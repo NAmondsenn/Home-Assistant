@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Environment variables (IMPORTANT - keeps API keys safe)
+.env
+
+# Logs and data
+logs/
+*.log
+*.wav
+*.mp3
+
+# Models (too large for git)
+models/
+*.onnx
+*.bin
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
