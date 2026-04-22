@@ -1,5 +1,23 @@
 llm:
-  provider: "gemini"
-  model: "gemini-2.0-flash"  # Update this
+  provider: "claude"
+  model: "claude-haiku-4-5-20251001"
   max_tokens: 150
   temperature: 0.7
+
+audio:
+  sample_rate: 48000
+  channels: 1
+  chunk_size: 2048
+
+whisper:
+  model: "base.en"
+  device: "cpu"
+  compute_type: "int8"
+
+conversation:
+  history_length: 5
+
+thresholds:
+  silence_duration: 0.5
+  recording_timeout: 5.0
+  wake_word_confidence: 0.5

@@ -136,7 +136,7 @@ class AudioManager:
     def record_until_silence(
         self,
         timeout: float = 5.0,
-        silence_threshold: float = 0.01,
+        silence_threshold: float = 0.04,
         silence_duration: float = 2.0
     ) -> np.ndarray:
         """
