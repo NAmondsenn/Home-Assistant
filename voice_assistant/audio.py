@@ -58,6 +58,9 @@ class AudioManager:
         Returns:
             Device index or None for default
         """
+        if isinstance(device_name, dict):
+            device_name = "default"
+
         if device_name is None or device_name == "default":
             return None
             

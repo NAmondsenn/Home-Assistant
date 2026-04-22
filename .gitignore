@@ -29,3 +29,11 @@ models/
 # OS
 .DS_Store
 Thumbs.db
+
+# System files (should never have been tracked)
+.Xauthority
+.bash_history
+.xsession-errors*
+.wget-hsts
+.cache/
+.local/
