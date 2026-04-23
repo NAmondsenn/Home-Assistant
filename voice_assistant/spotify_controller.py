@@ -76,14 +76,22 @@ class SpotifyController:
         """Play music (resume if no query, search and play if query provided)"""
         if not self.sp:
             return {"success": False, "message": "Not authenticated"}
-        
+    
         try:
-            if query:
+            # Get available devices
+            devices = self.sp.devices()
+            if not devices['devices']:
+                return {"success": False, "message": "No Spotify devices available. Open Spotify on a device first."}
+        
+            # Use first available device (or you can specify by name)
+            device_id = devices['devices'][0]['id']
+        
+            if query and query.lower() != "spotify":  # Don't search for the word "spotify"
                 # Search for track
                 results = self.sp.search(q=query, limit=1, type='track')
                 if results['tracks']['items']:
                     track_uri = results['tracks']['items'][0]['uri']
-                    self.sp.start_playback(uris=[track_uri])
+                    self.sp.start_playback(device_id=device_id, uris=[track_uri])
                     track_name = results['tracks']['items'][0]['name']
                     artist = results['tracks']['items'][0]['artists'][0]['name']
                     logger.info(f"Playing: {track_name} by {artist}")
@@ -91,13 +99,13 @@ class SpotifyController:
                 else:
                     return {"success": False, "message": f"Couldn't find '{query}'"}
             else:
-                # Resume playback
-                self.sp.start_playback()
+                # Resume playback on the device
+                self.sp.start_playback(device_id=device_id)
                 logger.info("Resumed playback")
                 return {"success": True, "message": "Resumed playback"}
         except Exception as e:
             logger.error(f"Play failed: {e}")
-            return {"success": False, "message": str(e)}
+        return {"success": False, "message": str(e)}
     
     def pause(self):
         """Pause playback"""

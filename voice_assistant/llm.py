@@ -36,18 +36,42 @@ class LLMHandler:
             self.history.append({"user": text, "assistant": response_text})
             if len(self.history) > self.history_length:
                 self.history = self.history[-self.history_length:]
-            action = None
-            user_lower = text.lower()
-            if "light" in user_lower or "lamp" in user_lower:
-                if "on" in user_lower:
-                    action = {"type": "home_assistant", "entity": "light.strip", "command": "turn_on", "confirmation": "chime"}
-                elif "off" in user_lower:
-                    action = {"type": "home_assistant", "entity": "light.strip", "command": "turn_off", "confirmation": "chime"}
+            action = self._parse_action(text, response_text)
             logger.info(f"LLM response: '{response_text}'")
             return {"response": response_text, "action": action, "confidence": 1.0}
         except Exception as e:
             logger.error(f"LLM processing failed: {e}")
             return {"response": "Sorry, I'm having trouble connecting right now.", "action": None, "confidence": 0.0}
+
+    def _parse_action(self, user_text: str, response: str) -> Optional[Dict]:
+        user_lower = user_text.lower()
+        
+        # Spotify commands
+        if any(word in user_lower for word in ["play", "music", "song", "spotify"]):
+            if "pause" in user_lower or "stop" in user_lower:
+                return {"type": "spotify", "command": "pause"}
+            elif "skip" in user_lower or "next" in user_lower:
+                return {"type": "spotify", "command": "skip"}
+            elif "previous" in user_lower or "back" in user_lower or "last" in user_lower:
+                return {"type": "spotify", "command": "previous"}
+            elif "what" in user_lower and ("playing" in user_lower or "song" in user_lower):
+                return {"type": "spotify", "command": "current"}
+            elif "play" in user_lower:
+                query = None
+                # Extract everything after "play" (case-insensitive)
+                play_index = user_lower.find("play ")
+                if play_index != -1 and len(user_text) > play_index + 5:
+                    query = user_text[play_index + 5:].strip()
+                return {"type": "spotify", "command": "play", "query": query}
+        
+        # Home Assistant commands
+        if "light" in user_lower or "lamp" in user_lower:
+            if "on" in user_lower:
+                return {"type": "home_assistant", "entity": "light.strip", "command": "turn_on", "confirmation": "chime"}
+            elif "off" in user_lower:
+                return {"type": "home_assistant", "entity": "light.strip", "command": "turn_off", "confirmation": "chime"}
+        
+        return None
 
     def clear_history(self):
         self.history = []
@@ -55,7 +79,7 @@ class LLMHandler:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     llm = LLMHandler()
-    for query in ["Hello, my name is Nathan.", "What's two plus two?", "Tell me a joke.", "Turn on the lights."]:
+    for query in ["Hello, my name is Nathan.", "What's two plus two?", "Tell me a joke.", "Play some jazz"]:
         print(f"\n> {query}")
         result = llm.process_query(query)
         print(f"< {result['response']}")
