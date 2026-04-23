@@ -37,3 +37,4 @@ Thumbs.db
 .wget-hsts
 .cache/
 .local/
+.spotify_cache
