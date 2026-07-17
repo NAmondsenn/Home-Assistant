@@ -7,7 +7,7 @@ __pycache__/
 venv/
 env/
 
-# Environment variables (IMPORTANT - keeps API keys safe)
+# .env
 .env
 
 # Logs and data
@@ -16,21 +16,16 @@ logs/
 *.wav
 *.mp3
 
-# Models (too large for git)
-models/
-*.onnx
-*.bin
-
-# IDE
+# IDE 
 .vscode/
 .idea/
 *.swp
 
-# OS
+# OS 
 .DS_Store
 Thumbs.db
 
-# System files (should never have been tracked)
+# System
 .Xauthority
 .bash_history
 .xsession-errors*
@@ -38,3 +33,22 @@ Thumbs.db
 .cache/
 .local/
 .spotify_cache
+
+# System dotfiles
+.asoundrc
+.bashrc
+.bash_logout
+.profile
+.gitconfig
+.sudo_as_admin_successful
+.config/
+
+# Models - too large for git and should be downloaded from official sources
+models/
+*.onnx
+*.bin
+piper/
+
+# Audio recordings
+*.flac
+*.ogg
