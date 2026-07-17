@@ -7,11 +7,11 @@ soundfile>=0.12.0
 # Speech recognition
 faster-whisper>=0.10.0
 
-# Wake word detection (using Porcupine instead of openwakeword)
+# Wake word detection
 pvporcupine==3.0.2
 
 # LLM
-google-generativeai>=0.3.0
+Claude Haiku 4.5 2025-10-01
 
 # Utilities
 python-dotenv>=1.0.0
