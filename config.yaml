@@ -17,6 +17,7 @@ whisper:
   model: "base.en"
   device: "cpu"
   compute_type: "int8"
+  fallback_model: "tiny.en"
 
 conversation:
   history_length: 5

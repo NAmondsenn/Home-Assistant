@@ -1,51 +1,57 @@
-"""
-Speech-to-Text Module
-Handles audio transcription using faster-whisper.
-"""
-
 import logging
 import numpy as np
 from faster_whisper import WhisperModel
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 import time
 
+# Logger setup
 logger = logging.getLogger(__name__)
 
-
 class SpeechToText:
-    """Transcribes speech using Whisper."""
-    
     def __init__(
         self,
-        model_size: str = "base.en",
+        # Small, English-only model which is faster and uses less memory.
+        model_size: str = "base.en", 
         device: str = "cpu",
+        # Use int8 quantization for faster inference and lower memory usage.
         compute_type: str = "int8",
         fallback_model: Optional[str] = None
     ):
-        """
-        Initialize Whisper model.
-        
-        Args:
-            model_size: Model size (tiny.en, base.en, small.en, etc.)
-            device: Device to run on (cpu or cuda)
-            compute_type: Computation precision (int8, float16, float32)
-            fallback_model: Fallback model if primary is too slow
-        """
+
+       # Initialise the SpeechToText class with the specified model size, 
+       # device, compute type, and optional fallback model.
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
         self.fallback_model = fallback_model
-        
+
+        # Load the Whisper model using the specified parameters.
+        # This logs before and after loading the model to provide feedback on the process.
+        # If loading fails and a fallback_model was provided, this is tried
+        # instead of crashing the entire assistant on startup.
         logger.info(f"Loading Whisper model: {model_size}")
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
-        logger.info(f"Whisper model loaded: {model_size}")
-        
-        # Warm up model with dummy audio
+        try:
+            self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            logger.info(f"Whisper model loaded: {model_size}")
+        except Exception as e:
+            if fallback_model:
+                logger.warning(f"Failed to load {model_size}, falling back to {fallback_model}: {e}")
+                self.model = WhisperModel(fallback_model, device=device, compute_type=compute_type)
+                logger.info(f"Whisper model loaded: {fallback_model}")
+            else:
+                raise
+
+        # Runs a warm-up process to avoid latency on the first transcription query.
         self._warmup()
         
     def _warmup(self):
-        """Warm up model to avoid first-query latency."""
+        """
+        Warm up model to avoid first-query latency.
+        This method runs a dummy transcription to ensure that the model is ready for real-time use.
+        It provides feedback on whether the warm-up was successful or if it encountered any issues.
+        """
         logger.info("Warming up Whisper model...")
+        # Provides audio at 16kHz sample rate, which is the expected input for Whisper.
         dummy_audio = np.zeros(16000, dtype=np.float32)
         try:
             list(self.model.transcribe(dummy_audio, beam_size=1))
@@ -55,29 +61,32 @@ class SpeechToText:
             
     def transcribe(
         self,
-        audio: np.ndarray,
-        sample_rate: int = 16000,
+        audio: Union[np.ndarray, str],
         language: str = "en",
-        beam_size: int = 5,
+        beam_size: int = 3,
         vad_filter: bool = True
-    ) -> Dict[str, any]:
+        ) -> Dict[str, any]:
         """
-        Transcribe audio to text.
-        
+        Transcribes audio into text using the Whisper model.
+
         Args:
-            audio: Audio data as numpy array (float32, -1 to 1)
-            sample_rate: Sample rate of audio
-            language: Language code (en, es, fr, etc.)
-            beam_size: Beam size for decoding (higher = more accurate, slower)
-            vad_filter: Use voice activity detection to filter silence
-            
+            audio: Array of raw audio samples.
+            language: Default language for transcription (English).
+            beam_size: Decoding beam size; higher = slower but more accurate (default: 3).
+            vad_filter: Enable Voice Activity Detection to skip silence.
+
         Returns:
-            Dict with 'text', 'language', 'confidence', 'duration'
+            A dictionary containing the transcribed text, detected language, confidence score, and duration.
         """
-        logger.info("Transcribing audio...")
+        source = f"file: {audio}" if isinstance(audio, str) else "raw audio array"
+
+        # Logs the start of the transcription process starts a timer to track how long the transcription takes.
+        logger.info(f"Transcribing {source}...")
         start_time = time.time()
-        
+
+        # try/except block which attempts to transcribe the audio and handles any exceptions that may occur during the process.
         try:
+            # Passes audio into the Whisper model.
             segments, info = self.model.transcribe(
                 audio,
                 language=language,
@@ -85,83 +94,57 @@ class SpeechToText:
                 vad_filter=vad_filter,
                 vad_parameters=dict(min_silence_duration_ms=500)
             )
-            
-            text_segments = []
-            for segment in segments:
-                text_segments.append(segment.text)
-                
-            text = " ".join(text_segments).strip()
+
+            # Whisper returns segments of text, which are concatenated into a single string.
+            text = " ".join(segment.text for segment in segments).strip()
+            # Calculates the duration of the transcription process 
             duration = time.time() - start_time
-            
+
+            # The result dictionary is constructed to include the transcribed text, 
+            # detected language, confidence score, and duration of the transcription.
             result = {
                 'text': text,
                 'language': info.language,
                 'confidence': info.language_probability,
                 'duration': duration
             }
-            
+
+            # Logs the completion of the transcription process alongside its duration, returning the result.
             logger.info(f"Transcription complete ({duration:.2f}s): '{text}'")
             return result
-            
+
+        # Exception handling to catch any errors that occur during the transcription process. 
+        # If an error occurs, it logs the error, returning a result dictionary with empty / default values, 
+        # along with the error message. 
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             return {
                 'text': '',
-                'language': 'en',
-                'confidence': 0.0,
-                'duration': 0.0,
-                'error': str(e)
-            }
-            
-    def transcribe_file(self, filepath: str) -> Dict[str, any]:
-        """
-        Transcribe audio file.
-        
-        Args:
-            filepath: Path to audio file
-            
-        Returns:
-            Transcription result dict
-        """
-        logger.info(f"Transcribing file: {filepath}")
-        start_time = time.time()
-        
-        try:
-            segments, info = self.model.transcribe(
-                filepath,
-                beam_size=5,
-                vad_filter=True
-            )
-            
-            text_segments = []
-            for segment in segments:
-                text_segments.append(segment.text)
-                
-            text = " ".join(text_segments).strip()
-            duration = time.time() - start_time
-            
-            result = {
-                'text': text,
-                'language': info.language,
-                'confidence': info.language_probability,
-                'duration': duration
-            }
-            
-            logger.info(f"File transcription complete ({duration:.2f}s)")
-            return result
-            
-        except Exception as e:
-            logger.error(f"File transcription failed: {e}")
-            return {
-                'text': '',
-                'language': 'en',
+                'language': None,
                 'confidence': 0.0,
                 'duration': 0.0,
                 'error': str(e)
             }
 
+    def transcribe_file(self, filepath: str, **kwargs) -> Dict[str, any]:
+        """
+        Transcribe an audio file from disk.
+
+        Forwards the file path to transcribe().
+        Any extra arguments (e.g. beam_size, language) also get passed through.
+
+        Args:
+            filepath: Path to the audio file to transcribe.
+            **kwargs: Any other arguments accepted by transcribe() (e.g. beam_size, language, vad_filter).
+
+        Returns:
+            A dictionary containing the transcribed text, detected language, confidence score, and duration.
+        """
+        return self.transcribe(audio=filepath, **kwargs)
 
 # Test function - runs when you execute this file directly
+# Records 5 seconds of audio from the microphone, saves it to a temporary WAV file, transcribes it,
+# and prints the result (text, detected language, confidence, and duration).
 if __name__ == "__main__":
     import pyaudio
     import wave
@@ -170,14 +153,15 @@ if __name__ == "__main__":
     
     print("\n=== Speech-to-Text Test ===\n")
     
-    # Initialize STT
+    # Initialise speech-to-text model
     stt = SpeechToText(model_size="base.en")
     
-    # Record audio
+    # Connects to the microphone and informs the user that reccording is starting.
     pa = pyaudio.PyAudio()
-    print("\nRecording 5 seconds...")
-    print("🎤 Speak now!")
-    
+    print("\nRecording 5 seconds of audio...")
+    print("Speak now!")
+
+    # Opens the mic stream at 48kHz sample rate, 16-bit depth, mono channel, and a buffer size of 2048 frames.
     stream = pa.open(
         format=pyaudio.paInt16,
         channels=1,
@@ -186,25 +170,28 @@ if __name__ == "__main__":
         frames_per_buffer=2048,
         input_device_index=0
     )
-    
+
+    # Records audio chunks lasting for 5 seconds and appends them to a list.
     frames = []
     for _ in range(int(48000/2048 * 5)):
         data = stream.read(2048, exception_on_overflow=False)
         frames.append(data)
-        
+
+    # Stops the microphone stream and terminates the PyAudio instance.
     stream.close()
     pa.terminate()
     
-    # Save temp file
+    # Writes the collected frames to temp_test.wav at the mic's native 48kHz rate.
     with wave.open("temp_test.wav", 'wb') as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(48000)
         wf.writeframes(b''.join(frames))
     
-    # Transcribe
+    # Transcribes the file using the transcribe_file() method.
     result = stt.transcribe_file("temp_test.wav")
-    
+
+    # Prints out the results dictionary in a readable form.
     print(f"\n{'='*40}")
     print(f"Transcription: '{result['text']}'")
     print(f"Language: {result['language']}")

@@ -9,7 +9,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 class LLMHandler:
-    def __init__(self, api_key=None, model="claude-haiku-4-5-20251001", max_tokens=150, temperature=0.7, history_length=5):
+    def __init__(self, api_key=None, model="claude-haiku-4-5-20251001", max_tokens=150, temperature=0.7, history_length=5, assistant_name="Assistant"):
         # If no API key is provided, "Claude_API_Key" is taken from .env
         self.api_key = api_key or os.getenv("Claude_API_Key")
         # If no API key is found, an error is raised
@@ -22,6 +22,8 @@ class LLMHandler:
         self.temperature = temperature
         self.history_length = history_length
         self.history = []
+        self.assistant_name = assistant_name
+        
         logger.info(f"LLM initialised: {model}")
 
     def process_query(self, text, context=None):
@@ -34,7 +36,7 @@ class LLMHandler:
         try:
             # System prompt explaining to the model how to behave, including instructions for formatting and response style
             system_prompt = (
-                "You are Atlas, a voice assistant running locally with smart home and utility features. "
+                f"You are {self.assistant_name}, a voice assistant running locally with smart home and utility features. "
                 "Your replies are converted to speech, so: "
                 "never use markdown, bullet points, emojis, or special formatting — plain spoken sentences only. "
                 "Keep responses to 1-2 sentences unless the user asks for detail. "
