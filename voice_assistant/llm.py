@@ -66,7 +66,7 @@ class LLMHandler:
             if len(self.history) > self.history_length:
                 self.history = self.history[-self.history_length:]
 
-            # Checks the users query and the model's response for any specific actions that should be executed, such as turning on the lights
+            # Checks the user's query and the model's response for any specific actions that should be executed, such as turning on the lights
             action = self._parse_action(text, response_text)
             logger.info(f"LLM response: '{response_text}'")
 
