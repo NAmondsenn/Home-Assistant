@@ -12,6 +12,7 @@ from llm import LLMHandler
 from text_to_speech import TextToSpeech
 from wake_word import WakeWordDetector
 from spotify_controller import SpotifyController
+from actions import ActionExecutor
 
 # Loads environment variables from .env
 load_dotenv()
@@ -19,7 +20,7 @@ load_dotenv()
 os.makedirs(os.path.expanduser("~/logs"), exist_ok=True)
 # Logging configuration for the entire application.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(os.path.expanduser("~/logs/smart_assistant.log")), logging.StreamHandler()])
+                    handlers=[logging.FileHandler(os.path.expanduser("~/logs/smart_assistant.log")), logging.StreamHandler()])
 # Logger for the SmartAssistant class
 logger = logging.getLogger(__name__)
 
@@ -70,13 +71,17 @@ class SmartAssistant:
         self.tts = TextToSpeech(self.config.data)
         
         logger.info("Loading Spotify...")
-        # Attempts to initialize the SpotifyController. If it fails, a warning is logged, 
+        # Attempts to initialise the SpotifyController. If it fails, a warning is logged,
         # self.spotify falls back to None and the assistant will continue to run without Spotify.
         try:
             self.spotify = SpotifyController()
         except Exception as e:
-            logger.warning(f"Spotify initialization failed: {e}")
+            logger.warning(f"Spotify initialisation failed: {e}")
             self.spotify = None
+
+        # Sets up the action executor, which dispatches detected actions to the right controller.
+        # Controllers which are currently unavailable are passed as None.
+        self.actions = ActionExecutor(spotify=self.spotify)
         
         # Sets up the wake word detector with sensitivity settings from config.
         self.thresholds = self.config.section("thresholds")
@@ -98,32 +103,6 @@ class SmartAssistant:
         self.running = False
         self.audio.close()
         sys.exit(0)
-
-    def _execute_spotify_action(self, action):
-        """
-        Executes a Spotify action based on the command detected in the user's query.
-        Returns a dictionary indicating success or failure, and any relevant messages.
-        The action dictionary is provided by the LLMHandler's _parse_action method, 
-        which interprets user queries and maps them to specific Spotify commands.
-        """
-        command = action.get("command")
-        if command == "play":
-            query = action.get("query")
-            return self.spotify.play(query)
-        elif command == "pause":
-            return self.spotify.pause()
-        elif command == "skip":
-            return self.spotify.skip()
-        elif command == "previous":
-            return self.spotify.previous()
-        elif command == "current":
-            result = self.spotify.current_track()
-            # If the current track information is successfully retrieved, return the track and artist details.
-            if result.get("success"):
-                return {"success": True, "message": f"Playing {result['track']} by {result['artist']}"}
-            return result
-        # If the command is not recognised, return a failure response.
-        return {"success": False}
 
     def run(self):
         """
@@ -161,16 +140,12 @@ class SmartAssistant:
                 response_text = result["response"]
                 action = result.get("action")
 
-                # If an action is detected and it is a Spotify command, it attempts to execute the command using the SpotifyController.
-                # If Spotify is unavailable, it informs the user that Spotify is not configured.
-                if action and action["type"] == "spotify" and self.spotify:
-                    spotify_result = self._execute_spotify_action(action)
-                    if spotify_result.get("success"):
-                        response_text = spotify_result.get("message", response_text)
-                    else:
-                        response_text = spotify_result.get("message", "Sorry, I couldn't execute that Spotify command.")
-                elif action and action["type"] == "spotify":
-                    response_text = "Spotify is not available. Please check your Spotify configuration."
+                # If an action was detected, it is run through the action executor.
+                # Its message is used as the spoken response, if one was returned.
+                if action:
+                    action_result = self.actions.execute(action)
+                    if action_result.get("message"):
+                        response_text = action_result["message"]
 
                 # Prints the response from the LLM, saves it as a WAV file, reads it, resamples it if necessary, 
                 # and plays it back to the user through the audio output.
