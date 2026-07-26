@@ -12,11 +12,11 @@ without a microphone connected.
 import os
 import sys
 import logging
-import yaml
 
 # Add voice_assistant to path
 sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
 
+from config import Config
 from llm import LLMHandler
 from actions import ActionExecutor
 from text_to_speech import TextToSpeech
@@ -44,31 +44,16 @@ def test_integration():
 
     # Load config.yaml
     print("Loading configuration...")
-    with open(os.path.expanduser('~/config.yaml'), 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Retrieve assistant name from config.yaml
-    assistant_config = config.get('assistant', {})
-    assistant_name = assistant_config.get('name', 'Assistant')
+    config = Config()
 
     # Initialise modules
     print("Initialising modules...")
 
-    # Retrieve llm conversation config
-    llm_config = config.get('llm', {})
-    conversation_config = config.get('conversation', {})
-
-    llm = LLMHandler(
-        api_key=None,
-        model=llm_config.get('model', 'claude-haiku-4-5-20251001'),
-        max_tokens=llm_config.get('max_tokens', 150),
-        temperature=llm_config.get('temperature', 0.7),
-        history_length=conversation_config.get('history_length', 5),
-        assistant_name=assistant_name
-    )
+    # LLMHandler pulls its own model / max_tokens / temperature / history_length / assistant_name from config
+    llm = LLMHandler(config=config, api_key=None)
 
     # Spotify and TTS are both optional, the test still runs and reports
-    # results even if either is unavailable. 
+    # results even if either is unavailable.
     try:
         spotify = SpotifyController()
     except Exception as e:
@@ -77,13 +62,19 @@ def test_integration():
 
     actions = ActionExecutor(spotify=spotify)
 
-    # TTS is required, meaning no Piper TTS install will fail the test.
-    tts = TextToSpeech(config)
+    # TTS is optional, meaning no Piper TTS install won't fail the test.
+    try:
+        tts = TextToSpeech(config)
+        tts_available = True
+    except Exception as e:
+        print(f"TTS not available: {e}")
+        tts = None
+        tts_available = False
 
     print("\nAll modules initialised\n")
 
     # Runs each test query through: LLM -> action executor -> TTS,
-    # and reports pass/fail per stage rather than stopping at the first failure.
+    # and reports pass / fail per stage rather than stopping at the first failure.
     results = []
 
     for i, query in enumerate(TEST_QUERIES, 1):
@@ -114,17 +105,19 @@ def test_integration():
                 print(f"   Action result: {action_result}")
 
             # Step 3: TTS (only if the LLM produced something to speak)
-            if response_text:
+            if response_text and tts_available:
                 tts_file = f"test_integration_{i}.wav"
-                tts_result = tts.synthesize(response_text, tts_file)
+                tts_result = tts.synthesise(response_text, tts_file)
                 if tts_result is None:
                     query_result["tts_ok"] = False
-                    print("   TTS failed to generate audio")
+                    print("TTS failed to generate audio")
                 else:
-                    print(f"   TTS saved to: {tts_file}")
+                    print(f"TTS saved to: {tts_file}")
+            elif response_text:
+                print("TTS not available, skipping speech generation")
 
         except Exception as e:
-            print(f"   Error during query: {e}")
+            print(f"Error during query: {e}")
             query_result["llm_ok"] = False
 
         results.append(query_result)
