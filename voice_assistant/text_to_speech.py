@@ -12,7 +12,6 @@ from pathlib import Path
 # Logger setup
 logger = logging.getLogger(__name__)
 
-
 class TextToSpeech:
     """Synthesises and outputs speech from text given to Piper TTS."""
 
@@ -21,11 +20,10 @@ class TextToSpeech:
         Initialise the TTS engine.
 
         Args:
-            config: Dict loaded from config.yaml.
-                    Used to look up the assistant's name.
+            config: Configs loaded from config.yaml.
         """
 
-        # Stores the config dict and resolves the paths to Piper TTS and the voice model.
+        # Stores the config and resolves the paths to Piper TTS and the voice model.
         self.config = config
         self.piper_path = os.path.expanduser("~/models/piper/piper")
         self.model_path = os.path.expanduser("~/models/en_GB-alan-medium.onnx")
@@ -35,7 +33,7 @@ class TextToSpeech:
         self.temp_dir.mkdir(exist_ok=True)
 
         # Reads the assistant's name from the "assistant" section in config.yaml.
-        assistant_config = self.config.get("assistant", {})
+        assistant_config = self.config.section("assistant")
         self.name = assistant_config.get("name", "Assistant")
 
         # Verify Piper is installed, raising error if not.
@@ -68,6 +66,7 @@ class TextToSpeech:
             self.synthesise("Ready.", str(test_file))
             test_file.unlink()  # Deletes the warmup file
             logger.info("Piper warmup complete")
+
         # Catches an error and logs warmup failure.
         # This prevents the system crashing on startup if the warmup fails.
         except Exception as e:
@@ -116,8 +115,7 @@ class TextToSpeech:
                 logger.error(f"No output file found: {output_file}")
                 return None
 
-            # Retrieves and logs the audio duration
-            # This is done by reading the WAV header
+            # Retrieves and logs the audio duration.
             with wave.open(output_file, 'rb') as wf:
                 frames = wf.getnframes()
                 rate = wf.getframerate()
@@ -165,18 +163,16 @@ class TextToSpeech:
             logger.error(f"Error converting to array: {e}")
             return None, None
 
-
 def main():
     """
-    Manual testing which only runs if text_to_speech.py is ran directly.
-    This synthesises a list of sample phrases with Piper. 
-    The audio is not played upon test completion but is saved to a file which can be opened manually.    
+    Manual testing which only runs if text_to_speech.py is run directly.
+    This synthesises a list of sample phrases with Piper.
+    The audio is not played upon test completion but is saved to a file which can be opened manually.
     """
-    import yaml
+    from config import Config
 
     # Loads config.yaml
-    with open('config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
+    config = Config()
 
     # Setup logging
     logging.basicConfig(
