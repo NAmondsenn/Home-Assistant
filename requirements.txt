@@ -3,15 +3,20 @@ pyaudio==0.2.14
 numpy>=1.24.0
 librosa>=0.10.0
 soundfile>=0.12.0
+sounddevice>=0.5.0
 
 # Speech recognition
 faster-whisper>=0.10.0
 
 # Wake word detection
-pvporcupine==3.0.2
+openwakeword>=0.6.0
 
 # LLM
-Claude Haiku 4.5 2025-10-01
+anthropic>=0.120.0
+
+# Spotify
+spotipy>=2.26.0
+flask>=3.0.0
 
 # Utilities
 python-dotenv>=1.0.0
