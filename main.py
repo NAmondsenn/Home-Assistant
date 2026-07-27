@@ -60,19 +60,15 @@ class SmartAssistant:
                                 compute_type=whisper_config.get("compute_type", "int8"), 
                                 fallback_model=whisper_config.get("fallback_model", "tiny.en"))
         
-        # Sets up the LLM handler with settings from config, passing in the assistant's name for the system prompt. 
-        # The LLMHandler is responsible for processing user queries and generating responses.
-        llm_config = self.config.section("llm")
-        self.llm = LLMHandler(api_key=None, model=llm_config.get("model", "claude-haiku-4-5-20251001"), 
-                              max_tokens=llm_config.get("max_tokens", 150), temperature=llm_config.get("temperature", 0.7), 
-                              history_length=self.config.section("conversation").get("history_length", 5), assistant_name=self.name)
+        # Retrieves LLM configuration from config.yaml and passes it to LLMHandler.
+        self.llm = LLMHandler(config=self.config, api_key=None)
         
         # Sets up text-to-speech with settings from config.
         self.tts = TextToSpeech(self.config.data)
         
         logger.info("Loading Spotify...")
         # Attempts to initialise the SpotifyController. If it fails, a warning is logged,
-        # self.spotify falls back to None and the assistant will continue to run without Spotify.
+        # self.spotify falls back to None, and the assistant will continue to run without Spotify.
         try:
             self.spotify = SpotifyController()
         except Exception as e:
@@ -150,7 +146,7 @@ class SmartAssistant:
                 # Prints the response from the LLM, saves it as a WAV file, reads it, resamples it if necessary, 
                 # and plays it back to the user through the audio output.
                 print(f"{self.name}: {response_text}")
-                self.tts.synthesize(response_text, self.tts_file)
+                self.tts.synthesise(response_text, self.tts_file)
                 tts_audio, tts_sr = sf.read(self.tts_file)
                 if tts_sr != self.mic_rate:
                     tts_audio = librosa.resample(tts_audio.astype("float32"), orig_sr=tts_sr, target_sr=self.mic_rate)
