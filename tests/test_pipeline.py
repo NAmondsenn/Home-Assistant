@@ -10,13 +10,13 @@ the wake word detector.
 import sys
 import os
 import logging
-import yaml
 import librosa
 import soundfile as sf
 
 # Add voice_assistant to path
 sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
 
+from config import Config
 from audio import AudioManager
 from speech_to_text import SpeechToText
 from llm import LLMHandler
@@ -40,18 +40,13 @@ def test_pipeline():
 
     # Load config
     print("Loading configuration...")
-    with open(os.path.expanduser('~/config.yaml'), 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Retrieves assistant name from config.yaml
-    assistant_config = config.get('assistant', {})
-    assistant_name = assistant_config.get('name', 'Assistant')
+    config = Config()
 
     # Initialise modules
     print("Initialising modules...")
 
     # Retrieves audio config
-    audio_config = config.get('audio', {})
+    audio_config = config.section('audio')
     mic_rate = audio_config.get('sample_rate', 48000)
     whisper_rate = 16000  # Whisper expected sample rate
 
@@ -64,7 +59,7 @@ def test_pipeline():
     )
 
     # Retrieves Whisper config
-    whisper_config = config.get('whisper', {})
+    whisper_config = config.section('whisper')
     stt = SpeechToText(
         model_size=whisper_config.get('model', 'base.en'),
         device=whisper_config.get('device', 'cpu'),
@@ -72,23 +67,12 @@ def test_pipeline():
         fallback_model=whisper_config.get('fallback_model', 'tiny.en')
     )
 
-    # LLM config - this defaults here match llm.py's own defaults so this test
-    # behaves the same as the real app when config.yaml doesn't override them.
-    llm_config = config.get('llm', {})
-    conversation_config = config.get('conversation', {})
-
-    llm = LLMHandler(
-        api_key=None,  # Loaded from .env
-        model=llm_config.get('model', 'claude-haiku-4-5-20251001'),
-        max_tokens=llm_config.get('max_tokens', 150),
-        temperature=llm_config.get('temperature', 0.7),
-        history_length=conversation_config.get('history_length', 5),
-        assistant_name=assistant_name
-    )
+    # LLMHandler pulls its configuration from config.yaml
+    llm = LLMHandler(config=config, api_key=None)  # api_key loaded from .env
 
     # Import TTS
-    # TTS is optional for this test - if Piper isn't installed, the test
-    # still runs through transcription and the LLM response, just skips speech.
+    # TTS is optional for this test. If Piper isn't installed, the test
+    # still runs through transcription and the LLM response but skips speech.
     try:
         tts = TextToSpeech(config)
         tts_available = True
@@ -157,7 +141,7 @@ def test_pipeline():
             if tts_available:
                 print("\n[4/4] Generating speech...")
                 tts_file = "test_response.wav"
-                tts.synthesize(response_text, tts_file)
+                tts.synthesise(response_text, tts_file)
 
                 print("Speech generated")
                 print("\nPlaying response...")
