@@ -8,8 +8,12 @@ sounddevice>=0.5.0
 # Speech recognition
 faster-whisper>=0.10.0
 
-# Wake word detection
-openwakeword>=0.6.0
+# Wake word detection:
+# openwakeword is installed separately in setup.sh (pip install --no-deps),
+# because it pins tflite-runtime on Linux which has no wheels for Python 3.12+.
+# The assistant uses openwakeword's ONNX runtime instead, and every package
+# openwakeword actually needs (onnxruntime, scipy, scikit-learn, tqdm, requests)
+# is already installed via faster-whisper / librosa below.
 
 # LLM
 anthropic>=0.120.0

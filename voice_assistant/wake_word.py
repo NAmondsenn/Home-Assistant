@@ -51,7 +51,10 @@ class WakeWordDetector:
         model_path = os.path.join(PROJECT_DIRECTORY, "models", f"{self.wake_word_key}.onnx")
 
         logger.info(f"Loading openWakeWord model for '{self.wake_word_phrase}'...")
-        self.model = Model(wakeword_models=[model_path])
+        # inference_framework is set to "onnx" rather than the default "tflite".
+        # This is because tflite-runtime has no wheels for Python 3.12+ and the wake word
+        # models are .onnx files anyway.
+        self.model = Model(wakeword_models=[model_path], inference_framework="onnx")
         logger.info(f"openWakeWord initialised with '{self.wake_word_key}' model")
 
     def listen_once(self):
