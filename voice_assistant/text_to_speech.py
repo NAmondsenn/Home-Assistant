@@ -12,6 +12,10 @@ from pathlib import Path
 # Logger setup
 logger = logging.getLogger(__name__)
 
+# Resolves paths relative to this file's own location, so the project
+# works when cloned / run from anywhere.
+PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+
 class TextToSpeech:
     """Synthesises and outputs speech from text given to Piper TTS."""
 
@@ -25,11 +29,11 @@ class TextToSpeech:
 
         # Stores the config and resolves the paths to Piper TTS and the voice model.
         self.config = config
-        self.piper_path = os.path.expanduser("~/models/piper/piper")
-        self.model_path = os.path.expanduser("~/models/en_GB-alan-medium.onnx")
+        self.piper_path = os.path.join(PROJECT_DIRECTORY, "models", "piper", "piper")
+        self.model_path = os.path.join(PROJECT_DIRECTORY, "models", "en_GB-alan-medium.onnx")
 
         # Creates / reuses a temporary folder for generated audio.
-        self.temp_dir = Path("temp_audio")
+        self.temp_dir = Path(PROJECT_DIRECTORY) / "temp_audio"
         self.temp_dir.mkdir(exist_ok=True)
 
         # Reads the assistant's name from the "assistant" section in config.yaml.
@@ -40,14 +44,14 @@ class TextToSpeech:
         if not os.path.exists(self.piper_path):
             raise FileNotFoundError(
                 f"Piper not found at {self.piper_path}. "
-                "Run install_piper.sh first."
+                "Run setup.sh to install Piper TTS"
             )
 
         # Same check but for the voice model.
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(
                 f"Voice model not found at {self.model_path}. "
-                "Run install_piper.sh first."
+                "Run setup.sh to install Piper TTS"
             )
 
         logger.info(f"Piper TTS initialised with model: {self.model_path}")

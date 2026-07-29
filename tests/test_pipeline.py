@@ -78,7 +78,7 @@ def test_pipeline():
         tts_available = True
     except Exception as e:
         print(f"TTS not available: {e}")
-        print("Run install_piper.sh to install Piper TTS")
+        print("Run setup.sh to install Piper TTS")
         tts_available = False
 
     print("\nAll modules initialised\n")

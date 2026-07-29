@@ -9,7 +9,12 @@ class Config:
     Loads settings from config.yaml. This throws an error if the file is missing or invalid.
     Config exposes sections via .section(name) for easy access to specific parts of the configuration.
     """
-    def __init__(self, path="~/config.yaml"):
+
+    def __init__(self, path=None):
+        # Defaults to config.yaml sitting alongside this file, so the project
+        # works anywhere when cloned / run.
+        if path is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
         self.path = os.path.expanduser(path)
         
         if not os.path.exists(self.path):
