@@ -192,6 +192,25 @@ if ! pip install -r "${PROJECT_DIRECTORY}/requirements.txt"; then
     exit 1
 fi
 
+# openwakeword is installed without its declared dependencies, because it pins
+# tflite-runtime on Linux which has no wheels for Python 3.12+. The assistant
+# uses openwakeword's ONNX runtime instead, and everything openwakeword actually
+# needs (onnxruntime, scipy, scikit-learn, tqdm, requests) is already installed
+# by requirements.txt above.
+echo "Installing openwakeword (without tflite-runtime)..."
+if ! pip install --no-deps "openwakeword>=0.6.0"; then
+    echo "Error: Failed to install openwakeword." >&2
+    exit 1
+fi
+
+# Downloads openwakeword's shared preprocessing models (melspectrogram /
+# embedding), which it needs on first run alongside the wake word model itself.
+echo "Downloading openwakeword preprocessing models..."
+python3 - <<'EOF'
+from openwakeword.utils import download_models
+download_models()
+EOF
+
 # 6. Detect Architecture and Install Piper TTS Binary.
 echo "[6/7] Detecting platform architecture & installing Piper..."
 ARCH=$(uname -m)
