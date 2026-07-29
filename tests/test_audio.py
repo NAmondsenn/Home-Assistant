@@ -12,12 +12,13 @@ for confirming the mic and speaker setup works before running the full pipeline.
 import os
 import sys
 import logging
-import yaml
 
-# Add voice_assistant to path
-sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
+# Add the project root to the path so the voice_assistant package imports work
+# no matter where the tests are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from audio import AudioManager
+from voice_assistant.config import Config
+from voice_assistant.audio import AudioManager
 
 def test_audio():
     """Runs a series of manual AudioManager checks: devices, recording, resampling, playback."""
@@ -31,12 +32,12 @@ def test_audio():
     print("AUDIO MANAGER TEST")
     print("=" * 60 + "\n")
 
-    # Load config
+    # Load config via the same Config class the rest of the app uses.
     print("Loading configuration...")
-    with open(os.path.expanduser('~/config.yaml'), 'r') as f:
-        config = yaml.safe_load(f)
+    config = Config()
 
-    audio_config = config.get('audio', {})
+    audio_config = config.section('audio')
+    thresholds_config = config.section('thresholds')
     mic_rate = audio_config.get('sample_rate', 48000)
     whisper_rate = 16000  # Whisper's expected sample rate.
 
@@ -72,7 +73,7 @@ def test_audio():
         print("[3/5] Silence-triggered recording (say something, then go quiet)")
         input("Press Enter, then speak and pause when you're done...")
         silence_audio = audio.record_until_silence(
-            silence_duration=audio_config.get('silence_duration', 2.0),
+            silence_duration=thresholds_config.get('silence_duration', 2.0),
             timeout=10.0
         )
         audio.save_wav(silence_audio, "test_audio_silence.wav")

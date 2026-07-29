@@ -12,9 +12,9 @@ from pathlib import Path
 # Logger setup
 logger = logging.getLogger(__name__)
 
-# Resolves paths relative to this file's own location, so the project
-# works when cloned / run from anywhere.
-PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+# Resolves paths relative to the project root (the parent of the voice_assistant
+# package), matching where setup.sh installs models/ and where main.py runs.
+PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class TextToSpeech:
     """Synthesises and outputs speech from text given to Piper TTS."""
@@ -98,12 +98,12 @@ class TextToSpeech:
 
             logger.info(f"Synthesising: '{text[:50]}...'")
 
-            # Runs Piper and inputs text via echo, this then outputs to a file.
-            cmd = f'echo "{text}" | {self.piper_path} --model {self.model_path} --output_file {output_file}'
-
+            # Runs Piper directly (no shell) and feeds the text via stdin.
+            # Passing the text as stdin rather than interpolating it into a shell
+            # command means LLM output can never be executed as shell code.
             result = subprocess.run(
-                cmd,
-                shell=True,
+                [self.piper_path, "--model", self.model_path, "--output_file", output_file],
+                input=text,
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -173,7 +173,11 @@ def main():
     This synthesises a list of sample phrases with Piper.
     The audio is not played upon test completion but is saved to a file which can be opened manually.
     """
-    from config import Config
+    # Allows this file to be run directly (python voice_assistant/text_to_speech.py)
+    # by putting the project root on the path before importing from the package.
+    import sys
+    sys.path.insert(0, PROJECT_DIRECTORY)
+    from voice_assistant.config import Config
 
     # Loads config.yaml
     config = Config()

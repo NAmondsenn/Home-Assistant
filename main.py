@@ -1,20 +1,19 @@
 import os, sys, time, logging, signal, librosa, soundfile as sf
 from pathlib import Path
 from dotenv import load_dotenv
-from config import Config
 
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
-# Manually adds the voice_assistant directory to the Python path, 
-# ensuring that modules from other directories can be imported without issues.
-sys.path.insert(0, os.path.expanduser("~/voice_assistant"))
-from audio import AudioManager
-from speech_to_text import SpeechToText
-from llm import LLMHandler
-from text_to_speech import TextToSpeech
-from wake_word import WakeWordDetector
-from spotify_controller import SpotifyController
-from actions import ActionExecutor
+# voice_assistant is a proper package sitting next to this file, so its modules
+# are imported through the package rather than via sys.path manipulation.
+from voice_assistant.config import Config
+from voice_assistant.audio import AudioManager
+from voice_assistant.speech_to_text import SpeechToText
+from voice_assistant.llm import LLMHandler
+from voice_assistant.text_to_speech import TextToSpeech
+from voice_assistant.wake_word import WakeWordDetector
+from voice_assistant.spotify_controller import SpotifyController
+from voice_assistant.actions import ActionExecutor
 
 # Loads environment variables from .env
 load_dotenv()
@@ -147,10 +146,13 @@ class SmartAssistant:
                     if action_result.get("message"):
                         response_text = action_result["message"]
 
-                # Prints the response from the LLM, saves it as a WAV file, reads it, resamples it if necessary, 
+                # Prints the response from the LLM, saves it as a WAV file, reads it, resamples it if necessary,
                 # and plays it back to the user through the audio output.
+                # If synthesis fails, playback is skipped rather than replaying a stale file.
                 print(f"{self.name}: {response_text}")
-                self.tts.synthesise(response_text, self.tts_file)
+                if self.tts.synthesise(response_text, self.tts_file) is None:
+                    logger.error("TTS synthesis failed, skipping playback")
+                    continue
                 tts_audio, tts_sr = sf.read(self.tts_file)
                 if tts_sr != self.mic_rate:
                     tts_audio = librosa.resample(tts_audio.astype("float32"), orig_sr=tts_sr, target_sr=self.mic_rate)

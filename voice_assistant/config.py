@@ -11,10 +11,11 @@ class Config:
     """
 
     def __init__(self, path=None):
-        # Defaults to config.yaml sitting alongside this file, so the project
-        # works anywhere when cloned / run.
+        # Defaults to config.yaml in the project root (the parent of the
+        # voice_assistant package), so the project works anywhere when cloned / run.
         if path is None:
-            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            path = os.path.join(project_root, "config.yaml")
         self.path = os.path.expanduser(path)
         
         if not os.path.exists(self.path):

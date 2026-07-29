@@ -63,9 +63,6 @@ class AudioManager:
         Returns:
             Device index integer if found, or None to fall back to system default.
         """
-        # Sets the device name to "default" if a dictionary is passed in as the argument.
-        if isinstance(device_name, dict):
-            device_name = "default"
         # If no device name or if device_name is "default", returns None to use the system default.
         if device_name is None or device_name == "default":
             return None
@@ -175,10 +172,13 @@ class AudioManager:
 
         frames = []
         silence_chunks = 0
+        speech_started = False
         silence_chunks_needed = int(silence_duration * self.sample_rate / self.chunk_size)
         max_chunks = int(timeout * self.sample_rate / self.chunk_size)
 
         # Read audio data until silence is detected or timeout is reached.
+        # Silence only starts counting once speech has been heard, so a short
+        # pause before the user starts talking doesn't end the recording early.
         try:
             for i in range(max_chunks):
                 data = stream.read(self.chunk_size, exception_on_overflow=False)
@@ -188,14 +188,16 @@ class AudioManager:
                 audio_chunk = self._bytes_to_float(data)
                 rms = np.sqrt(np.mean(audio_chunk ** 2))
 
-                # Breaks recording if silence is detected.
+                # Breaks recording once silence follows speech.
                 if rms < silence_threshold:
-                    silence_chunks += 1
-                    if silence_chunks >= silence_chunks_needed:
-                        elapsed = i * self.chunk_size / self.sample_rate
-                        logger.info(f"Silence detected after {elapsed:.1f}s")
-                        break
+                    if speech_started:
+                        silence_chunks += 1
+                        if silence_chunks >= silence_chunks_needed:
+                            elapsed = i * self.chunk_size / self.sample_rate
+                            logger.info(f"Silence detected after {elapsed:.1f}s")
+                            break
                 else:
+                    speech_started = True
                     silence_chunks = 0
         finally:
             # Safely stop the stream and close the audio device.

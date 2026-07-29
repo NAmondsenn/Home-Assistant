@@ -1,7 +1,7 @@
 import logging
 import numpy as np
 from faster_whisper import WhisperModel
-from typing import Optional, Dict, Union
+from typing import Any, Optional, Dict, Union
 import time
 
 # Logger setup
@@ -65,7 +65,7 @@ class SpeechToText:
         language: str = "en",
         beam_size: int = 3,
         vad_filter: bool = True
-        ) -> Dict[str, any]:
+        ) -> Dict[str, Any]:
         """
         Transcribes audio into text using the Whisper model.
 
@@ -126,7 +126,7 @@ class SpeechToText:
                 'error': str(e)
             }
 
-    def transcribe_file(self, filepath: str, **kwargs) -> Dict[str, any]:
+    def transcribe_file(self, filepath: str, **kwargs) -> Dict[str, Any]:
         """
         Transcribe an audio file from disk.
 

@@ -51,6 +51,10 @@ echo "Actual wake word detection depends on the .onnx model installed on the dev
 read -rp "Wake word phrase [${CURRENT_WAKE}]: " WAKE_WORD
 WAKE_WORD="${WAKE_WORD:-$CURRENT_WAKE}"
 
+# Strips characters that would break the YAML quoting or the sed replacements below.
+ASSISTANT_NAME=$(printf '%s' "$ASSISTANT_NAME" | tr -d '"\\|&')
+WAKE_WORD=$(printf '%s' "$WAKE_WORD" | tr -d '"\\|&')
+
 sed -i "s|^  name: .*|  name: \"${ASSISTANT_NAME}\"|" "$CONFIG_FILE"
 sed -i "s|^  wake_word: .*|  wake_word: \"${WAKE_WORD}\"|" "$CONFIG_FILE"
 echo "Saved '${ASSISTANT_NAME}' / '${WAKE_WORD}' to config.yaml"
