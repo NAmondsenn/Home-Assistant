@@ -11,13 +11,13 @@ produces, so it can check dispatch logic without needing an API call.
 import os
 import sys
 import logging
-import yaml
 
-# Add voice_assistant to path
-sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
+# Add the project root to the path so the voice_assistant package imports work
+# no matter where the tests are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from actions import ActionExecutor
-from spotify_controller import SpotifyController
+from voice_assistant.actions import ActionExecutor
+from voice_assistant.spotify_controller import SpotifyController
 
 # Sample actions covering normal and exceptional cases for Spotify and Home Assistant commands.
 TEST_ACTIONS = [

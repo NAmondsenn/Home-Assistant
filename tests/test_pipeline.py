@@ -13,14 +13,15 @@ import logging
 import librosa
 import soundfile as sf
 
-# Add voice_assistant to path
-sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
+# Add the project root to the path so the voice_assistant package imports work
+# no matter where the tests are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import Config
-from audio import AudioManager
-from speech_to_text import SpeechToText
-from llm import LLMHandler
-from text_to_speech import TextToSpeech
+from voice_assistant.config import Config
+from voice_assistant.audio import AudioManager
+from voice_assistant.speech_to_text import SpeechToText
+from voice_assistant.llm import LLMHandler
+from voice_assistant.text_to_speech import TextToSpeech
 
 def test_pipeline():
     """

@@ -13,14 +13,15 @@ import os
 import sys
 import logging
 
-# Add voice_assistant to path
-sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
+# Add the project root to the path so the voice_assistant package imports work
+# no matter where the tests are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import Config
-from llm import LLMHandler
-from actions import ActionExecutor
-from text_to_speech import TextToSpeech
-from spotify_controller import SpotifyController
+from voice_assistant.config import Config
+from voice_assistant.llm import LLMHandler
+from voice_assistant.actions import ActionExecutor
+from voice_assistant.text_to_speech import TextToSpeech
+from voice_assistant.spotify_controller import SpotifyController
 
 # Sample queries covering the main paths through the system: a plain
 # conversational query, a Spotify action, and a Home Assistant action.

@@ -12,10 +12,11 @@ import os
 import sys
 import logging
 
-# Add voice_assistant to path
-sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
+# Add the project root to the path so the voice_assistant package imports work
+# no matter where the tests are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from llm import LLMHandler
+from voice_assistant.llm import LLMHandler
 
 # Tests each case: (query, expected action dict, or None if no action should be detected).
 TEST_CASES = [
@@ -55,8 +56,8 @@ def test_llm_parsing():
     print("LLM ACTION PARSING TEST")
     print("=" * 60 + "\n")
 
-    # Initialising LLMHandler requires an API key, but _parse_action never calls the API.
-    # This means the test doesn't require any tokens.
+    # LLMHandler initialises without an API key (it just logs a warning), and
+    # _parse_action never calls the API, so this test runs fully offline.
     print("Initialising LLMHandler...")
     llm = LLMHandler(api_key=None)
     print("LLMHandler initialised\n")

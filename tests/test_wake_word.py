@@ -14,11 +14,12 @@ import sys
 import logging
 import time
 
-# Add voice_assistant to path
-sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
+# Add the project root to the path so the voice_assistant package imports work
+# no matter where the tests are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import Config
-from wake_word import WakeWordDetector
+from voice_assistant.config import Config
+from voice_assistant.wake_word import WakeWordDetector
 
 logger = logging.getLogger(__name__)
 

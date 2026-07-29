@@ -1,6 +1,7 @@
 import os
+import re
 import logging
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from dotenv import load_dotenv
 from anthropic import Anthropic
 
@@ -18,16 +19,21 @@ class LLMHandler:
         conversation_config = config.section("conversation") if config else {}
         assistant_config = config.section("assistant") if config else {}
 
-        # If no API key is provided, "Claude_API_Key" is taken from .env
-        self.api_key = api_key or os.getenv("Claude_API_Key")
-        if not self.api_key:
-            raise ValueError("Claude_API_Key not found in environment")
+        # If no API key is provided, the standard ANTHROPIC_API_KEY is taken from .env,
+        # falling back to the legacy Claude_API_Key name.
+        # A missing key doesn't raise here: offline features like action parsing still
+        # work, and process_query reports the problem gracefully instead.
+        self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY") or os.getenv("Claude_API_Key")
+        if self.api_key:
+            self.client = Anthropic(api_key=self.api_key)
+        else:
+            self.client = None
+            logger.warning("No API key found (ANTHROPIC_API_KEY), LLM queries will fail until one is set")
 
-        self.client = Anthropic(api_key=self.api_key)
         self.model_name = model or llm_config.get("model", "claude-haiku-4-5-20251001")
-        self.max_tokens = max_tokens or llm_config.get("max_tokens", 150)
+        self.max_tokens = max_tokens if max_tokens is not None else llm_config.get("max_tokens", 150)
         self.temperature = temperature if temperature is not None else llm_config.get("temperature", 0.7)
-        self.history_length = history_length or conversation_config.get("history_length", 5)
+        self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
         self.history = []
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
 
@@ -41,6 +47,9 @@ class LLMHandler:
         Finally, it returns a dictionary containing the model's response, any detected action, and whether the transaction was successful.
         """
         logger.info(f"Processing query: '{text}'")
+        if self.client is None:
+            logger.error("Cannot process query: no API key configured")
+            return {"response": "Sorry, I'm not connected to my language model right now.", "action": self._parse_action(text, ""), "success": False}
         try:
             # System prompt explaining to the model how to behave, including instructions for formatting and response style.
             system_prompt = (
@@ -91,33 +100,41 @@ class LLMHandler:
 
     def _parse_action(self, user_text: str, response: str) -> Optional[Dict]:
         user_lower = user_text.lower()
+        # Splits the query into whole words, so keywords only match complete words
+        # rather than substrings (e.g. "on" no longer matches inside "monitor").
+        words = set(re.findall(r"[a-z]+", user_lower))
 
         # Spotify commands
-        if any(word in user_lower for word in ["play", "music", "song", "spotify"]):
-            if "pause" in user_lower or "stop" in user_lower:
+        if words & {"play", "playing", "music", "song", "songs", "track", "tracks", "spotify"}:
+            if words & {"pause", "stop"}:
                 return {"type": "spotify", "command": "pause"}
-            elif "skip" in user_lower or "next" in user_lower:
+            elif words & {"skip", "next"}:
                 return {"type": "spotify", "command": "skip"}
-            elif "previous" in user_lower or "back" in user_lower or "last" in user_lower:
+            elif words & {"previous", "back", "last"}:
                 return {"type": "spotify", "command": "previous"}
-            elif "what" in user_lower and ("playing" in user_lower or "song" in user_lower):
+            elif "what" in words and words & {"playing", "song", "track"}:
                 return {"type": "spotify", "command": "current"}
 
-            # Checks if the user said "play" and extracts the song or artist name if present.
+            # Checks if the user said "play" and extracts the song or artist name if present,
+            # dropping leading filler words like "some".
             # If no specific query is found, it will play the default playlist or resume playback.
-            elif "play" in user_lower:
+            elif "play" in words:
                 query = None
                 play_index = user_lower.find("play ")
                 if play_index != -1 and len(user_text) > play_index + 5:
                     query = user_text[play_index + 5:].strip()
+                    for filler in ("some ", "me ", "the ", "a "):
+                        if query.lower().startswith(filler):
+                            query = query[len(filler):].strip()
+                    query = query or None
                 return {"type": "spotify", "command": "play", "query": query}
 
         # Home Assistant commands
-        if "light" in user_lower or "lamp" in user_lower:
-            if "on" in user_lower:
+        if words & {"light", "lights", "lamp", "lamps"}:
+            if "on" in words:
                 return {"type": "home_assistant", "entity": "light.strip", "command": "turn_on",
                         "confirmation": "chime"}
-            elif "off" in user_lower:
+            elif "off" in words:
                 return {"type": "home_assistant", "entity": "light.strip", "command": "turn_off",
                         "confirmation": "chime"}
 
