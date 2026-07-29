@@ -13,11 +13,11 @@ import os
 import sys
 import logging
 import time
-import yaml
 
 # Add voice_assistant to path
 sys.path.insert(0, os.path.expanduser('~/voice_assistant'))
 
+from config import Config
 from wake_word import WakeWordDetector
 
 logger = logging.getLogger(__name__)
@@ -32,20 +32,6 @@ def parse_args():
         help="Override the wake_word_confidence value from config.yaml for this run"
     )
     return parser.parse_args()
-
-
-def load_config():
-    """Loads config.yaml, with a clean message output."""
-    config_path = os.path.expanduser('~/config.yaml')
-    try:
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        print(f"Config file not found at {config_path}")
-        sys.exit(1)
-    except yaml.YAMLError as e:
-        print(f"Config file is broken YAML: {e}")
-        sys.exit(1)
 
 
 def test_wake_word():
@@ -64,22 +50,17 @@ def test_wake_word():
 
     # Load config
     print("Loading configuration...")
-    config = load_config()
-
-    assistant_config = config.get('assistant', {})
-    wake_word = assistant_config.get('wake_word', 'Hey Assistant')
-
-    thresholds = config.get('thresholds', {})
-    sensitivity = args.sensitivity if args.sensitivity is not None else thresholds.get('wake_word_confidence', 0.5)
+    config = Config()
 
     if args.sensitivity is not None:
-        print(f"Overriding config sensitivity with CLI value: {sensitivity}")
+        print(f"Overriding config sensitivity with CLI value: {args.sensitivity}")
 
-    print(f"Initialising wake word detector (sensitivity={sensitivity})...")
-    detector = WakeWordDetector(sensitivity=sensitivity)
-    print("Wake word detector ready\n")
+    print("Initialising wake word detector...")
+    # WakeWordDetector pulls its wake word phrase / model and default sensitivity from config
+    detector = WakeWordDetector(config=config, sensitivity=args.sensitivity)
+    print(f"Wake word detector ready (sensitivity={detector.sensitivity})\n")
 
-    print(f"Say '{wake_word}' as many times as you like.")
+    print(f"Say '{detector.wake_word_phrase}' as many times as you like.")
     print("Press Ctrl + C to exit to summary.\n")
 
     detection_times = []
