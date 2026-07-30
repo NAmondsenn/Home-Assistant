@@ -66,15 +66,24 @@ def test_wake_word():
 
     detection_times = []
     confidences = []
+    consecutive_errors = 0
     start_time = time.time()
 
     try:
         while True:
             try:
                 result = detector.listen_once()
+                consecutive_errors = 0
             except Exception:
-                # Don't let one bad frame kill the entire test.
+                # Don't let one bad frame kill the entire test, but give up after
+                # repeated failures in a row - that means there is no working
+                # microphone rather than a transient glitch.
+                consecutive_errors += 1
                 logger.exception("listen_once() raised an error, continuing test")
+                if consecutive_errors >= 3:
+                    print("\nlisten_once() failed 3 times in a row - is a microphone connected?")
+                    print("Aborting to summary.")
+                    break
                 continue
 
             detection_times.append(time.time())
