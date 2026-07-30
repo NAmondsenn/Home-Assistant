@@ -13,6 +13,9 @@ from spotipy.oauth2 import SpotifyOAuth
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+# Resolves paths relative to the project root.
+PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 class SpotifyController:
     def __init__(self):
@@ -31,7 +34,7 @@ class SpotifyController:
             client_secret=self.client_secret,
             redirect_uri=self.redirect_uri,
             scope=scope,
-            cache_path=os.path.expanduser("~/.spotify_cache")
+            cache_path=os.path.join(PROJECT_DIRECTORY, ".spotify_cache")
         )
         
         self.sp = None
@@ -69,8 +72,8 @@ class SpotifyController:
         token_info = self.sp_oauth.get_access_token(code)
         
         self.sp = spotipy.Spotify(auth=token_info['access_token'])
-        logger.info("✅ Authentication successful! Token cached for future use.")
-        print("✅ Authentication successful!")
+        logger.info("Authentication successful! Token cached for future use.")
+        print("Authentication successful!")
     
     def play(self, query: Optional[str] = None):
         """Play music (resume if no query, search and play if query provided)"""
@@ -174,5 +177,5 @@ if __name__ == "__main__":
         controller.authenticate_first_time()
     
     # Test playback
-    print("\n🎵 Spotify Controller Ready!")
+    print("\nSpotify Controller Ready!")
     print("Commands: play [song], pause, skip, previous, current")
