@@ -97,6 +97,10 @@ class LLMHandler:
                 "and stop. Only go longer if the user explicitly asks for detail. "
                 "Be direct and natural, like a helpful person talking, not a customer service bot. "
                 "If you don't know something, say so plainly rather than guessing. "
+                "Use UK units and conventions only: degrees Celsius for temperature, "
+                "miles for distance and road speeds, stones and pounds for body weight, kilograms and grams "
+                "for other weights, litres and pints, and pounds sterling for money. Give dates as day then "
+                "month, and use the 12-hour clock with AM / PM. Use British spelling. "
             )
 
             # The cutoff wording depends on whether a live lookup is available for this
