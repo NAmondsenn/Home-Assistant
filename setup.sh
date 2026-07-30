@@ -15,6 +15,7 @@ TEMP_DIRECTORY="${PROJECT_DIRECTORY}/temp_audio"
 BIN_DIRECTORY="${PROJECT_DIRECTORY}/bin"
 VENV_DIRECTORY="${PROJECT_DIRECTORY}/venv"
 CONFIG_FILE="${PROJECT_DIRECTORY}/config.yaml"
+ENV_FILE="${PROJECT_DIRECTORY}/.env"
 
 PIPER_VERSION="2023.11.14-2"
 VOICE_MODEL="en_GB-alan-medium"
@@ -39,7 +40,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # 1. Searches for the assistants name and wake word for config.yaml
-echo "[1/7] Assistant configuration"
+echo "[1/8] Assistant configuration"
 CURRENT_NAME=$(grep -m1 "^  name:" "$CONFIG_FILE" | sed -E 's/^  name: *"?([^"]*)"?/\1/')
 CURRENT_WAKE=$(grep -m1 "^  wake_word:" "$CONFIG_FILE" | sed -E 's/^  wake_word: *"?([^"]*)"?/\1/')
 
@@ -62,12 +63,46 @@ echo ""
 
 WAKE_WORD_KEY=$(echo "$WAKE_WORD" | tr '[:upper:]' '[:lower:]' | tr -s ' ' '_')
 
-# 2. Prepare Directory structure, all inside the project folder.
-echo "[2/7] Preparing Directory structure..."
+# 2. API keys, written to .env inside the project folder.
+# The file is only written if it doesn't already exist, so re-running setup.sh
+# never overwrites working credentials.
+echo "[2/8] API keys"
+
+if [ -f "$ENV_FILE" ]; then
+    echo ".env already exists, leaving it untouched."
+    echo "Delete ${ENV_FILE} and re-run setup.sh if you need to re-enter your keys."
+else
+    echo "Your keys are written to ${ENV_FILE}, which is gitignored and never committed."
+    echo "Leave any of these blank to skip - the assistant runs without Spotify,"
+    echo "and you can add them to .env by hand later."
+    echo ""
+
+    read -rp "Anthropic API key: " ANTHROPIC_KEY
+    read -rp "Spotify client ID: " SPOTIFY_ID
+    read -rp "Spotify client secret: " SPOTIFY_SECRET
+    read -rp "Spotify redirect URI [http://127.0.0.1:8888/callback]: " SPOTIFY_URI
+    SPOTIFY_URI="${SPOTIFY_URI:-http://127.0.0.1:8888/callback}"
+
+    # Written with a restrictive umask so the credentials aren't world-readable.
+    (
+        umask 077
+        cat > "$ENV_FILE" <<EOF
+ANTHROPIC_API_KEY=${ANTHROPIC_KEY}
+SPOTIFY_CLIENT_ID=${SPOTIFY_ID}
+SPOTIFY_CLIENT_SECRET=${SPOTIFY_SECRET}
+SPOTIFY_REDIRECT_URI=${SPOTIFY_URI}
+EOF
+    )
+    echo "Saved credentials to ${ENV_FILE}"
+fi
+echo ""
+
+# 3. Prepare Directory structure, all inside the project folder.
+echo "[3/8] Preparing Directory structure..."
 mkdir -p "$MODELS_DIRECTORY" "$LOGS_DIRECTORY" "$TEMP_DIRECTORY" "$BIN_DIRECTORY"
 
-# 3. Locate and install the wake word model.
-echo "[3/7] Wake word model"
+# 4. Locate and install the wake word model.
+echo "[4/8] Wake word model"
 read -rp "Have you already copied your wake word .onnx model onto this machine? [y/N]: " HAS_MODEL
 
 if [[ "$HAS_MODEL" =~ ^[Yy]$ ]]; then
@@ -101,8 +136,8 @@ else
 fi
 echo ""
 
-# 4. Detect OS package manager & install hardware dependencies.
-echo "[4/7] Installing system dependencies..."
+# 5. Detect OS package manager & install hardware dependencies.
+echo "[5/8] Installing system dependencies..."
 
 if command -v apt-get &> /dev/null; then
     echo "Debian / Ubuntu / Pi OS detected (apt)..."
@@ -161,8 +196,8 @@ else
     echo "Please ensure PortAudio, ffmpeg, alsa-utils, and build tools are installed manually." >&2
 fi
 
-# 5. Create Python Virtual Environment & Install requirements.
-echo "[5/7] Setting up Python virtual environment..."
+# 6. Create Python Virtual Environment & Install requirements.
+echo "[6/8] Setting up Python virtual environment..."
 
 if [ ! -f "${PROJECT_DIRECTORY}/requirements.txt" ]; then
     echo "Error: requirements.txt not found in ${PROJECT_DIRECTORY}." >&2
@@ -211,8 +246,8 @@ from openwakeword.utils import download_models
 download_models()
 EOF
 
-# 6. Detect Architecture and Install Piper TTS Binary.
-echo "[6/7] Detecting platform architecture & installing Piper..."
+# 7. Detect Architecture and Install Piper TTS Binary.
+echo "[7/8] Detecting platform architecture & installing Piper..."
 ARCH=$(uname -m)
 cd "$MODELS_DIRECTORY"
 
@@ -249,8 +284,8 @@ if [ ! -L "${BIN_DIRECTORY}/piper" ]; then
     ln -s "${MODELS_DIRECTORY}/piper/piper" "${BIN_DIRECTORY}/piper"
 fi
 
-# 7. Download Piper TTS Voice Model
-echo "[7/7] Downloading Piper voice model (${VOICE_MODEL})..."
+# 8. Download Piper TTS Voice Model
+echo "[8/8] Downloading Piper voice model (${VOICE_MODEL})..."
 if [ ! -f "${MODELS_DIRECTORY}/${VOICE_MODEL}.onnx" ]; then
     if ! wget -q --show-progress "${VOICE_URL}/${VOICE_MODEL}.onnx" -O "${MODELS_DIRECTORY}/${VOICE_MODEL}.onnx"; then
         echo "Error: failed to download voice model. Check your internet connection and try again." >&2
@@ -279,4 +314,7 @@ echo "source ${VENV_DIRECTORY}/bin/activate"
 echo ""
 echo "To run your voice assistant:"
 echo "${VENV_DIRECTORY}/bin/python ${PROJECT_DIRECTORY}/main.py"
+echo ""
+echo "If you're using Spotify, authorise it once before the first run:"
+echo "${VENV_DIRECTORY}/bin/python ${PROJECT_DIRECTORY}/voice_assistant/spotify_auth.py"
 echo ""
