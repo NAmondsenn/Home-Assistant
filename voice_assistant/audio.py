@@ -145,7 +145,8 @@ class AudioManager:
             self,
             timeout: float = 5.0,
             silence_threshold: float = 0.04,
-            silence_duration: float = 2.0
+            silence_duration: float = 2.0,
+            speech_chunks_needed: int = 3
     ) -> np.ndarray:
         """
         Record audio until silence is detected or the timeout is reached.
@@ -154,6 +155,10 @@ class AudioManager:
             timeout: Maximum recording duration in seconds.
             silence_threshold: Threshold in which sound is considered silent.
             silence_duration: Duration of consecutive silence in seconds.
+            speech_chunks_needed: Consecutive loud chunks required before the
+                recording counts as having started. This stops the tail of the
+                wake word, or a click as the stream opens, from being mistaken
+                for the user speaking.
 
         Returns:
             Numpy array of normalised float32 audio samples.
@@ -172,12 +177,13 @@ class AudioManager:
 
         frames = []
         silence_chunks = 0
+        speech_chunks = 0
         speech_started = False
         silence_chunks_needed = int(silence_duration * self.sample_rate / self.chunk_size)
         max_chunks = int(timeout * self.sample_rate / self.chunk_size)
 
         # Read audio data until silence is detected or timeout is reached.
-        # Silence only starts counting once speech has been heard, so a short
+        # Silence only starts counting once speech has actually been heard, so a
         # pause before the user starts talking doesn't end the recording early.
         try:
             for i in range(max_chunks):
@@ -190,6 +196,7 @@ class AudioManager:
 
                 # Breaks recording once silence follows speech.
                 if rms < silence_threshold:
+                    speech_chunks = 0
                     if speech_started:
                         silence_chunks += 1
                         if silence_chunks >= silence_chunks_needed:
@@ -197,8 +204,13 @@ class AudioManager:
                             logger.info(f"Silence detected after {elapsed:.1f}s")
                             break
                 else:
-                    speech_started = True
+                    # Several loud chunks in a row are needed before this counts as
+                    # the user speaking, rather than a single click or the wake word's tail.
+                    speech_chunks += 1
                     silence_chunks = 0
+                    if not speech_started and speech_chunks >= speech_chunks_needed:
+                        speech_started = True
+                        logger.info("Speech detected, listening for the end of the query...")
         finally:
             # Safely stop the stream and close the audio device.
             stream.stop_stream()
