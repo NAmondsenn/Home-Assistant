@@ -23,6 +23,6 @@ conversation:
   history_length: 5
 
 thresholds:
-  silence_duration: 0.5
-  recording_timeout: 5.0
+  silence_duration: 1.0
+  recording_timeout: 8.0
   wake_word_confidence: 0.5
