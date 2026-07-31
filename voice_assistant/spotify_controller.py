@@ -34,7 +34,7 @@ class SpotifyController:
         """
         # Pulls the spotify section from config.yaml.
         spotify_config = config.section("spotify") if config else {}
-        self.device_name = spotify_config.get("device_name", "Nova")
+        self.device_name = spotify_config.get("device_name", "Voice-Assistant")
         self.pause_while_speaking = spotify_config.get("pause_while_speaking", True)
 
         self.client_id = os.getenv("SPOTIFY_CLIENT_ID")
@@ -283,7 +283,14 @@ class SpotifyController:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    controller = SpotifyController()
+    # Allows this file to be run directly by putting the project
+    # root on the path before importing from the package.
+    import sys
+    sys.path.insert(0, PROJECT_DIRECTORY)
+    from voice_assistant.config import Config
+
+    # Config is passed in for the device name.
+    controller = SpotifyController(config=Config())
 
     # If there's no cached token yet, walk the user through authorising.
     if not controller.sp:
