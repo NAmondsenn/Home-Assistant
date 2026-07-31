@@ -71,7 +71,7 @@ class SmartAssistant:
         # Attempts to initialise the SpotifyController. If it fails, a warning is logged,
         # self.spotify falls back to None, and the assistant will continue to run without Spotify.
         try:
-            self.spotify = SpotifyController()
+            self.spotify = SpotifyController(config=self.config)
         except Exception as e:
             logger.warning(f"Spotify initialisation failed: {e}")
             self.spotify = None
@@ -156,7 +156,17 @@ class SmartAssistant:
                 tts_audio, tts_sr = sf.read(self.tts_file)
                 if tts_sr != self.mic_rate:
                     tts_audio = librosa.resample(tts_audio.astype("float32"), orig_sr=tts_sr, target_sr=self.mic_rate)
-                self.audio.play(tts_audio, sample_rate=self.mic_rate)
+
+                # Pauses the music while speaking so the reply can be heard, then puts
+                # it back on afterwards. try/finally means the music always comes back,
+                # even if playback of the reply fails.
+                if self.spotify:
+                    self.spotify.pause_for_speech()
+                try:
+                    self.audio.play(tts_audio, sample_rate=self.mic_rate)
+                finally:
+                    if self.spotify:
+                        self.spotify.resume_after_speech()
             # Catches any unexpected errors during the main loop, logs the error
             # and pauses briefly before continuing to listen for the wake word again.
             except Exception as e:
