@@ -69,10 +69,14 @@ echo ""
 
 WAKE_WORD_KEY=$(echo "$WAKE_WORD" | tr '[:upper:]' '[:lower:]' | tr -s ' ' '_')
 
-# The Spotify Connect speaker is named after the assistant, and written into
-# config.yaml so the controller and raspotify agree on the same name.
-SPOTIFY_DEVICE_NAME="$ASSISTANT_NAME"
+# Sets the Spotify Connect speaker name to the name stored in config.yaml
+CURRENT_DEVICE=$(grep -m1 "^  device_name:" "$CONFIG_FILE" | sed -E 's/^  device_name: *"?([^"]*)"?/\1/')
+read -rp "Spotify Connect speaker name [${CURRENT_DEVICE}]: " SPOTIFY_DEVICE_NAME
+SPOTIFY_DEVICE_NAME="${SPOTIFY_DEVICE_NAME:-$CURRENT_DEVICE}"
+SPOTIFY_DEVICE_NAME=$(printf '%s' "$SPOTIFY_DEVICE_NAME" | tr -d '"\\|&')
+
 sed -i "s|^  device_name: .*|  device_name: \"${SPOTIFY_DEVICE_NAME}\"|" "$CONFIG_FILE"
+echo ""
 
 # 2. API keys, written to .env inside the project folder.
 # The file is only written if it doesn't already exist, so re-running setup.sh
