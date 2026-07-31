@@ -20,7 +20,6 @@ anthropic>=0.120.0
 
 # Spotify
 spotipy>=2.26.0
-flask>=3.0.0
 
 # Utilities
 python-dotenv>=1.0.0

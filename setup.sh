@@ -46,7 +46,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # 1. Searches for the assistants name and wake word for config.yaml
-echo "[1/9] Assistant configuration"
+echo "[1/10] Assistant configuration"
 CURRENT_NAME=$(grep -m1 "^  name:" "$CONFIG_FILE" | sed -E 's/^  name: *"?([^"]*)"?/\1/')
 CURRENT_WAKE=$(grep -m1 "^  wake_word:" "$CONFIG_FILE" | sed -E 's/^  wake_word: *"?([^"]*)"?/\1/')
 
@@ -69,10 +69,15 @@ echo ""
 
 WAKE_WORD_KEY=$(echo "$WAKE_WORD" | tr '[:upper:]' '[:lower:]' | tr -s ' ' '_')
 
+# The Spotify Connect speaker is named after the assistant, and written into
+# config.yaml so the controller and raspotify agree on the same name.
+SPOTIFY_DEVICE_NAME="$ASSISTANT_NAME"
+sed -i "s|^  device_name: .*|  device_name: \"${SPOTIFY_DEVICE_NAME}\"|" "$CONFIG_FILE"
+
 # 2. API keys, written to .env inside the project folder.
 # The file is only written if it doesn't already exist, so re-running setup.sh
 # never overwrites working credentials.
-echo "[2/9] API keys"
+echo "[2/10] API keys"
 
 if [ -f "$ENV_FILE" ]; then
     echo ".env already exists, leaving it untouched."
@@ -104,11 +109,11 @@ fi
 echo ""
 
 # 3. Prepare Directory structure, all inside the project folder.
-echo "[3/9] Preparing Directory structure..."
+echo "[3/10] Preparing Directory structure..."
 mkdir -p "$MODELS_DIRECTORY" "$LOGS_DIRECTORY" "$TEMP_DIRECTORY" "$BIN_DIRECTORY"
 
 # 4. Locate and install the wake word model.
-echo "[4/9] Wake word model"
+echo "[4/10] Wake word model"
 read -rp "Have you already copied your wake word .onnx model onto this machine? [y/N]: " HAS_MODEL
 
 if [[ "$HAS_MODEL" =~ ^[Yy]$ ]]; then
@@ -143,7 +148,7 @@ fi
 echo ""
 
 # 5. Detect OS package manager & install hardware dependencies.
-echo "[5/9] Installing system dependencies..."
+echo "[5/10] Installing system dependencies..."
 
 if command -v apt-get &> /dev/null; then
     echo "Debian / Ubuntu / Pi OS detected (apt)..."
@@ -203,7 +208,7 @@ else
 fi
 
 # 6. Create Python Virtual Environment & Install requirements.
-echo "[6/9] Setting up Python virtual environment..."
+echo "[6/10] Setting up Python virtual environment..."
 
 if [ ! -f "${PROJECT_DIRECTORY}/requirements.txt" ]; then
     echo "Error: requirements.txt not found in ${PROJECT_DIRECTORY}." >&2
@@ -253,7 +258,7 @@ download_models()
 EOF
 
 # 7. Detect Architecture and Install Piper TTS Binary.
-echo "[7/9] Detecting platform architecture & installing Piper..."
+echo "[7/10] Detecting platform architecture & installing Piper..."
 ARCH=$(uname -m)
 cd "$MODELS_DIRECTORY"
 
@@ -291,7 +296,7 @@ if [ ! -L "${BIN_DIRECTORY}/piper" ]; then
 fi
 
 # 8. Download Piper TTS Voice Model
-echo "[8/9] Downloading Piper voice model (${VOICE_MODEL})..."
+echo "[8/10] Downloading Piper voice model (${VOICE_MODEL})..."
 if [ ! -f "${MODELS_DIRECTORY}/${VOICE_MODEL}.onnx" ]; then
     if ! wget -q --show-progress "${VOICE_URL}/${VOICE_MODEL}.onnx" -O "${MODELS_DIRECTORY}/${VOICE_MODEL}.onnx"; then
         echo "Error: failed to download voice model. Check your internet connection and try again." >&2
@@ -311,7 +316,48 @@ fi
 
 # 9. Gives the user the option to run the assistant on startup.
 echo ""
-echo "[9/9] Start on boot (optional)"
+echo "[9/10] Spotify Connect playback (optional)"
+
+if ! command -v apt-get &> /dev/null; then
+    echo "raspotify only ships .deb packages, skipping on this distribution."
+    echo "Install librespot manually if you want local Spotify playback."
+else
+    echo "This installs raspotify, so '${SPOTIFY_DEVICE_NAME}' shows up as a speaker in Spotify."
+    echo "Note: Spotify Connect requires a Spotify Premium account."
+    read -rp "Install Spotify Connect playback? [y/N]: " INSTALL_RASPOTIFY
+
+    if [[ "$INSTALL_RASPOTIFY" =~ ^[Yy]$ ]]; then
+        if [ ! -f /usr/bin/librespot ]; then
+            echo "Adding the raspotify repository..."
+            curl -sSL https://dtcooper.github.io/raspotify/key.asc | sudo tee /usr/share/keyrings/raspotify_key.asc > /dev/null
+            sudo chmod 644 /usr/share/keyrings/raspotify_key.asc
+            echo 'deb [signed-by=/usr/share/keyrings/raspotify_key.asc] https://dtcooper.github.io/raspotify raspotify main' \
+                | sudo tee /etc/apt/sources.list.d/raspotify.list > /dev/null
+            sudo apt-get update
+        fi
+
+        if sudo apt-get install -y raspotify; then
+            # Points raspotify at the configured device name so it matches config.yaml,
+            # otherwise the assistant won't recognise its own speaker.
+            if [ -f /etc/raspotify/conf ]; then
+                sudo sed -i "s|^#\?LIBRESPOT_NAME=.*|LIBRESPOT_NAME=\"${SPOTIFY_DEVICE_NAME}\"|" /etc/raspotify/conf
+                sudo systemctl restart raspotify
+                echo "raspotify installed and advertising as '${SPOTIFY_DEVICE_NAME}'."
+            else
+                echo "Warning: /etc/raspotify/conf not found, set LIBRESPOT_NAME by hand." >&2
+            fi
+        else
+            echo "Warning: raspotify install failed. The assistant will still run," >&2
+            echo "but music will play on whichever device Spotify picks." >&2
+        fi
+    else
+        echo "Skipping. Music will play on whichever Spotify device is active."
+    fi
+fi
+echo ""
+
+# 10. Optionally install the systemd user service so the assistant starts on boot.
+echo "[10/10] Start on boot (optional)"
 
 if ! command -v systemctl &> /dev/null; then
     echo "systemd not found on this machine, skipping the boot service."
@@ -361,7 +407,7 @@ echo "To run your voice assistant:"
 echo "${VENV_DIRECTORY}/bin/python ${PROJECT_DIRECTORY}/main.py"
 echo ""
 echo "If you're using Spotify, authorise it once before the first run:"
-echo "${VENV_DIRECTORY}/bin/python ${PROJECT_DIRECTORY}/voice_assistant/spotify_auth.py"
+echo "${VENV_DIRECTORY}/bin/python ${PROJECT_DIRECTORY}/voice_assistant/spotify_controller.py"
 echo ""
 
 if [ "$SERVICE_INSTALLED" = true ]; then

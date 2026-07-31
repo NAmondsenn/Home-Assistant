@@ -13,6 +13,10 @@ audio:
   channels: 1
   chunk_size: 2048
 
+spotify:
+  device_name: "Voice-Assistant"
+  pause_while_speaking: true
+
 whisper:
   model: "base.en"
   device: "cpu"
