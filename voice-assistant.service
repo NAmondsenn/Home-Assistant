@@ -1,0 +1,42 @@
+[Unit]
+# systemd user service for the voice assistant.
+#
+# This is a template. setup.sh fills in the placeholders and installs it to
+# ~/.config/systemd/user/, or you can do it manually:
+#
+#   sed -e "s|__PROJECT_DIRECTORY__|$PWD|g" \
+#       -e "s|__PYTHON__|$PWD/venv/bin/python|g" \
+#       voice-assistant.service > ~/.config/systemd/user/voice-assistant.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now voice-assistant
+#   sudo loginctl enable-linger "$USER"   # so it starts without logging in
+#
+# Running as a user service (rather than system-wide) keeps the assistant in the
+# same session as the audio devices, so the microphone and speaker behave exactly
+# as they do when main.py is run by hand.
+Description=Voice Assistant
+
+# Waits for the network, since the assistant talks to the Claude and Spotify APIs.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIRECTORY__
+ExecStart=__PYTHON__ __PROJECT_DIRECTORY__/main.py
+
+# Restarts the assistant if it crashes, with a short pause to excessive crashing.
+Restart=on-failure
+RestartSec=10
+
+# Allows the assistant time to close the audio stream cleanly when stopped.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Logs to the assistants journal.
+# The assistant also keeps its own log in the project's logs/ folder.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
