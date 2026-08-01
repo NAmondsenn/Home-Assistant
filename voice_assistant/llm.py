@@ -45,6 +45,88 @@ class LLMHandler:
             f"LLM initialised: {self.model_name} (max_tokens={self.max_tokens}, temperature={self.temperature}, "
             f"history_length={self.history_length}, web_search={self.web_search_enabled})")
 
+    # Tools the model can call to control music and lights.
+    # This selects actions more accurately than keyword matching and corrects mis-transcriptions.
+    ACTION_TOOLS = [
+        {
+            "name": "play_music",
+            "description": (
+                "Play music on Spotify. Correct any obvious mis-transcriptions of artist "
+                "or song names before calling, since the user's speech may have been "
+                "misheard. Use this for requests to play a song, artist, album or genre, "
+                "and to resume music that was paused."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to play, spelled correctly, e.g. 'Gooba by 6ix9ine' or 'Drake'."
+                            "Leave out entirely to resume paused music."
+                        ),
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "enum": ["track", "artist", "playlist"],
+                        "description": (
+                            "Whether the query names a specific song, an artist, or a "
+                            "genre or mood to build a playlist from."
+                        ),
+                    },
+                },
+            },
+        },
+        {
+            "name": "control_playback",
+            "description": "Pause, skip, go back a track, or report what is currently playing.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["pause", "skip", "previous", "current"]},
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "control_lights",
+            "description": "Turn the smart lights on or off.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"state": {"type": "string", "enum": ["on", "off"]}},
+                "required": ["state"],
+            },
+        },
+    ]
+
+    def _action_from_tool_use(self, block) -> Optional[Dict]:
+        """
+        Converts a tool call from the model into the action dict the ActionExecutor expects.
+
+        Args:
+            block: A tool_use content block from the model's response.
+
+        Returns:
+            An action dict, or None if the tool isn't recognised.
+        """
+        params = block.input or {}
+
+        if block.name == "play_music":
+            return {"type": "spotify", "command": "play",
+                    "query": params.get("query") or None,
+                    "search_type": params.get("search_type")}
+
+        if block.name == "control_playback":
+            return {"type": "spotify", "command": params.get("action")}
+
+        if block.name == "control_lights":
+            command = "turn_on" if params.get("state") == "on" else "turn_off"
+            return {"type": "home_assistant", "entity": "light.strip",
+                    "command": command, "confirmation": "chime"}
+
+        logger.warning(f"Model called an unknown tool: {block.name}")
+        return None
+
     # Phrases which mean the user is explicitly asking for a web search.
     # Web search is only attached to the request when one of these appears.
     WEB_SEARCH_TRIGGERS = (
@@ -88,6 +170,9 @@ class LLMHandler:
             system_prompt = (
                 f"You are {self.assistant_name}, a voice assistant running locally with smart home and utility features. "
                 "You can control Spotify playback and (soon) the smart lights, so don't claim you're unable to play music. "
+                "Music and light commands are carried out by a separate command system, not by you, and its result "
+                "message replaces yours. So for those commands reply with a brief acknowledgement like 'Okay.' - "
+                "never announce that an action has already happened, since you can't know whether it did. "
                 "Your replies are converted to speech, so: "
                 "never use markdown, bullet points, emojis, or special formatting - plain spoken sentences only. "
                 "Keep responses to 1-2 short sentences. Spoken answers are slow to listen to, so say the useful part "
@@ -121,14 +206,17 @@ class LLMHandler:
             for turn in self.history:
                 messages.append({"role": "user", "content": turn["user"]})
                 messages.append({"role": "assistant", "content": turn["assistant"]})
-            # Adds the current user query to the messages list
+            # Adds the current user query to the messages list.
             messages.append({"role": "user", "content": text})
 
+            # The music and light tools are always offered, so the model decides what
+            # the user meant rather than a keyword match guessing at it.
+            request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.ACTION_TOOLS)}
+
             # Only attaches the web search tool when the user explicitly asked to look something up.
-            request_kwargs = {"max_tokens": self.max_tokens}
             if use_web_search:
                 logger.info("Query asked for a live lookup, enabling web search")
-                request_kwargs["tools"] = [{
+                request_kwargs["tools"] = request_kwargs["tools"] + [{
                     "type": "web_search_20250305",
                     "name": "web_search",
                     "max_uses": self.web_search_max_uses,
@@ -163,6 +251,19 @@ class LLMHandler:
             # reads them out character by character.
             response_text = re.sub(r"https?://\S+", "", response_text)
             response_text = re.sub(r"\s+", " ", response_text).strip()
+
+            # Picks up any tool the model called. If it didn't call one, there is no action.
+            # the model's judgement is trusted rather than keyword guessing.
+            action = None
+            for block in response.content:
+                if getattr(block, "type", None) == "tool_use":
+                    action = self._action_from_tool_use(block)
+                    break
+
+            # Fallback for when the action is called by the model, but no message is produced.
+            if action and not response_text:
+                response_text = "Okay."
+
             self.history.append({"user": text, "assistant": response_text})
 
             # Stops the history from growing indefinitely by only keeping a specified number of exchanges,
@@ -170,26 +271,33 @@ class LLMHandler:
             if len(self.history) > self.history_length:
                 self.history = self.history[-self.history_length:]
 
-            # Checks for any specific actions that should be executed, e.g. Spotify commands.
-            action = self._parse_action(text, response_text)
-            logger.info(f"LLM response: '{response_text}'")
+            logger.info(f"LLM response: '{response_text}'" + (f" (action: {action})" if action else ""))
 
             # Returns a dictionary containing the model's response, any detected action, and whether the transaction was successful
             return {"response": response_text, "action": action, "success": True}
 
         # Catches errors instead of crashing the voice assistant.
         # This logs the error and returns an apology message to the user.
+        # The keyword parser is used as a fallback here, so music can still be
+        # controlled when the API is unreachable.
         except Exception as e:
             logger.error(f"LLM processing failed: {e}")
-            return {"response": "Sorry, I'm having trouble connecting right now.", "action": None, "success": False}
+            return {"response": "Sorry, I'm having trouble connecting right now.",
+                    "action": self._parse_action(text, ""), "success": False}
 
     def _parse_action(self, user_text: str, response: str) -> Optional[Dict]:
+        """
+        Keyword-based action detection, used as a fallback when the model is
+        unavailable (no API key, or the request failed). Normally the model picks
+        the action itself via ACTION_TOOLS, which handles phrasing and
+        mis-transcriptions far better than these keywords can.
+        """
         user_lower = user_text.lower()
         # Splits the query into whole words, so keywords only match complete words rather than substrings.
         words = set(re.findall(r"[a-z]+", user_lower))
 
         # Spotify commands
-        if words & {"play", "playing", "music", "song", "songs", "track", "tracks", "spotify"}:
+        if words & {"play", "playing", "resume", "unpause", "music", "song", "songs", "track", "tracks", "spotify"}:
             if words & {"pause", "stop"}:
                 return {"type": "spotify", "command": "pause"}
             elif words & {"skip", "next"}:
@@ -199,10 +307,9 @@ class LLMHandler:
             elif "what" in words and words & {"playing", "song", "track"}:
                 return {"type": "spotify", "command": "current"}
 
-            # Checks if the user said "play" and extracts the song or artist name if present,
-            # dropping leading filler words like "some".
+            # Checks if the user said "play" and extracts the song or artist name if present, whilst removing filler words.
             # If no specific query is found, it will play the default playlist or resume playback.
-            elif "play" in words:
+            elif words & {"play", "resume", "unpause"}:
                 query = None
                 play_index = user_lower.find("play ")
                 if play_index != -1 and len(user_text) > play_index + 5:
@@ -213,7 +320,7 @@ class LLMHandler:
                         if query.lower().startswith(filler):
                             query = query[len(filler):].strip()
 
-                    # "play (Artist) on Spotify" means play (Artist), not search for "(Artist) on Spotify".
+                    # "play Drake on Spotify" means play Drake, not search for "Drake on Spotify".
                     for suffix in (" on spotify", " in spotify", " from spotify", " with spotify"):
                         if query.lower().endswith(suffix):
                             query = query[:-len(suffix)].strip()

@@ -8,6 +8,7 @@ than remote-controlling whichever phone or laptop Spotify happened to list first
 """
 
 import os
+import re
 import logging
 from typing import Optional, Dict
 from dotenv import load_dotenv
@@ -145,12 +146,14 @@ class SpotifyController:
 
         return device_id
 
-    def play(self, query: Optional[str] = None) -> Dict:
+    def play(self, query: Optional[str] = None, search_type: Optional[str] = None) -> Dict:
         """
         Play music on this machine's Connect device.
 
         Args:
             query: Song or artist to search for. Resumes playback if omitted.
+            search_type: 'track', 'artist' or 'playlist', when the caller knows
+                         which the query refers to. Optional.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
@@ -166,33 +169,7 @@ class SpotifyController:
 
             # "spotify" on its own isn't a search term, it's just the user naming the app.
             if query and query.lower() != "spotify":
-                # "song by artist" is turned into Spotify's field filters, which rank
-                # the original recording first.
-                search_query = query
-                if " by " in query.lower():
-                    split_index = query.lower().rindex(" by ")
-                    track_part = query[:split_index].strip()
-                    artist_part = query[split_index + 4:].strip()
-                    if track_part and artist_part:
-                        search_query = f'track:"{track_part}" artist:"{artist_part}"'
-
-                results = self.sp.search(q=search_query, limit=1, type='track')
-                items = results.get('tracks', {}).get('items', [])
-
-                # Falls back to the plain text search if the strict track / artist search found nothing.
-                if not items and search_query != query:
-                    results = self.sp.search(q=query, limit=1, type='track')
-                    items = results.get('tracks', {}).get('items', [])
-
-                if not items:
-                    return {"success": False, "message": f"Couldn't find '{query}'"}
-
-                track = items[0]
-                self.sp.start_playback(device_id=device_id, uris=[track['uri']])
-                track_name = track['name']
-                artist = track['artists'][0]['name']
-                logger.info(f"Playing: {track_name} by {artist}")
-                return {"success": True, "message": f"Playing {track_name} by {artist}"}
+                return self._search_and_play(query, device_id, search_type)
 
             # No search term, so resume whatever was queued on the device.
             self.sp.start_playback(device_id=device_id)
@@ -202,6 +179,109 @@ class SpotifyController:
         except Exception as e:
             logger.error(f"Play failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't start the music."}
+
+    @staticmethod
+    def _looks_like_match(query: str, *names: str) -> bool:
+        """
+        Loose check that a search result actually relates to what was asked for.
+
+        Whisper mishears song and artist names fairly often, and Spotify's search
+        always returns *something*, so without this an unrecognised query quietly
+        plays an unrelated track.
+
+        Args:
+            query: What the user asked for.
+            names: Track and artist names from the search result.
+
+        Returns:
+            True if any word of the query (3+ letters) appears in the result.
+        """
+        query_words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2}
+        if not query_words:
+            return True
+
+        result_words = set()
+        for name in names:
+            result_words |= set(re.findall(r"[a-z0-9]+", name.lower()))
+
+        return bool(query_words & result_words)
+
+    def _search_and_play(self, query: str, device_id: str, search_type: Optional[str] = None) -> Dict:
+        """
+        Searches for what the user asked for and starts playing it.
+
+        Playback is started with a context (a playlist, an artist's catalogue, or the
+        album a track belongs to) rather than a single track URI, so the music keeps
+        going instead of stopping dead at the end of one song.
+
+        Args:
+            query: Song, artist, genre, or "song by artist".
+            device_id: The Connect device to play on.
+            search_type: 'track', 'artist' or 'playlist' when known, which avoids
+                         having to guess what kind of thing the query names.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        # A genre or mood ("something chill") is best served by an existing playlist.
+        if search_type == "playlist":
+            playlists = self.sp.search(q=query, limit=1, type='playlist').get('playlists', {}).get('items', [])
+            playlists = [p for p in playlists if p]
+            if playlists:
+                self.sp.start_playback(device_id=device_id, context_uri=playlists[0]['uri'])
+                logger.info(f"Playing playlist: {playlists[0]['name']}")
+                return {"success": True, "message": f"Playing {playlists[0]['name']}"}
+        # "song by artist" is turned into Spotify's field filters, which rank the
+        # original recording first. As free text, "by" is just noise, and karaoke
+        # covers (whose titles contain "by ...") often win instead.
+        track_part = artist_part = None
+        if " by " in query.lower():
+            split_index = query.lower().rindex(" by ")
+            track_part = query[:split_index].strip()
+            artist_part = query[split_index + 4:].strip()
+
+        # An artist name on its own ("play Drake") should play that artist rather
+        # than one arbitrary song of theirs. An exact name match is required unless
+        # the caller has already identified the query as an artist.
+        if not track_part:
+            artists = self.sp.search(q=query, limit=1, type='artist').get('artists', {}).get('items', [])
+            if artists and (search_type == "artist" or artists[0]['name'].lower() == query.lower()):
+                artist = artists[0]
+                self.sp.start_playback(device_id=device_id, context_uri=artist['uri'])
+                logger.info(f"Playing artist: {artist['name']}")
+                return {"success": True, "message": f"Playing {artist['name']}"}
+
+        search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
+        items = self.sp.search(q=search_query, limit=1, type='track').get('tracks', {}).get('items', [])
+
+        # Falls back to a plain text search if the strict track / artist search
+        # found nothing, e.g. for titles which contain "by" themselves.
+        if not items and search_query != query:
+            items = self.sp.search(q=query, limit=1, type='track').get('tracks', {}).get('items', [])
+
+        if not items:
+            return {"success": False, "message": f"Sorry, I couldn't find {query}."}
+
+        track = items[0]
+        track_name = track['name']
+        artist_name = track['artists'][0]['name']
+
+        # Rejects results which have nothing in common with the query, rather than
+        # playing something random when the query was misheard.
+        if not self._looks_like_match(query, track_name, artist_name):
+            logger.info(f"Rejected poor match for '{query}': {track_name} by {artist_name}")
+            return {"success": False, "message": f"Sorry, I couldn't find {query}."}
+
+        # Starts from the track within its album, so playback continues afterwards.
+        album_uri = track.get('album', {}).get('uri')
+        if album_uri:
+            self.sp.start_playback(device_id=device_id, context_uri=album_uri,
+                                   offset={"uri": track['uri']})
+        else:
+            self.sp.start_playback(device_id=device_id, uris=[track['uri']])
+
+        logger.info(f"Playing: {track_name} by {artist_name}")
+        return {"success": True, "message": f"Playing {track_name} by {artist_name}"}
 
     def pause(self) -> Dict:
         """Pause playback"""
