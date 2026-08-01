@@ -20,10 +20,8 @@ class LLMHandler:
         assistant_config = config.section("assistant") if config else {}
         web_search_config = config.section("web_search") if config else {}
 
-        # If no API key is provided, the standard ANTHROPIC_API_KEY is taken from .env,
-        # falling back to the legacy Claude_API_Key name.
-        # A missing key doesn't raise here: offline features like action parsing still
-        # work, and process_query reports the problem gracefully instead.
+        # If no API key is provided, ANTHROPIC_API_KEY is taken from .env, falling back to Claude_API_Key.
+        # Missing API keys are logged as warnings, the program runs, but the LLM will not be available.
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY") or os.getenv("Claude_API_Key")
         if self.api_key:
             self.client = Anthropic(api_key=self.api_key)
@@ -39,7 +37,7 @@ class LLMHandler:
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
 
         # Web search is opt-in per query rather than always on, so ordinary replies
-        # aren't slowed down (or billed) by a search the user never asked for.
+        # aren't slowed down or billed by unnecessary searches.
         self.web_search_enabled = web_search_config.get("enabled", True)
         self.web_search_max_uses = web_search_config.get("max_uses", 3)
 
@@ -48,8 +46,7 @@ class LLMHandler:
             f"history_length={self.history_length}, web_search={self.web_search_enabled})")
 
     # Phrases which mean the user is explicitly asking for a web search.
-    # Web search is only attached to the request when one of these appears,
-    # keeping normal conversation fast and avoiding needless search charges.
+    # Web search is only attached to the request when one of these appears.
     WEB_SEARCH_TRIGGERS = (
         "search", "look up", "lookup", "google", "check online", "check the internet",
         "on the web", "latest news", "what's the latest", "whats the latest",
@@ -69,8 +66,8 @@ class LLMHandler:
         if not self.web_search_enabled:
             return False
 
-        # Matched on word boundaries so a trigger can't fire from inside a longer
-        # word, e.g. "research" containing "search".
+        # Matched on word boundaries, so a trigger can't fire from
+        # inside a longer word, e.g. "research" containing "search".
         lowered = text.lower()
         return any(re.search(rf"\b{re.escape(trigger)}\b", lowered)
                    for trigger in self.WEB_SEARCH_TRIGGERS)
@@ -120,16 +117,14 @@ class LLMHandler:
 
             # Maintains a conversation history to provide context for the model's responses.
             messages = []
-            # Loops through the conversation history and adds each user and assistant message to the messages list
+            # Loops through the conversation history and adds each user / assistant message to the messages list.
             for turn in self.history:
                 messages.append({"role": "user", "content": turn["user"]})
                 messages.append({"role": "assistant", "content": turn["assistant"]})
             # Adds the current user query to the messages list
             messages.append({"role": "user", "content": text})
 
-            # Only attaches the web search tool when the user explicitly asked to look
-            # something up. Searches are billed per use and add several seconds of
-            # latency, which is why this isn't left on for every query.
+            # Only attaches the web search tool when the user explicitly asked to look something up.
             request_kwargs = {"max_tokens": self.max_tokens}
             if use_web_search:
                 logger.info("Query asked for a live lookup, enabling web search")
@@ -159,10 +154,8 @@ class LLMHandler:
                     model=self.model_name, temperature=self.temperature,
                     system=system_prompt, messages=messages, **request_kwargs)
 
-            # Grabs text blocks from the model's response, joins them and strips excess whitespace.
-            # A search reply arrives as several text blocks (with tool blocks in between,
-            # which have no .text), so they're joined with a space rather than run together.
-            # This is the final response that will be spoken back to the user.
+            # Retrieves text blocks from the model's response, joins them and strips excess whitespace.
+            # This is because responses come as several text blocks which need to be formatted.
             text_blocks = [b.text for b in response.content if hasattr(b, "text")]
             response_text = " ".join(block.strip() for block in text_blocks if block.strip())
 
@@ -192,8 +185,7 @@ class LLMHandler:
 
     def _parse_action(self, user_text: str, response: str) -> Optional[Dict]:
         user_lower = user_text.lower()
-        # Splits the query into whole words, so keywords only match complete words
-        # rather than substrings (e.g. "on" no longer matches inside "monitor").
+        # Splits the query into whole words, so keywords only match complete words rather than substrings.
         words = set(re.findall(r"[a-z]+", user_lower))
 
         # Spotify commands
@@ -214,18 +206,19 @@ class LLMHandler:
                 query = None
                 play_index = user_lower.find("play ")
                 if play_index != -1 and len(user_text) > play_index + 5:
-                    # Whisper ends transcriptions with punctuation ("play Spotify."),
-                    # which would otherwise end up inside the search query.
+
+                    # Whisper strips punctuation that could end up in the search query.
                     query = user_text[play_index + 5:].strip().strip(".,!?").strip()
                     for filler in ("some ", "me ", "the ", "a "):
                         if query.lower().startswith(filler):
                             query = query[len(filler):].strip()
-                    # "play Drake on Spotify" means play Drake, not search for
-                    # "Drake on Spotify" - the app name isn't part of the query.
+
+                    # "play (Artist) on Spotify" means play (Artist), not search for "(Artist) on Spotify".
                     for suffix in (" on spotify", " in spotify", " from spotify", " with spotify"):
                         if query.lower().endswith(suffix):
                             query = query[:-len(suffix)].strip()
-                    # "spotify" isn't a search term, it's just the user naming the app.
+
+                    # "spotify" isn't a search term.
                     if query.lower() == "spotify":
                         query = None
                     query = query or None

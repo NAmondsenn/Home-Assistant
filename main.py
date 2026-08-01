@@ -118,11 +118,8 @@ class SmartAssistant:
                 print("Listening...")
 
                 # Pauses the music for the whole interaction, not just while speaking.
-                # Otherwise the microphone picks the music up during recording, so
-                # silence is never detected and the recording runs long, and the
-                # music ends up in the transcription audio as noise.
-                # The finally block guarantees the music comes back afterwards,
-                # whatever happens in between.
+                # This is so the microphone doesn't pick up the music while recording.
+                # The finally block guarantees the music resumes after the interaction.
                 if self.spotify:
                     self.spotify.pause_for_speech()
                 try:
@@ -130,6 +127,7 @@ class SmartAssistant:
                 finally:
                     if self.spotify:
                         self.spotify.resume_after_speech()
+
             # Catches any unexpected errors during the main loop, logs the error
             # and pauses briefly before continuing to listen for the wake word again.
             except Exception as e:
@@ -142,17 +140,18 @@ class SmartAssistant:
         transcribes it, processes it with the LLM, runs any detected action,
         and speaks the response.
         """
-        # Records audio after the wake word is detected until silence is detected or a timeout occurs.
+        # Records audio after the wake word is detected until silence / a timeout occurs.
         audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 2.0),
                                                      timeout=self.thresholds.get("recording_timeout", 10.0))
 
         if audio_data is None or len(audio_data) == 0:
             return
-                # Resamples the audio from the microphone's sample rate to the Whisper model's expected sample rate.
+
         # Resamples the audio from the microphone's sample rate to the Whisper model's expected sample rate.
         if self.mic_rate != self.whisper_rate:
             audio_data = librosa.resample(audio_data.astype("float32"), orig_sr=self.mic_rate, target_sr=self.whisper_rate)
-        # Transcribes the recorded audio using Whisper to get text, If no text is detected, it returns to listening
+
+        # Transcribes the recorded audio using Whisper to text, Continues listening if no text is returned.
         transcription = self.stt.transcribe(audio_data)
         if not transcription or not transcription.get("text", "").strip():
             return
@@ -166,7 +165,7 @@ class SmartAssistant:
         action = result.get("action")
 
         # If an action was detected, it is run through the action executor.
-        # Its message is used as the spoken response, if one was returned.
+        # Its message is used as the spoken response if one was returned.
         if action:
             action_result = self.actions.execute(action)
             if action_result.get("message"):
