@@ -74,7 +74,8 @@ class ActionExecutor:
 
         command = action.get("command")
         if command == "play":
-            return self.spotify.play(action.get("query"))
+            # search_type tells the controller whether the query names a track / artist / genre to play.
+            return self.spotify.play(action.get("query"), search_type=action.get("search_type"))
         elif command == "pause":
             return self.spotify.pause()
         elif command == "skip":
