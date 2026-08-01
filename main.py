@@ -141,7 +141,8 @@ class SmartAssistant:
         and speaks the response.
         """
         # Records audio after the wake word is detected until silence / a timeout occurs.
-        audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 2.0),
+        audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 0.8),
+                                                     silence_threshold=self.thresholds.get("silence_threshold", 0.05),
                                                      timeout=self.thresholds.get("recording_timeout", 10.0))
 
         if audio_data is None or len(audio_data) == 0:
