@@ -44,7 +44,7 @@ class SpotifyController:
         if not all([self.client_id, self.client_secret, self.redirect_uri]):
             raise ValueError("Spotify credentials not found in .env")
 
-        # Scopes needed for playback control
+        # Scopes needed for playback control.
         scope = "user-read-playback-state,user-modify-playback-state,user-read-currently-playing"
 
         self.sp_oauth = SpotifyOAuth(
@@ -56,8 +56,8 @@ class SpotifyController:
         )
 
         self.sp = None
-        # Tracks whether the assistant paused the music itself, so it only resumes
-        # playback it actually interrupted.
+        # Tracks whether the assistant paused the music itself,
+        # only resuming playback it actually interrupted.
         self._paused_for_speech = False
         self._authenticate()
 
@@ -91,7 +91,7 @@ class SpotifyController:
 
         redirect_response = input("Paste the full redirect URL here: ").strip()
 
-        # Extract the authorization code and get the token
+        # Extract the authorisation code and get the token
         code = self.sp_oauth.parse_response_code(redirect_response)
         self.sp_oauth.get_access_token(code)
 
@@ -167,8 +167,7 @@ class SpotifyController:
             # "spotify" on its own isn't a search term, it's just the user naming the app.
             if query and query.lower() != "spotify":
                 # "song by artist" is turned into Spotify's field filters, which rank
-                # the original recording first. As free text, "by" is just noise and
-                # karaoke covers (whose titles contain "by ...") often win instead.
+                # the original recording first.
                 search_query = query
                 if " by " in query.lower():
                     split_index = query.lower().rindex(" by ")
@@ -180,8 +179,7 @@ class SpotifyController:
                 results = self.sp.search(q=search_query, limit=1, type='track')
                 items = results.get('tracks', {}).get('items', [])
 
-                # Falls back to the plain text search if the strict track/artist
-                # search found nothing, e.g. for titles that contain "by" themselves.
+                # Falls back to the plain text search if the strict track / artist search found nothing.
                 if not items and search_query != query:
                     results = self.sp.search(q=query, limit=1, type='track')
                     items = results.get('tracks', {}).get('items', [])
@@ -219,7 +217,7 @@ class SpotifyController:
             return {"success": False, "message": "Sorry, I couldn't pause the music."}
 
     def skip(self) -> Dict:
-        """Skip to next track"""
+        """Skip to the next track"""
         if not self.sp:
             return {"success": False, "message": "Not authenticated"}
 
@@ -232,7 +230,7 @@ class SpotifyController:
             return {"success": False, "message": "Sorry, I couldn't skip the track."}
 
     def previous(self) -> Dict:
-        """Go to previous track"""
+        """Rewind to the previous track"""
         if not self.sp:
             return {"success": False, "message": "Not authenticated"}
 
@@ -245,7 +243,7 @@ class SpotifyController:
             return {"success": False, "message": "Sorry, I couldn't go back a track."}
 
     def current_track(self) -> Dict:
-        """Get currently playing track info"""
+        """Retrieves current track information."""
         if not self.sp:
             return {"success": False, "message": "Not authenticated"}
 
@@ -264,7 +262,7 @@ class SpotifyController:
         """
         Pauses playback so the assistant's reply can be heard over the music.
 
-        Only pauses if something is actually playing, and remembers that it did,
+        Only pauses if something is actually playing and remembers that it did,
         so resume_after_speech() won't start music the user had already stopped.
         """
         if not self.sp or not self.pause_while_speaking:
