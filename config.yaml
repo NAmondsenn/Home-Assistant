@@ -34,6 +34,12 @@ web_search:
   max_uses: 3
 
 thresholds:
-  silence_duration: 1.0
-  recording_timeout: 8.0
+  # How long the user has to be quiet before the recording stops.
+  silence_duration: 0.8
+  # Volume below which audio counts as silence.
+  # Raise this if the assistant keeps listening for too long after you've stopped talking.
+  silence_threshold: 0.05
+  # Hard cap on a single recording, in case silence is never detected.
+  recording_timeout: 10.0
+  # Minimum confidence required to consider a wake word detected.
   wake_word_confidence: 0.5
