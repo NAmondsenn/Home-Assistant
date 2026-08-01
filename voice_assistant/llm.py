@@ -214,10 +214,20 @@ class LLMHandler:
                 query = None
                 play_index = user_lower.find("play ")
                 if play_index != -1 and len(user_text) > play_index + 5:
-                    query = user_text[play_index + 5:].strip()
+                    # Whisper ends transcriptions with punctuation ("play Spotify."),
+                    # which would otherwise end up inside the search query.
+                    query = user_text[play_index + 5:].strip().strip(".,!?").strip()
                     for filler in ("some ", "me ", "the ", "a "):
                         if query.lower().startswith(filler):
                             query = query[len(filler):].strip()
+                    # "play Drake on Spotify" means play Drake, not search for
+                    # "Drake on Spotify" - the app name isn't part of the query.
+                    for suffix in (" on spotify", " in spotify", " from spotify", " with spotify"):
+                        if query.lower().endswith(suffix):
+                            query = query[:-len(suffix)].strip()
+                    # "spotify" isn't a search term, it's just the user naming the app.
+                    if query.lower() == "spotify":
+                        query = None
                     query = query or None
                 return {"type": "spotify", "command": "play", "query": query}
 

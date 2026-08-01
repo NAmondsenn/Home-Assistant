@@ -166,8 +166,25 @@ class SpotifyController:
 
             # "spotify" on its own isn't a search term, it's just the user naming the app.
             if query and query.lower() != "spotify":
-                results = self.sp.search(q=query, limit=1, type='track')
+                # "song by artist" is turned into Spotify's field filters, which rank
+                # the original recording first. As free text, "by" is just noise and
+                # karaoke covers (whose titles contain "by ...") often win instead.
+                search_query = query
+                if " by " in query.lower():
+                    split_index = query.lower().rindex(" by ")
+                    track_part = query[:split_index].strip()
+                    artist_part = query[split_index + 4:].strip()
+                    if track_part and artist_part:
+                        search_query = f'track:"{track_part}" artist:"{artist_part}"'
+
+                results = self.sp.search(q=search_query, limit=1, type='track')
                 items = results.get('tracks', {}).get('items', [])
+
+                # Falls back to the plain text search if the strict track/artist
+                # search found nothing, e.g. for titles that contain "by" themselves.
+                if not items and search_query != query:
+                    results = self.sp.search(q=query, limit=1, type='track')
+                    items = results.get('tracks', {}).get('items', [])
 
                 if not items:
                     return {"success": False, "message": f"Couldn't find '{query}'"}
@@ -262,6 +279,14 @@ class SpotifyController:
         except Exception as e:
             # Never let this stop the assistant from replying.
             logger.warning(f"Could not pause for speech: {e}")
+
+    def cancel_resume(self):
+        """
+        Stops resume_after_speech() from restarting playback. Used when the user
+        explicitly asked for the music to pause, which would otherwise be undone
+        by the automatic resume at the end of the interaction.
+        """
+        self._paused_for_speech = False
 
     def resume_after_speech(self):
         """Resumes playback, but only if pause_for_speech() was what paused it."""

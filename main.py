@@ -117,53 +117,16 @@ class SmartAssistant:
                 self.wake.listen_once()
                 print("Listening...")
 
-                # Records audio after the wake word is detected until silence is detected or a timeout occurs.
-                audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 2.0), 
-                                                             timeout=self.thresholds.get("recording_timeout", 10.0))
-
-                if audio_data is None or len(audio_data) == 0:
-                    continue
-                # Resamples the audio from the microphone's sample rate to the Whisper model's expected sample rate.
-                if self.mic_rate != self.whisper_rate:
-                    audio_data = librosa.resample(audio_data.astype("float32"), orig_sr=self.mic_rate, target_sr=self.whisper_rate)
-                # Transcribes the recorded audio using Whisper to get text, If no text is detected, it continues listening
-                transcription = self.stt.transcribe(audio_data)
-                if not transcription or not transcription.get("text", "").strip():
-                    continue
-
-                # Retrieves and prints the transcribed text.
-                text = transcription["text"]
-                print(f"You: {text}")
-                # Sends transcribed text to the LLM for processing, this returns a response and any detected actions.
-                result = self.llm.process_query(text)
-                response_text = result["response"]
-                action = result.get("action")
-
-                # If an action was detected, it is run through the action executor.
-                # Its message is used as the spoken response, if one was returned.
-                if action:
-                    action_result = self.actions.execute(action)
-                    if action_result.get("message"):
-                        response_text = action_result["message"]
-
-                # Prints the response from the LLM, saves it as a WAV file, reads it, resamples it if necessary,
-                # and plays it back to the user through the audio output.
-                # If synthesis fails, playback is skipped rather than replaying a stale file.
-                print(f"{self.name}: {response_text}")
-                if self.tts.synthesise(response_text, self.tts_file) is None:
-                    logger.error("TTS synthesis failed, skipping playback")
-                    continue
-                tts_audio, tts_sr = sf.read(self.tts_file)
-                if tts_sr != self.mic_rate:
-                    tts_audio = librosa.resample(tts_audio.astype("float32"), orig_sr=tts_sr, target_sr=self.mic_rate)
-
-                # Pauses the music while speaking so the reply can be heard, then puts
-                # it back on afterwards. try/finally means the music always comes back,
-                # even if playback of the reply fails.
+                # Pauses the music for the whole interaction, not just while speaking.
+                # Otherwise the microphone picks the music up during recording, so
+                # silence is never detected and the recording runs long, and the
+                # music ends up in the transcription audio as noise.
+                # The finally block guarantees the music comes back afterwards,
+                # whatever happens in between.
                 if self.spotify:
                     self.spotify.pause_for_speech()
                 try:
-                    self.audio.play(tts_audio, sample_rate=self.mic_rate)
+                    self._handle_interaction()
                 finally:
                     if self.spotify:
                         self.spotify.resume_after_speech()
@@ -172,6 +135,59 @@ class SmartAssistant:
             except Exception as e:
                 logger.error(f"Error: {e}", exc_info=True)
                 time.sleep(1)
+
+    def _handle_interaction(self):
+        """
+        Handles one full interaction after the wake word: records the query,
+        transcribes it, processes it with the LLM, runs any detected action,
+        and speaks the response.
+        """
+        # Records audio after the wake word is detected until silence is detected or a timeout occurs.
+        audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 2.0),
+                                                     timeout=self.thresholds.get("recording_timeout", 10.0))
+
+        if audio_data is None or len(audio_data) == 0:
+            return
+                # Resamples the audio from the microphone's sample rate to the Whisper model's expected sample rate.
+        # Resamples the audio from the microphone's sample rate to the Whisper model's expected sample rate.
+        if self.mic_rate != self.whisper_rate:
+            audio_data = librosa.resample(audio_data.astype("float32"), orig_sr=self.mic_rate, target_sr=self.whisper_rate)
+        # Transcribes the recorded audio using Whisper to get text, If no text is detected, it returns to listening
+        transcription = self.stt.transcribe(audio_data)
+        if not transcription or not transcription.get("text", "").strip():
+            return
+
+        # Retrieves and prints the transcribed text.
+        text = transcription["text"]
+        print(f"You: {text}")
+        # Sends transcribed text to the LLM for processing, this returns a response and any detected actions.
+        result = self.llm.process_query(text)
+        response_text = result["response"]
+        action = result.get("action")
+
+        # If an action was detected, it is run through the action executor.
+        # Its message is used as the spoken response, if one was returned.
+        if action:
+            action_result = self.actions.execute(action)
+            if action_result.get("message"):
+                response_text = action_result["message"]
+
+            # If the user explicitly asked for the music to pause, the automatic
+            # resume at the end of the interaction shouldn't switch it back on.
+            if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause":
+                self.spotify.cancel_resume()
+
+        # Prints the response from the LLM, saves it as a WAV file, reads it, resamples it if necessary,
+        # and plays it back to the user through the audio output.
+        # If synthesis fails, playback is skipped rather than replaying a stale file.
+        print(f"{self.name}: {response_text}")
+        if self.tts.synthesise(response_text, self.tts_file) is None:
+            logger.error("TTS synthesis failed, skipping playback")
+            return
+        tts_audio, tts_sr = sf.read(self.tts_file)
+        if tts_sr != self.mic_rate:
+            tts_audio = librosa.resample(tts_audio.astype("float32"), orig_sr=tts_sr, target_sr=self.mic_rate)
+        self.audio.play(tts_audio, sample_rate=self.mic_rate)
 
 # Runs the SmartAssistant if this script is executed directly. 
 # This creates an instance of SmartAssistant and calls its run method to start the main loop.
