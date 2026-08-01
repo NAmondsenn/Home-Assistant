@@ -122,7 +122,10 @@ read -rp "Have you already copied your wake word .onnx model onto this machine? 
 
 if [[ "$HAS_MODEL" =~ ^[Yy]$ ]]; then
     echo "Searching common locations for .onnx files..."
-    mapfile -t FOUND_MODELS < <(find "$HOME" /tmp /mnt /media -maxdepth 3 -iname "*.onnx" 2>/dev/null)
+    # openWakeWord ships its own .onnx files, and Piper's voice models are .onnx too.
+    # They are not the wake word model, so they're filtered out.
+    mapfile -t FOUND_MODELS < <(find "$HOME" /tmp /mnt /media -maxdepth 3 -iname "*.onnx" 2>/dev/null \
+        | grep -viE "melspectrogram|embedding_model|silero_vad|alexa|hey_mycroft|hey_jarvis|hey_rhasspy|timer_v|weather_v|piper|en_[A-Z]{2}-")
 
     if [ ${#FOUND_MODELS[@]} -eq 0 ]; then
         read -rp "None found automatically. Enter the full path to your model: " SELECTED_MODEL
@@ -341,14 +344,74 @@ else
         fi
 
         if sudo apt-get install -y raspotify; then
-            # Points raspotify at the configured device name so it matches config.yaml,
-            # otherwise the assistant won't recognise its own speaker.
             if [ -f /etc/raspotify/conf ]; then
-                sudo sed -i "s|^#\?LIBRESPOT_NAME=.*|LIBRESPOT_NAME=\"${SPOTIFY_DEVICE_NAME}\"|" /etc/raspotify/conf
+                # Sets (or replaces) a key in /etc/raspotify/conf, whether it's
+                # currently missing, commented out, or set to something else.
+                set_raspotify_conf() {
+                    local key="$1" value="$2"
+                    if sudo grep -qE "^#?${key}=" /etc/raspotify/conf; then
+                        sudo sed -i "s|^#\?${key}=.*|${key}=${value}|" /etc/raspotify/conf
+                    else
+                        echo "${key}=${value}" | sudo tee -a /etc/raspotify/conf > /dev/null
+                    fi
+                }
+
+                # The device name must match config.yaml, otherwise the assistant
+                # won't recognise its own speaker.
+                set_raspotify_conf "LIBRESPOT_NAME" "\"${SPOTIFY_DEVICE_NAME}\""
+
+                # librespot's default logarithmic volume curve makes the bottom half
+                # of Spotify's volume slider near-silent; linear behaves as expected.
+                set_raspotify_conf "LIBRESPOT_VOLUME_CTRL" "\"linear\""
+
+                # Credential caching must stay on, or the device logs out on every
+                # restart and playback silently stops working.
+                sudo sed -i 's|^LIBRESPOT_DISABLE_CREDENTIAL_CACHE=|#LIBRESPOT_DISABLE_CREDENTIAL_CACHE=|' /etc/raspotify/conf
+
+                # Finds the USB sound card (skipping the Pi's HDMI outputs) and points
+                # librespot at it by name, since ALSA's default is usually HDMI and
+                # card numbers can shuffle between boots.
+                USB_CARD=$(aplay -l 2>/dev/null | grep "^card" | grep -viE "vc4hdmi|bcm2835" \
+                    | sed -E 's/^card [0-9]+: ([^ ]+) .*/\1/' | head -1)
+                if [ -n "$USB_CARD" ]; then
+                    read -rp "Play Spotify through sound card [${USB_CARD}]: " SPOTIFY_CARD
+                    SPOTIFY_CARD="${SPOTIFY_CARD:-$USB_CARD}"
+                    set_raspotify_conf "LIBRESPOT_DEVICE" "\"plughw:CARD=${SPOTIFY_CARD},DEV=0\""
+                else
+                    echo "Warning: no USB sound card found, leaving librespot on the default output." >&2
+                    echo "Set LIBRESPOT_DEVICE in /etc/raspotify/conf once a speaker is connected." >&2
+                fi
+
+                # raspotify's packaged service sandbox doesn't grant /var/lib/raspotify,
+                # where librespot keeps its Spotify login. Without this override the
+                # cached credentials can't be used and the device stays logged out.
+                sudo mkdir -p /etc/systemd/system/raspotify.service.d
+                printf '[Service]\nStateDirectory=raspotify\n' \
+                    | sudo tee /etc/systemd/system/raspotify.service.d/override.conf > /dev/null
+                sudo systemctl daemon-reload
+
+                # Discovery-only mode needs a phone/PC on the same network to hand the
+                # device a session, which fails on many networks. Once the device has
+                # its own cached login, direct login mode is far more reliable.
+                if sudo test -f /var/lib/raspotify/credentials.json; then
+                    set_raspotify_conf "LIBRESPOT_DISABLE_DISCOVERY" ""
+                    echo "Spotify credentials found - using direct login mode."
+                else
+                    echo ""
+                    echo "No Spotify login found yet. One-time setup after this script finishes:"
+                    echo "  1. From your PC:  ssh -L 5588:localhost:5588 ${USER}@$(hostname)"
+                    echo "  2. On this machine:  sudo systemctl stop raspotify"
+                    echo "     sudo librespot -n \"${SPOTIFY_DEVICE_NAME}\" -j -K 5588 --system-cache /var/lib/raspotify"
+                    echo "  3. Open the printed URL in your PC browser and approve."
+                    echo "  4. Ctrl+C librespot, then re-run setup.sh (it will detect the"
+                    echo "     login and switch to direct mode automatically)."
+                    echo ""
+                fi
+
                 sudo systemctl restart raspotify
-                echo "raspotify installed and advertising as '${SPOTIFY_DEVICE_NAME}'."
+                echo "raspotify configured as '${SPOTIFY_DEVICE_NAME}'."
             else
-                echo "Warning: /etc/raspotify/conf not found, set LIBRESPOT_NAME by hand." >&2
+                echo "Warning: /etc/raspotify/conf not found, configure raspotify by hand." >&2
             fi
         else
             echo "Warning: raspotify install failed. The assistant will still run," >&2
