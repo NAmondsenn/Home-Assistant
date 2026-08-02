@@ -39,6 +39,9 @@ thresholds:
   # Volume below which audio counts as silence.
   # Raise this if the assistant keeps listening for too long after you've stopped talking.
   silence_threshold: 0.05
+  # How long to wait for the user to start talking after the wake word before
+  # giving up, so a false trigger doesn't hold the assistant for the full timeout.
+  speech_timeout: 3.0
   # Hard cap on a single recording, in case silence is never detected.
   recording_timeout: 10.0
   # Minimum confidence required to consider a wake word detected.
