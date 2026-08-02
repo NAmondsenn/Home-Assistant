@@ -146,7 +146,8 @@ class AudioManager:
             timeout: float = 5.0,
             silence_threshold: float = 0.04,
             silence_duration: float = 2.0,
-            speech_chunks_needed: int = 3
+            speech_chunks_needed: int = 3,
+            speech_timeout: float = 3.0
     ) -> np.ndarray:
         """
         Record audio until silence is detected or the timeout is reached.
@@ -159,6 +160,9 @@ class AudioManager:
                 recording counts as having started. This stops the tail of the
                 wake word, or a click as the stream opens, from being mistaken
                 for the user speaking.
+            speech_timeout: How long to wait for the user to start speaking before
+                giving up, so a false wake word trigger doesn't sit recording
+                silence for the full timeout.
 
         Returns:
             Numpy array of normalised float32 audio samples.
@@ -181,6 +185,7 @@ class AudioManager:
         speech_started = False
         silence_chunks_needed = int(silence_duration * self.sample_rate / self.chunk_size)
         max_chunks = int(timeout * self.sample_rate / self.chunk_size)
+        speech_timeout_chunks = int(speech_timeout * self.sample_rate / self.chunk_size)
 
         # Read audio data until silence is detected or timeout is reached.
         # Silence only starts counting once speech has actually been heard, so a
@@ -193,6 +198,12 @@ class AudioManager:
                 # Calculate Root Mean Square (RMS) energy to measure audio volume level.
                 audio_chunk = self._bytes_to_float(data)
                 rms = np.sqrt(np.mean(audio_chunk ** 2))
+
+                # Gives up early if the user never started speaking, so a false wake
+                # word trigger doesn't leave the assistant recording silence.
+                if not speech_started and i >= speech_timeout_chunks:
+                    logger.info(f"No speech within {speech_timeout:.1f}s, cancelling")
+                    return np.array([], dtype=np.float32)
 
                 # Breaks recording once silence follows speech.
                 if rms < silence_threshold:

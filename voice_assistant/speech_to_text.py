@@ -13,7 +13,7 @@ class SpeechToText:
         # Small, English-only model which is faster and uses less memory.
         model_size: str = "base.en", 
         device: str = "cpu",
-        # Use int8 quantization for faster inference and lower memory usage.
+        # Use int8 quantisation for faster inference and lower memory usage.
         compute_type: str = "int8",
         fallback_model: Optional[str] = None
     ):
@@ -141,60 +141,3 @@ class SpeechToText:
             A dictionary containing the transcribed text, detected language, confidence score, and duration.
         """
         return self.transcribe(audio=filepath, **kwargs)
-
-# Test function - runs when you execute this file directly
-# Records 5 seconds of audio from the microphone, saves it to a temporary WAV file, transcribes it,
-# and prints the result (text, detected language, confidence, and duration).
-if __name__ == "__main__":
-    import pyaudio
-    import wave
-    
-    logging.basicConfig(level=logging.INFO)
-    
-    print("\n=== Speech-to-Text Test ===\n")
-    
-    # Initialise speech-to-text model
-    stt = SpeechToText(model_size="base.en")
-    
-    # Connects to the microphone and informs the user that reccording is starting.
-    pa = pyaudio.PyAudio()
-    print("\nRecording 5 seconds of audio...")
-    print("Speak now!")
-
-    # Opens the mic stream at 48kHz sample rate, 16-bit depth, mono channel, and a buffer size of 2048 frames.
-    stream = pa.open(
-        format=pyaudio.paInt16,
-        channels=1,
-        rate=48000,
-        input=True,
-        frames_per_buffer=2048,
-        input_device_index=0
-    )
-
-    # Records audio chunks lasting for 5 seconds and appends them to a list.
-    frames = []
-    for _ in range(int(48000/2048 * 5)):
-        data = stream.read(2048, exception_on_overflow=False)
-        frames.append(data)
-
-    # Stops the microphone stream and terminates the PyAudio instance.
-    stream.close()
-    pa.terminate()
-    
-    # Writes the collected frames to temp_test.wav at the mic's native 48kHz rate.
-    with wave.open("temp_test.wav", 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(48000)
-        wf.writeframes(b''.join(frames))
-    
-    # Transcribes the file using the transcribe_file() method.
-    result = stt.transcribe_file("temp_test.wav")
-
-    # Prints out the results dictionary in a readable form.
-    print(f"\n{'='*40}")
-    print(f"Transcription: '{result['text']}'")
-    print(f"Language: {result['language']}")
-    print(f"Confidence: {result['confidence']:.2%}")
-    print(f"Duration: {result['duration']:.2f}s")
-    print(f"{'='*40}\n")
