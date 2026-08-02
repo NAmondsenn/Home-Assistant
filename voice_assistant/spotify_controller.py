@@ -295,7 +295,7 @@ class SpotifyController:
         try:
             self.sp.pause_playback()
             logger.info("Paused playback")
-            return {"success": True, "message": "Paused"}
+            return {"success": True, "message": ""}
         except Exception as e:
             logger.error(f"Pause failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't pause the music."}
@@ -308,7 +308,7 @@ class SpotifyController:
         try:
             self.sp.next_track()
             logger.info("Skipped to next track")
-            return {"success": True, "message": "Skipped"}
+            return {"success": True, "message": "That song was shit anyway"}
         except Exception as e:
             logger.error(f"Skip failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't skip the track."}
@@ -479,7 +479,10 @@ class SpotifyController:
 
         try:
             current = self.sp.current_playback()
-            if current and current.get('is_playing'):
+            # Checks for a loaded track rather than is_playing, since the assistant
+            # pauses the music while it listens - so at this point what the user is
+            # asking about is always paused.
+            if current and current.get('item'):
                 track = current['item']['name']
                 artist = current['item']['artists'][0]['name']
                 return {"success": True, "track": track, "artist": artist}
