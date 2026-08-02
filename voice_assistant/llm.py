@@ -62,8 +62,10 @@ class LLMHandler:
                     "query": {
                         "type": "string",
                         "description": (
-                            "What to play, spelled correctly, e.g. 'Gooba by 6ix9ine' or 'Drake'."
-                            "Leave out entirely to resume paused music."
+                            "What to play, spelled correctly, e.g. 'Gooba by 6ix9ine' or 'Drake'. "
+                            "Leave this out entirely for a bare 'play', 'resume' or 'unpause', "
+                            "which means carry on with whatever was playing - don't ask the user "
+                            "what they want in that case."
                         ),
                     },
                     "search_type": {
@@ -270,7 +272,9 @@ class LLMHandler:
 
             # The music and light tools are always offered, so the model decides what
             # the user meant rather than a keyword match guessing at it.
-            request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.ACTION_TOOLS)}
+            # max_tokens is set to 300 to stop responses from reaching the limit and being cut off.
+            request_kwargs = {"max_tokens": max(self.max_tokens, 300),
+                              "tools": list(self.ACTION_TOOLS)}
 
             # Only attaches the web search tool when the user explicitly asked to look something up.
             if use_web_search:
