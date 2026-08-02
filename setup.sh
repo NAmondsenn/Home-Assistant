@@ -46,7 +46,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # 1. Searches for the assistants name and wake word for config.yaml
-echo "[1/10] Assistant configuration"
+echo "[1/11] Assistant configuration"
 CURRENT_NAME=$(grep -m1 "^  name:" "$CONFIG_FILE" | sed -E 's/^  name: *"?([^"]*)"?/\1/')
 CURRENT_WAKE=$(grep -m1 "^  wake_word:" "$CONFIG_FILE" | sed -E 's/^  wake_word: *"?([^"]*)"?/\1/')
 
@@ -81,7 +81,7 @@ echo ""
 # 2. API keys, written to .env inside the project folder.
 # The file is only written if it doesn't already exist, so re-running setup.sh
 # never overwrites working credentials.
-echo "[2/10] API keys"
+echo "[2/11] API keys"
 
 if [ -f "$ENV_FILE" ]; then
     echo ".env already exists, leaving it untouched."
@@ -113,11 +113,11 @@ fi
 echo ""
 
 # 3. Prepare Directory structure, all inside the project folder.
-echo "[3/10] Preparing Directory structure..."
+echo "[3/11] Preparing Directory structure..."
 mkdir -p "$MODELS_DIRECTORY" "$LOGS_DIRECTORY" "$TEMP_DIRECTORY" "$BIN_DIRECTORY"
 
 # 4. Locate and install the wake word model.
-echo "[4/10] Wake word model"
+echo "[4/11] Wake word model"
 read -rp "Have you already copied your wake word .onnx model onto this machine? [y/N]: " HAS_MODEL
 
 if [[ "$HAS_MODEL" =~ ^[Yy]$ ]]; then
@@ -155,7 +155,7 @@ fi
 echo ""
 
 # 5. Detect OS package manager & install hardware dependencies.
-echo "[5/10] Installing system dependencies..."
+echo "[5/11] Installing system dependencies..."
 
 if command -v apt-get &> /dev/null; then
     echo "Debian / Ubuntu / Pi OS detected (apt)..."
@@ -215,7 +215,7 @@ else
 fi
 
 # 6. Create Python Virtual Environment & Install requirements.
-echo "[6/10] Setting up Python virtual environment..."
+echo "[6/11] Setting up Python virtual environment..."
 
 if [ ! -f "${PROJECT_DIRECTORY}/requirements.txt" ]; then
     echo "Error: requirements.txt not found in ${PROJECT_DIRECTORY}." >&2
@@ -265,7 +265,7 @@ download_models()
 EOF
 
 # 7. Detect Architecture and Install Piper TTS Binary.
-echo "[7/10] Detecting platform architecture & installing Piper..."
+echo "[7/11] Detecting platform architecture & installing Piper..."
 ARCH=$(uname -m)
 cd "$MODELS_DIRECTORY"
 
@@ -303,7 +303,7 @@ if [ ! -L "${BIN_DIRECTORY}/piper" ]; then
 fi
 
 # 8. Download Piper TTS Voice Model
-echo "[8/10] Downloading Piper voice model (${VOICE_MODEL})..."
+echo "[8/11] Downloading Piper voice model (${VOICE_MODEL})..."
 if [ ! -f "${MODELS_DIRECTORY}/${VOICE_MODEL}.onnx" ]; then
     if ! wget -q --show-progress "${VOICE_URL}/${VOICE_MODEL}.onnx" -O "${MODELS_DIRECTORY}/${VOICE_MODEL}.onnx"; then
         echo "Error: failed to download voice model. Check your internet connection and try again." >&2
@@ -322,8 +322,92 @@ fi
 
 
 # 9. Gives the user the option to run the assistant on startup.
+
+# 9. Shared audio devices. Without this, whichever program opens the sound card
+# first locks the others out: music playing means the assistant can't speak, and
+# ALSA's own default output is usually HDMI rather than the connected speaker.
 echo ""
-echo "[9/10] Spotify Connect playback (optional)"
+echo "[9/11] Shared audio setup"
+
+# Lists sound cards, skipping the Pi's built-in HDMI outputs.
+PLAYBACK_CARDS=$(aplay -l 2>/dev/null | grep "^card" | grep -viE "vc4hdmi|bcm2835" \
+    | sed -E 's/^card [0-9]+: ([^ ]+) .*/\1/' | sort -u)
+CAPTURE_CARDS=$(arecord -l 2>/dev/null | grep "^card" | grep -viE "vc4hdmi|bcm2835" \
+    | sed -E 's/^card [0-9]+: ([^ ]+) .*/\1/' | sort -u)
+
+DEFAULT_PLAYBACK=$(echo "$PLAYBACK_CARDS" | head -1)
+# Prefers a capture card that isn't also the speaker, since a headset's playback
+# and capture halves share a name and the microphone is usually a separate device.
+DEFAULT_CAPTURE=$(echo "$CAPTURE_CARDS" | grep -v "^${DEFAULT_PLAYBACK}$" | head -1)
+DEFAULT_CAPTURE="${DEFAULT_CAPTURE:-$(echo "$CAPTURE_CARDS" | head -1)}"
+
+if [ -z "$DEFAULT_PLAYBACK" ] || [ -z "$DEFAULT_CAPTURE" ]; then
+    echo "Warning: couldn't find a USB speaker and microphone, skipping shared audio setup." >&2
+    echo "Connect them and re-run setup.sh, or write /etc/asound.conf by hand." >&2
+else
+    echo "Detected speaker: ${DEFAULT_PLAYBACK}"
+    echo "Detected microphone: ${DEFAULT_CAPTURE}"
+    read -rp "Write /etc/asound.conf so audio can be shared? [Y/n]: " WRITE_ASOUND
+
+    if [[ ! "$WRITE_ASOUND" =~ ^[Nn]$ ]]; then
+        read -rp "Speaker card [${DEFAULT_PLAYBACK}]: " PLAYBACK_CARD
+        PLAYBACK_CARD="${PLAYBACK_CARD:-$DEFAULT_PLAYBACK}"
+        read -rp "Microphone card [${DEFAULT_CAPTURE}]: " CAPTURE_CARD
+        CAPTURE_CARD="${CAPTURE_CARD:-$DEFAULT_CAPTURE}"
+
+        # Keeps a backup, since this replaces a system-wide audio configuration.
+        if [ -f /etc/asound.conf ]; then
+            sudo cp /etc/asound.conf "/etc/asound.conf.backup.$(date +%Y%m%d%H%M%S)"
+            echo "Existing /etc/asound.conf backed up."
+        fi
+
+        sudo tee /etc/asound.conf > /dev/null <<EOF
+
+# dmix and dsnoop allow the programs to share the speaker / microphone at once.
+# Without this, the system would break as the current program using an I / O device locks it.
+pcm.!default {
+    type asym
+    playback.pcm "plug:shared_out"
+    capture.pcm "plug:shared_in"
+}
+
+pcm.shared_out {
+    type dmix
+    ipc_key 2048
+    ipc_perm 0666
+    slave {
+        pcm "hw:CARD=${PLAYBACK_CARD},DEV=0"
+        rate 48000
+        format S16_LE
+        channels 2
+    }
+}
+
+pcm.shared_in {
+    type dsnoop
+    ipc_key 2049
+    ipc_perm 0666
+    slave {
+        pcm "hw:CARD=${CAPTURE_CARD},DEV=0"
+        rate 48000
+        format S16_LE
+        channels 1
+    }
+}
+
+ctl.!default {
+    type hw
+    card ${PLAYBACK_CARD}
+}
+EOF
+        echo "Wrote /etc/asound.conf (speaker: ${PLAYBACK_CARD}, microphone: ${CAPTURE_CARD})."
+    else
+        echo "Skipping. Note that music and speech may not be able to play at the same time."
+    fi
+fi
+echo ""
+
+echo "[10/11] Spotify Connect playback (optional)"
 
 if ! command -v apt-get &> /dev/null; then
     echo "raspotify only ships .deb packages, skipping on this distribution."
@@ -368,19 +452,11 @@ else
                 # restart and playback silently stops working.
                 sudo sed -i 's|^LIBRESPOT_DISABLE_CREDENTIAL_CACHE=|#LIBRESPOT_DISABLE_CREDENTIAL_CACHE=|' /etc/raspotify/conf
 
-                # Finds the USB sound card (skipping the Pi's HDMI outputs) and points
-                # librespot at it by name, since ALSA's default is usually HDMI and
-                # card numbers can shuffle between boots.
-                USB_CARD=$(aplay -l 2>/dev/null | grep "^card" | grep -viE "vc4hdmi|bcm2835" \
-                    | sed -E 's/^card [0-9]+: ([^ ]+) .*/\1/' | head -1)
-                if [ -n "$USB_CARD" ]; then
-                    read -rp "Play Spotify through sound card [${USB_CARD}]: " SPOTIFY_CARD
-                    SPOTIFY_CARD="${SPOTIFY_CARD:-$USB_CARD}"
-                    set_raspotify_conf "LIBRESPOT_DEVICE" "\"plughw:CARD=${SPOTIFY_CARD},DEV=0\""
-                else
-                    echo "Warning: no USB sound card found, leaving librespot on the default output." >&2
-                    echo "Set LIBRESPOT_DEVICE in /etc/raspotify/conf once a speaker is connected." >&2
-                fi
+                # Uses the system default, which the shared audio step points at the
+                # speaker via dmix. Going direct to the hardware instead would lock
+                # the speaker exclusively and leave the assistant unable to speak
+                # while music is playing.
+                set_raspotify_conf "LIBRESPOT_DEVICE" "\"default\""
 
                 # raspotify's packaged service sandbox doesn't grant /var/lib/raspotify,
                 # where librespot keeps its Spotify login. Without this override the
@@ -424,7 +500,7 @@ fi
 echo ""
 
 # 10. Optionally install the systemd user service so the assistant starts on boot.
-echo "[10/10] Start on boot (optional)"
+echo "[11/11] Start on boot (optional)"
 
 if ! command -v systemctl &> /dev/null; then
     echo "systemd not found on this machine, skipping the boot service."
