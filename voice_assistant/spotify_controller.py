@@ -98,7 +98,7 @@ class SpotifyController:
 
         # Extract the authorisation code and get the token
         code = self.sp_oauth.parse_response_code(redirect_response)
-        self.sp_oauth.get_access_token(code)
+        self.sp_oauth.get_access_token(code, as_dict=False)
 
         self._authenticate()
         print("Authentication successful! The token is cached for future runs.")
