@@ -314,11 +314,18 @@ class SpotifyController:
             return {"success": False, "message": "Sorry, I couldn't skip the track."}
 
     def previous(self) -> Dict:
-        """Rewind to the previous track"""
+        """Go back to the previous track."""
         if not self.sp:
             return {"success": False, "message": "Not authenticated"}
 
         try:
+            # With the player at position 0, "previous" steps back a track rather
+            # than restarting the current one.
+            try:
+                self.sp.seek_track(0)
+            except Exception as e:
+                logger.warning(f"Could not seek before going back: {e}")
+
             self.sp.previous_track()
             logger.info("Went to previous track")
             return {"success": True, "message": "Previous track"}
