@@ -78,14 +78,62 @@ class LLMHandler:
             },
         },
         {
-            "name": "control_playback",
-            "description": "Pause, skip, go back a track, or report what is currently playing.",
+            "name": "play_playlist",
+            "description": (
+                "Play one of the user's own saved Spotify playlists, for requests like "
+                "'play my workout playlist'. The name is matched loosely, so pass it "
+                "roughly as the user said it. Use play_music instead for songs, artists, "
+                "or general genres the user doesn't have a playlist for."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["pause", "skip", "previous", "current"]},
+                    "name": {"type": "string", "description": "The playlist name as the user said it."},
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "control_playback",
+            "description": (
+                "Pause, skip, go back a track, start the current track again, or report "
+                "what is currently playing."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["pause", "skip", "previous", "restart", "current"],
+                        "description": (
+                            "'previous' goes to the last song, 'restart' plays the current "
+                            "song again from the start."
+                        ),
+                    },
                 },
                 "required": ["action"],
+            },
+        },
+        {
+            "name": "repeat",
+            "description": "Turn repeat off, repeat the current track, or repeat the whole playlist or album.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["off", "track", "all"]},
+                },
+                "required": ["mode"],
+            },
+        },
+        {
+            "name": "shuffle",
+            "description": "Turn shuffle on or off.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "enabled": {"type": "boolean", "description": "True to shuffle, False to play in order."},
+                },
+                "required": ["enabled"],
             },
         },
         {
@@ -116,8 +164,17 @@ class LLMHandler:
                     "query": params.get("query") or None,
                     "search_type": params.get("search_type")}
 
+        if block.name == "play_playlist":
+            return {"type": "spotify", "command": "play_playlist", "name": params.get("name")}
+
         if block.name == "control_playback":
             return {"type": "spotify", "command": params.get("action")}
+
+        if block.name == "repeat":
+            return {"type": "spotify", "command": "repeat", "mode": params.get("mode", "off")}
+
+        if block.name == "shuffle":
+            return {"type": "spotify", "command": "shuffle", "enabled": bool(params.get("enabled", True))}
 
         if block.name == "control_lights":
             command = "turn_on" if params.get("state") == "on" else "turn_off"
