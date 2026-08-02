@@ -82,6 +82,14 @@ class ActionExecutor:
             return self.spotify.skip()
         elif command == "previous":
             return self.spotify.previous()
+        elif command == "restart":
+            return self.spotify.restart()
+        elif command == "repeat":
+            return self.spotify.repeat(action.get("mode", "off"))
+        elif command == "shuffle":
+            return self.spotify.shuffle(action.get("enabled", True))
+        elif command == "play_playlist":
+            return self.spotify.play_playlist(action.get("name", ""))
         elif command == "current":
             result = self.spotify.current_track()
             # Returns the track and artist details if the current track is found.

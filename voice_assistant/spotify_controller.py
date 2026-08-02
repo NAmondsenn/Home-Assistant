@@ -9,6 +9,7 @@ than remote-controlling whichever phone or laptop Spotify happened to list first
 
 import os
 import re
+import difflib
 import logging
 from typing import Optional, Dict
 from dotenv import load_dotenv
@@ -321,6 +322,145 @@ class SpotifyController:
         except Exception as e:
             logger.error(f"Previous failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't go back a track."}
+
+    def restart(self) -> Dict:
+        """Start the current track again from the beginning."""
+        if not self.sp:
+            return {"success": False, "message": "Not authenticated"}
+
+        try:
+            self.sp.seek_track(0)
+            logger.info("Restarted the current track")
+            return {"success": True, "message": "Starting it again"}
+        except Exception as e:
+            logger.error(f"Restart failed: {e}")
+            return {"success": False, "message": "Sorry, I couldn't restart the track."}
+
+    def repeat(self, mode: str) -> Dict:
+        """
+        Set the repeat mode.
+
+        Args:
+            mode: 'off', 'track' to repeat the current song, or 'all' / 'context'
+                  to repeat the playlist or album.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        if not self.sp:
+            return {"success": False, "message": "Not authenticated"}
+
+        # Spotify calls repeating the whole playlist / album "context".
+        api_mode = "context" if mode in ("all", "context", "playlist", "album") else mode
+        if api_mode not in ("off", "track", "context"):
+            return {"success": False, "message": f"I don't know how to repeat '{mode}'."}
+
+        try:
+            self.sp.repeat(api_mode)
+            logger.info(f"Repeat set to {api_mode}")
+            messages = {"off": "Repeat off", "track": "Repeating this track",
+                        "context": "Repeating everything"}
+            return {"success": True, "message": messages[api_mode]}
+        except Exception as e:
+            logger.error(f"Repeat failed: {e}")
+            return {"success": False, "message": "Sorry, I couldn't change repeat."}
+
+    def shuffle(self, enabled: bool) -> Dict:
+        """
+        Turn shuffle on or off.
+
+        Args:
+            enabled: True to shuffle, False to play in order.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        if not self.sp:
+            return {"success": False, "message": "Not authenticated"}
+
+        try:
+            self.sp.shuffle(enabled)
+            logger.info(f"Shuffle set to {enabled}")
+            return {"success": True, "message": "Shuffle on" if enabled else "Shuffle off"}
+        except Exception as e:
+            logger.error(f"Shuffle failed: {e}")
+            return {"success": False, "message": "Sorry, I couldn't change shuffle."}
+
+    def _find_playlist(self, name: str) -> Optional[Dict]:
+        """
+        Finds one of the user's own playlists by name.
+
+        Matching is deliberately loose, since the name comes from speech: an exact
+        match wins, then one name containing the other, then the closest match by
+        similarity. Comparing against the user's own few dozen playlists is far
+        more forgiving than searching all of Spotify.
+
+        Args:
+            name: The playlist name as the user said it.
+
+        Returns:
+            The playlist dict, or None if nothing matched closely enough.
+        """
+        # Pages through the user's playlists, since the API returns 50 at a time.
+        playlists = []
+        offset = 0
+        while True:
+            page = self.sp.current_user_playlists(limit=50, offset=offset)
+            items = [p for p in page.get("items", []) if p]
+            playlists.extend(items)
+            if len(items) < 50:
+                break
+            offset += 50
+
+        wanted = name.strip().lower()
+
+        for playlist in playlists:
+            if playlist["name"].lower() == wanted:
+                return playlist
+
+        for playlist in playlists:
+            playlist_name = playlist["name"].lower()
+            if wanted in playlist_name or playlist_name in wanted:
+                return playlist
+
+        # Falls back to the closest name, as long as it's a reasonable match.
+        best, best_score = None, 0.0
+        for playlist in playlists:
+            score = difflib.SequenceMatcher(None, wanted, playlist["name"].lower()).ratio()
+            if score > best_score:
+                best, best_score = playlist, score
+
+        return best if best_score >= 0.6 else None
+
+    def play_playlist(self, name: str) -> Dict:
+        """
+        Play one of the user's own playlists.
+
+        Args:
+            name: The playlist name as the user said it.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        if not self.sp:
+            return {"success": False, "message": "Not authenticated"}
+
+        try:
+            device_id = self._activate_device()
+            if not device_id:
+                return {"success": False,
+                        "message": f"I can't find the {self.device_name} speaker. Is Spotify Connect running?"}
+
+            playlist = self._find_playlist(name)
+            if not playlist:
+                return {"success": False, "message": f"I couldn't find a playlist called {name}."}
+
+            self.sp.start_playback(device_id=device_id, context_uri=playlist["uri"])
+            logger.info(f"Playing playlist: {playlist['name']}")
+            return {"success": True, "message": f"Playing {playlist['name']}"}
+        except Exception as e:
+            logger.error(f"Playlist playback failed: {e}")
+            return {"success": False, "message": "Sorry, I couldn't play that playlist."}
 
     def current_track(self) -> Dict:
         """Retrieves current track information."""
