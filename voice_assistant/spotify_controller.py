@@ -47,7 +47,10 @@ class SpotifyController:
             raise ValueError("Spotify credentials not found in .env")
 
         # Scopes needed for playback control.
-        scope = "user-read-playback-state,user-modify-playback-state,user-read-currently-playing"
+        # playlist-read scopes are needed to look up the user's own playlists by name.
+        scope = ("user-read-playback-state,user-modify-playback-state,"
+                 "user-read-currently-playing,playlist-read-private,"
+                 "playlist-read-collaborative")
 
         self.sp_oauth = SpotifyOAuth(
             client_id=self.client_id,
