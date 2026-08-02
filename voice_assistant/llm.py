@@ -108,8 +108,10 @@ class LLMHandler:
                         "type": "string",
                         "enum": ["pause", "skip", "previous", "restart", "current"],
                         "description": (
-                            "'previous' goes to the last song, 'restart' plays the current "
-                            "song again from the start."
+                            "'previous' goes back to the song before this one, for requests "
+                            "like 'go back', 'last song' or 'previous track'. 'restart' plays "
+                            "the current song again from the beginning, for requests like "
+                            "'play that again', 'start it over' or 'rewind'."
                         ),
                     },
                 },
