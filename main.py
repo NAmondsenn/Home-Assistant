@@ -1,4 +1,4 @@
-import os, sys, time, uuid, logging, signal, librosa, soundfile as sf
+import os, sys, time, uuid, logging, signal, threading, librosa, soundfile as sf
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -49,6 +49,11 @@ class SmartAssistant:
 
         # Controls the main loop of the assistant. When set to False, the assistant will stop running.
         self.running = False
+
+        # Set while the assistant is idle, cleared while it's dealing with the user.
+        # Timer announcements wait on this, so they don't talk over a conversation.
+        self._idle = threading.Event()
+        self._idle.set()
 
         logger.info("Loading modules...")
         
@@ -105,6 +110,10 @@ class SmartAssistant:
         Args:
             message: What to say.
         """
+        # Waits for any conversation to finish before making any announcements.
+        if not self._idle.wait(timeout=60):
+            logger.warning("Announcing over an unusually long interaction")
+
         # A unique filename per announcement, so two going off close together can never overwrite each other's audio.
         announcement_file = str(self.temp_folder / f"announcement_{uuid.uuid4().hex[:8]}.wav")
 
@@ -161,9 +170,12 @@ class SmartAssistant:
                 # The finally block guarantees the music resumes after the interaction.
                 if self.spotify:
                     self.spotify.pause_for_speech()
+                # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
+                self._idle.clear()
                 try:
                     self._handle_interaction()
                 finally:
+                    self._idle.set()
                     if self.spotify:
                         self.spotify.resume_after_speech()
 
