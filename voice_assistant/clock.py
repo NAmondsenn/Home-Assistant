@@ -221,8 +221,7 @@ class Clock:
                     self._save()
 
             for timer in due:
-                # A labelled timer is a reminder, so the label is the message.
-                self._announce(timer["label"] or
+                self._announce(f"Reminder: {timer['label']}" if timer["label"] else
                                f"Your {format_duration(timer['duration'])} timer is up.")
 
             time.sleep(self.check_interval)
@@ -296,11 +295,11 @@ class Clock:
             return {"success": True, "message": "You don't have any timers running."}
 
         now = time.time()
-        described = []
-        for timer in timers:
-            remaining = format_duration(max(0, timer["due_at"] - now))
-            described.append(f"{timer['label']}, {remaining} left" if timer["label"]
-                             else f"{remaining} left")
+        # Each timer is named the same way it can be cancelled, so "the 2 minute
+        # timer" is both what the user hears and what they can say back.
+        described = [f"{self._describe(timer)}, "
+                     f"{format_duration(max(0, timer['due_at'] - now))} left"
+                     for timer in timers]
 
         if len(described) == 1:
             return {"success": True, "message": f"One timer: {described[0]}."}
@@ -314,7 +313,7 @@ class Clock:
         since it's being used as a description rather than a duration.
         """
         if timer["label"]:
-            return f"'{timer['label']}' reminder"
+            return f"{timer['label']} reminder"
 
         length = format_duration(timer["duration"])
         for unit in ("seconds", "minutes", "hours", "days"):
