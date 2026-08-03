@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+from datetime import datetime
 from typing import Optional, Dict
 from dotenv import load_dotenv
 from anthropic import Anthropic
@@ -141,6 +142,63 @@ class LLMHandler:
             },
         },
         {
+            "name": "set_timer",
+            "description": (
+                "Set a countdown timer or reminder. Work out the duration in seconds "
+                "yourself from what the user said ('ten minutes' is 600). Include a label "
+                "only when the user says what the timer is for - with a label it becomes a "
+                "reminder and the label is spoken when it goes off, so word it as the "
+                "reminder itself, e.g. 'Take the pizza out'."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "duration_seconds": {
+                        "type": "integer",
+                        "description": "How long the timer runs for, in seconds.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": (
+                            "What to say when it goes off. Leave out entirely for a plain "
+                            "timer with no message."
+                        ),
+                    },
+                },
+                "required": ["duration_seconds"],
+            },
+        },
+        {
+            "name": "list_timers",
+            "description": "Report which timers are running and how long is left on each.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "cancel_timer",
+            "description": (
+                "Cancel a running timer. Identify it by label, or by its length for timers "
+                "set without one. Use cancel_all only when the user clearly means every "
+                "timer. If they just say 'cancel the timer' and it's ambiguous, call this "
+                "with neither argument - the user will be asked which one they meant."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": (
+                            "Which timer to cancel: its label, or its length for an "
+                            "unlabelled one, e.g. '10 minutes'."
+                        ),
+                    },
+                    "cancel_all": {
+                        "type": "boolean",
+                        "description": "True only if the user asked to cancel every timer.",
+                    },
+                },
+            },
+        },
+        {
             "name": "control_lights",
             "description": "Turn the smart lights on or off.",
             "input_schema": {
@@ -179,6 +237,19 @@ class LLMHandler:
 
         if block.name == "shuffle":
             return {"type": "spotify", "command": "shuffle", "enabled": bool(params.get("enabled", True))}
+
+        if block.name == "set_timer":
+            return {"type": "clock", "command": "set_timer",
+                    "duration_seconds": params.get("duration_seconds"),
+                    "label": params.get("label") or None}
+
+        if block.name == "list_timers":
+            return {"type": "clock", "command": "list_timers"}
+
+        if block.name == "cancel_timer":
+            return {"type": "clock", "command": "cancel_timer",
+                    "label": params.get("label") or None,
+                    "cancel_all": bool(params.get("cancel_all", False))}
 
         if block.name == "control_lights":
             command = "turn_on" if params.get("state") == "on" else "turn_off"
@@ -238,10 +309,12 @@ class LLMHandler:
                 "result is what gets spoken to the user. "
                 "Your replies are converted to speech, so: "
                 "never use markdown, bullet points, emojis, or special formatting - plain spoken sentences only. "
-                "Keep responses to 1-2 short sentences. Spoken answers are slow to listen to, so say the useful part "
-                "and stop. Only go longer if the user explicitly asks for detail. "
+                "It is imperative you keep responses to 1-2 short sentences. Spoken answers are slow to listen to, "
+                "so say the useful part and stop. Only go longer if the user explicitly asks for detail. "
                 "Be direct and natural, like a helpful person talking, not a customer service bot. "
                 "If you don't know something, say so plainly rather than guessing. "
+                f"The current date and time is {datetime.now().astimezone().strftime('%A %d %B %Y, %H:%M (%Z)')}. "
+                "Work out any times or dates the user asks about from that. "
                 "Use UK units and conventions only: degrees Celsius for temperature, "
                 "miles for distance and road speeds, stones and pounds for body weight, kilograms and grams "
                 "for other weights, litres and pints, and pounds sterling for money. Give dates as day then "

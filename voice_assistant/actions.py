@@ -27,7 +27,7 @@ class ActionExecutor:
         """
         self.spotify = spotify
         self.home_assistant = home_assistant
-        self.clock = clock # TODO
+        self.clock = clock
         self.calendar = calendar # TODO
         self.weather = weather # TODO
 
@@ -54,6 +54,8 @@ class ActionExecutor:
             return self._execute_spotify(action)
         elif action_type == "home_assistant":
             return self._execute_home_assistant(action)
+        elif action_type == "clock":
+            return self._execute_clock(action)
         else:
             # Fallback incase the LLM Handler returns an invalid action type.
             logger.warning(f"Invalid action type: {action_type}")
@@ -99,6 +101,31 @@ class ActionExecutor:
         else:
             logger.warning(f"Unknown Spotify command: {command}")
             return {"success": False, "message": f"I don't know how to '{command}' on Spotify."}
+
+    def _execute_clock(self, action: Dict) -> Dict:
+        """
+        Runs a timer command (set / list / cancel).
+
+        Args:
+            action: Dict with a 'command', plus 'duration_seconds' and 'label'
+                    for set_timer, or 'label' for cancel.
+
+        Returns:
+            Dict with 'success' and a relevant message.
+        """
+        if not self.clock:
+            return {"success": False, "message": "Timers aren't available right now."}
+
+        command = action.get("command")
+        if command == "set_timer":
+            return self.clock.set_timer(action.get("duration_seconds"), action.get("label"))
+        elif command == "list_timers":
+            return self.clock.list_timers()
+        elif command == "cancel_timer":
+            return self.clock.cancel_timer(action.get("label"), action.get("cancel_all", False))
+
+        logger.warning(f"Unknown clock command: {command}")
+        return {"success": False, "message": f"I don't know how to '{command}' a timer."}
 
     def _execute_home_assistant(self, action: Dict) -> Dict:
         """

@@ -1,4 +1,4 @@
-import os, sys, time, logging, signal, librosa, soundfile as sf
+import os, sys, time, uuid, logging, signal, librosa, soundfile as sf
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -13,6 +13,7 @@ from voice_assistant.llm import LLMHandler
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector
 from voice_assistant.spotify_controller import SpotifyController
+from voice_assistant.clock import Clock
 from voice_assistant.actions import ActionExecutor
 
 # Loads environment variables from .env
@@ -76,9 +77,11 @@ class SmartAssistant:
             logger.warning(f"Spotify initialisation failed: {e}")
             self.spotify = None
 
+        # Sets up timers, which run on their own thread and call back here to speak when one goes off.
+        self.clock = Clock(on_timer_finished=self._announce)
+
         # Sets up the action executor, which dispatches detected actions to the right controller.
-        # Controllers which are currently unavailable are passed as None.
-        self.actions = ActionExecutor(spotify=self.spotify)
+        self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock)
         
         # Sets up the wake word detector with sensitivity settings from config.
         self.thresholds = self.config.section("thresholds")
@@ -91,6 +94,41 @@ class SmartAssistant:
         
         logger.info(f"{self.name} ready!")
 
+    def _announce(self, message):
+        """
+        Speaks a message which the user has scheduled, e.g. a timer.
+
+        Uses its own audio file rather than the one the main loop uses, so a timer
+        firing mid-conversation can't overwrite the reply being spoken. Shared ALSA
+        output means both can play at once without fighting over the speaker.
+
+        Args:
+            message: What to say.
+        """
+        # A unique filename per announcement, so two going off close together can never overwrite each other's audio.
+        announcement_file = str(self.temp_folder / f"announcement_{uuid.uuid4().hex[:8]}.wav")
+
+        try:
+            print(f"\n{self.name}: {message}")
+
+            if self.tts.synthesise(message, announcement_file) is None:
+                logger.error("Announcement synthesis failed")
+                return
+
+            audio_data, sample_rate = sf.read(announcement_file)
+            if sample_rate != self.mic_rate:
+                audio_data = librosa.resample(audio_data.astype("float32"),
+                                              orig_sr=sample_rate, target_sr=self.mic_rate)
+            self.audio.play(audio_data, sample_rate=self.mic_rate)
+        except Exception as e:
+            logger.error(f"Announcement failed: {e}")
+        finally:
+            # Announcement files are one-use, so they don't waste system storage.
+            try:
+                os.remove(announcement_file)
+            except OSError:
+                pass
+
     def _shutdown(self, *args):
         """
         Called automatically when the program receives Ctrl+C or a termination request.
@@ -98,6 +136,7 @@ class SmartAssistant:
         """
         logger.info("Shutting down...")
         self.running = False
+        self.clock.stop()
         self.audio.close()
         sys.exit(0)
 
