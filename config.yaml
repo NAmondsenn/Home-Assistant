@@ -22,6 +22,14 @@ whisper:
   device: "cpu"
   compute_type: "int8"
   fallback_model: "tiny.en"
+  # Higher is more accurate and slower.
+  beam_size: 5
+  # Words the model is told to expect, which biases it towards the names this
+  # assistant actually hears rather than similar sounding ones.
+  initial_prompt: >-
+    Hey Nova. Play Spotify. Pause the music, skip this track, shuffle,
+    repeat, play my playlist. Set a timer, set a reminder, cancel the timer.
+    Turn on the lights. What time is it? What's the weather?
 
 conversation:
   history_length: 5

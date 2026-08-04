@@ -64,8 +64,10 @@ class SmartAssistant:
         # Sets up speech-to-text with Whisper settings from config.
         whisper_config = self.config.section("whisper")
         self.stt = SpeechToText(model_size=whisper_config.get("model", "base.en"), device=whisper_config.get("device", "cpu"), 
-                                compute_type=whisper_config.get("compute_type", "int8"), 
-                                fallback_model=whisper_config.get("fallback_model", "tiny.en"))
+                                compute_type=whisper_config.get("compute_type", "int8"),
+                                fallback_model=whisper_config.get("fallback_model", "tiny.en"),
+                                initial_prompt=whisper_config.get("initial_prompt"),
+                                beam_size=whisper_config.get("beam_size", 5))
         
         # Retrieves LLM configuration from config.yaml and passes it to LLMHandler.
         self.llm = LLMHandler(config=self.config, api_key=None)
