@@ -15,7 +15,9 @@ class SpeechToText:
         device: str = "cpu",
         # Use int8 quantisation for faster inference and lower memory usage.
         compute_type: str = "int8",
-        fallback_model: Optional[str] = None
+        fallback_model: Optional[str] = None,
+        initial_prompt: Optional[str] = None,
+        beam_size: int = 3
     ):
 
        # Initialise the SpeechToText class with the specified model size, 
@@ -24,6 +26,10 @@ class SpeechToText:
         self.device = device
         self.compute_type = compute_type
         self.fallback_model = fallback_model
+        # Words the model is told to expect, which biases it towards names it would
+        # otherwise mangle - "Spotify" and the assistant's own name especially.
+        self.initial_prompt = initial_prompt
+        self.beam_size = beam_size
 
         # Load the Whisper model using the specified parameters.
         # This logs before and after loading the model to provide feedback on the process.
@@ -63,7 +69,7 @@ class SpeechToText:
         self,
         audio: Union[np.ndarray, str],
         language: str = "en",
-        beam_size: int = 3,
+        beam_size: Optional[int] = None,
         vad_filter: bool = True
         ) -> Dict[str, Any]:
         """
@@ -72,7 +78,8 @@ class SpeechToText:
         Args:
             audio: Array of raw audio samples.
             language: Default language for transcription (English).
-            beam_size: Decoding beam size; higher = slower but more accurate (default: 3).
+            beam_size: Decoding beam size; higher = slower but more accurate.
+                       Defaults to the value given when the model was set up.
             vad_filter: Enable Voice Activity Detection to skip silence.
 
         Returns:
@@ -90,9 +97,12 @@ class SpeechToText:
             segments, info = self.model.transcribe(
                 audio,
                 language=language,
-                beam_size=beam_size,
+                beam_size=beam_size if beam_size is not None else self.beam_size,
                 vad_filter=vad_filter,
-                vad_parameters=dict(min_silence_duration_ms=500)
+                vad_parameters=dict(min_silence_duration_ms=500),
+                # Nudges the model towards the words this assistant actually hears,
+                # so names like "Spotify" aren't turned into something similar sounding.
+                initial_prompt=self.initial_prompt
             )
 
             # Whisper returns segments of text, which are concatenated into a single string.
