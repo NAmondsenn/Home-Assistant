@@ -178,7 +178,7 @@ class SpotifyController:
             # No search term, so resume whatever was queued on the device.
             self.sp.start_playback(device_id=device_id)
             logger.info("Resumed playback")
-            return {"success": True, "message": "Resumed playback"}
+            return {"success": True, "message": "Resumed playback", "chime": True}
 
         except Exception as e:
             logger.error(f"Play failed: {e}")
@@ -295,7 +295,8 @@ class SpotifyController:
         try:
             self.sp.pause_playback()
             logger.info("Paused playback")
-            return {"success": True, "message": ""}
+            # The message is only used when the chime is turned off.
+            return {"success": True, "message": "Paused", "chime": True}
         except Exception as e:
             logger.error(f"Pause failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't pause the music."}
@@ -328,7 +329,7 @@ class SpotifyController:
 
             self.sp.previous_track()
             logger.info("Went to previous track")
-            return {"success": True, "message": "Previous track"}
+            return {"success": True, "message": "Previous track", "chime": True}
         except Exception as e:
             logger.error(f"Previous failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't go back a track."}
@@ -371,7 +372,7 @@ class SpotifyController:
         try:
             self.sp.seek_track(0)
             logger.info("Restarted the current track")
-            return {"success": True, "message": "Starting it again"}
+            return {"success": True, "message": "Starting it again", "chime": True}
         except Exception as e:
             logger.error(f"Restart failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't restart the track."}
@@ -400,7 +401,7 @@ class SpotifyController:
             logger.info(f"Repeat set to {api_mode}")
             messages = {"off": "Repeat off", "track": "Repeating this track",
                         "context": "Repeating everything"}
-            return {"success": True, "message": messages[api_mode]}
+            return {"success": True, "message": messages[api_mode], "chime": True}
         except Exception as e:
             logger.error(f"Repeat failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't change repeat."}
@@ -421,7 +422,7 @@ class SpotifyController:
         try:
             self.sp.shuffle(enabled)
             logger.info(f"Shuffle set to {enabled}")
-            return {"success": True, "message": "Shuffle on" if enabled else "Shuffle off"}
+            return {"success": True, "message": "Shuffle on" if enabled else "Shuffle off", "chime": True}
         except Exception as e:
             logger.error(f"Shuffle failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't change shuffle."}

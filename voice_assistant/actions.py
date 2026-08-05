@@ -181,4 +181,6 @@ class ActionExecutor:
 
         # TODO: replace with a real call once the Home Assistant client is built,
         # e.g. self.home_assistant.call_service(entity, command)
+        # This will want "chime": True once it works, since a light turning on is
+        # its own confirmation and doesn't need saying out loud.
         return {"success": False, "message": "Home Assistant integration not yet implemented."}
