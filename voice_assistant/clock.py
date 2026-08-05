@@ -222,22 +222,23 @@ class Clock:
 
             for timer in due:
                 self._announce(f"Reminder: {timer['label']}" if timer["label"] else
-                               f"Your {format_duration(timer['duration'])} timer is up.")
+                               f"Timer for {format_duration(timer['duration'])}.")
 
             time.sleep(self.check_interval)
 
-    def _announce(self, message: str):
+    def _announce(self, message: str, sound: str = "announcement_sound.wav"):
         """
         Passes a message to the callback which speaks it.
 
         Args:
             message: What to say.
+            sound: Which sound effect should introduce the message.
         """
         logger.info(f"Timer finished: {message}")
 
         if self.on_timer_finished:
             try:
-                self.on_timer_finished(message)
+                self.on_timer_finished(message, sound)
             except Exception as e:
                 # A failed announcement must not kill the timer thread.
                 logger.error(f"Timer announcement failed: {e}")
