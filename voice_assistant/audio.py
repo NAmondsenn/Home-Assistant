@@ -5,11 +5,13 @@ This module handles real-time microphone recording, silence detection, audio pla
 WAV file saving, and sample rate conversion using PyAudio and Librosa.
 """
 
+import os
 import wave
 import logging
 import pyaudio
 import numpy as np
 import librosa
+import soundfile as sf
 from typing import Optional
 
 # Logger setup.
@@ -266,6 +268,42 @@ class AudioManager:
         finally:
             stream.stop_stream()
             stream.close()
+
+    def play_file(self, filename: str, volume: float = 1.0) -> bool:
+        """
+        Play a sound file, resampling it if it doesn't match the output rate.
+
+        Used for the assistant's own sounds - chimes, alarms, spoken responses -
+        so the reading, resampling, and volume handling live in one place.
+
+        Args:
+            filename: Path to the audio file.
+            volume: How loud to play it, from 0 (silent) to 1 (as recorded).
+
+        Returns:
+            True if it played, False if the file was missing or unreadable.
+        """
+        if not os.path.exists(filename):
+            logger.warning(f"Sound file not found: {filename}")
+            return False
+
+        try:
+            audio, file_sample_rate = sf.read(filename)
+
+            if file_sample_rate != self.sample_rate:
+                audio = librosa.resample(audio.astype(np.float32),
+                                         orig_sr=file_sample_rate, target_sr=self.sample_rate)
+
+            # Scaling down can't distort, so only the upper bound needs guarding.
+            volume = max(0.0, min(1.0, float(volume)))
+            if volume != 1.0:
+                audio = audio * volume
+
+            self.play(audio, sample_rate=self.sample_rate)
+            return True
+        except Exception as e:
+            logger.error(f"Could not play {filename}: {e}")
+            return False
 
     def save_wav(self, audio: np.ndarray, filename: str, sample_rate: Optional[int] = None):
         """

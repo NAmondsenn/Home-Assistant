@@ -199,6 +199,52 @@ class LLMHandler:
             },
         },
         {
+            "name": "set_volume",
+            "description": (
+                "Change how loud the assistant is. Always use the 'general' category unless "
+                "the user specifically mentions alarms or reminders - 'turn it up', 'volume "
+                "up' and 'too loud' all mean general, which covers the assistant's voice and "
+                "the music together. Give either level (to set a specific value) or change "
+                "(to move it up or down), not both."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["general", "alarm", "reminder"],
+                        "description": (
+                            "'general' unless the user said alarm or reminder specifically."
+                        ),
+                    },
+                    "level": {
+                        "type": "integer",
+                        "description": (
+                            "Set the volume to this exact percentage, 0 to 100. Only for "
+                            "requests naming a number, like 'set the volume to 40'."
+                        ),
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down"],
+                        "description": (
+                            "Use this for 'volume up', 'louder', 'turn it down' and so on. "
+                            "The assistant decides how much by, so don't give an amount "
+                            "unless the user asked for a specific one."
+                        ),
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "description": (
+                            "Only when the user asks for a specific change, e.g. 'turn it "
+                            "down by 30'. Leave out otherwise so the standard step is used."
+                        ),
+                    },
+                },
+                "required": ["category"],
+            },
+        },
+        {
             "name": "control_lights",
             "description": "Turn the smart lights on or off.",
             "input_schema": {
@@ -250,6 +296,13 @@ class LLMHandler:
             return {"type": "clock", "command": "cancel_timer",
                     "label": params.get("label") or None,
                     "cancel_all": bool(params.get("cancel_all", False))}
+
+        if block.name == "set_volume":
+            return {"type": "volume",
+                    "category": params.get("category", "general"),
+                    "level": params.get("level"),
+                    "direction": params.get("direction"),
+                    "amount": params.get("amount")}
 
         if block.name == "control_lights":
             command = "turn_on" if params.get("state") == "on" else "turn_off"

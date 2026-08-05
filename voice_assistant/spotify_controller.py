@@ -333,6 +333,36 @@ class SpotifyController:
             logger.error(f"Previous failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't go back a track."}
 
+    def set_volume(self, percent: int) -> Dict:
+        """
+        Set the volume of the Connect device.
+
+        Called when the assistant's general volume changes, so music and speech
+        stay in proportion rather than being adjusted separately.
+
+        Args:
+            percent: Volume from 0 to 100.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        if not self.sp:
+            return {"success": False, "message": "Not authenticated"}
+
+        percent = max(0, min(100, int(percent)))
+
+        try:
+            device_id = self._find_device()
+            # Falls back to whatever is active, so the volume still applies if the
+            # assistant's own speaker isn't currently available.
+            self.sp.volume(percent, device_id=device_id)
+            logger.info(f"Spotify volume set to {percent}%")
+            return {"success": True, "message": f"Volume {percent} percent."}
+        except Exception as e:
+            # Not being able to set the volume shouldn't fail whatever asked for it.
+            logger.warning(f"Could not set Spotify volume: {e}")
+            return {"success": False, "message": "Sorry, I couldn't change the music volume."}
+
     def restart(self) -> Dict:
         """Start the current track again from the beginning."""
         if not self.sp:

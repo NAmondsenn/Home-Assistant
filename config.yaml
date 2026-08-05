@@ -54,3 +54,9 @@ thresholds:
   recording_timeout: 10.0
   # Minimum confidence required to consider a wake word detected.
   wake_word_confidence: 0.5
+
+sounds:
+  chime_enabled: true
+  reminder_enabled: true
+  volume_step: 10
+  spotify_max_volume: 100

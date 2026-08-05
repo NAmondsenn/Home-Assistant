@@ -55,3 +55,6 @@ piper/
 
 # Saved timers and other runtime state
 data/
+
+# Exception for UI sounds
+!sounds/*.wav

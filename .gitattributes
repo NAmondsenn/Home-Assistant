@@ -1,1 +1,8 @@
 *.sh text eol=lf
+
+# Audio and model files must never have their line endings converted, which
+# would corrupt them. Git usually detects this on its own, but not always, and
+# a silently mangled sound file is hard to spot.
+*.wav binary
+*.mp3 binary
+*.onnx binary
