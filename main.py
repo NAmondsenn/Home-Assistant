@@ -14,6 +14,7 @@ from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector
 from voice_assistant.spotify_controller import SpotifyController
 from voice_assistant.clock import Clock
+from voice_assistant.volume import VolumeControl
 from voice_assistant.actions import ActionExecutor
 
 # Loads environment variables from .env
@@ -87,8 +88,17 @@ class SmartAssistant:
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
         self.clock = Clock(on_timer_finished=self._announce)
 
+        # Sets up volume control. Spotify follows the general level, scaled against a
+        # fixed ceiling, so turning the assistant down turns the music down with it.
+        self.spotify_max_volume = self.config.section("sounds").get("spotify_max_volume", 100)
+        self.volume = VolumeControl(config=self.config, on_general_change=self._apply_music_volume)
+
+        # Brings Spotify in line with the saved level at startup, in case it was
+        # changed elsewhere while the assistant wasn't running.
+        self._apply_music_volume(self.volume.get("general"))
+
         # Sets up the action executor, which dispatches detected actions to the right controller.
-        self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock)
+        self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock, volume=self.volume)
         
         # Sets up the wake word detector with sensitivity settings from config.
         self.thresholds = self.config.section("thresholds")
@@ -100,6 +110,20 @@ class SmartAssistant:
         signal.signal(signal.SIGTERM, self._shutdown) # Signal termination
         
         logger.info(f"{self.name} ready!")
+
+    def _apply_music_volume(self, level):
+        """
+        Brings Spotify's volume in line with the assistant's general volume.
+
+        Spotify has a fixed ceiling of its own, so the general level scales against
+        that rather than setting Spotify to full whenever the assistant is loud.
+
+        Args:
+            level: The general volume, from 0 to 1.
+        """
+        if not self.spotify:
+            return
+        self.spotify.set_volume(int(round(level * self.spotify_max_volume)))
 
     def _announce(self, message):
         """
@@ -126,11 +150,9 @@ class SmartAssistant:
                 logger.error("Announcement synthesis failed")
                 return
 
-            audio_data, sample_rate = sf.read(announcement_file)
-            if sample_rate != self.mic_rate:
-                audio_data = librosa.resample(audio_data.astype("float32"),
-                                              orig_sr=sample_rate, target_sr=self.mic_rate)
-            self.audio.play(audio_data, sample_rate=self.mic_rate)
+            # Announcements use the reminder volume, which follows the general one
+            # unless the user has set it to something of its own.
+            self.audio.play_file(announcement_file, volume=self.volume.get("reminder"))
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
         finally:
@@ -238,10 +260,7 @@ class SmartAssistant:
         if self.tts.synthesise(response_text, self.tts_file) is None:
             logger.error("TTS synthesis failed, skipping playback")
             return
-        tts_audio, tts_sr = sf.read(self.tts_file)
-        if tts_sr != self.mic_rate:
-            tts_audio = librosa.resample(tts_audio.astype("float32"), orig_sr=tts_sr, target_sr=self.mic_rate)
-        self.audio.play(tts_audio, sample_rate=self.mic_rate)
+        self.audio.play_file(self.tts_file, volume=self.volume.get("general"))
 
 # Runs the SmartAssistant if this script is executed directly. 
 # This creates an instance of SmartAssistant and calls its run method to start the main loop.

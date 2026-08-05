@@ -16,7 +16,8 @@ class ActionExecutor:
     against the relevant controller.
     """
 
-    def __init__(self, spotify=None, home_assistant=None, clock=None, calendar=None, weather=None):
+    def __init__(self, spotify=None, home_assistant=None, clock=None, volume=None,
+                 calendar=None, weather=None):
         """
         Args:
             spotify: SpotifyController instance, or None if Spotify isn't available.
@@ -28,6 +29,7 @@ class ActionExecutor:
         self.spotify = spotify
         self.home_assistant = home_assistant
         self.clock = clock
+        self.volume = volume
         self.calendar = calendar # TODO
         self.weather = weather # TODO
 
@@ -56,6 +58,8 @@ class ActionExecutor:
             return self._execute_home_assistant(action)
         elif action_type == "clock":
             return self._execute_clock(action)
+        elif action_type == "volume":
+            return self._change_volume(action)
         else:
             # Fallback incase the LLM Handler returns an invalid action type.
             logger.warning(f"Invalid action type: {action_type}")
@@ -101,6 +105,37 @@ class ActionExecutor:
         else:
             logger.warning(f"Unknown Spotify command: {command}")
             return {"success": False, "message": f"I don't know how to '{command}' on Spotify."}
+
+    def _change_volume(self, action: Dict) -> Dict:
+        """
+        Changes a volume level.
+
+        Args:
+            action: Dict with a 'category', and either 'level' to set an exact value
+                    or 'direction' ('up' / 'down') to step it, optionally with an
+                    'amount' to override the standard step.
+
+        Returns:
+            Dict with 'success' and a relevant message.
+        """
+        if not self.volume:
+            return {"success": False, "message": "Volume control isn't available right now."}
+
+        category = action.get("category", "general")
+
+        if action.get("level") is not None:
+            return self.volume.set(category, action["level"])
+
+        direction = action.get("direction")
+        if direction in ("up", "down"):
+            # Volume Up / Down changes the volume by 10% by default.
+            amount = action.get("amount")
+            amount = self.volume.step if amount is None else abs(float(amount))
+            return self.volume.adjust(category, amount if direction == "up" else -amount)
+
+        # Nothing to change, so the current level is reported instead.
+        return {"success": True,
+                "message": f"The {category} volume is at {self.volume.percent(category)} percent."}
 
     def _execute_clock(self, action: Dict) -> Dict:
         """
