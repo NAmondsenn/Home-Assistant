@@ -2,13 +2,11 @@
 Volume Module
 Keeps track of how loud each kind of sound should be.
 
-There are three separate levels, and changing one never affects the others:
+There are two separate levels, and changing one never affects the other:
 
-    general - the assistant's voice, and Spotify playback with it
-    alarm - timers going off, kept separate so an alarm can be loud,
-            even when everything else is quiet
-    reminder - reminder announcements, which follow the general level
-               unless the user sets them to something of their own
+    general - the assistant's voice
+    alarm - anything which goes off by itself: timers, reminders and alarms.
+            Kept separate so they can stay loud when everything else is quiet
 
 Levels are saved to data/volumes.json, so a change made by voice survives a
 restart. They deliberately aren't in config.yaml: they're changed by speaking
@@ -32,15 +30,15 @@ VOLUMES_FILE = os.path.join(PROJECT_DIRECTORY, "data", "volumes.json")
 
 class VolumeControl:
     """
-    Controls the volume levels for the assistant, spotify, reminders and alarms.
+    Controls the volume levels for the assistant's voice and for alarms.
     This remembers changes made by voice, so a restart doesn't change them.
     """
 
-    CATEGORIES = ("general", "alarm", "reminder")
+    CATEGORIES = ("general", "alarm")
 
-    # Starting levels for a machine which has never had a volume change. "reminder"
-    # is None on purpose: with no level of its own, it follows the general one.
-    DEFAULT_LEVELS = {"general": 0.7, "alarm": 1.0, "reminder": None}
+    # Starting levels for a machine which has never had a volume change. Alarms
+    # start at full, since something which goes off unprompted is no use unheard.
+    DEFAULT_LEVELS = {"general": 0.7, "alarm": 1.0}
 
     def __init__(self, config=None, on_general_change: Optional[Callable[[float], None]] = None):
         """
@@ -60,8 +58,7 @@ class VolumeControl:
         # Anything the user has changed by voice overrides those defaults.
         self._load()
 
-        logger.info(f"Volume: general {self.percent('general')}%, "
-                    f"alarm {self.percent('alarm')}%, reminder {self.percent('reminder')}%")
+        logger.info(f"Volume: general {self.percent('general')}%, alarm {self.percent('alarm')}%")
 
     @staticmethod
     def _clamp_step(step) -> float:
@@ -93,9 +90,7 @@ class VolumeControl:
 
         for category in self.CATEGORIES:
             if category in saved:
-                value = saved[category]
-                # None is meaningful for the reminder level, so it's kept as-is.
-                self._levels[category] = None if value is None else self._clamp(value)
+                self._levels[category] = self._clamp(saved[category])
 
     def _save(self):
         """
@@ -129,16 +124,13 @@ class VolumeControl:
         The level for a kind of sound, as a number between 0 and 1.
 
         Args:
-            category: 'general', 'alarm' or 'reminder'.
+            category: 'general' or 'alarm'.
 
         Returns:
-            The level to multiply audio by. The reminder level falls back to the
-            general one when the user hasn't set it separately.
+            The level to multiply audio by.
         """
         level = self._levels.get(category)
-        if level is None:
-            return self._levels["general"]
-        return level
+        return self._levels["general"] if level is None else level
 
     def percent(self, category: str = "general") -> int:
         """The level as a percentage, for saying out loud."""
@@ -149,7 +141,7 @@ class VolumeControl:
         Set a level.
 
         Args:
-            category: 'general', 'alarm' or 'reminder'.
+            category: 'general' or 'alarm'.
             percent: The new level, 0 to 100.
 
         Returns:
@@ -186,7 +178,7 @@ class VolumeControl:
         Move a level up or down, for "turn it up a bit" rather than a specific number.
 
         Args:
-            category: 'general', 'alarm' or 'reminder'.
+            category: 'general' or 'alarm'.
             change_percent: How much to change by, positive or negative.
 
         Returns:
@@ -200,13 +192,5 @@ class VolumeControl:
         except (TypeError, ValueError):
             return {"success": False, "message": "Sorry, I didn't catch how much by."}
 
-        # Adjusting the reminder level for the first time starts from whatever it
-        # was following, so it doesn't jump.
         return self.set(category, self.percent(category) + change_percent)
 
-    def reset_reminder(self) -> Dict:
-        """Puts the reminder level back to following the general one."""
-        self._levels["reminder"] = None
-        self._save()
-        logger.info("Reminder volume follows the general volume again")
-        return {"success": True, "message": "Reminders will follow the main volume."}
