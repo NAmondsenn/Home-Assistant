@@ -1,0 +1,14 @@
+[Unit]
+# Restarts the Spotify Connect endpoint, run on a timer by raspotify-restart.timer.
+
+# librespot's connection to Spotify can drop without the process exiting: it stays
+# "active" to systemd, but quietly disappears from the account.
+# A nightly restart caps how long that can go unnoticed.
+Description=Restart Raspotify to keep its Spotify connection alive
+
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart raspotify.service

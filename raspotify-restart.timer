@@ -1,0 +1,13 @@
+[Unit]
+Description=Restart Raspotify nightly
+
+[Timer]
+# Restart at 4am every day.
+OnCalendar=*-*-* 04:00:00
+
+Persistent=true
+
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
