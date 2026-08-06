@@ -232,13 +232,15 @@ class LLMHandler:
                 "properties": {
                     "category": {
                         "type": "string",
-                        "enum": ["general", "music", "alarm", "reminder"],
+                        "enum": ["general", "music", "alarm"],
                         "description": (
                             "'general' for the assistant's own voice, and for a bare 'volume "
-                            "up' or 'too loud'. 'music' only when the user means what's "
-                            "playing, e.g. 'turn the music down'. 'alarm' or 'reminder' only "
-                            "when they say so. The music volume is separate from the "
-                            "assistant's, so changing one doesn't change the other."
+                            "up' or 'too loud'. 'music' when the user means what's playing, "
+                            "e.g. 'turn the music down'. 'alarm' for anything which goes off "
+                            "by itself - timers, reminders and alarms all share this one, so "
+                            "'turn the timer volume down' and 'reminders are too loud' are "
+                            "both 'alarm'. Each is separate, so changing one leaves the "
+                            "others alone."
                         ),
                     },
                     "level": {

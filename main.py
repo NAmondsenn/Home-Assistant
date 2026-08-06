@@ -152,15 +152,15 @@ class SmartAssistant:
 
             # A sound first, so the user knows the assistant is about to speak.
             if sound and self.reminder_sound_enabled:
-                self._play_sound(sound, volume=self.volume.get("reminder"))
+                self._play_sound(sound, volume=self.volume.get("alarm"))
 
             if self.tts.synthesise(message, announcement_file) is None:
                 logger.error("Announcement synthesis failed")
                 return
 
-            # Announcements use the reminder volume, which follows the general one
-            # unless the user has set it to something of its own.
-            self.audio.play_file(announcement_file, volume=self.volume.get("reminder"))
+            # Anything which goes off by itself uses the alarm volume, so it can
+            # stay loud even when the assistant's voice is turned down.
+            self.audio.play_file(announcement_file, volume=self.volume.get("alarm"))
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
         finally:
