@@ -484,6 +484,19 @@ else
                     echo ""
                 fi
 
+                # librespot's connection to Spotify can drop without the process
+                # exiting, leaving the device silently missing from the account
+                # while systemd still reports it healthy. A nightly restart keeps
+                # that from going unnoticed for days.
+                if [ -f "${PROJECT_DIRECTORY}/raspotify-restart.timer" ]; then
+                    sudo cp "${PROJECT_DIRECTORY}/raspotify-restart.service" \
+                            "${PROJECT_DIRECTORY}/raspotify-restart.timer" \
+                            /etc/systemd/system/
+                    sudo systemctl daemon-reload
+                    sudo systemctl enable --now raspotify-restart.timer
+                    echo "Raspotify will restart nightly to keep its connection alive."
+                fi
+
                 sudo systemctl restart raspotify
                 echo "raspotify configured as '${SPOTIFY_DEVICE_NAME}'."
             else

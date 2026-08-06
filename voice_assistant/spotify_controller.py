@@ -347,7 +347,8 @@ class SpotifyController:
 
         try:
             current = self.sp.current_playback()
-            if current:
+            # Only reports this machine's speaker, so the level can't be read from another device.
+            if current and current.get("device", {}).get("name", "").lower() == self.device_name.lower():
                 return current.get("device", {}).get("volume_percent")
         except Exception as e:
             logger.warning(f"Could not read the Spotify volume: {e}")
@@ -373,8 +374,10 @@ class SpotifyController:
 
         try:
             device_id = self._find_device()
-            # Falls back to whatever is active, so the volume still applies if the
-            # assistant's own speaker isn't currently available.
+            if not device_id:
+                return {"success": False,
+                        "message": f"I can't find the {self.device_name} speaker."}
+
             self.sp.volume(percent, device_id=device_id)
             logger.info(f"Spotify volume set to {percent}%")
             return {"success": True, "message": f"Volume {percent} percent."}
