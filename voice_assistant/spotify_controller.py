@@ -227,6 +227,18 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
+        # An album is played whole, from the first track, and named as an album
+        # rather than announcing whichever song happens to start.
+        if search_type == "album":
+            albums = self.sp.search(q=query, limit=1, type='album').get('albums', {}).get('items', [])
+            albums = [a for a in albums if a]
+            if albums:
+                album = albums[0]
+                self.sp.start_playback(device_id=device_id, context_uri=album['uri'])
+                artist = album['artists'][0]['name']
+                logger.info(f"Playing album: {album['name']} by {artist}")
+                return {"success": True, "message": f"Playing {album['name']} by {artist}"}
+
         # A genre or mood ("something chill") is best served by an existing playlist.
         if search_type == "playlist":
             playlists = self.sp.search(q=query, limit=1, type='playlist').get('playlists', {}).get('items', [])
@@ -339,17 +351,19 @@ class SpotifyController:
         The Connect device's current volume, as a percentage.
 
         Returns:
-            The volume, or None if it can't be read (nothing playing, or the
-            device doesn't report one).
+            The volume, or None if the device isn't available.
         """
         if not self.sp:
             return None
 
         try:
-            current = self.sp.current_playback()
-            # Only reports this machine's speaker, so the level can't be read from another device.
-            if current and current.get("device", {}).get("name", "").lower() == self.device_name.lower():
-                return current.get("device", {}).get("volume_percent")
+            # Read from the device list rather than the playback state, since that
+            # only exists while something is playing - the volume can still be
+            # changed when the music is paused or stopped. Only this machine's own
+            # speaker is looked at, so another device's level is never read.
+            for device in self.sp.devices().get("devices", []):
+                if device["name"].lower() == self.device_name.lower():
+                    return device.get("volume_percent")
         except Exception as e:
             logger.warning(f"Could not read the Spotify volume: {e}")
         return None

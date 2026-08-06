@@ -159,7 +159,11 @@ class ActionExecutor:
             amount = self.volume.step if amount is None else abs(float(amount))
             target = current + (amount if direction == "up" else -amount)
 
-        return self.spotify.set_volume(target)
+        # Confirmed with the same beep as the other volumes. It plays at the
+        # assistant's own level rather than the music's, since it comes out of the
+        # assistant and not through Spotify - the music itself demonstrates the new
+        # level well enough.
+        return self._with_beep("general", self.spotify.set_volume(target))
 
     def _change_volume(self, action: Dict) -> Dict:
         """

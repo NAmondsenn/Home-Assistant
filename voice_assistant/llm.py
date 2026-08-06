@@ -71,10 +71,12 @@ class LLMHandler:
                     },
                     "search_type": {
                         "type": "string",
-                        "enum": ["track", "artist", "playlist"],
+                        "enum": ["track", "artist", "album", "playlist"],
                         "description": (
-                            "Whether the query names a specific song, an artist, or a "
-                            "genre or mood to build a playlist from."
+                            "What the query names: a specific song, an artist, an album, or "
+                            "a genre or mood to find a playlist for. Use 'album' whenever the "
+                            "user says album, or names something you know to be one - 'play "
+                            "The Chronic by Dr. Dre' means the album, not a track."
                         ),
                     },
                 },
@@ -392,10 +394,11 @@ class LLMHandler:
                 "tool - including for shuffle, repeat, skipping, restarting a track, and pausing. Your own text "
                 "reply for those commands should just be a short acknowledgement like 'Okay.', since the tool's "
                 "result is what gets spoken to the user. "
-                "Only ever act on what the user has just said. Earlier requests in the conversation have "
-                "already been carried out, so never repeat an action because of them - if the latest message "
-                "is unclear, or sounds like the user talking to themselves rather than to you, ask what they "
-                "meant instead of guessing at a tool. "
+                "Act on what the user has just said, not on earlier turns: those requests have already been "
+                "carried out, so don't act on them again. That does not mean skipping a new request which "
+                "resembles an old one - if they ask to turn the volume up three times, turn it up three "
+                "times. Only when the latest message is unclear, or sounds like the user talking to "
+                "themselves rather than to you, ask what they meant instead of guessing at a tool. "
                 "What you receive is speech that has been transcribed, so it often contains mishearings. "
                 "When a word is clearly wrong but the intent is obvious, correct it silently and carry on - "
                 "'set a timer for 10 cents' means 10 seconds, 'play goobah by six nine' means Gooba by "
