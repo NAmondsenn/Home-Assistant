@@ -74,9 +74,9 @@ class LLMHandler:
                         "enum": ["track", "artist", "album", "playlist"],
                         "description": (
                             "What the query names: a specific song, an artist, an album, or "
-                            "a genre or mood to find a playlist for. Use 'album' whenever the "
-                            "user says album, or names something you know to be one - 'play "
-                            "The Chronic by Dr. Dre' means the album, not a track."
+                            "a genre or mood to find a playlist for. Only use 'album' if the "
+                            "user actually says the word album - otherwise a title is taken "
+                            "as a song, even when you know it's also an album."
                         ),
                     },
                 },
@@ -496,6 +496,14 @@ class LLMHandler:
                 if getattr(block, "type", None) == "tool_use":
                     action = self._action_from_tool_use(block)
                     break
+
+            # An album is only played whole when the user actually asked for one.
+            # Titles are often both a song and an album, and the model tends to
+            # assume the album, so the user's own words decide it.
+            if (action and action.get("search_type") == "album"
+                    and "album" not in text.lower()):
+                logger.info("Album wasn't asked for by name, playing the track instead")
+                action["search_type"] = "track"
 
             # Fallback for when the action is called by the model, but no message is produced.
             if action and not response_text:
