@@ -256,6 +256,13 @@ class SmartAssistant:
             if action_result.get("message"):
                 response_text = action_result["message"]
 
+            # If the user explicitly asked for the music to pause, the automatic
+            # resume at the end of the interaction shouldn't switch it back on.
+            # This has to happen before the confirmations below, since those return
+            # early and would otherwise skip it, leaving the music playing again.
+            if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause":
+                self.spotify.cancel_resume()
+
             # Actions which just change something confirm themselves with a chime rather than a spoken "Okay",
             # which is quicker to hear and less repetitive.
             # A volume change plays its own sound at the new level.
@@ -269,11 +276,6 @@ class SmartAssistant:
                 self._play_sound("success_chime.wav")
                 logger.info(f"Action confirmed with a chime: {response_text}")
                 return
-
-            # If the user explicitly asked for the music to pause, the automatic
-            # resume at the end of the interaction shouldn't switch it back on.
-            if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause":
-                self.spotify.cancel_resume()
 
         # Prints the response from the LLM, saves it as a WAV file, reads it, resamples it if necessary,
         # and plays it back to the user through the audio output.
