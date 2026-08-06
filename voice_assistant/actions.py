@@ -215,6 +215,10 @@ class ActionExecutor:
             return self.clock.set_timer(action.get("duration_seconds"), action.get("label"))
         elif command == "list_timers":
             return self.clock.list_timers()
+        elif command == "dismiss":
+            return self.clock.dismiss()
+        elif command == "missed":
+            return self.clock.missed()
         elif command == "cancel_timer":
             return self.clock.cancel_timer(action.get("label"), action.get("cancel_all", False))
 

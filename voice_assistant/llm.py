@@ -174,6 +174,24 @@ class LLMHandler:
             "input_schema": {"type": "object", "properties": {}},
         },
         {
+            "name": "dismiss_timer",
+            "description": (
+                "Acknowledge a timer or reminder which has just gone off, for 'okay', "
+                "'stop', 'got it', 'thanks' or similar right after one sounds. This stops "
+                "it announcing itself again. Not for cancelling a timer which hasn't gone "
+                "off yet - use cancel_timer for that."
+            ),
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "check_missed",
+            "description": (
+                "Report timers and reminders which went off without being acknowledged, "
+                "for 'did I miss anything?' or 'what did I miss?'."
+            ),
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
             "name": "cancel_timer",
             "description": (
                 "Cancel a running timer. Identify it by label, or by its length for timers "
@@ -187,8 +205,10 @@ class LLMHandler:
                     "label": {
                         "type": "string",
                         "description": (
-                            "Which timer to cancel: its label, or its length for an "
-                            "unlabelled one, e.g. '10 minutes'."
+                            "Which timer to cancel: its label, or the length it was set "
+                            "for, e.g. '10 minutes'. Only give this when the user named a "
+                            "timer - never invent one from how long is left, and leave it "
+                            "out when they just mean 'that one' or 'the timer'."
                         ),
                     },
                     "cancel_all": {
@@ -296,6 +316,12 @@ class LLMHandler:
         if block.name == "list_timers":
             return {"type": "clock", "command": "list_timers"}
 
+        if block.name == "dismiss_timer":
+            return {"type": "clock", "command": "dismiss"}
+
+        if block.name == "check_missed":
+            return {"type": "clock", "command": "missed"}
+
         if block.name == "cancel_timer":
             return {"type": "clock", "command": "cancel_timer",
                     "label": params.get("label") or None,
@@ -368,6 +394,11 @@ class LLMHandler:
                 "already been carried out, so never repeat an action because of them - if the latest message "
                 "is unclear, or sounds like the user talking to themselves rather than to you, ask what they "
                 "meant instead of guessing at a tool. "
+                "What you receive is speech that has been transcribed, so it often contains mishearings. "
+                "When a word is clearly wrong but the intent is obvious, correct it silently and carry on - "
+                "'set a timer for 10 cents' means 10 seconds, 'play goobah by six nine' means Gooba by "
+                "6ix9ine. Only ask when you genuinely can't tell what was wanted, not when a word simply "
+                "came out wrong. "
                 "Your replies are converted to speech, so: "
                 "never use markdown, bullet points, emojis, or special formatting - plain spoken sentences only. "
                 "It is imperative you keep responses to 1-2 short sentences. Spoken answers are slow to listen to, "

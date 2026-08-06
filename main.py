@@ -92,7 +92,7 @@ class SmartAssistant:
             self.spotify = None
 
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
-        self.clock = Clock(on_timer_finished=self._announce)
+        self.clock = Clock(on_timer_finished=self._announce, config=self.config)
 
         # Sets up volume control.
         self.volume = VolumeControl(config=self.config)
