@@ -106,6 +106,23 @@ class ActionExecutor:
             logger.warning(f"Unknown Spotify command: {command}")
             return {"success": False, "message": f"I don't know how to '{command}' on Spotify."}
 
+    @staticmethod
+    def _with_beep(category: str, result: Dict) -> Dict:
+        """
+        Confirms change of volume level with a beep at that volume.
+
+        Args:
+            category: Which volume changed, so the beep plays at that level.
+            result: What the volume control returned.
+
+        Returns:
+            The result, with the beep attached if the change worked.
+        """
+        if result.get("success"):
+            result["sound"] = "volume_beep.wav"
+            result["sound_category"] = category
+        return result
+
     def _change_volume(self, action: Dict) -> Dict:
         """
         Changes a volume level.
@@ -124,14 +141,15 @@ class ActionExecutor:
         category = action.get("category", "general")
 
         if action.get("level") is not None:
-            return self.volume.set(category, action["level"])
+            return self._with_beep(category, self.volume.set(category, action["level"]))
 
         direction = action.get("direction")
         if direction in ("up", "down"):
             # Volume Up / Down changes the volume by 10% by default.
             amount = action.get("amount")
             amount = self.volume.step if amount is None else abs(float(amount))
-            return self.volume.adjust(category, amount if direction == "up" else -amount)
+            return self._with_beep(
+                category, self.volume.adjust(category, amount if direction == "up" else -amount))
 
         # Nothing to change, so the current level is reported instead.
         return {"success": True,

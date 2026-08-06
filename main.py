@@ -275,6 +275,13 @@ class SmartAssistant:
 
             # Actions which just change something confirm themselves with a chime rather than a spoken "Okay",
             # which is quicker to hear and less repetitive.
+            # A volume change plays its own sound at the new level.
+            if action_result.get("success") and action_result.get("sound"):
+                self._play_sound(action_result["sound"],
+                                 volume=self.volume.get(action_result.get("sound_category", "general")))
+                logger.info(f"Action confirmed with a sound: {response_text}")
+                return
+
             if action_result.get("success") and action_result.get("chime") and self.chime_enabled:
                 self._play_sound("success_chime.wav")
                 logger.info(f"Action confirmed with a chime: {response_text}")
