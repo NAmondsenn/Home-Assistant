@@ -70,7 +70,7 @@ class Clock:
     """
 
     def __init__(self, on_timer_finished: Optional[Callable[[str], None]] = None,
-                 check_interval: float = 0.5):
+                 check_interval: float = 0.5, config=None):
         """
         Args:
             on_timer_finished: Called with the announcement text when a timer goes
@@ -85,6 +85,20 @@ class Clock:
         self._next_id = 1
         # Guards the timers dict, since the background thread and the assistant's main loop both touch it.
         self._lock = threading.Lock()
+
+        # A plain timer announces itself twice in quick succession: you're usually
+        # nearby when one is running. A reminder keeps going for a few minutes,
+        # since it exists precisely because the user will be doing something else.
+        timers_config = config.section("timers") if config else {}
+        self.timer_announcements = max(1, int(timers_config.get("announcements", 2)))
+        self.timer_repeat_gap = max(0.0, float(timers_config.get("repeat_gap", 1.5)))
+        self.reminder_announcements = max(1, int(timers_config.get("reminder_announcements", 7)))
+        self.reminder_repeat_gap = max(0.0, float(timers_config.get("reminder_repeat_gap", 30)))
+
+        # Timers which have gone off and are waiting to be repeated or dismissed.
+        self._ringing: List[Dict] = []
+        # Timers which were never acknowledged, so the user can ask what they missed.
+        self._unacknowledged: List[Dict] = []
 
         # Restores timers saved before the last shutdown, so they survive restarts.
         self._missed: List[Dict] = []
@@ -221,10 +235,126 @@ class Clock:
                     self._save()
 
             for timer in due:
-                self._announce(f"Reminder: {timer['label']}" if timer["label"] else
-                               f"Timer for {format_duration(timer['duration'])}.")
+                self._sound_off(timer)
+                # Queued to be announced again in case the first wasn't heard.
+                # Dismissing it stops the repeats.
+                announcements, gap = self._repeat_settings(timer)
+                if announcements > 1:
+                    with self._lock:
+                        self._ringing.append({"timer": timer,
+                                              "left": announcements - 1,
+                                              "gap": gap,
+                                              "next_at": now + gap})
+                else:
+                    self._record_unacknowledged(timer)
+
+            # Repeats anything which went off and hasn't been dismissed yet.
+            repeat_now = []
+            with self._lock:
+                for entry in list(self._ringing):
+                    if entry["next_at"] <= now:
+                        self._ringing.remove(entry)
+                        repeat_now.append(entry)
+
+            for entry in repeat_now:
+                self._sound_off(entry["timer"], repeat=True)
+                entry["left"] -= 1
+                if entry["left"] > 0:
+                    entry["next_at"] = now + entry["gap"]
+                    with self._lock:
+                        self._ringing.append(entry)
+                else:
+                    # Said its piece and heard nothing back, so it's noted as missed.
+                    self._record_unacknowledged(entry["timer"])
 
             time.sleep(self.check_interval)
+
+    def _repeat_settings(self, timer: Dict):
+        """
+        How persistently a timer should announce itself.
+
+        Args:
+            timer: The timer which finished.
+
+        Returns:
+            Tuple of (how many announcements in total, seconds between them).
+            Reminders keep going for minutes, plain timers just repeat once.
+        """
+        if timer["label"]:
+            return self.reminder_announcements, self.reminder_repeat_gap
+        return self.timer_announcements, self.timer_repeat_gap
+
+    def _sound_off(self, timer: Dict, repeat: bool = False):
+        """
+        Announces a timer which has come due.
+
+        Args:
+            timer: The timer which finished.
+            repeat: True if this is the second time round. The wording is the same
+                    either way, since the repeat follows straight after the first.
+        """
+        # A labelled timer is a reminder, so the label is the message. It's
+        # introduced rather than spoken bare, since a phrase out of nowhere isn't
+        # obviously a reminder to someone across the room.
+        if timer["label"]:
+            message = f"Reminder: {timer['label']}"
+        else:
+            message = f"Timer for {format_duration(timer['duration'])}."
+
+        self._announce(message)
+
+    def _record_unacknowledged(self, timer: Dict):
+        """
+        Notes a timer which went off without the user acknowledging it, so they can
+        ask what they missed later.
+
+        Args:
+            timer: The timer which was never dismissed.
+        """
+        with self._lock:
+            timer["missed_at"] = time.time()
+            self._unacknowledged.append(timer)
+            # Only the recent ones are worth keeping, so this can't grow forever.
+            self._unacknowledged = self._unacknowledged[-10:]
+
+    def dismiss(self) -> Dict:
+        """
+        Acknowledges anything currently going off, stopping it repeating.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        with self._lock:
+            ringing = self._ringing
+            self._ringing = []
+            # Dismissing also clears what was missed, since the user has now heard it.
+            missed = len(self._unacknowledged)
+            self._unacknowledged = []
+
+        if not ringing and not missed:
+            return {"success": False, "message": "Nothing's going off."}
+
+        logger.info(f"Dismissed {len(ringing)} ringing timer(s)")
+        return {"success": True, "message": "Okay.", "chime": True}
+
+    def missed(self) -> Dict:
+        """
+        Reports timers which went off without being acknowledged.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        with self._lock:
+            missed = list(self._unacknowledged)
+            self._unacknowledged = []
+
+        if not missed:
+            return {"success": True, "message": "You haven't missed anything."}
+
+        now = time.time()
+        described = [f"{self._describe(t)}, {format_duration(now - t['missed_at'])} ago"
+                     for t in missed]
+        return {"success": True, "message": "You missed " + "; ".join(described) + "."}
 
     def _announce(self, message: str, sound: str = "announcement_sound.wav"):
         """
@@ -377,6 +507,13 @@ class Clock:
                     self._timers.pop(timer_id)
                     self._save()
                     return {"success": True, "message": f"Cancelled the {self._describe(timer)}."}
+
+            # Nothing matched, but with a single timer running there's nothing else
+            # the user could have meant, so it deletes the timer.
+            if len(self._timers) == 1:
+                timer = self._timers.popitem()[1]
+                self._save()
+                return {"success": True, "message": f"Cancelled the {self._describe(timer)}."}
 
             return {"success": False, "message": f"I couldn't find a timer for {label}."}
 

@@ -55,6 +55,14 @@ thresholds:
   # Minimum confidence required to consider a wake word detected.
   wake_word_confidence: 0.5
 
+timers:
+  # A plain timer announces itself twice in quick succession.
+  announcements: 2
+  repeat_gap: 1.5
+  # A reminder keeps going for three minutes.
+  reminder_announcements: 7
+  reminder_repeat_gap: 30
+
 sounds:
   chime_enabled: true
   reminder_enabled: true
