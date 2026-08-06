@@ -94,14 +94,11 @@ class SmartAssistant:
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
         self.clock = Clock(on_timer_finished=self._announce)
 
-        # Sets up volume control. Spotify follows the general level, scaled against a
-        # fixed ceiling, so turning the assistant down turns the music down with it.
-        self.spotify_max_volume = self.config.section("sounds").get("spotify_max_volume", 100)
-        self.volume = VolumeControl(config=self.config, on_general_change=self._apply_music_volume)
+        # Sets up volume control.
+        self.volume = VolumeControl(config=self.config)
 
-        # Brings Spotify in line with the saved level at startup, in case it was
-        # changed elsewhere while the assistant wasn't running.
-        self._apply_music_volume(self.volume.get("general"))
+        if self.spotify:
+            self.spotify.set_volume(self.config.section("sounds").get("spotify_volume", 100))
 
         # Sets up the action executor, which dispatches detected actions to the right controller.
         self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock, volume=self.volume)
@@ -131,20 +128,6 @@ class SmartAssistant:
         if volume is None:
             volume = self.volume.get("general")
         return self.audio.play_file(str(self.sounds_folder / name), volume=volume)
-
-    def _apply_music_volume(self, level):
-        """
-        Brings Spotify's volume in line with the assistant's general volume.
-
-        Spotify has a fixed ceiling of its own, so the general level scales against
-        that rather than setting Spotify to full whenever the assistant is loud.
-
-        Args:
-            level: The general volume, from 0 to 1.
-        """
-        if not self.spotify:
-            return
-        self.spotify.set_volume(int(round(level * self.spotify_max_volume)))
 
     def _announce(self, message, sound="announcement_sound.wav"):
         """
