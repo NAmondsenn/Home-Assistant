@@ -123,6 +123,44 @@ class ActionExecutor:
             result["sound_category"] = category
         return result
 
+    def _change_spotify_volume(self, action: Dict) -> Dict:
+        """
+        Changes Spotify's own volume.
+
+        Kept apart from the assistant's volumes because Spotify holds this level
+        itself, so it applies to every device playing rather than just to audio
+        this assistant produces.
+
+        Args:
+            action: Dict with 'level' for an exact percentage, or 'direction'
+                    ('up' / 'down') with an optional 'amount'.
+
+        Returns:
+            Dict with 'success' and a relevant message.
+        """
+        if not self.spotify:
+            return {"success": False, "message": "Spotify isn't available right now."}
+
+        current = self.spotify.get_volume()
+
+        if action.get("level") is not None:
+            target = action["level"]
+        else:
+            direction = action.get("direction")
+            if direction not in ("up", "down"):
+                if current is None:
+                    return {"success": False, "message": "I can't tell how loud the music is."}
+                return {"success": True, "message": f"The music is at {current} percent."}
+
+            if current is None:
+                return {"success": False, "message": "I can't tell how loud the music is."}
+
+            amount = action.get("amount")
+            amount = self.volume.step if amount is None else abs(float(amount))
+            target = current + (amount if direction == "up" else -amount)
+
+        return self.spotify.set_volume(target)
+
     def _change_volume(self, action: Dict) -> Dict:
         """
         Changes a volume level.
@@ -139,6 +177,9 @@ class ActionExecutor:
             return {"success": False, "message": "Volume control isn't available right now."}
 
         category = action.get("category", "general")
+
+        if category == "music":
+            return self._change_spotify_volume(action)
 
         if action.get("level") is not None:
             return self._with_beep(category, self.volume.set(category, action["level"]))

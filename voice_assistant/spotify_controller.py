@@ -334,6 +334,25 @@ class SpotifyController:
             logger.error(f"Previous failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't go back a track."}
 
+    def get_volume(self) -> Optional[int]:
+        """
+        The Connect device's current volume, as a percentage.
+
+        Returns:
+            The volume, or None if it can't be read (nothing playing, or the
+            device doesn't report one).
+        """
+        if not self.sp:
+            return None
+
+        try:
+            current = self.sp.current_playback()
+            if current:
+                return current.get("device", {}).get("volume_percent")
+        except Exception as e:
+            logger.warning(f"Could not read the Spotify volume: {e}")
+        return None
+
     def set_volume(self, percent: int) -> Dict:
         """
         Set the volume of the Connect device.
