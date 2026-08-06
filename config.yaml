@@ -59,9 +59,9 @@ timers:
   # A plain timer announces itself twice in quick succession.
   announcements: 2
   repeat_gap: 1.5
-  # A reminder keeps going for three minutes.
-  reminder_announcements: 7
-  reminder_repeat_gap: 30
+  # reminders come back every 30 seconds for 3 minutes until dismissed.
+  reminder_rounds: 7
+  reminder_round_gap: 30
 
 sounds:
   chime_enabled: true

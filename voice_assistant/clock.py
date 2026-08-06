@@ -90,10 +90,14 @@ class Clock:
         # nearby when one is running. A reminder keeps going for a few minutes,
         # since it exists precisely because the user will be doing something else.
         timers_config = config.section("timers") if config else {}
-        self.timer_announcements = max(1, int(timers_config.get("announcements", 2)))
-        self.timer_repeat_gap = max(0.0, float(timers_config.get("repeat_gap", 1.5)))
-        self.reminder_announcements = max(1, int(timers_config.get("reminder_announcements", 7)))
-        self.reminder_repeat_gap = max(0.0, float(timers_config.get("reminder_repeat_gap", 30)))
+        # Each time something goes off it announces itself twice in a row - sound,
+        # message, brief pause, then the same again.
+        self.announcements = max(1, int(timers_config.get("announcements", 2)))
+        self.repeat_gap = max(0.0, float(timers_config.get("repeat_gap", 1.5)))
+        # A plain timer does that once. A reminder comes back every so often until
+        # it's acknowledged, since it exists because the user will be busy.
+        self.reminder_rounds = max(1, int(timers_config.get("reminder_rounds", 7)))
+        self.reminder_round_gap = max(1.0, float(timers_config.get("reminder_round_gap", 30)))
 
         # Timers which have gone off and are waiting to be repeated or dismissed.
         self._ringing: List[Dict] = []
@@ -235,18 +239,22 @@ class Clock:
                     self._save()
 
             for timer in due:
+                # Registered as ringing before it speaks, so dismissing it part way
+                # through stops it immediately.
+                rounds, gap = self._repeat_settings(timer)
+                entry = {"timer": timer, "left": rounds - 1, "gap": gap, "next_at": now + gap}
+                with self._lock:
+                    self._ringing.append(entry)
+
                 self._sound_off(timer)
-                # Queued to be announced again in case the first wasn't heard.
-                # Dismissing it stops the repeats.
-                announcements, gap = self._repeat_settings(timer)
-                if announcements > 1:
+
+                if rounds <= 1:
                     with self._lock:
-                        self._ringing.append({"timer": timer,
-                                              "left": announcements - 1,
-                                              "gap": gap,
-                                              "next_at": now + gap})
-                else:
-                    self._record_unacknowledged(timer)
+                        finished = entry in self._ringing
+                        if finished:
+                            self._ringing.remove(entry)
+                    if finished:
+                        self._record_unacknowledged(timer)
 
             # Repeats anything which went off and hasn't been dismissed yet.
             repeat_now = []
@@ -257,51 +265,76 @@ class Clock:
                         repeat_now.append(entry)
 
             for entry in repeat_now:
-                self._sound_off(entry["timer"], repeat=True)
                 entry["left"] -= 1
                 if entry["left"] > 0:
+                    # Put back before it speaks, so it can be dismissed mid-round.
                     entry["next_at"] = now + entry["gap"]
                     with self._lock:
                         self._ringing.append(entry)
+                    self._sound_off(entry["timer"], repeat=True)
                 else:
-                    # Said its piece and heard nothing back, so it's noted as missed.
-                    self._record_unacknowledged(entry["timer"])
+                    # Its last go, and still nothing back, so it's noted as missed.
+                    with self._lock:
+                        self._ringing.append(entry)
+                    self._sound_off(entry["timer"], repeat=True)
+
+                    with self._lock:
+                        finished = entry in self._ringing
+                        if finished:
+                            self._ringing.remove(entry)
+                    if finished:
+                        self._record_unacknowledged(entry["timer"])
 
             time.sleep(self.check_interval)
 
     def _repeat_settings(self, timer: Dict):
         """
-        How persistently a timer should announce itself.
+        How persistently a timer should keep announcing itself.
 
         Args:
             timer: The timer which finished.
 
         Returns:
-            Tuple of (how many announcements in total, seconds between them).
-            Reminders keep going for minutes, plain timers just repeat once.
+            Tuple of (how many rounds of announcements, seconds between rounds).
+            A reminder comes back until acknowledged; a plain timer says its piece
+            once and leaves it at that.
         """
         if timer["label"]:
-            return self.reminder_announcements, self.reminder_repeat_gap
-        return self.timer_announcements, self.timer_repeat_gap
+            return self.reminder_rounds, self.reminder_round_gap
+        return 1, 0.0
 
     def _sound_off(self, timer: Dict, repeat: bool = False):
         """
         Announces a timer which has come due.
 
+        Announced twice in a row - sound, message, brief pause, then the same again
+        - so a moment's inattention doesn't mean missing it entirely.
+
         Args:
             timer: The timer which finished.
-            repeat: True if this is the second time round. The wording is the same
-                    either way, since the repeat follows straight after the first.
+            repeat: True if this is a later round, which doesn't change the wording:
+                    the user hasn't heard it yet, or they'd have dismissed it.
         """
         # A labelled timer is a reminder, so the label is the message. It's
         # introduced rather than spoken bare, since a phrase out of nowhere isn't
         # obviously a reminder to someone across the room.
         if timer["label"]:
-            message = f"Reminder: {timer['label']}"
+            message = f"This is a reminder: {timer['label']}"
         else:
             message = f"Timer for {format_duration(timer['duration'])}."
 
-        self._announce(message)
+        for announcement in range(self.announcements):
+            # Stops mid-round if the user dismisses it, rather than talking over them.
+            if announcement and not self._is_ringing(timer):
+                return
+            self._announce(message)
+            if announcement < self.announcements - 1:
+                time.sleep(self.repeat_gap)
+
+    def _is_ringing(self, timer: Dict) -> bool:
+        """Whether a timer is still waiting to be acknowledged."""
+        with self._lock:
+            return any(entry["timer"] is timer for entry in self._ringing)
 
     def _record_unacknowledged(self, timer: Dict):
         """
@@ -465,6 +498,14 @@ class Clock:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
+        # Something going off right now is dismissed rather than cancelled, since
+        # "cancel that" while a reminder is sounding means "stop it", and there's
+        # no pending timer left to cancel by then.
+        with self._lock:
+            ringing = bool(self._ringing)
+        if ringing:
+            return self.dismiss()
+
         with self._lock:
             if not self._timers:
                 return {"success": False, "message": "There aren't any timers to cancel."}
@@ -475,7 +516,7 @@ class Clock:
                 self._save()
                 if count == 1:
                     return {"success": True, "message": "Timer cancelled."}
-                return {"success": True, "message": f"Cancelled all {count} timers."}
+                return {"success": True, "message": f"Cancelled {count} timers."}
 
             # Asks the user which timer to cancel if they didn't specify one.
             if not label:
