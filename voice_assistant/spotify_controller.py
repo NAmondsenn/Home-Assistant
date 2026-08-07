@@ -182,14 +182,30 @@ class SpotifyController:
 
             # "spotify" on its own isn't a search term, it's just the user naming the app.
             if query and query.lower() != "spotify":
-                return self._search_and_play(query, device_id, search_type)
+                result = self._search_and_play(query, device_id, search_type)
+            else:
+                # No search term, so carry on with whatever was playing.
+                result = self._resume_something(device_id)
 
-            # No search term, so carry on with whatever was playing.
-            return self._resume_something(device_id)
+            if result.get("success"):
+                self._playback_started()
+            return result
 
         except Exception as e:
             logger.error(f"Play failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't start the music."}
+
+    def _playback_started(self):
+        """
+        Notes that the assistant has just started playing something itself.
+
+        This cancels the automatic resume at the end of the interaction. That resume
+        exists to put back music which pause_for_speech() interrupted, but when the
+        user has asked for something new there's nothing to put back - and the resume
+        issues a bare start_playback() with no context or offset, which lands on top
+        of the track which was just deliberately chosen.
+        """
+        self._paused_for_speech = False
 
     def _set_shuffle_quietly(self, state: bool, device_id: str):
         """
@@ -225,6 +241,11 @@ class SpotifyController:
         """
         total = playlist.get('tracks', {}).get('total', 0)
         offset = {"position": random.randint(0, total - 1)} if total > 1 else None
+
+        # Logged so it's obvious from the log whether the random start actually
+        # happened, rather than having to infer it from which song came out.
+        logger.info(f"Starting playlist at position "
+                    f"{offset['position'] if offset else 0} of {total}")
 
         if offset:
             self.sp.start_playback(device_id=device_id, context_uri=playlist['uri'], offset=offset)
@@ -263,10 +284,15 @@ class SpotifyController:
 
         if uris:
             random.shuffle(uris)
+            # Logged so the log shows whether the shuffled top tracks were used and
+            # what it opened on, rather than leaving it to be guessed from the sound.
+            logger.info(f"Playing {len(uris)} shuffled top tracks, starting on {uris[0]}")
             self.sp.start_playback(device_id=device_id, uris=uris)
         else:
             # Falls back to the plain artist context if the top tracks lookup failed -
             # always the same opening track, but better than nothing playing at all.
+            logger.warning("No top tracks available, falling back to the artist context "
+                           "(this always opens on the same track)")
             self.sp.start_playback(device_id=device_id, context_uri=artist['uri'])
 
         self._set_shuffle_quietly(True, device_id)
@@ -790,6 +816,7 @@ class SpotifyController:
 
             # Playlists are always shuffled, so the same songs don't play in the same order every time.
             self._start_playlist_shuffled(playlist, device_id)
+            self._playback_started()
             logger.info(f"Playing playlist: {playlist['name']}")
             return {"success": True, "message": f"Playing {playlist['name']}"}
         except Exception as e:
