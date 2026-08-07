@@ -248,6 +248,12 @@ class Clock:
 
                 self._sound_off(timer)
 
+                # Timed from when it actually finished speaking, not from when it
+                # was due. An announcement held back while the user was talking to
+                # the assistant would otherwise be followed immediately by the next
+                # one, bunching them together.
+                entry["next_at"] = time.time() + gap
+
                 if rounds <= 1:
                     with self._lock:
                         finished = entry in self._ringing
@@ -268,10 +274,12 @@ class Clock:
                 entry["left"] -= 1
                 if entry["left"] > 0:
                     # Put back before it speaks, so it can be dismissed mid-round.
-                    entry["next_at"] = now + entry["gap"]
                     with self._lock:
                         self._ringing.append(entry)
                     self._sound_off(entry["timer"], repeat=True)
+                    # Timed from when it finished speaking, so a round delayed by a
+                    # conversation doesn't run straight into the next one.
+                    entry["next_at"] = time.time() + entry["gap"]
                 else:
                     # Its last go, and still nothing back, so it's noted as missed.
                     with self._lock:
@@ -349,6 +357,41 @@ class Clock:
             self._unacknowledged.append(timer)
             # Only the recent ones are worth keeping, so this can't grow forever.
             self._unacknowledged = self._unacknowledged[-10:]
+
+    # Words which mean "make it stop" when something is going off. Kept deliberately
+    # broad, since anything said to a nagging reminder is meant to silence it.
+    DISMISSAL_WORDS = {
+        "stop", "stopped", "cancel", "cancelled", "dismiss", "dismissed", "okay", "ok",
+        "alright", "right", "fine", "yes", "yep", "yeah", "yep", "done", "finished",
+        "enough", "quiet", "shush", "shut", "off", "thanks", "thank", "got", "heard",
+        "understood", "silence", "mute", "no",
+    }
+
+    def is_ringing(self) -> bool:
+        """Whether a timer or reminder is going off and waiting to be acknowledged."""
+        with self._lock:
+            return bool(self._ringing)
+
+    @classmethod
+    def looks_like_dismissal(cls, text: str) -> bool:
+        """
+        Whether something said while a timer is going off was meant to stop it.
+
+        Only used when something is actually ringing, so it can afford to be
+        generous: nearly anything short said to a reminder means "I've heard you".
+        Longer sentences are left to the model, since those are more likely to be a
+        real request than an acknowledgement.
+
+        Args:
+            text: What the user said.
+
+        Returns:
+            True if it should be treated as dismissing the alarm.
+        """
+        words = re.findall(r"[a-z']+", text.lower())
+        if not words or len(words) > 5:
+            return False
+        return bool(set(words) & cls.DISMISSAL_WORDS)
 
     def dismiss(self) -> Dict:
         """
