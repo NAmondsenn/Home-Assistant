@@ -261,13 +261,17 @@ class SpotifyController:
         An artist's context_uri doesn't support an offset the way an album or
         playlist does (Spotify always opens it on the same "top track"), so
         there's no equivalent of _start_playlist_shuffled's random offset here.
-        Instead, the artist's top tracks are fetched and shuffled locally, the
+        Instead a set of the artist's tracks is fetched and shuffled locally, the
         same approach _play_liked_songs uses, and started as an explicit list
         rather than a context.
 
-        This trades away Spotify's own "artist radio" (which keeps introducing
-        new tracks indefinitely) for a shuffled top-ten - playback will stop once
-        those run out, rather than carrying on by itself.
+        The tracks come from a search rather than the top-tracks endpoint, which
+        returns 403 on this account. A search also isn't limited to ten tracks, so
+        there's more to shuffle through.
+
+        This trades away Spotify's own "artist radio" (which keeps introducing new
+        tracks indefinitely) for a fixed list - playback will stop once it runs
+        out, rather than carrying on by itself.
 
         Args:
             artist: The artist search result.
@@ -276,23 +280,23 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
-        try:
-            uris = [t['uri'] for t in self.sp.artist_top_tracks(artist['id']).get('tracks', [])]
-        except Exception as e:
-            logger.warning(f"Could not fetch top tracks for {artist['name']}: {e}")
-            uris = []
+        # Filtered to tracks actually credited to this artist, since a search on the
+        # name alone also returns covers, tributes and unrelated features.
+        tracks = self._search_items(f'artist:"{artist["name"]}"', 'track')
+        uris = [t['uri'] for t in tracks
+                if any(a['id'] == artist['id'] for a in t.get('artists', []))]
 
         if uris:
             random.shuffle(uris)
-            # Logged so the log shows whether the shuffled top tracks were used and
-            # what it opened on, rather than leaving it to be guessed from the sound.
-            logger.info(f"Playing {len(uris)} shuffled top tracks, starting on {uris[0]}")
+            # Logged so the log shows the shuffled list was used and what it opened
+            # on, rather than leaving it to be guessed from the sound.
+            logger.info(f"Playing {len(uris)} shuffled tracks, starting on {uris[0]}")
             self.sp.start_playback(device_id=device_id, uris=uris)
         else:
-            # Falls back to the plain artist context if the top tracks lookup failed -
-            # always the same opening track, but better than nothing playing at all.
-            logger.warning("No top tracks available, falling back to the artist context "
-                           "(this always opens on the same track)")
+            # Falls back to the plain artist context if the track search found
+            # nothing - always the same opening track, but better than silence.
+            logger.warning(f"No tracks found for {artist['name']}, falling back to the "
+                           "artist context (this always opens on the same track)")
             self.sp.start_playback(device_id=device_id, context_uri=artist['uri'])
 
         self._set_shuffle_quietly(True, device_id)
@@ -405,6 +409,70 @@ class SpotifyController:
 
         return bool(query_words & result_words)
 
+    # How many results to weigh up when picking the best match. 
+    SEARCH_LIMIT = 10
+
+    def _search_items(self, query: str, item_type: str) -> list:
+        """
+        Runs a search and returns the results, without letting a rejected search
+        take the whole request down with it.
+
+        Args:
+            query: The search query, which may use Spotify's field filters.
+            item_type: 'album', 'artist', 'track' or 'playlist'.
+
+        Returns:
+            The results, or an empty list if the search failed.
+        """
+        for limit in (self.SEARCH_LIMIT, 1):
+            try:
+                results = self.sp.search(q=query, limit=limit, type=item_type)
+                items = results.get(f"{item_type}s", {}).get("items", [])
+                return [item for item in items if item]
+            except Exception as e:
+                logger.warning(f"Search for {item_type} '{query}' failed at limit {limit}: {e}")
+
+        return []
+
+    def _find_artist(self, query: str) -> Optional[Dict]:
+        """
+        Finds the artist the user asked for.
+
+        The result is checked against what was asked for rather than trusted: the
+        top hit for "Kaiser Chiefs" came back as Two Door Cinema Club, and with no
+        check that played happily. Search results are ranked by popularity, so a
+        query Spotify doesn't recognise still returns a well-known artist.
+
+        Args:
+            query: The artist name as the user said it.
+
+        Returns:
+            The artist dict, or None if nothing matched closely enough.
+        """
+        artists = self._search_items(query, 'artist')
+        if not artists:
+            return None
+
+        wanted = self._normalise(query)
+
+        best, best_score = None, 0.0
+        for artist in artists:
+            name = self._normalise(artist['name'])
+
+            if name == wanted:
+                return artist
+
+            score = difflib.SequenceMatcher(None, wanted, name).ratio()
+            if score > best_score:
+                best, best_score = artist, score
+
+        if best_score < 0.6:
+            logger.info(f"No artist close enough to '{query}' "
+                        f"(closest was {best['name'] if best else 'nothing'})")
+            return None
+
+        return best
+
     def _find_album(self, query: str) -> Optional[Dict]:
         """
         Finds the album the user asked for.
@@ -430,13 +498,11 @@ class SpotifyController:
             artist = query[split_index + 4:].strip()
 
         search_query = f'album:"{title}" artist:"{artist}"' if artist else f'album:"{title}"'
-        albums = self.sp.search(q=search_query, limit=20, type='album').get('albums', {}).get('items', [])
-        albums = [a for a in albums if a]
+        albums = self._search_items(search_query, 'album')
 
         # Falls back to a plain text search, e.g. for titles which contain "by".
         if not albums:
-            albums = self.sp.search(q=query, limit=20, type='album').get('albums', {}).get('items', [])
-            albums = [a for a in albums if a]
+            albums = self._search_items(query, 'album')
 
         if not albums:
             return None
@@ -541,13 +607,11 @@ class SpotifyController:
             track_part = query[:split_index].strip()
             artist_part = query[split_index + 4:].strip()
 
-        # An artist name on its own ("play Drake") should play that artist rather
-        # than one arbitrary song of theirs. An exact name match is required unless
-        # the caller has already identified the query as an artist.
         if not track_part:
-            artists = self.sp.search(q=query, limit=1, type='artist').get('artists', {}).get('items', [])
-            if artists and (search_type == "artist" or artists[0]['name'].lower() == query.lower()):
-                return self._play_artist(artists[0], device_id)
+            artist = self._find_artist(query)
+            if artist and (search_type == "artist"
+                           or self._normalise(artist['name']) == self._normalise(query)):
+                return self._play_artist(artist, device_id)
 
         search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
         items = self.sp.search(q=search_query, limit=1, type='track').get('tracks', {}).get('items', [])
