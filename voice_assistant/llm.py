@@ -287,6 +287,33 @@ class LLMHandler:
         },
     ]
 
+    def _asked_for_album(self, text: str) -> bool:
+        """
+        Whether the user asked for an album, taking the conversation into account.
+
+        The word won't be in the current utterance when the assistant had to ask
+        which record was meant: "play the Chronic album" / "do you mean The Chronic
+        by Dr. Dre?" / "yes" - by the time the answer arrives, "album" was two turns
+        ago, and looking only at "yes" would quietly play the song instead.
+
+        Args:
+            text: What the user just said.
+
+        Returns:
+            True if an album was asked for, here or in the exchange being answered.
+        """
+        if "album" in text.lower():
+            return True
+
+        # Only the exchange immediately before counts. Anything older is a separate
+        # request, and would otherwise turn later track requests into albums.
+        if not self.history:
+            return False
+
+        last = self.history[-1]
+        return ("album" in last.get("user", "").lower()
+                or "album" in last.get("assistant", "").lower())
+
     def _action_from_tool_use(self, block) -> Optional[Dict]:
         """
         Converts a tool call from the model into the action dict the ActionExecutor expects.
@@ -504,8 +531,7 @@ class LLMHandler:
             # An album is only played whole when the user actually asked for one.
             # Titles are often both a song and an album, and the model tends to
             # assume the album, so the user's own words decide it.
-            if (action and action.get("search_type") == "album"
-                    and "album" not in text.lower()):
+            if action and action.get("search_type") == "album" and not self._asked_for_album(text):
                 logger.info("Album wasn't asked for by name, playing the track instead")
                 action["search_type"] = "track"
 
