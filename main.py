@@ -266,13 +266,13 @@ class SmartAssistant:
 
         # Anything short said while a timer is going off means "make it stop", so it's handled
         # here rather than going to the model, making it quicker and easier to silence.
-            result = self.clock.dismiss()
-            logger.info("Dismissed by voice without asking the model")
-            if self.chime_enabled:
-                self._play_sound("success_chime.wav")
-            else:
-                print(f"{self.name}: {result['message']}")
-            return
+        result = self.clock.dismiss()
+        logger.info("Dismissed by voice without asking the model")
+        if self.chime_enabled:
+            self._play_sound("success_chime.wav")
+        else:
+            print(f"{self.name}: {result['message']}")
+        return
         # Sends transcribed text to the LLM for processing, this returns a response and any detected actions.
         result = self.llm.process_query(text)
         response_text = result["response"]
