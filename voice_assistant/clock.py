@@ -531,6 +531,24 @@ class Clock:
 
             wanted = label.strip().lower()
 
+            # The next upcoming timer / reminder can be cancelled by saying "cancel the next ...".
+            if any(word in wanted for word in ("next", "upcoming", "soonest", "first")):
+                if "reminder" in wanted:
+                    candidates = [t for t in self._timers.values() if t["label"]]
+                elif "timer" in wanted:
+                    candidates = [t for t in self._timers.values() if not t["label"]]
+                else:
+                    candidates = list(self._timers.values())
+
+                # Fallback incase a "reminder" was set without a label.
+                candidates = candidates or list(self._timers.values())
+
+                if candidates:
+                    timer = min(candidates, key=lambda t: t["due_at"])
+                    self._timers.pop(timer["id"], None)
+                    self._save()
+                    return {"success": True, "message": f"Cancelled the {self._describe(timer)}."}
+
             wanted_numbers = set(re.findall(r"\d+", wanted))
 
             for timer_id, timer in list(self._timers.items()):
