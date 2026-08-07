@@ -195,8 +195,9 @@ class SpotifyController:
         """
         Turn shuffle on or off without making a fuss if it doesn't work.
 
-        Called before starting playback, so the first track is the right one: with
-        shuffle left on, an album would open on a random track rather than the first.
+        Called after starting playback, not before: start_playback resets the
+        device's shuffle state for whatever context it starts, so a call made
+        beforehand would just get silently overwritten.
 
         Args:
             state: True to shuffle, False to play in order.
@@ -207,6 +208,70 @@ class SpotifyController:
         except Exception as e:
             # Not worth failing playback over, the music will keep playing anyway.
             logger.warning(f"Could not turn shuffle {'on' if state else 'off'}: {e}")
+
+    def _start_playlist_shuffled(self, playlist: Dict, device_id: str):
+        """
+        Start a playlist on a random track, then turn shuffle on.
+
+        Turning shuffle on after start_playback (see _set_shuffle_quietly) covers
+        every track after the first, but the first track is chosen the moment
+        playback starts, before shuffle is applied - so without this, a playlist
+        would always open on the same track (its first) even though the rest
+        shuffles correctly. An explicit random offset picks the opening track too.
+
+        Args:
+            playlist: The playlist search result / library entry to play.
+            device_id: The Connect device to play on.
+        """
+        total = playlist.get('tracks', {}).get('total', 0)
+        offset = {"position": random.randint(0, total - 1)} if total > 1 else None
+
+        if offset:
+            self.sp.start_playback(device_id=device_id, context_uri=playlist['uri'], offset=offset)
+        else:
+            self.sp.start_playback(device_id=device_id, context_uri=playlist['uri'])
+
+        self._set_shuffle_quietly(True, device_id)
+
+    def _play_artist(self, artist: Dict, device_id: str) -> Dict:
+        """
+        Play an artist, shuffled, starting from a different track each time.
+
+        An artist's context_uri doesn't support an offset the way an album or
+        playlist does (Spotify always opens it on the same "top track"), so
+        there's no equivalent of _start_playlist_shuffled's random offset here.
+        Instead, the artist's top tracks are fetched and shuffled locally, the
+        same approach _play_liked_songs uses, and started as an explicit list
+        rather than a context.
+
+        This trades away Spotify's own "artist radio" (which keeps introducing
+        new tracks indefinitely) for a shuffled top-ten - playback will stop once
+        those run out, rather than carrying on by itself.
+
+        Args:
+            artist: The artist search result.
+            device_id: The Connect device to play on.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        try:
+            uris = [t['uri'] for t in self.sp.artist_top_tracks(artist['id']).get('tracks', [])]
+        except Exception as e:
+            logger.warning(f"Could not fetch top tracks for {artist['name']}: {e}")
+            uris = []
+
+        if uris:
+            random.shuffle(uris)
+            self.sp.start_playback(device_id=device_id, uris=uris)
+        else:
+            # Falls back to the plain artist context if the top tracks lookup failed -
+            # always the same opening track, but better than nothing playing at all.
+            self.sp.start_playback(device_id=device_id, context_uri=artist['uri'])
+
+        self._set_shuffle_quietly(True, device_id)
+        logger.info(f"Playing artist: {artist['name']}")
+        return {"success": True, "message": f"Playing {artist['name']}"}
 
     def _resume_something(self, device_id: str) -> Dict:
         """
@@ -314,6 +379,88 @@ class SpotifyController:
 
         return bool(query_words & result_words)
 
+    def _find_album(self, query: str) -> Optional[Dict]:
+        """
+        Finds the album the user asked for.
+
+        Spotify's album search ranks by popularity rather than by how well the name
+        matches, so taking the first result plays whatever that artist is best known
+        for rather than the album actually named - asking for "The Chronic" returns
+        "2001". Several results are fetched and scored on the title instead, and
+        anything which doesn't resemble the request is rejected rather than played.
+
+        Args:
+            query: The album as the user said it, optionally "album by artist".
+
+        Returns:
+            The album dict, or None if nothing matched closely enough.
+        """
+        # "The Chronic by Dr. Dre" is turned into Spotify's field filters, which
+        # narrow the search far more effectively than the same words as free text.
+        title, artist = query, None
+        if " by " in query.lower():
+            split_index = query.lower().rindex(" by ")
+            title = query[:split_index].strip()
+            artist = query[split_index + 4:].strip()
+
+        search_query = f'album:"{title}" artist:"{artist}"' if artist else f'album:"{title}"'
+        albums = self.sp.search(q=search_query, limit=20, type='album').get('albums', {}).get('items', [])
+        albums = [a for a in albums if a]
+
+        # Falls back to a plain text search, e.g. for titles which contain "by".
+        if not albums:
+            albums = self.sp.search(q=query, limit=20, type='album').get('albums', {}).get('items', [])
+            albums = [a for a in albums if a]
+
+        if not albums:
+            return None
+
+        wanted = self._normalise(title)
+
+        # Scored on the title alone: the artist has already been used to narrow the
+        # search, and including it here would favour an artist's other albums.
+        best, best_score = None, 0.0
+        for album in albums:
+            name = self._normalise(album['name'])
+
+            if name == wanted:
+                return album
+
+            score = difflib.SequenceMatcher(None, wanted, name).ratio()
+            # A deluxe or remastered edition is the same album, so a title which
+            # contains the request in full counts as a strong match rather than
+            # being penalised for the extra words.
+            if wanted and wanted in name:
+                score = max(score, 0.9)
+
+            if score > best_score:
+                best, best_score = album, score
+
+        if best_score < 0.6:
+            return None
+
+        return best
+
+    @staticmethod
+    def _normalise(name: str) -> str:
+        """
+        Reduces a title to just its words, for comparison.
+
+        Punctuation and a leading "the" are dropped, since neither survives speech
+        reliably: the user says "play the chronic", Spotify calls it "The Chronic",
+        and either might arrive with or without the article.
+
+        Args:
+            name: The title to normalise.
+
+        Returns:
+            The title as lowercase words separated by single spaces.
+        """
+        words = re.findall(r"[a-z0-9]+", name.lower())
+        if len(words) > 1 and words[0] == "the":
+            words = words[1:]
+        return " ".join(words)
+
     def _search_and_play(self, query: str, device_id: str, search_type: Optional[str] = None) -> Dict:
         """
         Searches for what the user asked for and starts playing it.
@@ -334,10 +481,8 @@ class SpotifyController:
         # An album is played whole, from the first track, and named as an album
         # rather than announcing whichever song happens to start.
         if search_type == "album":
-            albums = self.sp.search(q=query, limit=1, type='album').get('albums', {}).get('items', [])
-            albums = [a for a in albums if a]
-            if albums:
-                album = albums[0]
+            album = self._find_album(query)
+            if album:
                 # An album is meant to be heard in order. Shuffle is set after starting
                 # playback, not before: start_playback resets the device's shuffle state
                 # for the new context, so a call made beforehand gets silently overwritten.
@@ -348,17 +493,17 @@ class SpotifyController:
                 logger.info(f"Playing album: {album['name']} by {artist}")
                 return {"success": True, "message": f"Playing {album['name']} by {artist}"}
 
+            # Nothing close enough. Falling through to the track search would play a
+            # song of that name instead, which isn't what was asked for.
+            logger.info(f"No album close enough to '{query}'")
+            return {"success": False, "message": f"Sorry, I couldn't find the album {query}."}
+
         # A genre or mood ("something chill") is best served by an existing playlist.
         if search_type == "playlist":
             playlists = self.sp.search(q=query, limit=1, type='playlist').get('playlists', {}).get('items', [])
             playlists = [p for p in playlists if p]
             if playlists:
-                # Playlists are always shuffled, so the same songs don't come round in the
-                # same order every time. Set after start_playback, not before - starting
-                # playback on a new context resets the device's shuffle state, so a call
-                # made beforehand gets silently overwritten.
-                self.sp.start_playback(device_id=device_id, context_uri=playlists[0]['uri'])
-                self._set_shuffle_quietly(True, device_id)
+                self._start_playlist_shuffled(playlists[0], device_id)
                 logger.info(f"Playing playlist: {playlists[0]['name']}")
                 return {"success": True, "message": f"Playing {playlists[0]['name']}"}
         # "song by artist" is turned into Spotify's field filters, which rank the
@@ -376,10 +521,7 @@ class SpotifyController:
         if not track_part:
             artists = self.sp.search(q=query, limit=1, type='artist').get('artists', {}).get('items', [])
             if artists and (search_type == "artist" or artists[0]['name'].lower() == query.lower()):
-                artist = artists[0]
-                self.sp.start_playback(device_id=device_id, context_uri=artist['uri'])
-                logger.info(f"Playing artist: {artist['name']}")
-                return {"success": True, "message": f"Playing {artist['name']}"}
+                return self._play_artist(artists[0], device_id)
 
         search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
         items = self.sp.search(q=search_query, limit=1, type='track').get('tracks', {}).get('items', [])
@@ -647,8 +789,7 @@ class SpotifyController:
                 return {"success": False, "message": f"I couldn't find a playlist called {name}."}
 
             # Playlists are always shuffled, so the same songs don't play in the same order every time.
-            self.sp.start_playback(device_id=device_id, context_uri=playlist["uri"])
-            self._set_shuffle_quietly(True, device_id)
+            self._start_playlist_shuffled(playlist, device_id)
             logger.info(f"Playing playlist: {playlist['name']}")
             return {"success": True, "message": f"Playing {playlist['name']}"}
         except Exception as e:

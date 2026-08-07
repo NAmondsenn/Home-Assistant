@@ -64,9 +64,12 @@ class LLMHandler:
                         "type": "string",
                         "description": (
                             "What to play, spelled correctly, e.g. 'Gooba by 6ix9ine' or 'Drake'. "
-                            "Leave this out entirely for a bare 'play', 'resume' or 'unpause', "
-                            "which means carry on with whatever was playing - don't ask the user "
-                            "what they want in that case."
+                            "Always include the artist as 'title by artist' when you know it, for "
+                            "albums as well as songs, e.g. 'The Chronic by Dr. Dre' - the search "
+                            "is far more accurate with it, and a title alone often finds the "
+                            "wrong record. Leave this out entirely for a bare 'play', 'resume' or "
+                            "'unpause', which means carry on with whatever was playing - don't "
+                            "ask the user what they want in that case."
                         ),
                     },
                     "search_type": {
