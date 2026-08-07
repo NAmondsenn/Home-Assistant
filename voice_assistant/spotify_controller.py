@@ -338,10 +338,12 @@ class SpotifyController:
             albums = [a for a in albums if a]
             if albums:
                 album = albums[0]
-                # An album is meant to be heard in order, so shuffle turns off, starting playback from the first track.
-                self._set_shuffle_quietly(False, device_id)
+                # An album is meant to be heard in order. Shuffle is set after starting
+                # playback, not before: start_playback resets the device's shuffle state
+                # for the new context, so a call made beforehand gets silently overwritten.
                 self.sp.start_playback(device_id=device_id, context_uri=album['uri'],
                                        offset={"position": 0})
+                self._set_shuffle_quietly(False, device_id)
                 artist = album['artists'][0]['name']
                 logger.info(f"Playing album: {album['name']} by {artist}")
                 return {"success": True, "message": f"Playing {album['name']} by {artist}"}
@@ -351,9 +353,12 @@ class SpotifyController:
             playlists = self.sp.search(q=query, limit=1, type='playlist').get('playlists', {}).get('items', [])
             playlists = [p for p in playlists if p]
             if playlists:
-                # Playlists are always shuffled, so the same songs don't come round in the same order every time.
-                self._set_shuffle_quietly(True, device_id)
+                # Playlists are always shuffled, so the same songs don't come round in the
+                # same order every time. Set after start_playback, not before - starting
+                # playback on a new context resets the device's shuffle state, so a call
+                # made beforehand gets silently overwritten.
                 self.sp.start_playback(device_id=device_id, context_uri=playlists[0]['uri'])
+                self._set_shuffle_quietly(True, device_id)
                 logger.info(f"Playing playlist: {playlists[0]['name']}")
                 return {"success": True, "message": f"Playing {playlists[0]['name']}"}
         # "song by artist" is turned into Spotify's field filters, which rank the
@@ -642,8 +647,8 @@ class SpotifyController:
                 return {"success": False, "message": f"I couldn't find a playlist called {name}."}
 
             # Playlists are always shuffled, so the same songs don't play in the same order every time.
-            self._set_shuffle_quietly(True, device_id)
             self.sp.start_playback(device_id=device_id, context_uri=playlist["uri"])
+            self._set_shuffle_quietly(True, device_id)
             logger.info(f"Playing playlist: {playlist['name']}")
             return {"success": True, "message": f"Playing {playlist['name']}"}
         except Exception as e:
