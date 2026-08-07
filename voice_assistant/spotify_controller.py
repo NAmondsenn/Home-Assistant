@@ -9,6 +9,7 @@ than remote-controlling whichever phone or laptop Spotify happened to list first
 
 import os
 import re
+import random
 import difflib
 import logging
 from typing import Optional, Dict
@@ -48,9 +49,12 @@ class SpotifyController:
 
         # Scopes needed for playback control.
         # playlist-read scopes are needed to look up the user's own playlists by name.
+        # recently-played and library-read are needed so a bare "play" can fall back
+        # to the last thing listened to, and then to the user's liked songs.
         scope = ("user-read-playback-state,user-modify-playback-state,"
                  "user-read-currently-playing,playlist-read-private,"
-                 "playlist-read-collaborative")
+                 "playlist-read-collaborative,user-read-recently-played,"
+                 "user-library-read")
 
         self.sp_oauth = SpotifyOAuth(
             client_id=self.client_id,
@@ -175,14 +179,97 @@ class SpotifyController:
             if query and query.lower() != "spotify":
                 return self._search_and_play(query, device_id, search_type)
 
-            # No search term, so resume whatever was queued on the device.
-            self.sp.start_playback(device_id=device_id)
-            logger.info("Resumed playback")
-            return {"success": True, "message": "Resumed playback", "chime": True}
+            # No search term, so carry on with whatever was playing.
+            return self._resume_something(device_id)
 
         except Exception as e:
             logger.error(f"Play failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't start the music."}
+
+    def _resume_something(self, device_id: str) -> Dict:
+        """
+        Play whatever makes sense when the user just says "play", with no idea of
+        what they want.
+
+        Tried in order: carry on with what was paused, otherwise pick up where the
+        last listening session left off, otherwise fall back to their liked songs.
+
+        Args:
+            device_id: The Connect device to play on.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        # Whatever was paused or queued on the device, which is what "play" means
+        # most of the time.
+        try:
+            self.sp.start_playback(device_id=device_id)
+            logger.info("Resumed playback")
+            return {"success": True, "message": "Resumed playback", "chime": True}
+        except Exception as e:
+            logger.info(f"Nothing to resume ({e}), falling back to what was played last")
+
+        # Nothing queued, so the last thing listened to. Its album or playlist is
+        # used where there was one, so it carries on rather than stopping after a
+        # single track.
+        try:
+            recent = self.sp.current_user_recently_played(limit=1).get("items", [])
+            if recent:
+                track = recent[0]["track"]
+                context = (recent[0].get("context") or {}).get("uri")
+
+                if context:
+                    self.sp.start_playback(device_id=device_id, context_uri=context,
+                                           offset={"uri": track["uri"]})
+                else:
+                    self.sp.start_playback(device_id=device_id, uris=[track["uri"]])
+
+                artist = track["artists"][0]["name"]
+                logger.info(f"Resumed the last thing played: {track['name']} by {artist}")
+                return {"success": True, "message": f"Playing {track['name']} by {artist}"}
+        except Exception as e:
+            logger.info(f"Couldn't play the last thing ({e}), falling back to liked songs")
+
+        return self._play_liked_songs(device_id)
+
+    def _play_liked_songs(self, device_id: str) -> Dict:
+        """
+        Play the user's liked songs, shuffled.
+
+        The last resort when there's nothing else to go on. Shuffle is turned on
+        deliberately here, since playing a whole library in saved order would just
+        be the oldest things first - it is only changed on this path, so shuffle is
+        left alone everywhere else.
+
+        Args:
+            device_id: The Connect device to play on.
+
+        Returns:
+            Dict with 'success' and a spoken 'message'.
+        """
+        try:
+            saved = self.sp.current_user_saved_tracks(limit=50).get("items", [])
+            uris = [item["track"]["uri"] for item in saved if item.get("track")]
+
+            if not uris:
+                return {"success": False, "message": "I don't have anything to play."}
+
+            # Shuffled here as well as on Spotify's side, so it doesn't open with the
+            # same handful of tracks every time - only the first 50 are fetched.
+            random.shuffle(uris)
+            self.sp.start_playback(device_id=device_id, uris=uris)
+
+            # Set after playback starts, since shuffle needs an active device.
+            try:
+                self.sp.shuffle(True, device_id=device_id)
+            except Exception as e:
+                logger.warning(f"Could not turn shuffle on for liked songs: {e}")
+
+            logger.info("Playing liked songs, shuffled")
+            return {"success": True, "message": "Playing your liked songs"}
+        except Exception as e:
+            logger.error(f"Could not play liked songs: {e}")
+            return {"success": False, "message": "Sorry, I couldn't find anything to play."}
 
     @staticmethod
     def _looks_like_match(query: str, *names: str) -> bool:
