@@ -57,6 +57,11 @@ class SmartAssistant:
         # Controls the main loop of the assistant. When set to False, the assistant will stop running.
         self.running = False
 
+        # How many times in a row the assistant may ask a question and listen for the
+        # answer without the wake word, so it can't hold the microphone indefinitely.
+        self.max_follow_ups = self.config.section("thresholds").get("max_follow_ups", 3)
+        self._follow_ups = 0
+
         # Set while the assistant is idle, cleared while it's dealing with the user.
         # Timer announcements wait on this, so they don't talk over a conversation.
         self._idle = threading.Event()
@@ -205,6 +210,9 @@ class SmartAssistant:
                 # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
                 self._idle.clear()
                 try:
+                    # Reset per conversation, not per question, so a long back and
+                    # forth still ends after the cap is reached.
+                    self._follow_ups = 0
                     self._handle_interaction()
                 finally:
                     self._idle.set()
@@ -217,16 +225,27 @@ class SmartAssistant:
                 logger.error(f"Error: {e}", exc_info=True)
                 time.sleep(1)
 
-    def _handle_interaction(self):
+    def _handle_interaction(self, follow_up=False):
         """
         Handles one full interaction after the wake word: records the query,
         transcribes it, processes it with the LLM, runs any detected action,
         and speaks the response.
+
+        Args:
+            follow_up: True when the assistant has just asked the user a question
+                       and is listening for the answer, which allows a little
+                       longer to start speaking than a fresh request does.
         """
-        # Records audio after the wake word is detected until silence / a timeout occurs.
+        speech_timeout = self.thresholds.get("speech_timeout", 3.0)
+        if follow_up:
+            # Answering a question takes a moment's thought, so there's more time to
+            # start talking than when the user has just said the wake word.
+            speech_timeout = self.thresholds.get("follow_up_timeout", speech_timeout * 2)
+
+        # Records audio until silence / a timeout occurs.
         audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 0.8),
                                                      silence_threshold=self.thresholds.get("silence_threshold", 0.05),
-                                                     speech_timeout=self.thresholds.get("speech_timeout", 3.0),
+                                                     speech_timeout=speech_timeout,
                                                      timeout=self.thresholds.get("recording_timeout", 10.0))
 
         if audio_data is None or len(audio_data) == 0:
@@ -285,6 +304,14 @@ class SmartAssistant:
             logger.error("TTS synthesis failed, skipping playback")
             return
         self.audio.play_file(self.tts_file, volume=self.volume.get("general"))
+
+        # If the assistant asked something, it listens straight away for the answer.
+        # The count is capped so the model doesn't get stuck in an infinite loop.
+        if response_text.rstrip().endswith("?") and self._follow_ups < self.max_follow_ups:
+            self._follow_ups += 1
+            logger.info("Question asked, listening for a reply")
+            print("Listening...")
+            self._handle_interaction(follow_up=True)
 
 # Runs the SmartAssistant if this script is executed directly. 
 # This creates an instance of SmartAssistant and calls its run method to start the main loop.

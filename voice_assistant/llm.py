@@ -207,10 +207,11 @@ class LLMHandler:
                     "label": {
                         "type": "string",
                         "description": (
-                            "Which timer to cancel: its label, or the length it was set "
-                            "for, e.g. '10 minutes'. Only give this when the user named a "
-                            "timer - never invent one from how long is left, and leave it "
-                            "out when they just mean 'that one' or 'the timer'."
+                            "Which timer to cancel: its label, the length it was set for "
+                            "('10 minutes'), or how the user referred to it ('the next one', "
+                            "'the upcoming reminder'). Never invent a label from how long is "
+                            "left, and leave this out entirely when they just mean 'that one' "
+                            "or 'the timer'."
                         ),
                     },
                     "cancel_all": {
