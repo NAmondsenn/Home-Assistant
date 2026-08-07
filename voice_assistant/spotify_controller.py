@@ -9,6 +9,7 @@ than remote-controlling whichever phone or laptop Spotify happened to list first
 
 import os
 import re
+import time
 import random
 import difflib
 import logging
@@ -141,12 +142,16 @@ class SpotifyController:
             return None
 
         try:
-            # Only transfers if playback is on a different device, to avoid an
-            # unnecessary API call (and a brief audio stutter) every time.
+            # Transfer playback to the device, if it's not already on it.
             current = self.sp.current_playback()
-            if current and current.get("device", {}).get("id") != device_id:
-                logger.info(f"Transferring playback to '{self.device_name}'")
+            active_id = current.get("device", {}).get("id") if current else None
+
+            if active_id != device_id:
+                logger.info(f"Making '{self.device_name}' the active device")
                 self.sp.transfer_playback(device_id=device_id, force_play=False)
+                # Spotify needs a moment to act on the transfer before it will
+                # accept playback commands for the device.
+                time.sleep(0.5)
         except Exception as e:
             # A failed transfer isn't fatal - playback can still be started
             # directly on the device below.
