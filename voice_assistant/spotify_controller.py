@@ -186,6 +186,23 @@ class SpotifyController:
             logger.error(f"Play failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't start the music."}
 
+    def _set_shuffle_quietly(self, state: bool, device_id: str):
+        """
+        Turn shuffle on or off without making a fuss if it doesn't work.
+
+        Called before starting playback, so the first track is the right one: with
+        shuffle left on, an album would open on a random track rather than the first.
+
+        Args:
+            state: True to shuffle, False to play in order.
+            device_id: The device to change it on.
+        """
+        try:
+            self.sp.shuffle(state, device_id=device_id)
+        except Exception as e:
+            # Not worth failing playback over, the music will keep playing anyway.
+            logger.warning(f"Could not turn shuffle {'on' if state else 'off'}: {e}")
+
     def _resume_something(self, device_id: str) -> Dict:
         """
         Play whatever makes sense when the user just says "play", with no idea of
@@ -257,13 +274,8 @@ class SpotifyController:
             # Shuffled here as well as on Spotify's side, so it doesn't open with the
             # same handful of tracks every time - only the first 50 are fetched.
             random.shuffle(uris)
+            self._set_shuffle_quietly(True, device_id)
             self.sp.start_playback(device_id=device_id, uris=uris)
-
-            # Set after playback starts, since shuffle needs an active device.
-            try:
-                self.sp.shuffle(True, device_id=device_id)
-            except Exception as e:
-                logger.warning(f"Could not turn shuffle on for liked songs: {e}")
 
             logger.info("Playing liked songs, shuffled")
             return {"success": True, "message": "Playing your liked songs"}
@@ -321,7 +333,10 @@ class SpotifyController:
             albums = [a for a in albums if a]
             if albums:
                 album = albums[0]
-                self.sp.start_playback(device_id=device_id, context_uri=album['uri'])
+                # An album is meant to be heard in order, so shuffle turns off, starting playback from the first track.
+                self._set_shuffle_quietly(False, device_id)
+                self.sp.start_playback(device_id=device_id, context_uri=album['uri'],
+                                       offset={"position": 0})
                 artist = album['artists'][0]['name']
                 logger.info(f"Playing album: {album['name']} by {artist}")
                 return {"success": True, "message": f"Playing {album['name']} by {artist}"}
@@ -331,6 +346,8 @@ class SpotifyController:
             playlists = self.sp.search(q=query, limit=1, type='playlist').get('playlists', {}).get('items', [])
             playlists = [p for p in playlists if p]
             if playlists:
+                # Playlists are always shuffled, so the same songs don't come round in the same order every time.
+                self._set_shuffle_quietly(True, device_id)
                 self.sp.start_playback(device_id=device_id, context_uri=playlists[0]['uri'])
                 logger.info(f"Playing playlist: {playlists[0]['name']}")
                 return {"success": True, "message": f"Playing {playlists[0]['name']}"}
@@ -619,6 +636,8 @@ class SpotifyController:
             if not playlist:
                 return {"success": False, "message": f"I couldn't find a playlist called {name}."}
 
+            # Playlists are always shuffled, so the same songs don't play in the same order every time.
+            self._set_shuffle_quietly(True, device_id)
             self.sp.start_playback(device_id=device_id, context_uri=playlist["uri"])
             logger.info(f"Playing playlist: {playlist['name']}")
             return {"success": True, "message": f"Playing {playlist['name']}"}
