@@ -100,7 +100,7 @@ class ActionExecutor:
             result = self.spotify.current_track()
             # Returns the track and artist details if the current track is found.
             if result.get("success"):
-                return {"success": True, "message": f"Playing {result['track']} by {result['artist']}"}
+                return {"success": True, "message": f"This is {result['track']} by {result['artist']}"}
             return result
         else:
             logger.warning(f"Unknown Spotify command: {command}")

@@ -577,7 +577,7 @@ class SpotifyController:
         try:
             self.sp.next_track()
             logger.info("Skipped to next track")
-            return {"success": True, "message": "That song was shit anyway"}
+            return {"success": True, "message": "That song was shit anyway", "chime": True}
         except Exception as e:
             logger.error(f"Skip failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't skip the track."}
