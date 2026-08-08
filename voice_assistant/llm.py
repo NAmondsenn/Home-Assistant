@@ -105,7 +105,8 @@ class LLMHandler:
             "name": "control_playback",
             "description": (
                 "Pause, skip, go back a track, start the current track again, or report "
-                "what is currently playing."
+                "what is currently playing. This tool never starts music: a bare 'play', "
+                "'resume' or 'unpause' is play_music with no query."
             ),
             "input_schema": {
                 "type": "object",
@@ -114,10 +115,17 @@ class LLMHandler:
                         "type": "string",
                         "enum": ["pause", "skip", "previous", "restart", "current"],
                         "description": (
-                            "'previous' goes back to the song before this one, for requests "
-                            "like 'go back', 'last song' or 'previous track'. 'restart' plays "
-                            "the current song again from the beginning, for requests like "
-                            "'play that again', 'start it over' or 'rewind'."
+                            "'current' only answers a question about what is playing, like "
+                            "'what's this song' or 'who sings this' - never use it for an "
+                            "instruction to play something. 'pause' is for 'pause', 'stop' "
+                            "or 'be quiet'. 'skip' moves on to the next song, for requests like 'skip', "
+                            "'skip song', 'skip this one', 'next' or 'next song' - always "
+                            "call this rather than replying, since the user is asking for "
+                            "something to happen, not for an answer. 'previous' goes back to "
+                            "the song before this one, for requests like 'go back', 'last "
+                            "song' or 'previous track'. 'restart' plays the current song "
+                            "again from the beginning, for requests like 'play that again', "
+                            "'start it over' or 'rewind'."
                         ),
                     },
                 },
