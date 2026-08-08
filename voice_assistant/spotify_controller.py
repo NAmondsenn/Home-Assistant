@@ -516,6 +516,85 @@ class SpotifyController:
             words = words[1:]
         return " ".join(words)
 
+    # Phrases which mark a recording as an imitation rather than the real thing.
+    # Spotify is full of these, and their titles name the original artist ("...
+    # Originally Performed by Taylor Swift"), so a search for a well known song
+    # matches them just as well as the record the user actually wanted.
+    IMITATION_MARKERS = ("karaoke", "instrumental", "tribute", "originally performed",
+                         "made popular by", "in the style of", "as made famous by",
+                         "cover version", "backing track", "8-bit", "lullaby", "workout mix")
+
+    @classmethod
+    def _is_imitation(cls, track: Dict) -> bool:
+        """
+        Whether a search result is a karaoke version, tribute or similar.
+
+        Args:
+            track: A track from a search result.
+
+        Returns:
+            True if its title or artist marks it out as an imitation.
+        """
+        text = track['name'].lower() + " " + " ".join(a['name'].lower()
+                                                     for a in track.get('artists', []))
+        return any(marker in text for marker in cls.IMITATION_MARKERS)
+
+    def _pick_track(self, items: list, query: str, artist_part: Optional[str]) -> Optional[Dict]:
+        """
+        Chooses which search result to play.
+
+        Spotify's field filters are a ranking hint rather than a rule, so asking for
+        a song by an artist can still return a karaoke version credited to someone
+        else entirely - the original artist's name appears in the title, which is
+        enough for the search and enough for _looks_like_match.
+
+        Args:
+            items: The search results, best first.
+            query: What the user asked for, used to sanity check the result.
+            artist_part: The artist from a "song by artist" request, if there was one.
+
+        Returns:
+            The track to play, or None if nothing was acceptable.
+        """
+        wanted_artist = self._normalise(artist_part) if artist_part else None
+        # An imitation is only ruled out when the user didn't ask for one: someone
+        # who says "karaoke" means it.
+        allow_imitations = any(marker in query.lower() for marker in self.IMITATION_MARKERS)
+
+        fallback = None
+
+        for track in items:
+            name = track['name']
+            artists = [a['name'] for a in track.get('artists', [])]
+
+            # Nothing in common with the query means the query was probably misheard,
+            # so it's no better than playing something at random.
+            if not self._looks_like_match(query, name, *artists):
+                continue
+
+            if not allow_imitations and self._is_imitation(track):
+                logger.info(f"Skipping imitation: {name} by {artists[0] if artists else 'unknown'}")
+                continue
+
+            # When an artist was named, the track has to actually be credited to
+            # them. This is what a karaoke version fails: it names the original in
+            # its title, but the recording belongs to somebody else.
+            if wanted_artist:
+                credited = any(self._normalise(a) == wanted_artist
+                               or wanted_artist in self._normalise(a) for a in artists)
+                if not credited:
+                    # Kept aside in case nothing better turns up: the artist may
+                    # simply have been misheard, and the song is still worth playing.
+                    fallback = fallback or track
+                    logger.info(f"'{name}' isn't credited to {artist_part}, holding it back")
+                    continue
+
+            return track
+
+        if fallback:
+            logger.info(f"Nothing credited to {artist_part}, falling back to {fallback['name']}")
+        return fallback
+
     def _search_and_play(self, query: str, device_id: str, search_type: Optional[str] = None) -> Dict:
         """
         Searches for what the user asked for and starts playing it.
@@ -577,25 +656,24 @@ class SpotifyController:
                 return self._play_artist(artist, device_id)
 
         search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
-        items = self.sp.search(q=search_query, limit=1, type='track').get('tracks', {}).get('items', [])
+        items = self._search_items(search_query, 'track')
 
         # Falls back to a plain text search if the strict track / artist search
         # found nothing, e.g. for titles which contain "by" themselves.
         if not items and search_query != query:
-            items = self.sp.search(q=query, limit=1, type='track').get('tracks', {}).get('items', [])
+            items = self._search_items(query, 'track')
 
         if not items:
             return {"success": False, "message": f"Sorry, I couldn't find {query}."}
 
-        track = items[0]
+        track = self._pick_track(items, query, artist_part)
+
+        if not track:
+            logger.info(f"No acceptable track for '{query}'")
+            return {"success": False, "message": f"Sorry, I couldn't find {query}."}
+
         track_name = track['name']
         artist_name = track['artists'][0]['name']
-
-        # Rejects results which have nothing in common with the query, rather than
-        # playing something random when the query was misheard.
-        if not self._looks_like_match(query, track_name, artist_name):
-            logger.info(f"Rejected poor match for '{query}': {track_name} by {artist_name}")
-            return {"success": False, "message": f"Sorry, I couldn't find {query}."}
 
         # Starts from the track within its album, so playback continues afterwards.
         album_uri = track.get('album', {}).get('uri')
