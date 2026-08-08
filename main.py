@@ -294,6 +294,14 @@ class SmartAssistant:
             if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause":
                 self.spotify.cancel_resume()
 
+            # Some actions are heard the moment they happen - a skipped track starts
+            # playing, so a beep on top of it says nothing the music hasn't already,
+            # and a confirmation which sounds without the action working would be
+            # actively misleading. The music is the confirmation.
+            if action_result.get("success") and action_result.get("silent"):
+                logger.info(f"Action left to confirm itself: {response_text}")
+                return
+
             # Actions which just change something confirm themselves with a chime rather than a spoken "Okay",
             # which is quicker to hear and less repetitive.
             # A volume change plays its own sound at the new level.

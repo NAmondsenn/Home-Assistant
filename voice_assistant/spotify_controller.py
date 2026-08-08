@@ -285,7 +285,8 @@ class SpotifyController:
         try:
             self.sp.start_playback(device_id=device_id)
             logger.info("Resumed playback")
-            return {"success": True, "message": "Resumed playback", "chime": True}
+            # Silent: the music coming back on is the confirmation.
+            return {"success": True, "message": "Resumed playback", "silent": True}
         except Exception as e:
             logger.info(f"Nothing to resume ({e}), falling back to what was played last")
 
@@ -694,6 +695,8 @@ class SpotifyController:
         try:
             self.sp.pause_playback()
             logger.info("Paused playback")
+            # Chimed rather than silent: stopping leaves nothing to hear, so without
+            # this there'd be no sign the assistant did anything at all.
             # The message is only used when the chime is turned off.
             return {"success": True, "message": "Paused", "chime": True}
         except Exception as e:
@@ -708,7 +711,8 @@ class SpotifyController:
         try:
             self.sp.next_track()
             logger.info("Skipped to next track")
-            return {"success": True, "message": "That song was shit anyway", "chime": True}
+            # Silent: the next song starting is the confirmation.
+            return {"success": True, "message": "That song was shit anyway", "silent": True}
         except Exception as e:
             logger.error(f"Skip failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't skip the track."}
@@ -728,7 +732,8 @@ class SpotifyController:
 
             self.sp.previous_track()
             logger.info("Went to previous track")
-            return {"success": True, "message": "Previous track", "chime": True}
+            # Silent: the previous song starting is the confirmation.
+            return {"success": True, "message": "Previous track", "silent": True}
         except Exception as e:
             logger.error(f"Previous failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't go back a track."}
@@ -795,7 +800,8 @@ class SpotifyController:
         try:
             self.sp.seek_track(0)
             logger.info("Restarted the current track")
-            return {"success": True, "message": "Starting it again", "chime": True}
+            # Silent: the song starting again is the confirmation.
+            return {"success": True, "message": "Starting it again", "silent": True}
         except Exception as e:
             logger.error(f"Restart failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't restart the track."}
