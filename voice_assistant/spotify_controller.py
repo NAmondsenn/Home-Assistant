@@ -227,40 +227,28 @@ class SpotifyController:
 
     def _start_playlist_shuffled(self, playlist: Dict, device_id: str):
         """
-        Start a playlist shuffled, on a different track each time.
+        Start a playlist with shuffle on.
 
-        Play, turn shuffle on, then skip: the skip is what actually varies the
-        opening track, since shuffle only decides what comes next and can't change
-        what has already started.
+        It always opens on the playlist's first track. Shuffle only decides what
+        plays next, so it can't change what has already started - neither a random
+        start offset nor skipping a track afterwards moved it reliably. Everything
+        after the first track is shuffled.
 
         Args:
             playlist: The playlist search result / library entry to play.
             device_id: The Connect device to play on.
         """
-        total = playlist.get('tracks', {}).get('total', 0)
-
         self.sp.start_playback(device_id=device_id, context_uri=playlist['uri'])
         self._set_shuffle_quietly(True, device_id)
-
-        # Playback always begins on the playlist's first track, so the first track is skipped so playlists
-        # start from a random track.
-        if total > 1:
-            try:
-                self.sp.next_track(device_id=device_id)
-                logger.info(f"Skipped the first of {total} tracks to start on a random one")
-            except Exception as e:
-                # Not worth failing over: the playlist is playing either way, just
-                # from the top.
-                logger.warning(f"Could not skip to a random track: {e}")
 
     def _play_artist(self, artist: Dict, device_id: str) -> Dict:
         """
         Play an artist, shuffled, starting from a different track each time.
 
         An explicit list of tracks is built and shuffled locally, the same approach
-        _play_liked_songs uses, rather than playing the artist's context and skipping
-        as _start_playlist_shuffled does. The list is already in a random order, so
-        there's no first track to skip past.
+        _play_liked_songs uses, rather than playing the artist's context as
+        _start_playlist_shuffled does for a playlist. The list is already in a
+        random order, so this does vary which track it opens on.
 
         This trades away Spotify's own "artist radio" (which keeps introducing new
         tracks indefinitely) for a fixed list - playback will stop once it runs
