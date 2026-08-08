@@ -810,13 +810,68 @@ class SpotifyController:
                 return playlist
 
         # Falls back to the closest name, as long as it's a reasonable match.
+        wanted_words = self._distinctive_words(wanted)
+
         best, best_score = None, 0.0
         for playlist in playlists:
-            score = difflib.SequenceMatcher(None, wanted, playlist["name"].lower()).ratio()
+            playlist_name = playlist["name"].lower()
+            score = difflib.SequenceMatcher(None, wanted, playlist_name).ratio()
+
+            # Two names which only agree on a word like "songs" aren't a match:
+            # "liked songs" scores 0.60 against "car songs" on the letters alone,
+            # which was enough to play the wrong playlist. Sharing nothing more
+            # distinctive than that needs a much closer resemblance to count.
+            if not (wanted_words & self._distinctive_words(playlist_name)):
+                if score < 0.85:
+                    continue
+
             if score > best_score:
                 best, best_score = playlist, score
 
         return best if best_score >= 0.6 else None
+
+    # Words too common in playlist names to identify one on their own.
+    GENERIC_PLAYLIST_WORDS = {"songs", "song", "playlist", "playlists", "music",
+                              "mix", "tracks", "track", "list", "my", "the"}
+
+    @classmethod
+    def _distinctive_words(cls, name: str) -> set:
+        """
+        The words of a name which actually identify it.
+
+        Args:
+            name: A playlist name, or what the user said.
+
+        Returns:
+            Its words, minus the ones nearly every playlist name contains.
+        """
+        return set(re.findall(r"[a-z0-9]+", name.lower())) - cls.GENERIC_PLAYLIST_WORDS
+
+    # What the user might call their saved tracks. Spotify treats these as a
+    # library rather than a playlist, so they never appear in the playlist list.
+    LIKED_SONGS_NAMES = ("liked songs", "liked music", "my likes", "likes",
+                         "saved songs", "saved tracks", "saved music",
+                         "favourites", "favorites", "favourite songs", "favorite songs")
+
+    @classmethod
+    def _means_liked_songs(cls, name: str) -> bool:
+        """
+        Whether a requested "playlist" is really the user's saved tracks.
+
+        Matched loosely, since this arrives from speech like anything else -
+        "liked songs" comes back as "leaked songs" often enough to be worth
+        allowing for.
+
+        Args:
+            name: The playlist name as the user said it.
+
+        Returns:
+            True if they meant their liked songs.
+        """
+        wanted = name.strip().lower()
+        return any(wanted == liked
+                   or difflib.SequenceMatcher(None, wanted, liked).ratio() >= 0.8
+                   for liked in cls.LIKED_SONGS_NAMES)
 
     def play_playlist(self, name: str) -> Dict:
         """
@@ -837,7 +892,20 @@ class SpotifyController:
                 return {"success": False,
                         "message": f"I can't find the {self.device_name} speaker. Is Spotify Connect running?"}
 
+            # A real playlist of this name wins, so one actually called "Liked
+            # Songs" still plays rather than being taken for the library.
             playlist = self._find_playlist(name)
+
+            # Liked songs aren't a playlist, so they're never in the list searched
+            # above - without this the request falls through to the closest name
+            # instead, which is how "play Liked Songs" played "car songs".
+            if not playlist and self._means_liked_songs(name):
+                logger.info(f"'{name}' means the liked songs library, not a playlist")
+                result = self._play_liked_songs(device_id)
+                if result.get("success"):
+                    self._playback_started()
+                return result
+
             if not playlist:
                 return {"success": False, "message": f"I couldn't find a playlist called {name}."}
 
