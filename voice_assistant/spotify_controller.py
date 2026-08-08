@@ -227,47 +227,40 @@ class SpotifyController:
 
     def _start_playlist_shuffled(self, playlist: Dict, device_id: str):
         """
-        Start a playlist on a random track, then turn shuffle on.
+        Start a playlist shuffled, on a different track each time.
 
-        Turning shuffle on after start_playback (see _set_shuffle_quietly) covers
-        every track after the first, but the first track is chosen the moment
-        playback starts, before shuffle is applied - so without this, a playlist
-        would always open on the same track (its first) even though the rest
-        shuffles correctly. An explicit random offset picks the opening track too.
+        Play, turn shuffle on, then skip: the skip is what actually varies the
+        opening track, since shuffle only decides what comes next and can't change
+        what has already started.
 
         Args:
             playlist: The playlist search result / library entry to play.
             device_id: The Connect device to play on.
         """
         total = playlist.get('tracks', {}).get('total', 0)
-        offset = {"position": random.randint(0, total - 1)} if total > 1 else None
 
-        # Logged so it's obvious from the log whether the random start actually
-        # happened, rather than having to infer it from which song came out.
-        logger.info(f"Starting playlist at position "
-                    f"{offset['position'] if offset else 0} of {total}")
-
-        if offset:
-            self.sp.start_playback(device_id=device_id, context_uri=playlist['uri'], offset=offset)
-        else:
-            self.sp.start_playback(device_id=device_id, context_uri=playlist['uri'])
-
+        self.sp.start_playback(device_id=device_id, context_uri=playlist['uri'])
         self._set_shuffle_quietly(True, device_id)
+
+        # Playback always begins on the playlist's first track, so the first track is skipped so playlists
+        # start from a random track.
+        if total > 1:
+            try:
+                self.sp.next_track(device_id=device_id)
+                logger.info(f"Skipped the first of {total} tracks to start on a random one")
+            except Exception as e:
+                # Not worth failing over: the playlist is playing either way, just
+                # from the top.
+                logger.warning(f"Could not skip to a random track: {e}")
 
     def _play_artist(self, artist: Dict, device_id: str) -> Dict:
         """
         Play an artist, shuffled, starting from a different track each time.
 
-        An artist's context_uri doesn't support an offset the way an album or
-        playlist does (Spotify always opens it on the same "top track"), so
-        there's no equivalent of _start_playlist_shuffled's random offset here.
-        Instead a set of the artist's tracks is fetched and shuffled locally, the
-        same approach _play_liked_songs uses, and started as an explicit list
-        rather than a context.
-
-        The tracks come from a search rather than the top-tracks endpoint, which
-        returns 403 on this account. A search also isn't limited to ten tracks, so
-        there's more to shuffle through.
+        An explicit list of tracks is built and shuffled locally, the same approach
+        _play_liked_songs uses, rather than playing the artist's context and skipping
+        as _start_playlist_shuffled does. The list is already in a random order, so
+        there's no first track to skip past.
 
         This trades away Spotify's own "artist radio" (which keeps introducing new
         tracks indefinitely) for a fixed list - playback will stop once it runs
