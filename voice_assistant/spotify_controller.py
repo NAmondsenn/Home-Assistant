@@ -261,11 +261,7 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
-        # Filtered to tracks actually credited to this artist, since a search on the
-        # name alone also returns covers, tributes and unrelated features.
-        tracks = self._search_items(f'artist:"{artist["name"]}"', 'track')
-        uris = [t['uri'] for t in tracks
-                if any(a['id'] == artist['id'] for a in t.get('artists', []))]
+        uris = self._artist_tracks(artist)
 
         if uris:
             random.shuffle(uris)
@@ -390,10 +386,16 @@ class SpotifyController:
 
         return bool(query_words & result_words)
 
-    # How many results to weigh up when picking the best match. 
+    # How many results to weigh up when picking the best match.
     SEARCH_LIMIT = 10
+    # Roughly how many tracks to queue up for an artist. Enough for a decent while
+    # of listening without the request taking noticeably long to start.
+    ARTIST_TRACK_TARGET = 30
+    # A ceiling on how many searches one request may make, so an artist with few
+    # tracks can't page indefinitely looking for more.
+    MAX_SEARCH_PAGES = 6
 
-    def _search_items(self, query: str, item_type: str) -> list:
+    def _search_items(self, query: str, item_type: str, offset: int = 0) -> list:
         """
         Runs a search and returns the results, without letting a rejected search
         take the whole request down with it.
@@ -401,19 +403,68 @@ class SpotifyController:
         Args:
             query: The search query, which may use Spotify's field filters.
             item_type: 'album', 'artist', 'track' or 'playlist'.
+            offset: Where to start in the results, for fetching further pages.
 
         Returns:
             The results, or an empty list if the search failed.
         """
         for limit in (self.SEARCH_LIMIT, 1):
             try:
-                results = self.sp.search(q=query, limit=limit, type=item_type)
+                results = self.sp.search(q=query, limit=limit, offset=offset, type=item_type)
                 items = results.get(f"{item_type}s", {}).get("items", [])
                 return [item for item in items if item]
             except Exception as e:
                 logger.warning(f"Search for {item_type} '{query}' failed at limit {limit}: {e}")
 
         return []
+
+    def _artist_tracks(self, artist: Dict) -> list:
+        """
+        Collects a set of an artist's tracks to play.
+
+        Spotify won't accept a large enough limit to get these in one go, so the
+        search is paged instead, a few at a time until there are enough.
+
+        Tracks are de-duplicated on their name: a search returns the same song
+        several times over when it appears on an album, a deluxe reissue and a
+        single, which would otherwise fill most of the queue with repeats.
+
+        Args:
+            artist: The artist to collect tracks for.
+
+        Returns:
+            Up to ARTIST_TRACK_TARGET track URIs, in the order Spotify ranked them.
+        """
+        query = f'artist:"{artist["name"]}"'
+        uris, seen = [], set()
+
+        for page in range(self.MAX_SEARCH_PAGES):
+            items = self._search_items(query, 'track', offset=page * self.SEARCH_LIMIT)
+            if not items:
+                break
+
+            for track in items:
+                # Only tracks actually credited to this artist: a search on the name
+                # also returns covers, tributes and unrelated features.
+                if not any(a['id'] == artist['id'] for a in track.get('artists', [])):
+                    continue
+
+                name = self._normalise(track['name'])
+                if name in seen:
+                    continue
+
+                seen.add(name)
+                uris.append(track['uri'])
+
+            if len(uris) >= self.ARTIST_TRACK_TARGET:
+                break
+
+            # A short page means the results have run out, so there's no point asking
+            # for another.
+            if len(items) < self.SEARCH_LIMIT:
+                break
+
+        return uris[:self.ARTIST_TRACK_TARGET]
 
     def _find_artist(self, query: str) -> Optional[Dict]:
         """
