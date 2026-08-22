@@ -158,10 +158,15 @@ class LLMHandler:
             "name": "set_timer",
             "description": (
                 "Set a countdown timer or reminder. Work out the duration in seconds "
-                "yourself from what the user said ('ten minutes' is 600). Include a label "
-                "only when the user says what the timer is for - with a label it becomes a "
-                "reminder and the label is spoken when it goes off, so word it as the "
-                "reminder itself, e.g. 'Take the pizza out'."
+                "yourself from what the user said, from either a length ('ten minutes' is "
+                "600) or a clock time / date to count down to ('remind me at 4pm', 'set a "
+                "reminder for the 4th'). Include a label only when the user says what it's "
+                "for - with a label it becomes a reminder and the label is spoken when it "
+                "goes off, so word it as the reminder itself, e.g. 'Take the pizza out'. "
+                "If the user explicitly said 'reminder' or 'remind me' but didn't say what "
+                "it's for, still call this with is_reminder true and no label - the user "
+                "will be asked to name it. When they answer, call name_reminder with that "
+                "name rather than calling this again, so the original time is kept exact."
             ),
             "input_schema": {
                 "type": "object",
@@ -177,8 +182,37 @@ class LLMHandler:
                             "timer with no message."
                         ),
                     },
+                    "is_reminder": {
+                        "type": "boolean",
+                        "description": (
+                            "True if the user explicitly said 'reminder' or 'remind me', "
+                            "even if they gave no label. False for a plain 'timer'. This "
+                            "only matters when there's no label: an unlabelled reminder "
+                            "can't actually be created, so the user is asked to name it "
+                            "instead."
+                        ),
+                    },
                 },
                 "required": ["duration_seconds"],
+            },
+        },
+        {
+            "name": "name_reminder",
+            "description": (
+                "Give a name to the reminder which was just asked about, right after the "
+                "assistant said 'What would you like to name this reminder?'. Use this "
+                "instead of set_timer for that reply - it keeps the reminder's original "
+                "time exact rather than reworking it from how long ago it was asked."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "What to say when the reminder goes off, worded as the reminder itself.",
+                    },
+                },
+                "required": ["label"],
             },
         },
         {
@@ -207,10 +241,13 @@ class LLMHandler:
         {
             "name": "cancel_timer",
             "description": (
-                "Cancel a running timer. Identify it by label, or by its length for timers "
-                "set without one. Use cancel_all only when the user clearly means every "
-                "timer. If they just say 'cancel the timer' and it's ambiguous, call this "
-                "with neither argument - the user will be asked which one they meant."
+                "Cancel a running timer or reminder. Identify it by label, by its length for "
+                "timers set without one, or by the clock time it's due to go off ('the 5:40 "
+                "one', 'cancel the timer for 4pm'). Use cancel_all only when the user clearly "
+                "means every timer. If they just say 'cancel the timer' and it's ambiguous, "
+                "call this with neither argument - the user will be asked which one they "
+                "meant. If several timers match equally (e.g. two both set for 10 minutes), "
+                "the user is asked which one automatically - just pass through what they said."
             ),
             "input_schema": {
                 "type": "object",
@@ -219,10 +256,14 @@ class LLMHandler:
                         "type": "string",
                         "description": (
                             "Which timer to cancel: its label, the length it was set for "
-                            "('10 minutes'), or how the user referred to it ('the next one', "
-                            "'the upcoming reminder'). Never invent a label from how long is "
-                            "left, and leave this out entirely when they just mean 'that one' "
-                            "or 'the timer'."
+                            "('10 minutes'), the clock time it's due ('5:40', '5:40 pm'), or "
+                            "how the user referred to it ('the next one', 'the upcoming "
+                            "reminder'). If a running reminder's real label is a close match "
+                            "for a mangled transcription ('walk the frogs' for a 'walk the "
+                            "dogs' reminder that's actually set), pass the real label, not the "
+                            "mangled one. Never invent a label from how long is left, and "
+                            "leave this out entirely when they just mean 'that one' or 'the "
+                            "timer'."
                         ),
                     },
                     "cancel_all": {
@@ -354,7 +395,11 @@ class LLMHandler:
         if block.name == "set_timer":
             return {"type": "clock", "command": "set_timer",
                     "duration_seconds": params.get("duration_seconds"),
-                    "label": params.get("label") or None}
+                    "label": params.get("label") or None,
+                    "is_reminder": bool(params.get("is_reminder", False))}
+
+        if block.name == "name_reminder":
+            return {"type": "clock", "command": "name_reminder", "label": params.get("label")}
 
         if block.name == "list_timers":
             return {"type": "clock", "command": "list_timers"}
@@ -457,6 +502,30 @@ class LLMHandler:
                 "miles for distance and road speeds, stones and pounds for body weight, kilograms and grams "
                 "for other weights, litres and pints, and pounds sterling for money. Give dates as day then "
                 "month, and use the 12-hour clock with AM / PM. Use British spelling. "
+            )
+
+            # Gives the model visibility of what's actually running, so a mangled
+            # transcription of a custom label ("walk the frogs") can be matched
+            # against the real thing ("walk the dogs") instead of failing to find it.
+            if context:
+                system_prompt += (
+                    f"Timers and reminders currently running: {context} "
+                    "Speech-to-text often mangles custom words like these labels, so match "
+                    "what the user said against this list by meaning, not exact wording. If "
+                    "one of these is obviously what was meant despite the mangled "
+                    "transcription, treat it as that one: use its real label when calling a "
+                    "tool and when confirming it out loud, not the mangled version the user "
+                    "appeared to say. Only ask something like 'Are you trying to cancel your "
+                    "walk the dogs reminder?' when it's a close enough call between two "
+                    "plausible ones that guessing wrong is a real risk. "
+                )
+
+            # The same leniency applies everywhere, not just to timers: a mishearing you're
+            # genuinely confident about should be corrected and acted on, not questioned.
+            system_prompt += (
+                "This same judgement - correct a likely mishearing and act, only ask when "
+                "it's genuinely a close call - applies to everything you hear, not only "
+                "timers and reminders. "
             )
 
             # The cutoff wording depends on whether a live lookup is available for this

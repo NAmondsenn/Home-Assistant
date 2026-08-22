@@ -205,8 +205,8 @@ class ActionExecutor:
         Runs a timer command (set / list / cancel).
 
         Args:
-            action: Dict with a 'command', plus 'duration_seconds' and 'label'
-                    for set_timer, or 'label' for cancel.
+            action: Dict with a 'command', plus 'duration_seconds', 'label' and
+                    'is_reminder' for set_timer, or 'label' for cancel.
 
         Returns:
             Dict with 'success' and a relevant message.
@@ -216,7 +216,10 @@ class ActionExecutor:
 
         command = action.get("command")
         if command == "set_timer":
-            return self.clock.set_timer(action.get("duration_seconds"), action.get("label"))
+            return self.clock.set_timer(action.get("duration_seconds"), action.get("label"),
+                                        action.get("is_reminder", False))
+        elif command == "name_reminder":
+            return self.clock.name_pending_reminder(action.get("label"))
         elif command == "list_timers":
             return self.clock.list_timers()
         elif command == "dismiss":

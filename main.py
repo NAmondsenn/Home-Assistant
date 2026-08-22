@@ -134,7 +134,7 @@ class SmartAssistant:
             volume = self.volume.get("general")
         return self.audio.play_file(str(self.sounds_folder / name), volume=volume)
 
-    def _announce(self, message, sound="announcement_sound.wav"):
+    def _announce(self, message, sound="announcement_sound.wav", boost=False):
         """
         Speaks a message which the user has scheduled, e.g. a timer.
 
@@ -144,6 +144,8 @@ class SmartAssistant:
 
         Args:
             message: What to say.
+            boost: True once a timer/alarm has been ringing unanswered long enough
+                   that it jumps to full volume - see Clock._sound_off.
         """
         # Waits for any conversation to finish before making any announcements.
         if not self._idle.wait(timeout=60):
@@ -152,20 +154,23 @@ class SmartAssistant:
         # A unique filename per announcement, so two going off close together can never overwrite each other's audio.
         announcement_file = str(self.temp_folder / f"announcement_{uuid.uuid4().hex[:8]}.wav")
 
+        # Anything which goes off by itself uses the alarm volume, so it can stay
+        # loud even when the assistant's voice is turned down - and once boosted,
+        # it jumps straight to full regardless of that level.
+        volume = 1.0 if boost else self.volume.get("alarm")
+
         try:
             print(f"\n{self.name}: {message}")
 
             # A sound first, so the user knows the assistant is about to speak.
             if sound and self.reminder_sound_enabled:
-                self._play_sound(sound, volume=self.volume.get("alarm"))
+                self._play_sound(sound, volume=volume)
 
             if self.tts.synthesise(message, announcement_file) is None:
                 logger.error("Announcement synthesis failed")
                 return
 
-            # Anything which goes off by itself uses the alarm volume, so it can
-            # stay loud even when the assistant's voice is turned down.
-            self.audio.play_file(announcement_file, volume=self.volume.get("alarm"))
+            self.audio.play_file(announcement_file, volume=volume)
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
         finally:
@@ -202,9 +207,7 @@ class SmartAssistant:
                 self.wake.listen_once()
                 print("Listening...")
 
-                # Pauses the music for the whole interaction, not just while speaking.
-                # This is so the microphone doesn't pick up the music while recording.
-                # The finally block guarantees the music resumes after the interaction.
+                # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
                 if self.spotify:
                     self.spotify.pause_for_speech()
                 # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
@@ -275,8 +278,11 @@ class SmartAssistant:
                 print(f"{self.name}: {result['message']}")
             return
 
-        # Sends transcribed text to the LLM for processing, this returns a response and any detected actions.
-        result = self.llm.process_query(text)
+        # Sends transcribed text to the LLM for processing, along with what's currently on the
+        # clock, so a mangled label like "walk the frogs" can still be matched to the real
+        # "walk the dogs" reminder. Returns a response and any detected actions.
+        clock_context = "; ".join(self.clock.describe_all()) or None
+        result = self.llm.process_query(text, context=clock_context)
         response_text = result["response"]
         action = result.get("action")
 
@@ -287,24 +293,16 @@ class SmartAssistant:
             if action_result.get("message"):
                 response_text = action_result["message"]
 
-            # If the user explicitly asked for the music to pause, the automatic
-            # resume at the end of the interaction shouldn't switch it back on.
-            # This has to happen before the confirmations below, since those return
-            # early and would otherwise skip it, leaving the music playing again.
-            if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause":
+            # Cancels auto resume if the user pauses Spotify.
+            if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause" and action_result.get("success"):
                 self.spotify.cancel_resume()
 
-            # Some actions are heard the moment they happen - a skipped track starts
-            # playing, so a beep on top of it says nothing the music hasn't already,
-            # and a confirmation which sounds without the action working would be
-            # actively misleading. The music is the confirmation.
+            # Actions which are followed by a sound do not require a confirmation chime.
             if action_result.get("success") and action_result.get("silent"):
                 logger.info(f"Action left to confirm itself: {response_text}")
                 return
 
-            # Actions which just change something confirm themselves with a chime rather than a spoken "Okay",
-            # which is quicker to hear and less repetitive.
-            # A volume change plays its own sound at the new level.
+            # Confirms simple actions with a chime rather than a spoken response.
             if action_result.get("success") and action_result.get("sound"):
                 self._play_sound(action_result["sound"],
                                  volume=self.volume.get(action_result.get("sound_category", "general")))

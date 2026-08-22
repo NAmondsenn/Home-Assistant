@@ -57,12 +57,18 @@ thresholds:
   wake_word_confidence: 0.5
 
 timers:
-  # A plain timer announces itself twice in quick succession.
+  # Every announcement (timer, reminder, or alarm) is said twice in quick succession.
   announcements: 2
   repeat_gap: 1.5
-  # reminders come back every 30 seconds for 3 minutes until dismissed.
+  # Reminders come back every 30 seconds for 3 minutes, then give up.
   reminder_rounds: 7
   reminder_round_gap: 30
+  # Timers and alarms never give up on their own - they ring until dismissed -
+  # so this is just the breather between rounds while that keeps going.
+  timer_repeat_gap: 3
+  # How long a timer/alarm can ring unanswered before it jumps to full volume
+  # regardless of the alarm level below. Reminders are unaffected by this.
+  timer_volume_boost_after: 120
 
 sounds:
   chime_enabled: true
