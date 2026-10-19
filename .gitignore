@@ -48,6 +48,8 @@ models/
 *.onnx
 *.bin
 piper/
+# setup.sh's own folder, holding a link to the Piper binary above.
+bin/
 
 # Audio recordings
 *.flac
