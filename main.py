@@ -155,7 +155,30 @@ class SmartAssistant:
             return
         self.audio.play_file(self.tts_file, volume=self.volume.get("general"))
 
-    def _announce(self, message, sound="announcement_sound.wav", boost=False):
+    def _wait_for_turn(self, still_wanted=None):
+        """
+        Waits for any conversation to finish, then checks the announcement waiting
+        on it is still wanted.
+
+        Args:
+            still_wanted: Optional check from the Clock - False once the timer or
+                          alarm has been dismissed.
+
+        Returns:
+            True if the announcement should go ahead.
+        """
+        if not self._idle.wait(timeout=60):
+            logger.warning("Announcing over an unusually long interaction")
+
+        # Talking to the assistant is often how something ringing gets dismissed, so
+        # by the time the conversation it was waiting on has finished, it may well
+        # have been dealt with - and playing it again then would be wrong.
+        if still_wanted is not None and not still_wanted():
+            logger.info("Dismissed while waiting its turn, so it isn't announced")
+            return False
+        return True
+
+    def _announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None):
         """
         Speaks a message which the user has scheduled, e.g. a timer.
 
@@ -170,10 +193,12 @@ class SmartAssistant:
             boost: True to play at full volume regardless of the configured alarm
                    level. An alarm always sets this; a plain timer only once it's
                    been ringing unanswered a while - see Clock._sound_off.
+            still_wanted: Called before anything plays, so a timer or alarm the
+                          user dismissed while this was waiting stays quiet.
         """
         # Waits for any conversation to finish before making any announcements.
-        if not self._idle.wait(timeout=60):
-            logger.warning("Announcing over an unusually long interaction")
+        if not self._wait_for_turn(still_wanted):
+            return
 
         # A unique filename per announcement, so two going off close together can never overwrite each other's audio.
         announcement_file = str(self.temp_folder / f"announcement_{uuid.uuid4().hex[:8]}.wav")
@@ -191,6 +216,12 @@ class SmartAssistant:
                 self._play_sound(sound, volume=volume)
 
             if not message:
+                return
+
+            # The sound lasts a few seconds, long enough for the user to start talking
+            # to the assistant - or to dismiss this - before it's finished, so the
+            # message waits its turn again rather than talking over them.
+            if not self._wait_for_turn(still_wanted):
                 return
 
             if self.tts.synthesise(message, announcement_file) is None:

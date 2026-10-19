@@ -205,13 +205,13 @@ class Clock:
     pizza timer").
     """
 
-    def __init__(self, on_timer_finished: Optional[Callable[[str, str, bool], None]] = None,
+    def __init__(self, on_timer_finished: Optional[Callable[..., None]] = None,
                  check_interval: float = 0.5, config=None, start: bool = True):
         """
         Args:
-            on_timer_finished: Called with (message, sound, boost) when a timer
-                               goes off. This is how the assistant speaks it - the
-                               Clock itself has no audio.
+            on_timer_finished: Called with (message, sound, boost, still_wanted=...)
+                               when a timer goes off. This is how the assistant speaks
+                               it - the Clock itself has no audio.
             check_interval: How often the background thread checks for due timers.
             start: Whether to start the background thread. Only the tests turn
                    this off, so they can step the clock along with _tick() instead.
@@ -812,7 +812,7 @@ class Clock:
             # Stops mid-round if the user dismisses it, rather than talking over them.
             if announcement and not self._is_ringing(timer):
                 return
-            self._announce(message, sound, boost)
+            self._announce(message, sound, boost, still_wanted=lambda: self._is_ringing(timer))
             if announcement < self.announcements - 1:
                 time.sleep(self.repeat_gap)
 
@@ -831,9 +831,12 @@ class Clock:
         Returns:
             True if it's still ringing (not dismissed) by the end of the cycle.
         """
+        def still_wanted():
+            return self._is_ringing(alarm)
+
         now = datetime.now()
         cutin = f"It's {spoken_clock_time(now.hour, now.minute)}. Time to get up."
-        self._announce(cutin, "alarm_sound.wav", boost=True)
+        self._announce(cutin, "alarm_sound.wav", boost=True, still_wanted=still_wanted)
         if not self._is_ringing(alarm):
             return False
 
@@ -841,7 +844,7 @@ class Clock:
         while time.time() < end_at:
             if not self._is_ringing(alarm):
                 return False
-            self._announce(None, "alarm_sound.wav", boost=True)
+            self._announce(None, "alarm_sound.wav", boost=True, still_wanted=still_wanted)
 
         return self._is_ringing(alarm)
 
@@ -1082,7 +1085,8 @@ class Clock:
                      f"{format_duration(now - t['missed_at'])} ago" for t in missed]
         return {"success": True, "message": "You missed " + "; ".join(described) + "."}
 
-    def _announce(self, message: str, sound: str = "announcement_sound.wav", boost: bool = False):
+    def _announce(self, message: str, sound: str = "announcement_sound.wav", boost: bool = False,
+                  still_wanted: Optional[Callable[[], bool]] = None):
         """
         Passes a message to the callback which speaks it.
 
@@ -1091,12 +1095,16 @@ class Clock:
             sound: Which sound effect should introduce the message.
             boost: True if it should be spoken at full volume regardless of the
                    configured alarm level - see _sound_off.
+            still_wanted: Checked by the callback right before anything plays. An
+                          announcement can be held back while the user talks to the
+                          assistant, and they may dismiss it in that very conversation -
+                          without this it would still play once it was finally let through.
         """
         logger.info(f"Timer finished: {message}")
 
         if self.on_timer_finished:
             try:
-                self.on_timer_finished(message, sound, boost)
+                self.on_timer_finished(message, sound, boost, still_wanted=still_wanted)
             except Exception as e:
                 # A failed announcement must not kill the timer thread.
                 logger.error(f"Timer announcement failed: {e}")

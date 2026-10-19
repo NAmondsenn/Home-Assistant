@@ -145,6 +145,35 @@ def test_timers_are_held_until_the_system_clock_is_set(make_clock):
     assert not clock.is_ringing() and clock.announced == []
 
 
+def test_timer_announcement_can_tell_once_its_been_dismissed(make_clock):
+    clock = make_clock()
+    clock.set_timer(60)
+    clock._tick(time.time() + 61)
+    still_wanted = clock.announced[0]["still_wanted"]
+    assert still_wanted()
+    clock.dismiss()
+    # What the assistant checks after waiting for a conversation to finish.
+    assert not still_wanted()
+
+
+def test_alarm_announcement_can_tell_once_its_been_dismissed(make_clock):
+    checks = []
+
+    def dismiss_after_first_sound(clock, announcement):
+        checks.append(announcement["still_wanted"]())
+        clock.dismiss()
+        checks.append(announcement["still_wanted"]())
+
+    clock = make_clock(on_announce=dismiss_after_first_sound)
+    clock.set_alarm(7, 0)
+    for alarm in clock._alarms.values():
+        alarm["due_at"] = time.time() - 5
+    clock._tick(time.time())
+    assert checks == [True, False]
+    # Nothing more was played after the dismissal.
+    assert len(clock.announced) == 1
+
+
 # Saying "stop" and friends
 
 @pytest.mark.parametrize("text, dismissal", [
