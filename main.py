@@ -14,7 +14,7 @@ from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
-from voice_assistant.spotify_controller import SpotifyController
+from voice_assistant.spotify_controller import MusicHold, SpotifyController
 from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
 from voice_assistant.actions import ActionExecutor, confirm
@@ -87,8 +87,6 @@ class SmartAssistant:
         self._reminder_offered = False
         # Set while waiting on the answer to "shall I turn that reminder off?".
         self._reminder_answer_pending = False
-        # The background pause of Spotify started at the wake word - see _start_spotify_pause.
-        self._spotify_pause = None
 
         logger.info("Loading modules...")
         
@@ -126,6 +124,9 @@ class SmartAssistant:
         except Exception as e:
             logger.warning(f"Spotify initialisation failed: {e}")
             self.spotify = None
+
+        # Keeps the music paused while there's something to say - see MusicHold.
+        self.music = MusicHold(self.spotify)
 
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
         self.clock = Clock(on_timer_finished=self._announce, config=self.config)
@@ -250,8 +251,16 @@ class SmartAssistant:
             still_wanted: Called before anything plays, so a timer or alarm the
                           user dismissed while this was waiting stays quiet.
         """
-        with self._announcing:
-            self._announce_in_turn(message, sound, boost, still_wanted)
+        # The music is held from now, before waiting for any conversation to finish,
+        # so it doesn't come back in the gap between the two.
+        self.music.hold()
+        try:
+            with self._announcing:
+                self._announce_in_turn(message, sound, boost, still_wanted)
+        finally:
+            # Let back a few seconds later rather than straight away, since a timer's
+            # next round comes three seconds after this one.
+            self.music.release(after=5)
 
     def _announce_in_turn(self, message, sound, boost, still_wanted):
         """The body of _announce, run once any other announcement has finished."""
@@ -297,33 +306,6 @@ class SmartAssistant:
             except OSError:
                 pass
 
-    def _start_spotify_pause(self):
-        """
-        Pauses Spotify for the interaction, on a background thread.
-
-        The pause goes through Spotify's servers, which takes a moment - or a lot
-        longer when the network's struggling - so it runs alongside the recording
-        rather than before it. Waiting for it first meant anything said straight
-        after the wake word was lost, since nothing was listening yet.
-        """
-        self._spotify_pause = None
-        if self.spotify:
-            self._spotify_pause = threading.Thread(target=self.spotify.pause_for_speech,
-                                                   daemon=True, name="spotify-pause")
-            self._spotify_pause.start()
-
-    def _wait_for_spotify_pause(self):
-        """
-        Waits for the pause started at the wake word to finish, before anything else
-        is sent to Spotify. Otherwise a slow pause could land after a "play" request
-        and stop the music which was just asked for, or the resume at the end could
-        arrive before the pause it's meant to be undoing. Normally it's long finished
-        by the time this is called, so there's no wait at all.
-        """
-        if self._spotify_pause is not None:
-            # Bounded, so a hung request can't hold the assistant up indefinitely.
-            self._spotify_pause.join(timeout=20)
-
     def _shutdown(self, *args):
         """
         Called automatically when the program receives Ctrl+C or a termination request.
@@ -367,7 +349,9 @@ class SmartAssistant:
                 # ends. It carries on afterwards unless the conversation dealt with it.
                 self.speaker.silence("announcement")
                 # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
-                self._start_spotify_pause()
+                # The pause goes through Spotify's servers, so it runs alongside the
+                # recording rather than holding it up - see MusicHold.
+                self.music.hold()
                 try:
                     # Reset per conversation, not per question, so a long back and
                     # forth still ends after the cap is reached.
@@ -386,9 +370,7 @@ class SmartAssistant:
                     timeline.save(self.latency_file)
                     self.speaker.allow("announcement")
                     self._idle.set()
-                    if self.spotify:
-                        self._wait_for_spotify_pause()
-                        self.spotify.resume_after_speech()
+                    self.music.release()
 
             # Catches any unexpected errors during the main loop, logs the error
             # and pauses briefly before continuing to listen for the wake word again.
@@ -515,7 +497,7 @@ class SmartAssistant:
         action_results = []
         if actions:
             # Music and volume actions talk to Spotify too, so the pause has to have landed first.
-            self._wait_for_spotify_pause()
+            self.music.wait()
             for action in actions:
                 action_result = self.actions.execute(action)
                 action_results.append(action_result)
