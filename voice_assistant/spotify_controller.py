@@ -32,6 +32,10 @@ PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REQUEST_TIMEOUT = 4
 REQUEST_RETRIES = 1
 
+# Said when there's no Spotify login to use, rather than a bare "not authenticated" -
+# signing in again is done by hand, by running this file on the Pi (see the bottom).
+NOT_SIGNED_IN = "Spotify needs signing in again on the Pi."
+
 
 class _RefreshingAuth:
     """
@@ -221,7 +225,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             device_id = self._activate_device()
@@ -739,7 +743,7 @@ class SpotifyController:
     def pause(self) -> Dict:
         """Pause playback"""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.pause_playback()
@@ -755,7 +759,7 @@ class SpotifyController:
     def skip(self) -> Dict:
         """Skip to the next track"""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.next_track()
@@ -769,7 +773,7 @@ class SpotifyController:
     def previous(self) -> Dict:
         """Go back to the previous track."""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             # With the player at position 0, "previous" steps back a track rather
@@ -823,7 +827,7 @@ class SpotifyController:
             Dict with 'success' and a 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         percent = max(0, min(100, int(percent)))
 
@@ -844,7 +848,7 @@ class SpotifyController:
     def restart(self) -> Dict:
         """Start the current track again from the beginning."""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.seek_track(0)
@@ -867,7 +871,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         # Spotify calls repeating the whole playlist / album "context".
         api_mode = "context" if mode in ("all", "context", "playlist", "album") else mode
@@ -895,7 +899,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.shuffle(enabled)
@@ -1017,7 +1021,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             device_id = self._activate_device()
@@ -1054,7 +1058,7 @@ class SpotifyController:
     def current_track(self) -> Dict:
         """Retrieves current track information."""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             current = self.sp.current_playback()

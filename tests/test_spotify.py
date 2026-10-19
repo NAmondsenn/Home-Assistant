@@ -87,7 +87,7 @@ def test_a_lost_login_fails_clearly_instead_of_waiting_for_a_browser(make_contro
 def test_without_a_cached_login_it_says_so(make_controller):
     controller = make_controller(cached=None)
     assert controller.sp is None
-    assert controller.play("Drake") == {"success": False, "message": "Not authenticated"}
+    assert controller.play("Drake") == {"success": False, "message": spotify_controller.NOT_SIGNED_IN}
 
 
 class FakePlayback:

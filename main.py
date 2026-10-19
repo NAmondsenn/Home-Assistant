@@ -182,6 +182,22 @@ class SmartAssistant:
         playback.wait()
         return True
 
+    def _not_heard(self):
+        """
+        Plays the listening sound backwards - a short falling blip - when nothing was
+        heard or understood. Giving up used to be silent, which was easy to take for
+        the assistant still listening, or still thinking.
+        """
+        if self.listening_sound_enabled:
+            self._play_sound("not_heard.wav")
+
+    def _apologise(self):
+        """Says something went wrong, without letting that fail in turn."""
+        try:
+            self._say("Sorry, something went wrong there.")
+        except Exception as e:
+            logger.error(f"Couldn't even say so: {e}")
+
     def _say(self, message, timeline=None):
         """
         Speaks a reply to the user, through the same audio file the main loop uses.
@@ -416,6 +432,13 @@ class SmartAssistant:
                     self._reminder_offered = False
                     self._reminder_answer_pending = False
                     self._handle_interaction(timeline=timeline)
+                except Exception as e:
+                    # Said out loud, rather than only logged, so it isn't taken for the
+                    # assistant not having heard. Only for something which went wrong
+                    # during a conversation - one waiting for the wake word could
+                    # repeat every second.
+                    logger.error(f"Interaction failed: {e}", exc_info=True)
+                    self._apologise()
                 finally:
                     timeline.save(self.latency_file)
                     self.speaker.allow("announcement")
@@ -474,6 +497,7 @@ class SmartAssistant:
 
         if audio_data is None or len(audio_data) == 0:
             timeline.note(outcome="no_speech")
+            self._not_heard()
             return
 
         # Transcribes the recorded audio using Whisper to text, Continues listening if no text is returned.
@@ -487,6 +511,7 @@ class SmartAssistant:
         text = strip_wake_word((transcription or {}).get("text", ""), self.wake_word)
         if not text.strip():
             timeline.note(outcome="nothing_transcribed")
+            self._not_heard()
             return
 
         timeline.note(text_chars=len(text))
