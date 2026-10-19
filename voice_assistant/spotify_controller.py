@@ -25,6 +25,35 @@ logger = logging.getLogger(__name__)
 # package), so the token cache lives inside the project rather than at ~.
 PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# How long a single Spotify request may take, in seconds, and how many times it's
+# retried. spotipy's own defaults (5 seconds, retried 3 times with back-off) could
+# hold a command up for well over 15 seconds when the network was struggling.
+REQUEST_TIMEOUT = 4
+REQUEST_RETRIES = 1
+
+
+class _RefreshingAuth:
+    """
+    Hands the Spotify client a current access token on every request, refreshing
+    the cached one whenever it's expired.
+
+    spotipy's own SpotifyOAuth would do the refreshing too, but when the cached
+    login stops working altogether (revoked, or new scopes added) it falls back to
+    signing in from scratch - which with a 127.0.0.1 redirect means starting a web
+    server and waiting for a browser, hanging the assistant mid-command. This only
+    ever refreshes, and fails with a clear message instead.
+    """
+
+    def __init__(self, oauth: SpotifyOAuth):
+        self.oauth = oauth
+
+    def get_access_token(self, as_dict: bool = False):
+        # Reads the cache and refreshes the token if it's run out.
+        token_info = self.oauth.get_cached_token()
+        if not token_info:
+            raise RuntimeError("Spotify needs authorising again - run voice_assistant/spotify_controller.py")
+        return token_info if as_dict else token_info["access_token"]
+
 
 class SpotifyController:
     """Controls Spotify playback, preferring this machine's own Connect device."""
@@ -74,14 +103,24 @@ class SpotifyController:
         logger.info(f"Spotify controller initialised (target device: '{self.device_name}')")
 
     def _authenticate(self):
-        """Authenticate with Spotify (uses cached token if available)"""
-        token_info = self.sp_oauth.get_cached_token()
+        """
+        Authenticate with Spotify (uses cached token if available).
 
-        if not token_info:
+        Only checks the cached token is there - nothing goes over the network yet.
+        The token has always expired after a reboot (they last an hour), and
+        refreshing it here meant a Pi which started before its Wi-Fi was up lost
+        Spotify for the whole session. It's refreshed on the first command instead.
+        """
+        if not self.sp_oauth.cache_handler.get_cached_token():
             logger.warning("No cached token found. Run authenticate_first_time() to get one.")
             return
 
-        self.sp = spotipy.Spotify(auth=token_info['access_token'])
+        # Given something which fetches a fresh token for every request, rather than
+        # the access token itself. A fixed token only lasts an hour, which is what made
+        # every Spotify command fail once the assistant had been running for a while.
+        self.sp = spotipy.Spotify(auth_manager=_RefreshingAuth(self.sp_oauth),
+                                  requests_timeout=REQUEST_TIMEOUT,
+                                  retries=REQUEST_RETRIES, status_retries=REQUEST_RETRIES)
         logger.info("Authenticated with Spotify using cached token")
 
     def authenticate_first_time(self):
