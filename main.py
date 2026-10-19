@@ -109,11 +109,9 @@ class SmartAssistant:
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
         self.clock = Clock(on_timer_finished=self._announce, config=self.config)
 
-        # Sets up volume control.
+        # Sets up volume control. The music's own volume isn't set here - Spotify keeps
+        # that itself, so a level the user chose by voice survives a restart.
         self.volume = VolumeControl(config=self.config)
-
-        if self.spotify:
-            self.spotify.set_volume(self.config.section("sounds").get("spotify_volume", 100))
 
         # Sets up the action executor, which dispatches detected actions to the right controller.
         self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock, volume=self.volume)

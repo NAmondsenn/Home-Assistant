@@ -80,4 +80,3 @@ sounds:
   chime_enabled: true
   reminder_enabled: true
   volume_step: 10
-  spotify_volume: 100
