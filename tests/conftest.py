@@ -112,6 +112,13 @@ if _module_missing("sounddevice"):
     sys.modules["sounddevice"] = sounddevice
 
 
+# faster_whisper: only WhisperModel, which the tests replace with their own fake.
+if _module_missing("faster_whisper"):
+    faster_whisper = types.ModuleType("faster_whisper")
+    faster_whisper.WhisperModel = None
+    sys.modules["faster_whisper"] = faster_whisper
+
+
 # openwakeword: the wake word Model and Silero's VAD. Tests give the detectors their
 # own fakes for both, so no model ever has to be downloaded.
 if _module_missing("openwakeword"):

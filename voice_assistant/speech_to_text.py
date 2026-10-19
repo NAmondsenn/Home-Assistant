@@ -1,4 +1,5 @@
 import logging
+import re
 import numpy as np
 from faster_whisper import WhisperModel
 from typing import Any, Optional, Dict, Union
@@ -6,6 +7,38 @@ import time
 
 # Logger setup
 logger = logging.getLogger(__name__)
+
+# Things Whisper is known to "hear" in noise, breathing or silence - it was trained
+# on a lot of subtitled video. Only thrown away when they're the whole transcript,
+# so a real "set a timer, thank you" is kept.
+HALLUCINATIONS = {"you", "thank you", "thanks", "bye", "bye bye",
+                  "thanks for watching", "thank you for watching"}
+
+# A segment counts as Whisper guessing when it's both fairly sure there was no
+# speech, and unsure of the words it came up with anyway.
+NO_SPEECH_PROBABILITY = 0.6
+LOW_AVERAGE_LOGPROB = -1.0
+
+
+def looks_like_hallucination(text: str, segments) -> bool:
+    """
+    Whether a transcription is most likely Whisper finding words in noise.
+
+    Any text at all used to be treated as a request, so a false wake word followed
+    by a cough could come back as "Thank you." and be answered.
+
+    Args:
+        text: The whole transcription.
+        segments: Whisper's segments for it, with their no_speech_prob and avg_logprob.
+
+    Returns:
+        True if it should be thrown away.
+    """
+    if re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS:
+        return True
+    return bool(segments) and all(segment.no_speech_prob > NO_SPEECH_PROBABILITY
+                                  and segment.avg_logprob < LOW_AVERAGE_LOGPROB
+                                  for segment in segments)
 
 class SpeechToText:
     def __init__(
@@ -88,7 +121,9 @@ class SpeechToText:
             vad_filter: Enable Voice Activity Detection to skip silence.
 
         Returns:
-            A dictionary containing the transcribed text, detected language, confidence score, and duration.
+            A dictionary containing the transcribed text, detected language, how sure it
+            was of the language, and duration. The text is empty if it looks like
+            Whisper only imagined it - see looks_like_hallucination.
         """
         source = f"file: {audio}" if isinstance(audio, str) else "raw audio array"
 
@@ -111,22 +146,28 @@ class SpeechToText:
             )
 
             # Whisper returns segments of text, which are concatenated into a single string.
+            segments = list(segments)
             text = " ".join(segment.text for segment in segments).strip()
             # Calculates the duration of the transcription process 
             duration = time.time() - start_time
 
-            # The result dictionary is constructed to include the transcribed text, 
-            # detected language, confidence score, and duration of the transcription.
-            result = {
+            # Logs the completion of the transcription process alongside its duration.
+            logger.info(f"Transcription complete ({duration:.2f}s): '{text}'")
+
+            if text and looks_like_hallucination(text, segments):
+                logger.info(f"Ignoring '{text}' - most likely Whisper finding words in noise")
+                text = ""
+
+            # The result dictionary is constructed to include the transcribed text,
+            # detected language and duration of the transcription. language_probability
+            # is how sure it is of the language - always 1 for an English-only model,
+            # so it says nothing about how well the words were heard.
+            return {
                 'text': text,
                 'language': info.language,
-                'confidence': info.language_probability,
+                'language_probability': info.language_probability,
                 'duration': duration
             }
-
-            # Logs the completion of the transcription process alongside its duration, returning the result.
-            logger.info(f"Transcription complete ({duration:.2f}s): '{text}'")
-            return result
 
         # Exception handling to catch any errors that occur during the transcription process. 
         # If an error occurs, it logs the error, returning a result dictionary with empty / default values, 
@@ -136,7 +177,7 @@ class SpeechToText:
             return {
                 'text': '',
                 'language': None,
-                'confidence': 0.0,
+                'language_probability': 0.0,
                 'duration': 0.0,
                 'error': str(e)
             }
@@ -153,6 +194,6 @@ class SpeechToText:
             **kwargs: Any other arguments accepted by transcribe() (e.g. beam_size, language, vad_filter).
 
         Returns:
-            A dictionary containing the transcribed text, detected language, confidence score, and duration.
+            The same dictionary transcribe() does.
         """
         return self.transcribe(audio=filepath, **kwargs)

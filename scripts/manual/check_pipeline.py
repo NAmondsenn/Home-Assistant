@@ -119,10 +119,11 @@ def test_pipeline():
                 continue
 
             text = transcription['text']
-            confidence = transcription.get('confidence', 0)
+            # How sure Whisper was of the language - always 1 for an English-only model.
+            language_probability = transcription.get('language_probability', 0)
 
             print(f"Transcription: '{text}'")
-            print(f"Confidence: {confidence:.1%}")
+            print(f"Language probability: {language_probability:.1%}")
 
             # Step 3: Get LLM response
             print("\n[3/4] Getting AI response...")
