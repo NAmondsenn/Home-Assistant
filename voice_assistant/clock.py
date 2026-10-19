@@ -328,10 +328,14 @@ class Clock:
 
     def _load_alarms(self):
         """
-        Restores alarms from disk. Unlike a timer's due_at, an alarm's due_at is
-        always recomputed from its hour/minute/repeat rather than trusted as-is,
-        since it may have been sitting unfired since before the assistant last
-        shut down.
+        Restores alarms from disk.
+
+        An alarm's saved due_at is trusted as-is, since a repeating one has it moved
+        on to the next occurrence the moment it goes off (see _tick). One which came
+        due while the assistant was off is mentioned once it's started, the same way
+        a missed timer is, rather than being quietly moved to the following day - a
+        one-off alarm is then done with, and a repeating one carries on from its
+        next occurrence.
         """
         if not os.path.exists(ALARMS_FILE):
             return
@@ -343,7 +347,8 @@ class Clock:
             logger.error(f"Could not read saved alarms, ignoring them: {e}")
             return
 
-        restored = 0
+        now = time.time()
+        restored = missed = 0
         for alarm in data.get("alarms", []):
             if not isinstance(alarm, dict):
                 continue
@@ -356,16 +361,36 @@ class Clock:
                 continue
 
             repeat = alarm.get("repeat")
-            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat,
-                     "due_at": self._next_occurrence(hour, minute, repeat)}
+            try:
+                due_at = float(alarm["due_at"])
+            except (TypeError, ValueError, KeyError):
+                # Saved without a usable due time, so the next one is worked out afresh.
+                due_at = self._next_occurrence(hour, minute, repeat)
+
+            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at}
+
+            if due_at <= now:
+                # Recently missed, so it's still worth mentioning once started.
+                if now - due_at <= MISSED_TIMER_GRACE_SECONDS:
+                    self._missed.append({**alarm, "kind": "alarm"})
+                    missed += 1
+                if not repeat:
+                    continue
+                alarm["due_at"] = self._next_occurrence(hour, minute, repeat, after=max(due_at + 60, now))
+
             self._alarms[alarm_id] = alarm
             restored += 1
 
         self._next_alarm_id = max([int(data.get("next_id", 1))]
                                   + [a["id"] + 1 for a in self._alarms.values()] or [1])
 
-        if restored:
-            logger.info(f"Restored {restored} alarm(s)")
+        # Saved straight away if anything was missed, so a second restart soon after
+        # doesn't mention the same missed alarm all over again.
+        if missed:
+            self._save_alarms()
+
+        if restored or missed:
+            logger.info(f"Restored {restored} alarm(s), {missed} missed")
 
     def _next_occurrence(self, hour: int, minute: int, repeat, after: Optional[float] = None) -> float:
         """
@@ -464,17 +489,19 @@ class Clock:
             logger.warning("System clock not set yet, holding timers")
             return
 
-        # Timers which came due while the assistant was off are announced first,
-        # with a note that they're late so the user isn't misled. Alarms aren't
-        # caught up this way - by the time it's noticed, the moment's passed,
-        # and a repeating one will just fire again at its next occurrence.
+        # Anything which came due while the assistant was off is announced first,
+        # with a note that it's late so the user isn't misled. It's only mentioned,
+        # not rung - by the time it's noticed, the moment's passed.
         if self._missed:
             with self._lock:
                 missed, self._missed = self._missed, []
-            for timer in missed:
-                late = format_duration(now - timer["due_at"])
-                base = timer["label"] or f"your {format_duration(timer['duration'])} timer"
-                sound = "announcement_sound.wav" if timer["label"] else "timer_beep.wav"
+            for item in missed:
+                late = format_duration(now - item["due_at"])
+                if item.get("kind") == "alarm":
+                    base, sound = f"your {self._describe_alarm(item)}", "announcement_sound.wav"
+                else:
+                    base = item["label"] or f"your {format_duration(item['duration'])} timer"
+                    sound = "announcement_sound.wav" if item["label"] else "timer_beep.wav"
                 self._announce(f"While I was off: {base}. That was {late} ago.", sound)
 
         due = []
@@ -485,11 +512,20 @@ class Clock:
             if due:
                 self._save()
 
+        # What rings is a copy of the alarm as it was when it came due. A repeating
+        # alarm stays in the store and is moved on to its next occurrence straight
+        # away, rather than once it stops ringing - otherwise a restart while it was
+        # ringing (up to a quarter of an hour) would lose it from the file for good.
         due_alarms = []
         with self._lock:
             for alarm_id, alarm in list(self._alarms.items()):
                 if alarm["due_at"] <= now:
-                    due_alarms.append(self._alarms.pop(alarm_id))
+                    due_alarms.append({**alarm, "kind": "alarm"})
+                    if alarm.get("repeat"):
+                        alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"],
+                                                                alarm["repeat"], after=alarm["due_at"] + 60)
+                    else:
+                        del self._alarms[alarm_id]
             if due_alarms:
                 self._save_alarms()
 
@@ -586,10 +622,9 @@ class Clock:
 
     def _end_ringing(self, entry: Dict):
         """
-        Ends one ringing entry, however it got there - dismissed, or its rounds
-        ran out. A repeating alarm is rescheduled for its next occurrence here;
-        everything else was already removed from its store when it started
-        ringing, so there's nothing further to do for those.
+        Ends one ringing entry which ran out without being acknowledged, noting it
+        so the user can ask what they missed. Nothing needs rescheduling here -
+        everything was already dealt with in its store when it started ringing.
         """
         with self._lock:
             finished = entry in self._ringing
@@ -600,20 +635,6 @@ class Clock:
             return
 
         self._record_unacknowledged(entry["timer"])
-        self._finish_ringing(entry)
-
-    def _finish_ringing(self, entry: Dict):
-        """Reschedules a repeating alarm for its next occurrence. No-op for anything else."""
-        if entry["kind"] != "alarm":
-            return
-        alarm = entry["timer"]
-        if not alarm.get("repeat"):
-            return
-        with self._lock:
-            alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"],
-                                                     after=alarm["due_at"] + 60)
-            self._alarms[alarm["id"]] = alarm
-            self._save_alarms()
 
     def _repeat_settings(self, item: Dict, kind: str = "clock"):
         """
@@ -853,10 +874,6 @@ class Clock:
                 (silenced if self._is_insistent(entry) else keep).append(entry)
             self._ringing = keep
 
-        # Outside the lock, since a repeating alarm reschedules itself here.
-        for entry in silenced:
-            self._finish_ringing(entry)
-
         if silenced:
             logger.info(f"Silenced {len(silenced)} timer(s)/alarm(s) - the user was talking")
         return bool(silenced)
@@ -945,10 +962,10 @@ class Clock:
         """
         Acknowledges anything currently going off, stopping it repeating.
 
-        For a repeating alarm this only silences today's occurrence - it's
-        rescheduled for its next one, the same as if it had rung out its cycles
-        unanswered. Fully cancelling the repeat is a separate, explicit request
-        (see cancel_alarm), never implied by just dismissing it.
+        For a repeating alarm this only silences today's occurrence - its next
+        one was already scheduled when this one went off. Fully cancelling the
+        repeat is a separate, explicit request (see cancel_alarm), never implied
+        by just dismissing it.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
@@ -962,9 +979,6 @@ class Clock:
 
         if not ringing and not missed:
             return {"success": False, "message": "Nothing's going off."}
-
-        for entry in ringing:
-            self._finish_ringing(entry)
 
         logger.info(f"Dismissed {len(ringing)} ringing timer(s)")
         return {"success": True, "message": "Okay.", "chime": True}
@@ -983,9 +997,10 @@ class Clock:
         if not missed:
             return {"success": True, "message": "You haven't missed anything."}
 
+        # An alarm has no label or duration to name it by, so it's described by its time instead.
         now = time.time()
-        described = [f"{self._describe(t)}, {format_duration(now - t['missed_at'])} ago"
-                     for t in missed]
+        described = [f"{self._describe_alarm(t) if t.get('kind') == 'alarm' else self._describe(t)}, "
+                     f"{format_duration(now - t['missed_at'])} ago" for t in missed]
         return {"success": True, "message": "You missed " + "; ".join(described) + "."}
 
     def _announce(self, message: str, sound: str = "announcement_sound.wav", boost: bool = False):

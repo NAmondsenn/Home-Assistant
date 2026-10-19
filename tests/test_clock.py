@@ -175,3 +175,83 @@ def test_alarms_are_saved(make_clock, tmp_path):
     clock.set_alarm(6, 30, "daily")
     saved = json.loads((tmp_path / "alarms.json").read_text())
     assert saved["alarms"][0]["hour"] == 6 and saved["alarms"][0]["repeat"] == "daily"
+
+
+def _stop_on_first_sound(clock, announcement):
+    """An announcer which acts like the user saying "stop" as soon as anything sounds."""
+    clock.dismiss()
+
+
+def _make_due(clock, seconds_ago=5):
+    """Moves every alarm's due time into the recent past, as if it had just come round."""
+    for alarm in clock._alarms.values():
+        alarm["due_at"] = time.time() - seconds_ago
+    with clock._lock:
+        clock._save_alarms()
+
+
+def test_repeating_alarm_survives_a_restart_while_ringing(make_clock, tmp_path):
+    saved_while_ringing = []
+
+    def restart_mid_ring(clock, announcement):
+        # Reads the file while it's ringing - exactly what a restart at this moment would load.
+        saved_while_ringing.append(json.loads((tmp_path / "alarms.json").read_text())["alarms"])
+        clock.dismiss()
+
+    clock = make_clock(on_announce=restart_mid_ring)
+    clock.set_alarm(7, 0, "daily")
+    _make_due(clock)
+    clock._tick(time.time())
+
+    # Already moved on to tomorrow in the file, before anything was dismissed or rang out.
+    saved = saved_while_ringing[0]
+    assert len(saved) == 1 and saved[0]["due_at"] > time.time()
+
+    restarted = make_clock()
+    assert restarted.list_alarms()["message"] == "One alarm: 7:00 AM alarm, every day."
+
+
+def test_one_off_alarm_is_removed_once_it_goes_off(make_clock):
+    clock = make_clock(on_announce=_stop_on_first_sound)
+    clock.set_alarm(7, 0)
+    _make_due(clock)
+    clock._tick(time.time())
+    assert clock.list_alarms()["message"] == "You don't have any alarms set."
+
+
+def test_one_off_alarm_missed_while_off_is_reported_not_moved_to_tomorrow(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0)
+    _make_due(clock, seconds_ago=600)
+
+    restarted = make_clock()
+    assert restarted.list_alarms()["message"] == "You don't have any alarms set."
+    restarted._tick(time.time())
+    assert restarted.announced[0]["message"] == "While I was off: your 7:00 AM alarm. That was 10 minutes ago."
+
+    # Only mentioned the once, even after another restart.
+    again = make_clock()
+    again._tick(time.time())
+    assert again.announced == []
+
+
+def test_repeating_alarm_missed_while_off_carries_on(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, "daily")
+    _make_due(clock, seconds_ago=600)
+
+    restarted = make_clock()
+    assert next(iter(restarted._alarms.values()))["due_at"] > time.time()
+    restarted._tick(time.time())
+    assert restarted.announced[0]["message"].startswith("While I was off: your 7:00 AM alarm, every day.")
+
+
+def test_unanswered_alarm_shows_up_as_missed(make_clock):
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock.alarm_max_cycles = 1
+    clock.set_alarm(7, 0)
+    _make_due(clock)
+    clock._tick(time.time())
+    assert not clock.is_ringing()
+    assert clock.missed()["message"].startswith("You missed 7:00 AM alarm, ")
