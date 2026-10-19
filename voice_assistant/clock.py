@@ -69,6 +69,17 @@ def format_duration(seconds: int) -> str:
     return " and ".join(parts)
 
 
+def spoken_clock_time(hour: int, minute: int) -> str:
+    """
+    Formats a time of day for speech on the 12-hour clock, e.g. "7:05 AM".
+
+    Built by hand rather than with strftime's "%-I", which drops the leading zero
+    but only exists on Linux and macOS - Windows rejects it outright, which would
+    stop this module (and its tests) running anywhere but the Pi.
+    """
+    return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+
+
 def _duration_units(text: str) -> set:
     """
     Extracts the (number, unit) pairs mentioned in a duration phrase, e.g.
@@ -124,13 +135,15 @@ class Clock:
     """
 
     def __init__(self, on_timer_finished: Optional[Callable[[str, str, bool], None]] = None,
-                 check_interval: float = 0.5, config=None):
+                 check_interval: float = 0.5, config=None, start: bool = True):
         """
         Args:
             on_timer_finished: Called with (message, sound, boost) when a timer
                                goes off. This is how the assistant speaks it - the
                                Clock itself has no audio.
             check_interval: How often the background thread checks for due timers.
+            start: Whether to start the background thread. Only the tests turn
+                   this off, so they can step the clock along with _tick() instead.
         """
         self.on_timer_finished = on_timer_finished
         self.check_interval = check_interval
@@ -198,8 +211,9 @@ class Clock:
 
         self._running = True
         # A daemon thread so it never keeps the assistant alive on shutdown.
-        self._thread = threading.Thread(target=self._run, daemon=True, name="clock")
-        self._thread.start()
+        if start:
+            self._thread = threading.Thread(target=self._run, daemon=True, name="clock")
+            self._thread.start()
 
         logger.info("Clock started")
 
@@ -426,69 +440,74 @@ class Clock:
         return ""
 
     def _run(self):
+        """Background loop which fires timers, reminders and alarms as they come due."""
+        while self._running:
+            self._tick(time.time())
+            time.sleep(self.check_interval)
+
+    def _tick(self, now: float):
         """
-        Background loop which fires timers, reminders and alarms as they come due.
+        One pass of the background loop: announces anything missed while the
+        assistant was off, fires whatever has come due, and repeats anything still
+        ringing. Kept separate from _run so the tests can step through it by hand.
 
         Callbacks are made outside the lock, so a slow announcement doesn't block
         the assistant from setting or cancelling other timers meanwhile.
+
+        Args:
+            now: The current time, as an epoch timestamp.
         """
-        while self._running:
-            now = time.time()
+        # Waits for the system clock to be believable before firing anything.
+        # Without this, a Pi which hasn't reached an NTP server yet would think
+        # every pending timer is overdue and announce them all at once.
+        if now < PLAUSIBLE_TIME_AFTER:
+            logger.warning("System clock not set yet, holding timers")
+            return
 
-            # Waits for the system clock to be believable before firing anything.
-            # Without this, a Pi which hasn't reached an NTP server yet would think
-            # every pending timer is overdue and announce them all at once.
-            if now < PLAUSIBLE_TIME_AFTER:
-                logger.warning("System clock not set yet, holding timers")
-                time.sleep(self.check_interval)
-                continue
-
-            # Timers which came due while the assistant was off are announced first,
-            # with a note that they're late so the user isn't misled. Alarms aren't
-            # caught up this way - by the time it's noticed, the moment's passed,
-            # and a repeating one will just fire again at its next occurrence.
-            if self._missed:
-                with self._lock:
-                    missed, self._missed = self._missed, []
-                for timer in missed:
-                    late = format_duration(now - timer["due_at"])
-                    base = timer["label"] or f"your {format_duration(timer['duration'])} timer"
-                    sound = "announcement_sound.wav" if timer["label"] else "timer_beep.wav"
-                    self._announce(f"While I was off: {base}. That was {late} ago.", sound)
-
-            due = []
+        # Timers which came due while the assistant was off are announced first,
+        # with a note that they're late so the user isn't misled. Alarms aren't
+        # caught up this way - by the time it's noticed, the moment's passed,
+        # and a repeating one will just fire again at its next occurrence.
+        if self._missed:
             with self._lock:
-                for timer_id, timer in list(self._timers.items()):
-                    if timer["due_at"] <= now:
-                        due.append(self._timers.pop(timer_id))
-                if due:
-                    self._save()
+                missed, self._missed = self._missed, []
+            for timer in missed:
+                late = format_duration(now - timer["due_at"])
+                base = timer["label"] or f"your {format_duration(timer['duration'])} timer"
+                sound = "announcement_sound.wav" if timer["label"] else "timer_beep.wav"
+                self._announce(f"While I was off: {base}. That was {late} ago.", sound)
 
-            due_alarms = []
-            with self._lock:
-                for alarm_id, alarm in list(self._alarms.items()):
-                    if alarm["due_at"] <= now:
-                        due_alarms.append(self._alarms.pop(alarm_id))
-                if due_alarms:
-                    self._save_alarms()
+        due = []
+        with self._lock:
+            for timer_id, timer in list(self._timers.items()):
+                if timer["due_at"] <= now:
+                    due.append(self._timers.pop(timer_id))
+            if due:
+                self._save()
 
-            for timer in due:
-                self._start_ringing(timer, "clock", now)
-            for alarm in due_alarms:
-                self._start_ringing(alarm, "alarm", now)
+        due_alarms = []
+        with self._lock:
+            for alarm_id, alarm in list(self._alarms.items()):
+                if alarm["due_at"] <= now:
+                    due_alarms.append(self._alarms.pop(alarm_id))
+            if due_alarms:
+                self._save_alarms()
 
-            # Repeats anything which went off and hasn't been dismissed yet.
-            repeat_now = []
-            with self._lock:
-                for entry in list(self._ringing):
-                    if entry["next_at"] <= now:
-                        self._ringing.remove(entry)
-                        repeat_now.append(entry)
+        for timer in due:
+            self._start_ringing(timer, "clock", now)
+        for alarm in due_alarms:
+            self._start_ringing(alarm, "alarm", now)
 
-            for entry in repeat_now:
-                self._continue_ringing(entry)
+        # Repeats anything which went off and hasn't been dismissed yet.
+        repeat_now = []
+        with self._lock:
+            for entry in list(self._ringing):
+                if entry["next_at"] <= now:
+                    self._ringing.remove(entry)
+                    repeat_now.append(entry)
 
-            time.sleep(self.check_interval)
+        for entry in repeat_now:
+            self._continue_ringing(entry)
 
     def _start_ringing(self, item: Dict, kind: str, now: float):
         """
@@ -712,7 +731,8 @@ class Clock:
         Returns:
             True if it's still ringing (not dismissed) by the end of the cycle.
         """
-        cutin = f"It's {datetime.now().strftime('%-I:%M %p')}. Time to get up."
+        now = datetime.now()
+        cutin = f"It's {spoken_clock_time(now.hour, now.minute)}. Time to get up."
         self._announce(cutin, "alarm_sound.wav", boost=True)
         if not self._is_ringing(alarm):
             return False
@@ -1130,7 +1150,7 @@ class Clock:
         """
         due = time.localtime(due_at)
         now = time.localtime()
-        spoken = time.strftime("%-I:%M %p", due)
+        spoken = spoken_clock_time(due.tm_hour, due.tm_min)
         if (due.tm_year, due.tm_yday) != (now.tm_year, now.tm_yday):
             spoken += time.strftime(" on %A", due)
         return spoken
@@ -1286,7 +1306,7 @@ class Clock:
 
     def _spoken_time_of_day(self, hour: int, minute: int) -> str:
         """Formats an hour/minute as a spoken clock time, e.g. "7:00 AM"."""
-        return datetime.now().replace(hour=hour, minute=minute).strftime("%-I:%M %p")
+        return spoken_clock_time(hour, minute)
 
     def _describe_alarm(self, alarm: Dict) -> str:
         """Names an alarm for speech, e.g. "7:00 AM alarm, every weekday"."""
