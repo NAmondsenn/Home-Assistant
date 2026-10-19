@@ -1287,6 +1287,78 @@ class Clock:
             length = length.replace(unit, unit[:-1])
         return f"{length} timer"
 
+    @staticmethod
+    def _timer_matches(timer: Dict, wanted: str) -> bool:
+        """
+        Whether a timer or reminder is the one the user described.
+
+        Args:
+            timer: The timer to check.
+            wanted: What the user called it, lowercased - its label, its length, or
+                    the clock time it's due.
+
+        Returns:
+            True if it matches.
+        """
+        timer_label = (timer["label"] or "").lower()
+        wanted_units = _duration_units(wanted)
+        wanted_times = _time_of_day_candidates(wanted)
+        due_local = time.localtime(timer["due_at"])
+
+        matches_label = bool(timer_label) and (wanted in timer_label or timer_label in wanted)
+        # Unlabelled timers are matched on their length instead. Every number/unit pair
+        # the user said has to match the timer's actual duration exactly, so "the 30
+        # minute timer" can't also grab a 1 hour 30 minute timer just for sharing the
+        # digit "30" and the word "minute".
+        matches_duration = (not timer_label
+                            and bool(wanted_units)
+                            and wanted_units == _duration_units(format_duration(timer["duration"]).lower()))
+        # A timer or reminder can also be identified by the clock time it's
+        # due to go off, e.g. "cancel the 5:40 one".
+        matches_time = (bool(wanted_times)
+                        and (due_local.tm_hour, due_local.tm_min) in wanted_times)
+
+        return matches_label or matches_duration or matches_time
+
+    def _about_ringing(self, label: Optional[str], kind: str) -> bool:
+        """
+        Whether a cancel request is about something which is going off right now,
+        rather than one still waiting to go off.
+
+        Args:
+            label: What the user called it. None ("cancel it", "turn that off") means
+                   whatever of that kind is ringing.
+            kind: "clock" for timers / reminders, "alarm" for alarms.
+
+        Returns:
+            True if something of that kind is ringing and the request describes it.
+        """
+        with self._lock:
+            ringing = [entry["timer"] for entry in self._ringing if entry["kind"] == kind]
+        if not ringing:
+            return False
+        if not label:
+            return True
+
+        wanted = label.strip().lower()
+        if kind == "alarm":
+            wanted_times = _time_of_day_candidates(wanted)
+            return any((alarm["hour"], alarm["minute"]) in wanted_times for alarm in ringing)
+        return any(self._timer_matches(timer, wanted) for timer in ringing)
+
+    def _silence_kind(self, kind: str) -> int:
+        """
+        Stops everything of one kind which is going off, leaving the rest ringing.
+        Used when the user cancels every timer, or every alarm, while one is sounding.
+
+        Returns:
+            How many were silenced.
+        """
+        with self._lock:
+            silenced = [entry for entry in self._ringing if entry["kind"] == kind]
+            self._ringing = [entry for entry in self._ringing if entry["kind"] != kind]
+        return len(silenced)
+
     def cancel_timer(self, label: Optional[str] = None, cancel_all: bool = False) -> Dict:
         """
         Cancel a timer or reminder.
@@ -1305,14 +1377,18 @@ class Clock:
         """
         # Something going off right now is dismissed rather than cancelled, since
         # "cancel that" while a reminder is sounding means "stop it", and there's
-        # no pending timer left to cancel by then.
-        with self._lock:
-            ringing = bool(self._ringing)
-        if ringing:
+        # no pending timer left to cancel by then. Only when the request is actually
+        # about what's ringing, though - "cancel the pizza reminder" while some other
+        # timer is going off means the pizza reminder, and dismissing the other one
+        # instead would leave it set while the user thinks it's gone.
+        silenced = self._silence_kind("clock") if cancel_all else 0
+        if not cancel_all and self._about_ringing(label, "clock"):
             return self.dismiss()
 
         with self._lock:
             if not self._timers:
+                if silenced:
+                    return {"success": True, "message": "Okay.", "chime": True}
                 return {"success": False, "message": "There aren't any timers to cancel."}
 
             if cancel_all:
@@ -1354,33 +1430,10 @@ class Clock:
                     self._save()
                     return {"success": True, "message": self._deleted_message(timer)}
 
-            wanted_units = _duration_units(wanted)
-            wanted_times = _time_of_day_candidates(wanted)
-
             # Every timer matching what was said, rather than stopping at the first
             # one - two 10 minute timers both match "the 10 minute timer" equally,
             # so which one gets cancelled must be asked rather than guessed.
-            matches = []
-            for timer in self._timers.values():
-                timer_label = (timer["label"] or "").lower()
-                duration_text = format_duration(timer["duration"]).lower()
-                due_local = time.localtime(timer["due_at"])
-
-                matches_label = bool(timer_label) and (wanted in timer_label or timer_label in wanted)
-                # Unlabelled timers are matched on their length instead. Every number/unit pair
-                # the user said has to match the timer's actual duration exactly, so "the 30
-                # minute timer" can't also grab a 1 hour 30 minute timer just for sharing the
-                # digit "30" and the word "minute".
-                matches_duration = (not timer_label
-                                    and bool(wanted_units)
-                                    and wanted_units == _duration_units(duration_text))
-                # A timer or reminder can also be identified by the clock time it's
-                # due to go off, e.g. "cancel the 5:40 one".
-                matches_time = (bool(wanted_times)
-                                and (due_local.tm_hour, due_local.tm_min) in wanted_times)
-
-                if matches_label or matches_duration or matches_time:
-                    matches.append(timer)
+            matches = [timer for timer in self._timers.values() if self._timer_matches(timer, wanted)]
 
             if len(matches) == 1:
                 timer = matches[0]
@@ -1530,15 +1583,31 @@ class Clock:
             Dict with 'success' and a spoken 'message'.
         """
         # An alarm currently ringing is dismissed rather than cancelled here -
-        # dismissing it already does the right thing (silences today, reschedules
-        # if it repeats), and there's no pending alarm left to cancel by then.
-        with self._lock:
-            ringing = bool(self._ringing)
-        if ringing:
-            return self.dismiss()
+        # dismissing it already does the right thing (silences today, and a
+        # repeating one's next occurrence was scheduled when this one went off).
+        # Only when the request is about the ringing alarm, though: with a timer
+        # going off, "cancel my 7am alarm" still means the 7am alarm.
+        silenced = self._silence_kind("alarm") if cancel_all else 0
+        if not cancel_all and self._about_ringing(label, "alarm"):
+            with self._lock:
+                ringing_ids = [entry["timer"]["id"] for entry in self._ringing if entry["kind"] == "alarm"]
+            result = self.dismiss()
+
+            # "Stop it repeating" said to a ringing alarm means the whole schedule,
+            # not just today's - which dismissing alone would leave in place.
+            if scope == "all":
+                with self._lock:
+                    removed = [self._alarms.pop(alarm_id) for alarm_id in ringing_ids if alarm_id in self._alarms]
+                    if removed:
+                        self._save_alarms()
+                if removed:
+                    return {"success": True, "message": f"{self._describe_alarm(removed[0])} cancelled."}
+            return result
 
         with self._lock:
             if not self._alarms:
+                if silenced:
+                    return {"success": True, "message": "Okay.", "chime": True}
                 return {"success": False, "message": "There aren't any alarms to cancel."}
 
             if cancel_all:

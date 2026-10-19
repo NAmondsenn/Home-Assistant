@@ -174,6 +174,84 @@ def test_alarm_announcement_can_tell_once_its_been_dismissed(make_clock):
     assert len(clock.announced) == 1
 
 
+def _ring_a_timer(clock, seconds=60, label=None):
+    """Sets a timer and steps the clock past it, leaving it ringing."""
+    clock.set_timer(seconds, label=label)
+    clock._tick(time.time() + seconds + 1)
+    assert clock.is_ringing()
+
+
+def _ring_an_alarm(clock, repeat=None):
+    """Sets a 7am alarm and makes it go off now, leaving it ringing."""
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, repeat)
+    for alarm in clock._alarms.values():
+        alarm["due_at"] = time.time() - 5
+    clock._tick(time.time())
+    assert clock.is_ringing()
+
+
+def test_cancelling_an_alarm_while_a_timer_rings_cancels_the_alarm(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0)
+    _ring_a_timer(clock)
+    result = clock.cancel_alarm("7am")
+    assert result["success"] and result["message"] == "7:00 AM alarm cancelled."
+    assert clock.list_alarms()["message"] == "You don't have any alarms set."
+    # The timer it had nothing to do with is still going.
+    assert clock.is_ringing()
+
+
+def test_cancelling_a_named_reminder_while_another_timer_rings(make_clock):
+    clock = make_clock()
+    clock.set_timer(3600, label="pizza")
+    _ring_a_timer(clock)
+    assert clock.cancel_timer("the pizza reminder")["message"].startswith("Reminder for ")
+    assert clock.list_timers()["message"] == "You don't have any timers running."
+    assert clock.is_ringing()
+
+
+def test_cancel_with_no_name_still_dismisses_whats_ringing(make_clock):
+    clock = make_clock()
+    clock.set_timer(3600, label="pizza")
+    _ring_a_timer(clock)
+    assert clock.cancel_timer()["message"] == "Okay."
+    assert not clock.is_ringing()
+    assert len(clock.describe_all()) == 1
+
+
+def test_cancelling_the_ringing_timer_by_name_dismisses_it(make_clock):
+    clock = make_clock()
+    _ring_a_timer(clock, label="pasta")
+    assert clock.cancel_timer("pasta")["message"] == "Okay."
+    assert not clock.is_ringing()
+
+
+def test_cancel_all_timers_while_one_rings_stops_everything(make_clock):
+    clock = make_clock()
+    clock.set_timer(3600, label="pizza")
+    _ring_a_timer(clock)
+    assert clock.cancel_timer(cancel_all=True)["success"]
+    assert not clock.is_ringing()
+    assert clock.describe_all() == []
+
+
+def test_dismissing_a_ringing_repeating_alarm_keeps_tomorrows(make_clock):
+    clock = make_clock()
+    _ring_an_alarm(clock, "daily")
+    assert clock.cancel_alarm()["message"] == "Okay."
+    assert not clock.is_ringing()
+    assert clock.list_alarms()["message"] == "One alarm: 7:00 AM alarm, every day."
+
+
+def test_stopping_a_ringing_alarm_repeating_removes_the_schedule(make_clock):
+    clock = make_clock()
+    _ring_an_alarm(clock, "daily")
+    assert clock.cancel_alarm(scope="all")["message"] == "7:00 AM alarm, every day cancelled."
+    assert not clock.is_ringing()
+    assert clock.list_alarms()["message"] == "You don't have any alarms set."
+
+
 # Saying "stop" and friends
 
 @pytest.mark.parametrize("text, dismissal", [
