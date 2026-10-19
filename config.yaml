@@ -17,6 +17,9 @@ audio:
   sample_rate: 48000
   channels: 1
   chunk_size: 2048
+  # Seconds of audio from just before the wake word was detected which are kept,
+  # so "Hey Nova what time is it", said in one breath, isn't cut short.
+  pre_roll: 0.3
 
 spotify:
   device_name: "Voice-Assistant"

@@ -104,6 +104,28 @@ for name in ("librosa", "soundfile"):
         sys.modules[name] = types.ModuleType(name)
 
 
+# sounddevice: only its InputStream, which the tests replace with their own fake.
+if _module_missing("sounddevice"):
+    sounddevice = types.ModuleType("sounddevice")
+    sounddevice.InputStream = None
+    sys.modules["sounddevice"] = sounddevice
+
+
+# openwakeword: the wake word Model and Silero's VAD. Tests give the detectors their
+# own fakes for both, so no model ever has to be downloaded.
+if _module_missing("openwakeword"):
+    openwakeword = types.ModuleType("openwakeword")
+    openwakeword_model = types.ModuleType("openwakeword.model")
+    openwakeword_vad = types.ModuleType("openwakeword.vad")
+    openwakeword_model.Model = None
+    openwakeword_vad.VAD = None
+    openwakeword.model = openwakeword_model
+    openwakeword.vad = openwakeword_vad
+    sys.modules["openwakeword"] = openwakeword
+    sys.modules["openwakeword.model"] = openwakeword_model
+    sys.modules["openwakeword.vad"] = openwakeword_vad
+
+
 class FakeConfig:
     """Stands in for Config, returning sections from a plain dict instead of config.yaml."""
 

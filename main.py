@@ -1,4 +1,4 @@
-import os, sys, time, uuid, logging, signal, threading, librosa, soundfile as sf
+import os, sys, time, uuid, logging, signal, threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -8,10 +8,12 @@ PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 # are imported through the package rather than via sys.path manipulation.
 from voice_assistant.config import Config
 from voice_assistant.audio import AudioManager
+from voice_assistant.microphone import Microphone
+from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
 from voice_assistant.text_to_speech import TextToSpeech
-from voice_assistant.wake_word import WakeWordDetector
+from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.spotify_controller import SpotifyController
 from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
@@ -86,9 +88,18 @@ class SmartAssistant:
         logger.info("Loading modules...")
         
         # Sets up the audio manager with mic settings from config.
-        self.audio = AudioManager(sample_rate=self.mic_rate, channels=audio_config.get("channels", 1), 
+        self.audio = AudioManager(sample_rate=self.mic_rate, channels=audio_config.get("channels", 1),
                                   chunk_size=audio_config.get("chunk_size", 2048))
-        
+
+        # One microphone stream for as long as the assistant runs, which the wake word
+        # detector and the recorder share - see microphone.py.
+        self.microphone = Microphone(sample_rate=self.mic_rate)
+        # Seconds of audio from just before the wake word was detected which are kept,
+        # so a request said in the same breath as it isn't cut short.
+        self.pre_roll = audio_config.get("pre_roll", 0.3)
+        # Decides which parts of a recording are speech - see vad.py.
+        self.speech_detector = make_detector(self.config)
+
         # Sets up speech-to-text with Whisper settings from config.
         whisper_config = self.config.section("whisper")
         self.stt = SpeechToText(model_size=whisper_config.get("model", "base.en"), device=whisper_config.get("device", "cpu"), 
@@ -124,7 +135,7 @@ class SmartAssistant:
         
         # Sets up the wake word detector with sensitivity settings from config.
         self.thresholds = self.config.section("thresholds")
-        self.wake = WakeWordDetector(config=self.config)
+        self.wake = WakeWordDetector(config=self.config, microphone=self.microphone)
 
         # Register _shutdown to run on Ctrl + C (SIGINT) or a termination request (SIGTERM).
         # This ensures resources get cleaned up properly instead of the app dying abruptly .
@@ -285,6 +296,7 @@ class SmartAssistant:
         logger.info("Shutting down...")
         self.running = False
         self.clock.stop()
+        self.microphone.close()
         self.audio.close()
         sys.exit(0)
 
@@ -361,37 +373,46 @@ class SmartAssistant:
             # start talking than when the user has just said the wake word.
             speech_timeout = self.thresholds.get("follow_up_timeout", speech_timeout * 2)
 
+        # Listening starts from the moment the wake word was heard - or, for the answer
+        # to a question, from now, before the listening sound, so an answer started
+        # over the sound isn't lost. The microphone never stops, so nothing said
+        # while the sound plays goes missing either way.
+        listen_from = self.microphone.position if follow_up else self.wake.heard_at
+
         # A short sound to say it's listening, since on a headless Pi there's otherwise no
-        # way to tell the wake word was heard, or when to start talking. Played before the
-        # recording starts rather than over it, so it can't be mistaken for the user speaking.
+        # way to tell the wake word was heard, or when to start talking. The microphone
+        # hears it too, but it's far too short to count as the user starting to speak.
         if self.listening_sound_enabled:
             self._play_sound("listening.wav")
 
-        # Records audio until silence / a timeout occurs.
-        audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 0.8),
-                                                     silence_threshold=self.thresholds.get("silence_threshold", 0.05),
-                                                     speech_timeout=speech_timeout,
-                                                     timeout=self.thresholds.get("recording_timeout", 10.0),
-                                                     timeline=timeline)
+        # Records audio until silence / a timeout occurs. A fresh request also keeps a
+        # moment from before the wake word was detected, since "Hey Nova what time is
+        # it" said in one breath has often started on "what" by then.
+        audio_data = self.microphone.record_until_silence(
+            self.speech_detector, listen_from=listen_from,
+            keep_before=0.0 if follow_up else self.pre_roll,
+            silence_duration=self.thresholds.get("silence_duration", 0.8),
+            speech_timeout=speech_timeout,
+            timeout=self.thresholds.get("recording_timeout", 10.0),
+            timeline=timeline)
 
         if audio_data is None or len(audio_data) == 0:
             timeline.note(outcome="no_speech")
             return
 
-        # Resamples the audio from the microphone's sample rate to the Whisper model's expected sample rate.
-        if self.mic_rate != self.whisper_rate:
-            audio_data = librosa.resample(audio_data.astype("float32"), orig_sr=self.mic_rate, target_sr=self.whisper_rate)
-
         # Transcribes the recorded audio using Whisper to text, Continues listening if no text is returned.
+        # The audio is already at Whisper's rate, since the microphone keeps it at 16kHz.
         transcription = self.stt.transcribe(audio_data)
         timeline.mark("stt_done")
         timeline.note(audio_seconds=round(len(audio_data) / self.whisper_rate, 2))
-        if not transcription or not transcription.get("text", "").strip():
+
+        # Retrieves the transcribed text, without the end of the wake word which the
+        # recording sometimes catches - see strip_wake_word.
+        text = strip_wake_word((transcription or {}).get("text", ""), self.wake_word)
+        if not text.strip():
             timeline.note(outcome="nothing_transcribed")
             return
 
-        # Retrieves and prints the transcribed text.
-        text = transcription["text"]
         timeline.note(text_chars=len(text))
         print(f"You: {text}")
 

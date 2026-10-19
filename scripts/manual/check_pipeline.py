@@ -19,6 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from voice_assistant.config import Config
 from voice_assistant.audio import AudioManager
+from voice_assistant.microphone import Microphone
+from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
 from voice_assistant.text_to_speech import TextToSpeech
@@ -49,7 +51,6 @@ def test_pipeline():
     # Retrieves audio config
     audio_config = config.section('audio')
     mic_rate = audio_config.get('sample_rate', 48000)
-    whisper_rate = 16000  # Whisper expected sample rate
 
     audio = AudioManager(
         sample_rate=mic_rate,
@@ -58,6 +59,10 @@ def test_pipeline():
         input_device=audio_config.get('input_device', 'default'),
         output_device=audio_config.get('output_device', 'default')
     )
+
+    # Recording goes through the same microphone stream and speech detector main.py uses.
+    microphone = Microphone(sample_rate=mic_rate)
+    speech_detector = make_detector(config)
 
     # Retrieves Whisper config
     whisper_config = config.section('whisper')
@@ -97,20 +102,13 @@ def test_pipeline():
         try:
             # Step 1: Record audio
             print("\n[1/4] Recording... (speak now, will auto-stop on silence)")
-            audio_data = audio.record_until_silence(
+            # Already at Whisper's rate, since the microphone keeps its audio at 16kHz.
+            audio_data = microphone.record_until_silence(
+                speech_detector,
                 silence_duration=2.0,
                 timeout=10.0
             )
             print("Recording complete")
-
-            # Resample from mic rate to Whisper's expected rate.
-            if mic_rate != whisper_rate:
-                print(f"Resampling {mic_rate}Hz -> {whisper_rate}Hz...")
-                audio_data = librosa.resample(
-                    audio_data.astype('float32'),
-                    orig_sr=mic_rate,
-                    target_sr=whisper_rate
-                )
 
             # Step 2: Speech-to-text
             print("\n[2/4] Transcribing...")

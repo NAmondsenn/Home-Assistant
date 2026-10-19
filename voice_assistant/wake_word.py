@@ -1,10 +1,8 @@
 import os
 import re
 import logging
-import numpy as np
-import sounddevice as sd
-import librosa
 from openwakeword.model import Model
+from voice_assistant.microphone import Microphone
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +10,8 @@ logger = logging.getLogger(__name__)
 # package), matching where setup.sh installs models/ and where main.py runs.
 PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-OWW_RATE = 16000  # openWakeWord model expects 16kHz audio
-CHUNK_SECONDS = 0.08  # audio processing chunk length (80ms)
+# openWakeWord works through audio 80ms at a time - this many samples at 16kHz.
+CHUNK_SAMPLES = 1280
 
 # Fallback wake word phrase if no config is passed in
 DEFAULT_WAKE_WORD = "Hey Nova"
@@ -25,6 +23,37 @@ def _wake_word_filename(phrase):
     """
     return re.sub(r'\s+', '_', phrase.strip().lower())
 
+def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
+    """
+    Removes the wake word from the start of a transcription.
+
+    A recording starts a moment before the wake word was detected (see
+    Microphone.record_until_silence), so its end is sometimes transcribed too -
+    "Nova. Stop." - which would stop a short reply like that being recognised as
+    dismissing a timer, since every word of one has to be a dismissal.
+
+    Args:
+        text: What Whisper heard.
+        phrase: The wake word, e.g. "Hey Nova".
+
+    Returns:
+        The text without the wake word in front, e.g. "Stop."
+    """
+    words = phrase.split()
+    if not words:
+        return text
+
+    # Matches the whole phrase or only the end of it ("Hey Nova" or just "Nova"),
+    # along with whatever punctuation Whisper put around it - but only as whole
+    # words, so "Novak Djokovic" is left as it is.
+    pattern = ""
+    for word in words[:-1]:
+        pattern = rf"(?:{pattern}{re.escape(word)}\W+)?"
+    pattern = rf"^\W*{pattern}{re.escape(words[-1])}\b\W*"
+
+    rest = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
+    return rest[:1].upper() + rest[1:]
+
 class WakeWordDetector:
     """
     A simple wake word detector using the openWakeWord library. The wake word phrase,
@@ -33,7 +62,15 @@ class WakeWordDetector:
     between 0 and 1.
     """
 
-    def __init__(self, config=None, sensitivity=None):
+    def __init__(self, config=None, sensitivity=None, microphone=None):
+        """
+        Args:
+            config: Configs loaded from config.yaml.
+            sensitivity: Overrides the configured wake_word_confidence.
+            microphone: The shared Microphone to listen through. Left out, one is
+                opened on first use - for running the detector on its own, as
+                scripts/manual/check_wake_word.py does.
+        """
         # Pulls sensitivity from config.yaml's "thresholds" section, the wake word
         # phrase from "assistant", and the mic sample rate from "audio".
         thresholds_config = config.section("thresholds") if config else {}
@@ -42,7 +79,9 @@ class WakeWordDetector:
 
         # Mic settings come from the same audio section the rest of the app uses.
         self.mic_rate = audio_config.get("sample_rate", 48000)
-        self.chunk_size = int(self.mic_rate * CHUNK_SECONDS)
+        self.microphone = microphone
+        # The microphone position at which the wake word was last heard - see listen_once.
+        self.heard_at = None
 
         self.sensitivity = sensitivity if sensitivity is not None else thresholds_config.get("wake_word_confidence",
                                                                                              0.5)
@@ -59,27 +98,27 @@ class WakeWordDetector:
 
     def listen_once(self):
         """
-        This method opens the mic stream and listens for the wake word. It processes audio in chunks of 80ms,
-        resamples it to 16kHz, and checks for the wake word. This method will loop indefinitely until the
-        wake word is detected, at which point it returns the confidence score as a float.
+        Listens for the wake word, reading the shared microphone stream 80ms at a
+        time from the moment this is called. Loops until the wake word is heard.
+
+        Returns:
+            The confidence score as a float. heard_at is set to the microphone
+            position at that moment, so a recording can carry on from there.
         """
+        if self.microphone is None:
+            self.microphone = Microphone(sample_rate=self.mic_rate)
+
         logger.info(f"Listening for '{self.wake_word_phrase}'...")
         self.model.reset()
 
-        with sd.InputStream(samplerate=self.mic_rate, channels=1, dtype='int16', blocksize=self.chunk_size) as stream:
-            while True:
-                audio_data, _ = stream.read(self.chunk_size)
-                audio_array = audio_data.flatten().astype(np.float32) / 32768.0
+        reader = self.microphone.listen()
+        while True:
+            # Feeds audio into the openWakeWord model and gets the prediction score for the configured wake word
+            prediction = self.model.predict(reader.read(CHUNK_SAMPLES))
+            score = prediction.get(self.wake_word_key, 0)
 
-                # Resamples the audio to 16kHz for the openWakeWord model
-                audio_16k = librosa.resample(audio_array, orig_sr=self.mic_rate, target_sr=OWW_RATE)
-                audio_16k_int = (audio_16k * 32768.0).astype(np.int16)
-
-                # Feeds audio into the openWakeWord model and gets the prediction score for the configured wake word
-                prediction = self.model.predict(audio_16k_int)
-                score = prediction.get(self.wake_word_key, 0)
-
-                # Returns the confidence score and logs it if the wake word is detected
-                if score >= self.sensitivity:
-                    logger.info(f"Wake word detected! (confidence: {score:.2f})")
-                    return float(score)
+            # Returns the confidence score and logs it if the wake word is detected
+            if score >= self.sensitivity:
+                self.heard_at = reader.position
+                logger.info(f"Wake word detected! (confidence: {score:.2f})")
+                return float(score)

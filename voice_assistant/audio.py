@@ -1,12 +1,12 @@
 """
 Audio Management Module.
 
-This module handles real-time microphone recording, silence detection, audio playback,
-WAV file saving, and sample rate conversion using PyAudio and Librosa.
+This module handles audio playback, WAV file saving, sample rate conversion, and
+fixed-length recordings for testing, using PyAudio and Librosa. Listening for the
+user - the wake word and their requests - goes through microphone.py instead.
 """
 
 import os
-import time
 import wave
 import logging
 import pyaudio
@@ -142,115 +142,6 @@ class AudioManager:
         # Logs the number of recorded samples.
         logger.info(f"Recorded {len(audio_float)} samples")
         # Return the normalised audio array.
-        return audio_float
-
-    def record_until_silence(
-            self,
-            timeout: float = 5.0,
-            silence_threshold: float = 0.04,
-            silence_duration: float = 2.0,
-            speech_chunks_needed: int = 3,
-            speech_timeout: float = 3.0,
-            timeline=None
-    ) -> np.ndarray:
-        """
-        Record audio until silence is detected or the timeout is reached.
-
-        Args:
-            timeout: Maximum recording duration in seconds.
-            silence_threshold: Threshold in which sound is considered silent.
-            silence_duration: Duration of consecutive silence in seconds.
-            speech_chunks_needed: Consecutive loud chunks required before the
-                recording counts as having started. This stops the tail of the
-                wake word, or a click as the stream opens, from being mistaken
-                for the user speaking.
-            speech_timeout: How long to wait for the user to start speaking before
-                giving up, so a false wake word trigger doesn't sit recording
-                silence for the full timeout.
-            timeline: Optional Timeline to mark when listening started, when speech
-                started and ended, and when the recording stopped.
-
-        Returns:
-            Numpy array of normalised float32 audio samples.
-        """
-        logger.info("Recording until silence...")
-
-        # Open the audio stream with the specified parameters.
-        stream = self.pa.open(
-            format=pyaudio.paInt16,
-            channels=self.channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self.input_device_index,
-            frames_per_buffer=self.chunk_size
-        )
-
-        if timeline:
-            timeline.mark("recording_started")
-
-        frames = []
-        silence_chunks = 0
-        speech_chunks = 0
-        speech_started = False
-        # When the last loud chunk arrived - the moment the user actually stopped
-        # talking, as opposed to when the silence after it was long enough to stop.
-        last_loud = None
-        silence_chunks_needed = int(silence_duration * self.sample_rate / self.chunk_size)
-        max_chunks = int(timeout * self.sample_rate / self.chunk_size)
-        speech_timeout_chunks = int(speech_timeout * self.sample_rate / self.chunk_size)
-
-        # Read audio data until silence is detected or timeout is reached.
-        # Silence only starts counting once speech has actually been heard, so a
-        # pause before the user starts talking doesn't end the recording early.
-        try:
-            for i in range(max_chunks):
-                data = stream.read(self.chunk_size, exception_on_overflow=False)
-                frames.append(data)
-
-                # Calculate Root Mean Square (RMS) energy to measure audio volume level.
-                audio_chunk = self._bytes_to_float(data)
-                rms = np.sqrt(np.mean(audio_chunk ** 2))
-
-                # Gives up early if the user never started speaking, so a false wake
-                # word trigger doesn't leave the assistant recording silence.
-                if not speech_started and i >= speech_timeout_chunks:
-                    logger.info(f"No speech within {speech_timeout:.1f}s, cancelling")
-                    return np.array([], dtype=np.float32)
-
-                # Breaks recording once silence follows speech.
-                if rms < silence_threshold:
-                    speech_chunks = 0
-                    if speech_started:
-                        silence_chunks += 1
-                        if silence_chunks >= silence_chunks_needed:
-                            elapsed = i * self.chunk_size / self.sample_rate
-                            logger.info(f"Silence detected after {elapsed:.1f}s")
-                            break
-                else:
-                    # Several loud chunks in a row are needed before this counts as
-                    # the user speaking, rather than a single click or the wake word's tail.
-                    speech_chunks += 1
-                    silence_chunks = 0
-                    last_loud = time.monotonic()
-                    if not speech_started and speech_chunks >= speech_chunks_needed:
-                        speech_started = True
-                        logger.info("Speech detected, listening for the end of the query...")
-                        if timeline:
-                            timeline.mark("speech_started")
-        finally:
-            # Safely stop the stream and close the audio device.
-            stream.stop_stream()
-            stream.close()
-
-        if timeline:
-            if speech_started and last_loud is not None:
-                timeline.mark("speech_ended", at=last_loud)
-            timeline.mark("recording_stopped")
-
-        # Join all recorded frames into a single numpy array.
-        # This also logs the total number of recorded samples and returns the audio array.
-        audio_float = self._bytes_to_float(b''.join(frames))
-        logger.info(f"Recorded {len(audio_float)} samples")
         return audio_float
 
     def play(self, audio: np.ndarray, sample_rate: Optional[int] = None):
