@@ -1,4 +1,4 @@
-import os, sys, time, uuid, logging, signal, threading
+import os, time, uuid, logging, signal, threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -64,6 +64,8 @@ class SmartAssistant:
 
         # Controls the main loop of the assistant. When set to False, the assistant will stop running.
         self.running = False
+        # Set once a stop signal has arrived - see _shutdown.
+        self._stopping = False
 
         # How many times in a row the assistant may ask a question and listen for the
         # answer without the wake word, so it can't hold the microphone indefinitely.
@@ -309,14 +311,29 @@ class SmartAssistant:
     def _shutdown(self, *args):
         """
         Called automatically when the program receives Ctrl+C or a termination request.
-        Closes the audio stream properly before exiting, so the microphone doesn't get left in a locked state.
+
+        Only stops the main loop, by raising SystemExit in whatever it was doing. The
+        cleanup happens in run() once that has unwound, rather than in here, where
+        tearing the audio down part way through something could close a stream out
+        from under a recording still using it. A second signal while it's shutting
+        down is ignored, so it can't cut the cleanup short.
         """
+        if self._stopping:
+            return
+        self._stopping = True
         logger.info("Shutting down...")
         self.running = False
+        raise SystemExit(0)
+
+    def _clean_up(self):
+        """
+        Closes everything down in order - the clock, so nothing else starts ringing,
+        then the speaker and the microphone - so neither device is left locked.
+        """
         self.clock.stop()
-        self.microphone.close()
         self.speaker.close()
-        sys.exit(0)
+        self.microphone.close()
+        logger.info("Shut down cleanly")
 
     def run(self):
         """
@@ -327,6 +344,15 @@ class SmartAssistant:
         self.running = True
         print(f"\n{self.name} is ready. Say {self.wake_word} to activate.\n")
 
+        # However the loop ends - a stop signal (see _shutdown) or something
+        # unexpected - everything is closed down here, once, on the main thread.
+        try:
+            self._listen_forever()
+        finally:
+            self._clean_up()
+
+    def _listen_forever(self):
+        """Listens for the wake word and handles each interaction, until stopped."""
         # Main system loop that runs until self.running is set to False.
         # This loop uses try/except to catch any unexpected errors and log them rather than crashing the assistant.
         while self.running:
