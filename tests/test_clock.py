@@ -8,6 +8,7 @@ here touches the real data/ folder or waits on a real clock.
 """
 
 import json
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -234,6 +235,31 @@ def test_a_timer_ringing_when_the_assistant_stops_is_reported_as_missed(make_clo
     saved["ringing"][0]["due_at"] = time.time() - 60
     (tmp_path / "timers.json").write_text(json.dumps(saved))
     assert [timer["duration"] for timer in make_clock()._missed] == [60]
+
+
+def test_one_ringing_item_doesnt_hold_up_another(make_clock):
+    # The clock used to play each round itself, so while one item was ringing -
+    # an alarm cycle lasts two and a half minutes - nothing else was even checked.
+    first_finished = threading.Event()
+    seen = {}
+
+    def on_announce(clock, announcement):
+        if "first" in announcement["message"]:
+            time.sleep(0.5)
+            first_finished.set()
+        else:
+            seen["first_still_ringing"] = not first_finished.is_set()
+
+    clock = make_clock(on_announce=on_announce)
+    clock._rounds_on_threads = True
+    clock.set_timer(60, label="first")
+    clock.set_timer(120, label="second")
+    now = time.time()
+    clock._tick(now + 61)
+    clock._tick(now + 121)
+
+    first_finished.wait(2)
+    assert seen == {"first_still_ringing": True}
 
 
 def test_timers_are_held_until_the_system_clock_is_set(make_clock):

@@ -282,6 +282,11 @@ class Clock:
 
         self._running = True
         # A daemon thread so it never keeps the assistant alive on shutdown.
+        # Each round of ringing runs on a thread of its own when the clock has its
+        # background thread - see _run_round. The tests step through without one,
+        # so there a round simply runs in whatever called it.
+        self._rounds_on_threads = start
+
         if start:
             self._thread = threading.Thread(target=self._run, daemon=True, name="clock")
             self._thread.start()
@@ -644,16 +649,37 @@ class Clock:
         for alarm in due_alarms:
             self._start_ringing(alarm, "alarm", now)
 
-        # Repeats anything which went off and hasn't been dismissed yet.
+        # Repeats anything which went off and hasn't been dismissed yet - unless its
+        # last round is still going.
         repeat_now = []
         with self._lock:
-            for entry in list(self._ringing):
-                if entry["next_at"] <= now:
-                    self._ringing.remove(entry)
+            for entry in self._ringing:
+                if not entry["busy"] and entry["next_at"] <= now:
+                    entry["busy"] = True
                     repeat_now.append(entry)
 
         for entry in repeat_now:
-            self._continue_ringing(entry)
+            self._run_round(self._continue_ringing, entry)
+
+    def _run_round(self, round_function: Callable[[Dict], None], entry: Dict):
+        """
+        Runs one round of ringing, on a thread of its own so the clock carries on
+        checking everything else meanwhile.
+
+        A round can take minutes - an alarm cycle is two and a half minutes of
+        sound, and any round can wait up to a minute for a conversation to finish.
+        Run on the clock's own thread, that held up every other timer, so one which
+        came due during an alarm went off minutes late.
+
+        Args:
+            round_function: _first_round or _continue_ringing.
+            entry: The ringing entry, already marked busy.
+        """
+        if self._rounds_on_threads:
+            threading.Thread(target=round_function, args=(entry,), daemon=True,
+                             name=f"ringing-{entry['kind']}").start()
+        else:
+            round_function(entry)
 
     def _start_ringing(self, item: Dict, kind: str, now: float):
         """
@@ -679,42 +705,49 @@ class Clock:
                 # it has no separate deadline to watch.
                 "give_up_at": None if give_up_after is None else now + give_up_after,
                 # True only while it's actually making noise - see _ring_once.
-                "sounding": False}
+                "sounding": False,
+                # True while one of its rounds is playing, so _tick doesn't start
+                # another on top of it - see _run_round.
+                "busy": True}
         with self._lock:
             self._ringing.append(entry)
             if kind == "clock":
                 self._save()
 
+        self._run_round(self._first_round, entry)
+
+    def _first_round(self, entry: Dict):
+        """
+        Rings the first round for something which has just come due - see
+        _start_ringing.
+        """
         still_ringing = self._ring_once(entry, repeat=False)
 
         # Timed from when it actually finished speaking, not from when it was
         # due. An announcement held back while the user was talking to the
         # assistant would otherwise be followed immediately by the next one,
         # bunching them together.
-        entry["next_at"] = time.time() + gap
+        entry["next_at"] = time.time() + entry["gap"]
 
-        # rounds is None for a timer or reminder, which are bounded by give_up_at
+        # left is None for a timer or reminder, which are bounded by give_up_at
         # instead - see _repeat_settings. An alarm can end on the very first round
-        # if rounds is 1, which the current default doesn't, but is possible.
-        if not still_ringing or (rounds is not None and rounds <= 1):
+        # if it only has one, which the current default doesn't, but is possible.
+        if not still_ringing or (entry["left"] is not None and entry["left"] <= 0):
             self._end_ringing(entry)
+        entry["busy"] = False
 
     def _continue_ringing(self, entry: Dict):
         """
-        Rings the next round for something already ringing, having been put back
-        in the queue for it (see _run). Ends it - dismissed or not - once its
-        rounds run out, or once it's been ringing longer than it's allowed to.
+        Rings the next round for something already ringing, once _tick finds it's
+        due again (see _run_round). Ends it - dismissed or not - once its rounds
+        run out, or once it's been ringing longer than it's allowed to.
         """
-        # Put back before anything else, so it can be dismissed mid-round and so
-        # _end_ringing below can find it to record it as missed.
-        with self._lock:
-            self._ringing.append(entry)
-
         # A timer or reminder is stopped by the clock rather than by a round count.
         # Checked before it speaks rather than after, so the last thing the user
         # hears is a full round and not one cut off part way through.
         if entry["give_up_at"] is not None and time.time() >= entry["give_up_at"]:
             self._end_ringing(entry)
+            entry["busy"] = False
             return
 
         if entry["left"] is not None:
@@ -731,6 +764,7 @@ class Clock:
             entry["next_at"] = time.time() + entry["gap"]
         else:
             self._end_ringing(entry)
+        entry["busy"] = False
 
     def _end_ringing(self, entry: Dict):
         """

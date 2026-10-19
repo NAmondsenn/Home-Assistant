@@ -74,6 +74,10 @@ class SmartAssistant:
         # Timer announcements wait on this, so they don't talk over a conversation.
         self._idle = threading.Event()
         self._idle.set()
+        # Held while something which went off is being announced. The clock rings
+        # each timer on a thread of its own, so two going off together would
+        # otherwise talk over each other.
+        self._announcing = threading.Lock()
 
         # What was going off when the wake word last fired, and whether the user
         # has already been asked about a reminder this conversation - see
@@ -246,6 +250,11 @@ class SmartAssistant:
             still_wanted: Called before anything plays, so a timer or alarm the
                           user dismissed while this was waiting stays quiet.
         """
+        with self._announcing:
+            self._announce_in_turn(message, sound, boost, still_wanted)
+
+    def _announce_in_turn(self, message, sound, boost, still_wanted):
+        """The body of _announce, run once any other announcement has finished."""
         # Waits for any conversation to finish before making any announcements.
         if not self._wait_for_turn(still_wanted):
             return
