@@ -165,14 +165,28 @@ class ActionExecutor:
         # level well enough.
         return self._with_beep("general", self.spotify.set_volume(target))
 
+    def _unnamed_volume_category(self) -> str:
+        """
+        Which volume a request like "turn it down" means when it doesn't say.
+
+        The music, if it was playing when the user spoke - that's what they'll have
+        been listening to - and the assistant's own voice otherwise. Before this the
+        model always chose the assistant's voice, so "turn it down" with music on
+        changed nothing the user could actually hear.
+        """
+        if self.spotify and self.spotify.was_playing():
+            return "music"
+        return "general"
+
     def _change_volume(self, action: Dict) -> Dict:
         """
         Changes a volume level.
 
         Args:
-            action: Dict with a 'category', and either 'level' to set an exact value
-                    or 'direction' ('up' / 'down') to step it, optionally with an
-                    'amount' to override the standard step.
+            action: Dict with a 'category' (or None when the user didn't say which),
+                    and either 'level' to set an exact value or 'direction'
+                    ('up' / 'down') to step it, optionally with an 'amount' to
+                    override the standard step.
 
         Returns:
             Dict with 'success' and a relevant message.
@@ -180,7 +194,7 @@ class ActionExecutor:
         if not self.volume:
             return {"success": False, "message": "Volume control isn't available right now."}
 
-        category = action.get("category", "general")
+        category = action.get("category") or self._unnamed_volume_category()
 
         if category == "music":
             return self._change_spotify_volume(action)

@@ -18,7 +18,7 @@ import os
 import json
 import logging
 import tempfile
-from typing import Callable, Dict, Optional
+from typing import Dict, Optional
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -40,15 +40,12 @@ class VolumeControl:
     # start at full, since something which goes off unprompted is no use unheard.
     DEFAULT_LEVELS = {"general": 0.7, "alarm": 1.0}
 
-    def __init__(self, config=None, on_general_change: Optional[Callable[[float], None]] = None):
+    def __init__(self, config=None):
         """
         Args:
             config: Configs loaded from config.yaml, for the step size.
-            on_general_change: Called with the new level whenever the general
-                               volume changes, so Spotify can be brought in line.
         """
         sounds_config = config.section("sounds") if config else {}
-        self.on_general_change = on_general_change
 
         # Fixed step size for volume controls, as a percentage point.
         self.step = self._clamp_step(sounds_config.get("volume_step", 10))
@@ -157,14 +154,6 @@ class VolumeControl:
 
         self._levels[category] = self._clamp(percent / 100.0)
         self._save()
-
-        # Spotify is brought in line here rather than by the caller, so it can't be
-        # forgotten wherever the volume happens to be changed from.
-        if category == "general" and self.on_general_change:
-            try:
-                self.on_general_change(self._levels["general"])
-            except Exception as e:
-                logger.warning(f"Could not pass the volume change on: {e}")
 
         new_percent = self.percent(category)
         logger.info(f"{category.capitalize()} volume set to {new_percent}%")

@@ -353,11 +353,11 @@ class LLMHandler:
         {
             "name": "set_volume",
             "description": (
-                "Change how loud the assistant is. Always use the 'general' category unless "
-                "the user specifically mentions alarms or reminders - 'turn it up', 'volume "
-                "up' and 'too loud' all mean general, which covers the assistant's voice and "
-                "the music together. Give either level (to set a specific value) or change "
-                "(to move it up or down), not both."
+                "Change how loud something is. For a bare 'turn it up', 'volume up', 'too loud' "
+                "or 'set the volume to 40' that doesn't say what, leave category out - the "
+                "assistant works out from what's playing whether that means the music or its own "
+                "voice. Give either level (to set a specific value) or direction (to move it up "
+                "or down), not both."
             ),
             "input_schema": {
                 "type": "object",
@@ -366,13 +366,13 @@ class LLMHandler:
                         "type": "string",
                         "enum": ["general", "music", "alarm"],
                         "description": (
-                            "'general' for the assistant's own voice, and for a bare 'volume "
-                            "up' or 'too loud'. 'music' when the user means what's playing, "
-                            "e.g. 'turn the music down'. 'alarm' for anything which goes off "
-                            "by itself - timers, reminders and alarms all share this one, so "
-                            "'turn the timer volume down' and 'reminders are too loud' are "
-                            "both 'alarm'. Each is separate, so changing one leaves the "
-                            "others alone."
+                            "Only when the user says which. 'general' for the assistant's own "
+                            "voice ('talk quieter', 'your voice is too loud'). 'music' when they "
+                            "mean what's playing ('turn the music down'). 'alarm' for anything "
+                            "which goes off by itself - timers, reminders and alarms all share "
+                            "this one, so 'turn the timer volume down' and 'reminders are too "
+                            "loud' are both 'alarm'. Each is separate, so changing one leaves "
+                            "the others alone."
                         ),
                     },
                     "level": {
@@ -399,7 +399,6 @@ class LLMHandler:
                         ),
                     },
                 },
-                "required": ["category"],
             },
         },
         {
@@ -514,8 +513,9 @@ class LLMHandler:
                     "scope": params.get("scope") or None}
 
         if block.name == "set_volume":
+            # Left as None when the user didn't say which - the executor works it out.
             return {"type": "volume",
-                    "category": params.get("category", "general"),
+                    "category": params.get("category") or None,
                     "level": params.get("level"),
                     "direction": params.get("direction"),
                     "amount": params.get("amount")}

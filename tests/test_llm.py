@@ -31,3 +31,8 @@ def llm():
 def test_set_alarm_tool_becomes_a_clock_action(llm, params, repeat):
     action = llm._action_from_tool_use(_tool("set_alarm", **params))
     assert action == {"type": "clock", "command": "set_alarm", "hour": 7, "minute": 0, "repeat": repeat}
+
+
+def test_volume_without_a_category_is_left_for_the_executor(llm):
+    action = llm._action_from_tool_use(_tool("set_volume", direction="up"))
+    assert action["type"] == "volume" and action["category"] is None

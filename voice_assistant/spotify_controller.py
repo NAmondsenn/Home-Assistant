@@ -803,8 +803,8 @@ class SpotifyController:
         """
         Set the volume of the Connect device.
 
-        Called when the assistant's general volume changes, so music and speech
-        stay in proportion rather than being adjusted separately.
+        This is the music's own volume, kept separate from the assistant's voice
+        and alarm levels - changing one never moves the others.
 
         Args:
             percent: Volume from 0 to 100.
@@ -1079,6 +1079,13 @@ class SpotifyController:
         except Exception as e:
             # Never let this stop the assistant from replying.
             logger.warning(f"Could not pause for speech: {e}")
+
+    def was_playing(self) -> bool:
+        """
+        Whether music was playing when the user started speaking - that is, whether
+        pause_for_speech() paused it. Read from memory, so it costs no request.
+        """
+        return self._paused_for_speech
 
     def cancel_resume(self):
         """
