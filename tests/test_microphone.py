@@ -145,6 +145,20 @@ def test_captured_audio_is_kept_at_16khz(streams):
     assert 15500 < microphone.position <= 16000
 
 
+def test_full_scale_audio_is_clipped_rather_than_wrapping_around(streams):
+    # Resampling a jump from full scale negative to full scale positive overshoots
+    # past 1.0, and converting that to 16-bit without clipping wrapped it round to
+    # the opposite extreme - a loud click in what the wake word model was hearing.
+    microphone = Microphone(sample_rate=48000)
+    step = np.concatenate([np.full(24000, -1.0), np.full(24000, 1.0)]).astype(np.float32)
+    for start in range(0, len(step), 1440):
+        streams[0].callback(step[start:start + 1440].reshape(-1, 1), 1440, None, None)
+
+    heard = microphone.listen(start=0).read(microphone.position)
+    first_positive = int(np.argmax(heard > 0))
+    assert np.all(heard[:first_positive] <= 0) and np.all(heard[first_positive:] > 0)
+
+
 # Recovering
 
 def test_a_microphone_which_goes_quiet_is_reopened(streams):
