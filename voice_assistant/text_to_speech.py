@@ -151,7 +151,6 @@ class TextToSpeech:
             Tuple of (audio_array, sample_rate), or (None, None) on failure.
         """
         try:
-            import numpy as np
             import soundfile as sf
 
             # Creates a temporary file which Piper writes to, this is deleted upon use.
@@ -218,7 +217,7 @@ def main():
             # Terminal command to play the test file.
             print(f"Play with: aplay {output_file}")
         else:
-            print(f"Failed.")
+            print("Failed.")
         print()
 
 # Tests the TextToSpeech class manually.

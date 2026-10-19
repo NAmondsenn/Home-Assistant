@@ -1,0 +1,46 @@
+# Runs on every push and pull request: ruff, for the mistakes it can spot without
+# running anything, and the test suite. The tests only need a handful of packages -
+# conftest.py stands in for the hardware and network ones - so this doesn't install
+# the whole of requirements.txt, and takes well under a minute.
+#
+# Once a week it also checks requirements.lock for packages with known security
+# problems, since those turn up without the code changing at all.
+name: Checks
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 7 * * 1"
+
+jobs:
+  tests:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # What Raspberry Pi OS Bookworm (3.11) and Trixie (3.13) come with.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install what the tests need
+        run: pip install pytest ruff==0.17.1 numpy==2.4.6 soxr==1.1.0 soundfile==0.14.0 PyYAML==6.0.3 requests==2.34.2
+      - name: Lint
+        run: ruff check .
+      - name: Tests
+        run: pytest
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check the locked packages for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.lock --no-deps --disable-pip
