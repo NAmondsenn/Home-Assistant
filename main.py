@@ -78,7 +78,8 @@ class SmartAssistant:
         # What was going off when the wake word last fired, and whether the user
         # has already been asked about a reminder this conversation - see
         # _handle_interaction.
-        self._ringing_at_wake = {"insistent": False, "reminder": None, "reminder_sounding": False}
+        self._ringing_at_wake = {"insistent": False, "insistent_entries": [], "reminder": None,
+                                 "reminder_sounding": False}
         self._reminder_offered = False
         # Set while waiting on the answer to "shall I turn that reminder off?".
         self._reminder_answer_pending = False
@@ -458,7 +459,7 @@ class SmartAssistant:
         # word rather than now, so one which came due mid-conversation - which the
         # user hasn't heard, because announcements wait for the interaction to end -
         # isn't silenced along with it.
-        was_insistent = self._ringing_at_wake.get("insistent", False)
+        heard_ringing = self._ringing_at_wake.get("insistent_entries", [])
 
         # Sends transcribed text to the LLM for processing, along with what's currently on the
         # clock, so a mangled label like "walk the frogs" can still be matched to the real
@@ -491,8 +492,8 @@ class SmartAssistant:
         # after the action has run, so a request which was itself about the timer
         # ("cancel the timer") still finds it ringing and dismisses it, rather than
         # finding it already silent and deleting a pending one instead.
-        if was_insistent:
-            self.clock.silence_insistent()
+        if heard_ringing:
+            self.clock.silence_insistent(heard_ringing)
 
         # An action either confirms itself - the music changing, or a sound - or has
         # its message said in place of the model's own reply, which for a tool call is

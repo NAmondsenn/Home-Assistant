@@ -922,6 +922,9 @@ class Clock:
             Dict with:
               'insistent'        - a timer or alarm is going off. Talking to the
                                    assistant at all is enough to stop these.
+              'insistent_entries'- exactly which ones, for silence_insistent - so
+                                   one which only starts during the conversation
+                                   isn't silenced along with them.
               'reminder'         - the label of a reminder going off, or None. A
                                    reminder needs acknowledging in its own right.
               'reminder_sounding'- True if that reminder is mid-announcement rather
@@ -931,15 +934,17 @@ class Clock:
             entries = list(self._ringing)
 
         reminders = [e for e in entries if not self._is_insistent(e)]
+        insistent = [e for e in entries if self._is_insistent(e)]
         return {
-            "insistent": any(self._is_insistent(e) for e in entries),
+            "insistent": bool(insistent),
+            "insistent_entries": insistent,
             "reminder": reminders[0]["timer"]["label"] if reminders else None,
             "reminder_sounding": any(e.get("sounding") for e in reminders),
         }
 
-    def silence_insistent(self) -> bool:
+    def silence_insistent(self, heard: Optional[List[Dict]] = None) -> bool:
         """
-        Silences any timer or alarm going off, leaving reminders alone.
+        Silences timers and alarms going off, leaving reminders alone.
 
         Used when the user has said something to the assistant while one is ringing:
         talking at all means they've heard it, whatever they actually asked for. A
@@ -947,13 +952,21 @@ class Clock:
         right (see main.py) - and the missed list is left alone too, since this
         isn't the user saying they've caught up on what they missed.
 
+        Args:
+            heard: The ringing entries the user could hear when they started talking,
+                as from ringing_state()["insistent_entries"]. Only those are
+                silenced: a timer which came due while the assistant was replying
+                hasn't been announced yet - announcements wait for the conversation
+                to end - so it mustn't be silenced unheard. None silences all of them.
+
         Returns:
             True if anything was actually silenced.
         """
         with self._lock:
             keep, silenced = [], []
             for entry in self._ringing:
-                (silenced if self._is_insistent(entry) else keep).append(entry)
+                wanted = self._is_insistent(entry) and (heard is None or any(entry is h for h in heard))
+                (silenced if wanted else keep).append(entry)
             self._ringing = keep
 
         if silenced:

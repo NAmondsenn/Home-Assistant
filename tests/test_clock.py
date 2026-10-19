@@ -138,6 +138,22 @@ def test_a_timer_rings_when_due_and_dismisses(make_clock):
     assert not clock.is_ringing()
 
 
+def test_talking_only_silences_what_was_ringing_at_the_wake_word(make_clock):
+    # A timer which comes due while the assistant is replying hasn't been heard yet,
+    # since announcements wait for the conversation to end - so it mustn't be
+    # silenced along with the one the user was answering.
+    clock = make_clock()
+    clock.set_timer(60)
+    clock.set_timer(180)
+    now = time.time()
+    clock._tick(now + 61)
+    heard = clock.ringing_state()["insistent_entries"]
+    clock._tick(now + 181)
+
+    assert clock.silence_insistent(heard)
+    assert [entry["timer"]["duration"] for entry in clock._ringing] == [180]
+
+
 def test_timers_are_held_until_the_system_clock_is_set(make_clock):
     clock = make_clock()
     clock.set_timer(60)
