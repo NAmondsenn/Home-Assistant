@@ -52,8 +52,11 @@ web_search:
 thresholds:
   # How long the user has to be quiet before the recording stops.
   silence_duration: 0.8
-  # Volume below which audio counts as silence.
-  # Raise this if the assistant keeps listening for too long after you've stopped talking.
+  # How sure the voice activity model has to be that it's hearing speech, from 0 to 1.
+  # Raise it if background noise keeps recordings going; lower it if quiet speech is missed.
+  vad_threshold: 0.5
+  # Only used if the voice activity model can't be loaded: volume below which audio
+  # counts as silence.
   silence_threshold: 0.05
   # How long to wait for the user to start talking after the wake word before canceling.
   speech_timeout: 3.0
