@@ -21,6 +21,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
+from voice_assistant.logging_setup import TRANSCRIPT
+
 # Logger setup
 logger = logging.getLogger(__name__)
 
@@ -1270,7 +1272,7 @@ class Clock:
         # An alarm's bursts have no message, and come every few seconds, so they
         # aren't logged one by one.
         if message:
-            logger.info(f"Timer finished: {message}")
+            logger.info(f"Timer finished: {message}", extra=TRANSCRIPT)
 
         if self.on_timer_finished:
             try:

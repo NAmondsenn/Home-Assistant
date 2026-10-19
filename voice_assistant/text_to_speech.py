@@ -9,6 +9,10 @@ import wave
 import logging
 from pathlib import Path
 
+# The same marker as logging_setup.TRANSCRIPT, for lines holding what's said.
+# Written out rather than imported, so this file can still be run on its own (see main).
+TRANSCRIPT = {"transcript": True}
+
 # Logger setup
 logger = logging.getLogger(__name__)
 
@@ -96,7 +100,7 @@ class TextToSpeech:
                 logger.warning("No text provided.")
                 return None
 
-            logger.info(f"Synthesising: '{text[:50]}...'")
+            logger.info(f"Synthesising: '{text[:50]}...'", extra=TRANSCRIPT)
 
             # Runs Piper directly (no shell) and feeds the text via stdin.
             # Passing the text as stdin rather than interpolating it into a shell

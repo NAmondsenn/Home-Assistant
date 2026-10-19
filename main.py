@@ -20,21 +20,20 @@ from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
 from voice_assistant.actions import ActionExecutor, confirm
 from voice_assistant.timeline import Timeline
+from voice_assistant.logging_setup import TRANSCRIPT, log_transcripts, setup_logging, transcripts_logged
 
 # Loads environment variables from .env
 load_dotenv()
-# Creates the logs folder if it doesn't already exist.
-os.makedirs(os.path.join(PROJECT_DIRECTORY, "logs"), exist_ok=True)
-# Logging configuration for the entire application.
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                    handlers=[logging.FileHandler(os.path.join(PROJECT_DIRECTORY, "logs", "smart_assistant.log")), logging.StreamHandler()])
-# Logger for the SmartAssistant class
+# Logger for the SmartAssistant class. Where its lines go is set up when the
+# assistant is run (see the bottom of this file), not on import.
 logger = logging.getLogger(__name__)
 
 class SmartAssistant:
     def __init__(self):
         # Loads settings from config.yaml
         self.config = Config()
+        # Whether what's said, and the replies, are kept in the logs - see logging_setup.py.
+        log_transcripts(self.config.section("logging").get("log_transcripts", True))
 
         # Retrieves the assistant's configuration section from config.yaml
         assistant_config = self.config.section("assistant")
@@ -155,6 +154,15 @@ class SmartAssistant:
         
         logger.info(f"{self.name} ready!")
 
+    def _show(self, line):
+        """
+        Prints a line of the conversation. The console is the system journal when
+        running as a service, so this is left out along with the logged transcripts
+        when logging.log_transcripts is off.
+        """
+        if transcripts_logged():
+            print(line)
+
     def _play_sound(self, name, volume=None):
         """
         Plays one of the assistant's sound effects, waiting for it to finish.
@@ -182,7 +190,7 @@ class SmartAssistant:
             message: What to say.
             timeline: Optional Timeline to mark when the speech was ready and when it finished.
         """
-        print(f"{self.name}: {message}")
+        self._show(f"{self.name}: {message}")
         if self.tts.synthesise(message, self.tts_file) is None:
             logger.error("TTS synthesis failed, skipping playback")
             return
@@ -294,7 +302,7 @@ class SmartAssistant:
         try:
             # An alarm's later bursts aren't printed, since there's one every few seconds.
             if message or not start:
-                print(f"\n{self.name}: {message}" if message else f"\n{self.name}: [{sound}]")
+                self._show(f"\n{self.name}: {message}" if message else f"\n{self.name}: [{sound}]")
 
             # A sound first, so the user knows the assistant is about to speak.
             if sound and self.reminder_sound_enabled:
@@ -482,7 +490,7 @@ class SmartAssistant:
             return
 
         timeline.note(text_chars=len(text))
-        print(f"You: {text}")
+        self._show(f"You: {text}")
 
         # Answering the assistant's own "shall I turn that reminder off?". Checked
         # before anything else, since "no" here means leave it alone, while "no"
@@ -501,7 +509,7 @@ class SmartAssistant:
                 if self.chime_enabled:
                     self._play_sound("success_chime.wav")
                 else:
-                    print(f"{self.name}: Okay.")
+                    self._show(f"{self.name}: Okay.")
                 return
             # Anything else is a fresh request, so it falls through and is handled
             # normally - the reminder simply carries on.
@@ -515,7 +523,7 @@ class SmartAssistant:
             if self.chime_enabled:
                 self._play_sound("success_chime.wav")
             else:
-                print(f"{self.name}: {result['message']}")
+                self._show(f"{self.name}: {result['message']}")
             return
 
         # A timer or alarm going off is silenced by the user saying anything at all,
@@ -603,7 +611,7 @@ class SmartAssistant:
                              f"going. Shall I turn it off?").strip()
 
         if not response_text:
-            logger.info(f"Action confirmed itself: {[r.get('message') for r in action_results]}")
+            logger.info(f"Action confirmed itself: {[r.get('message') for r in action_results]}", extra=TRANSCRIPT)
             return
 
         # The model's history only has its own text for this turn - usually "Okay." when
@@ -634,4 +642,5 @@ class SmartAssistant:
 # Runs the SmartAssistant if this script is executed directly. 
 # This creates an instance of SmartAssistant and calls its run method to start the main loop.
 if __name__ == "__main__":
+    setup_logging(os.path.join(PROJECT_DIRECTORY, "logs", "smart_assistant.log"))
     SmartAssistant().run()

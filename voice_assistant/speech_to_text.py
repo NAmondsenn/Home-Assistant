@@ -4,6 +4,7 @@ import numpy as np
 from faster_whisper import WhisperModel
 from typing import Any, Optional, Dict, Union
 import time
+from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -152,10 +153,10 @@ class SpeechToText:
             duration = time.time() - start_time
 
             # Logs the completion of the transcription process alongside its duration.
-            logger.info(f"Transcription complete ({duration:.2f}s): '{text}'")
+            logger.info(f"Transcription complete ({duration:.2f}s): '{text}'", extra=TRANSCRIPT)
 
             if text and looks_like_hallucination(text, segments):
-                logger.info(f"Ignoring '{text}' - most likely Whisper finding words in noise")
+                logger.info(f"Ignoring '{text}' - most likely Whisper finding words in noise", extra=TRANSCRIPT)
                 text = ""
 
             # The result dictionary is constructed to include the transcribed text,

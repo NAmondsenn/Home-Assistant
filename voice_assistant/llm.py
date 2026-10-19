@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import anthropic
 from anthropic import Anthropic
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.logging_setup import TRANSCRIPT
 
 # loads environment variables from a .env file if present.
 load_dotenv()
@@ -587,7 +588,7 @@ class LLMHandler:
         This method checks the query against _parse_action to determine if there are any specific actions (e.g. Spotify commands) to be executed.
         Finally, it returns a dictionary containing the model's response, the list of actions it asked for, and whether the transaction was successful.
         """
-        logger.info(f"Processing query: '{text}'")
+        logger.info(f"Processing query: '{text}'", extra=TRANSCRIPT)
         use_web_search = self._wants_web_search(text)
         if self.client is None:
             logger.error("Cannot process query: no API key configured")
@@ -757,7 +758,8 @@ class LLMHandler:
             if len(self.history) > self.history_length:
                 self.history = self.history[-self.history_length:]
 
-            logger.info(f"LLM response: '{response_text}'" + (f" (actions: {actions})" if actions else ""))
+            logger.info(f"LLM response: '{response_text}'" + (f" (actions: {actions})" if actions else ""),
+                        extra=TRANSCRIPT)
 
             # Returns a dictionary containing the model's response, the actions it asked for, and whether the transaction was successful
             return {"response": response_text, "actions": actions, "success": True}

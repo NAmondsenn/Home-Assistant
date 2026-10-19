@@ -100,3 +100,9 @@ sounds:
   # A short blip after the wake word (and before a follow-up answer) to say it's listening.
   listening_enabled: true
   volume_step: 10
+
+logging:
+  # Whether what's said to the assistant, and its replies, are written to the logs
+  # (logs/smart_assistant.log and the system journal). Handy while setting things up;
+  # turn it off to keep conversations out of the logs altogether.
+  log_transcripts: true

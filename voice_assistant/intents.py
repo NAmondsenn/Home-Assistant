@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ class LocalIntents:
             result = handle(found)
             if result is not None:
                 logger.info(f"Handled locally: '{text}'" + (f" (actions: {result['actions']})"
-                                                            if result["actions"] else ""))
+                                                            if result["actions"] else ""), extra=TRANSCRIPT)
                 return result
         return None
 
