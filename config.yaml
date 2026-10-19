@@ -41,6 +41,8 @@ whisper:
 
 conversation:
   history_length: 5
+  # Seconds an exchange is remembered for, once a new conversation starts.
+  history_max_age: 300
 
 # Web search is only used when the query explicitly asks for it
 # (e.g. "search for..."), so normal replies stay fast and free.

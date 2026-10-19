@@ -332,6 +332,9 @@ class SmartAssistant:
                     # Reset per conversation, not per question, so a long back and
                     # forth still ends after the cap is reached.
                     self._follow_ups = 0
+                    # Earlier conversations are only remembered for a few minutes, so this
+                    # morning's "play that one" doesn't colour tonight's "yes".
+                    self.llm.forget_stale_history()
                     # A reminder is only offered up once per conversation, however
                     # many follow-up questions it runs to. The answer to that offer
                     # is only expected within the same conversation, so a question

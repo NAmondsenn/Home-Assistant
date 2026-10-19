@@ -158,8 +158,8 @@ def test_history_records_what_was_actually_said(llm):
 
     # What main.py does once the action has asked its question.
     llm.record_reply("remind me in 20 minutes", "What would you like to name this reminder?")
-    assert llm.history[-1] == {"user": "remind me in 20 minutes",
-                               "assistant": "What would you like to name this reminder?"}
+    assert (llm.history[-1]["user"], llm.history[-1]["assistant"]) == \
+        ("remind me in 20 minutes", "What would you like to name this reminder?")
 
     # The question is then part of what the model sees with the answer.
     llm.client = FakeClient(_reply("Okay.", _tool("name_reminder", label="Walk the dogs")))
@@ -172,3 +172,17 @@ def test_record_reply_only_changes_the_matching_exchange(llm):
     llm.history = [{"user": "turn it up", "assistant": "Okay."}]
     llm.record_reply("something else", "Volume 80 percent.")
     assert llm.history[-1]["assistant"] == "Okay."
+
+
+def test_old_exchanges_are_forgotten_when_a_new_conversation_starts(llm):
+    # This morning's "play that one" shouldn't colour tonight's "yes".
+    llm.history = [{"user": "play that one", "assistant": "Which one?", "at": 0.0},
+                   {"user": "what time is it", "assistant": "It's 7:36 PM.", "at": 900.0}]
+    llm.forget_stale_history(now=1000.0)
+    assert [turn["user"] for turn in llm.history] == ["what time is it"]
+
+
+def test_exchanges_remember_when_they_happened(llm):
+    llm.client = FakeClient(_reply("It's 7:36 PM."))
+    llm.process_query("what time is it")
+    assert "at" in llm.history[-1]

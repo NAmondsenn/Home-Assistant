@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import logging
 from datetime import datetime
 from typing import Optional, Dict
@@ -48,6 +49,8 @@ class LLMHandler:
         self.temperature = temperature if temperature is not None else llm_config.get("temperature", 0.7)
         self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
         self.history = []
+        # Seconds after which an exchange is forgotten once a new conversation starts - see forget_stale_history.
+        self.history_max_age = conversation_config.get("history_max_age", 300)
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
 
         # Web search is opt-in per query rather than always on, so ordinary replies
@@ -737,7 +740,7 @@ class LLMHandler:
             if actions and not response_text:
                 response_text = "Okay."
 
-            self.history.append({"user": text, "assistant": response_text})
+            self.history.append({"user": text, "assistant": response_text, "at": time.monotonic()})
 
             # Stops the history from growing indefinitely by only keeping a specified number of exchanges,
             # this is defined by history_length.
@@ -856,6 +859,24 @@ class LLMHandler:
 
         # If no specific action is detected, return None
         return None
+
+    def forget_stale_history(self, now: Optional[float] = None):
+        """
+        Forgets exchanges older than history_max_age. Called as each new conversation
+        starts, rather than every turn, so a back and forth is always remembered in
+        full while it's going on.
+
+        Without this, the last few exchanges were kept however old they were, so a
+        conversation from the morning coloured a "yes" or "that one" in the evening.
+
+        Args:
+            now: The current time.monotonic() value - only given by the tests.
+        """
+        now = time.monotonic() if now is None else now
+        kept = [turn for turn in self.history if now - turn.get("at", now) <= self.history_max_age]
+        if len(kept) < len(self.history):
+            logger.info(f"Forgot {len(self.history) - len(kept)} old exchange(s)")
+        self.history = kept
 
     def record_reply(self, user_text: str, spoken: str):
         """
