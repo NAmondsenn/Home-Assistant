@@ -32,6 +32,17 @@ ALARMS_FILE = os.path.join(PROJECT_DIRECTORY, "data", "alarms.json")
 # The days an alarm's repeat pattern can mean, as weekday() indices (0=Monday).
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
+# Every other way a repeat pattern's days might arrive, mapped to the days meant:
+# abbreviations ("mon", "thurs"), and the words for whole groups of days. "day" is
+# what's left of "every day" once the "every" has been taken off.
+REPEAT_WORDS = {name[:3]: (name,) for name in WEEKDAY_NAMES}
+REPEAT_WORDS.update({
+    "tues": ("tuesday",), "weds": ("wednesday",), "thur": ("thursday",), "thurs": ("thursday",),
+    "weekday": WEEKDAY_NAMES[:5], "weekdays": WEEKDAY_NAMES[:5],
+    "weekend": WEEKDAY_NAMES[5:], "weekends": WEEKDAY_NAMES[5:],
+    "daily": WEEKDAY_NAMES, "everyday": WEEKDAY_NAMES, "day": WEEKDAY_NAMES,
+})
+
 # A timer which came due while the assistant was off is still announced if it was
 # recent, anything older is ignored.
 MISSED_TIMER_GRACE_SECONDS = 3600
@@ -78,6 +89,66 @@ def spoken_clock_time(hour: int, minute: int) -> str:
     stop this module (and its tests) running anywhere but the Pi.
     """
     return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+
+
+def parse_repeat(repeat):
+    """
+    Turns an alarm's repeat pattern, however it was given, into the one form the
+    clock keeps: None for a one-off, "daily", "weekdays", "weekends", or a list of
+    weekday names in order (e.g. ["monday", "wednesday"]).
+
+    Anything it can't read raises ValueError rather than being dropped. Quietly
+    ignoring a day it didn't recognise ("mon", "mondays", "every day") used to leave
+    an alarm with no days at all, which then rang every day while being described
+    as a one-off.
+
+    Args:
+        repeat: None, a preset like "weekdays", a comma or "and" separated string
+                of days ("tuesdays and thursdays"), or a list of day names.
+
+    Returns:
+        The repeat pattern in its stored form.
+    """
+    if repeat is None or repeat == "":
+        return None
+
+    if isinstance(repeat, str):
+        words = re.split(r"[,/&]|\band\b", repeat.lower())
+    elif isinstance(repeat, (list, tuple)):
+        words = [str(word).lower() for word in repeat]
+    else:
+        raise ValueError(f"Unrecognised repeat pattern: {repeat!r}")
+
+    days = set()
+    for word in words:
+        word = word.strip()
+        if word.startswith("every "):
+            word = word[len("every "):].strip()
+        if not word:
+            continue
+        # A plural day ("mondays") means the same as the day itself.
+        if word.endswith("s") and word[:-1] in WEEKDAY_NAMES:
+            word = word[:-1]
+        if word in WEEKDAY_NAMES:
+            days.add(word)
+        elif word in REPEAT_WORDS:
+            days.update(REPEAT_WORDS[word])
+        else:
+            raise ValueError(f"Unrecognised day: {word!r}")
+
+    if not days:
+        raise ValueError(f"No days in repeat pattern: {repeat!r}")
+
+    # Stored in the shortest form that means the same thing, so it's described
+    # naturally ("every weekday" rather than listing Monday to Friday).
+    ordered = [day for day in WEEKDAY_NAMES if day in days]
+    if len(ordered) == 7:
+        return "daily"
+    if ordered == list(WEEKDAY_NAMES[:5]):
+        return "weekdays"
+    if ordered == list(WEEKDAY_NAMES[5:]):
+        return "weekends"
+    return ordered
 
 
 def _duration_units(text: str) -> set:
@@ -360,7 +431,15 @@ class Clock:
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 continue
 
-            repeat = alarm.get("repeat")
+            # Normalised on the way in, so an alarm saved before repeat patterns were
+            # checked ("every day") still repeats the way it was meant to.
+            try:
+                repeat = parse_repeat(alarm.get("repeat"))
+            except ValueError:
+                logger.warning(f"Alarm {alarm_id} had an unreadable repeat pattern "
+                               f"{alarm.get('repeat')!r}, keeping it as a one-off")
+                repeat = None
+
             try:
                 due_at = float(alarm["due_at"])
             except (TypeError, ValueError, KeyError):
@@ -1339,8 +1418,9 @@ class Clock:
         Args:
             hour: 0-23.
             minute: 0-59.
-            repeat: None for a one-off alarm, or a repeat pattern - "daily",
-                    "weekdays", "weekends", or a list of weekday names.
+            repeat: None for a one-off alarm, or a repeat pattern in any form
+                    parse_repeat understands - "daily", "weekdays", "weekends",
+                    or the days themselves.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
@@ -1352,6 +1432,15 @@ class Clock:
 
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             return {"success": False, "message": "That's not a real time."}
+
+        # Asked about rather than guessed at, since a wrong guess means an alarm
+        # going off on days it shouldn't. Worded as a question so the answer is
+        # listened for straight away.
+        try:
+            repeat = parse_repeat(repeat)
+        except ValueError:
+            logger.info(f"Couldn't read the repeat pattern {repeat!r}, asking")
+            return {"success": False, "message": "Sorry, which days should that alarm repeat on?"}
 
         due_at = self._next_occurrence(hour, minute, repeat)
 

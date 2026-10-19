@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from voice_assistant import clock as clock_module
-from voice_assistant.clock import Clock, format_duration, spoken_clock_time, _time_of_day_candidates
+from voice_assistant.clock import Clock, format_duration, parse_repeat, spoken_clock_time, _time_of_day_candidates
 
 
 @pytest.fixture
@@ -175,6 +175,54 @@ def test_alarms_are_saved(make_clock, tmp_path):
     clock.set_alarm(6, 30, "daily")
     saved = json.loads((tmp_path / "alarms.json").read_text())
     assert saved["alarms"][0]["hour"] == 6 and saved["alarms"][0]["repeat"] == "daily"
+
+
+@pytest.mark.parametrize("given, stored", [
+    (None, None), ("", None),
+    ("daily", "daily"), ("every day", "daily"), ("everyday", "daily"),
+    ("weekdays", "weekdays"), ("weekends", "weekends"),
+    ("mon, wed", ["monday", "wednesday"]),
+    ("mondays and wednesdays", ["monday", "wednesday"]),
+    ("Tues & Thurs", ["tuesday", "thursday"]),
+    (["friday", "monday"], ["monday", "friday"]),
+    (["monday", "tuesday", "wednesday", "thursday", "friday"], "weekdays"),
+    (["saturday", "sunday"], "weekends"),
+    ("every saturday", ["saturday"]),
+])
+def test_parse_repeat(given, stored):
+    assert parse_repeat(given) == stored
+
+
+@pytest.mark.parametrize("given", ["funday", "custom", "mon, someday", 7])
+def test_parse_repeat_rejects_what_it_cant_read(given):
+    with pytest.raises(ValueError):
+        parse_repeat(given)
+
+
+def test_set_alarm_reads_spoken_repeat_patterns(make_clock):
+    clock = make_clock()
+    assert clock.set_alarm(7, 0, "every day")["message"] == "7:00 AM alarm, every day."
+    assert clock.set_alarm(6, 30, "mon, wed")["message"] == "6:30 AM alarm, every Monday and Wednesday."
+    assert clock._alarms[2]["repeat"] == ["monday", "wednesday"]
+
+
+def test_set_alarm_asks_when_it_cant_read_the_days(make_clock):
+    clock = make_clock()
+    result = clock.set_alarm(7, 0, "custom")
+    assert not result["success"] and result["message"].endswith("?")
+    assert clock.list_alarms()["message"] == "You don't have any alarms set."
+
+
+def test_custom_days_alarm_skips_other_days(make_clock):
+    tuesday = datetime(2026, 10, 20, 12, 0).timestamp()
+    due = datetime.fromtimestamp(make_clock()._next_occurrence(7, 0, ["monday", "wednesday"], after=tuesday))
+    assert due.strftime("%A") == "Wednesday"
+
+
+def test_alarm_saved_with_an_old_style_repeat_still_repeats(make_clock, tmp_path):
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": ["every day"], "due_at": time.time() + 3600}]}))
+    assert make_clock().list_alarms()["message"] == "One alarm: 7:00 AM alarm, every day."
 
 
 def _stop_on_first_sound(clock, announcement):

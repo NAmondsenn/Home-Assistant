@@ -289,12 +289,18 @@ class LLMHandler:
                     "minute": {"type": "integer", "description": "0-59."},
                     "repeat": {
                         "type": "string",
+                        "enum": ["daily", "weekdays", "weekends", "custom"],
                         "description": (
                             "Leave out entirely for a one-off alarm. Otherwise: 'daily' for "
                             "every day, 'weekdays' for Monday-Friday, 'weekends' for Saturday "
-                            "and Sunday, or a comma-separated list of specific days ('monday, "
-                            "wednesday, friday') for anything else."
+                            "and Sunday, or 'custom' for specific days, listed in days."
                         ),
+                    },
+                    "days": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday",
+                                                             "friday", "saturday", "sunday"]},
+                        "description": "Only with repeat 'custom': the days it repeats on.",
                     },
                 },
                 "required": ["hour", "minute"],
@@ -488,9 +494,10 @@ class LLMHandler:
 
         if block.name == "set_alarm":
             repeat = params.get("repeat") or None
-            if repeat and repeat not in ("daily", "weekdays", "weekends"):
-                # A specific list of days, given as a comma/"and"-separated string.
-                repeat = [d.strip().lower() for d in re.split(r"[,/&]|\band\b", repeat) if d.strip()]
+            if repeat == "custom":
+                # The days themselves. Left as "custom" if none were given, which the
+                # clock can't read, so it asks which days rather than guessing.
+                repeat = params.get("days") or "custom"
             return {"type": "clock", "command": "set_alarm",
                     "hour": params.get("hour"), "minute": params.get("minute"), "repeat": repeat}
 
