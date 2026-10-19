@@ -133,7 +133,20 @@ def test_each_kind_of_failure_says_what_went_wrong(llm, error, spoken):
 def test_a_failed_request_still_handles_music_offline(llm):
     llm.client = FakeClient(_error(anthropic.APIConnectionError))
     result = llm.process_query("pause the music")
-    assert result["action"] == {"type": "spotify", "command": "pause"}
+    assert result["actions"] == [{"type": "spotify", "command": "pause"}]
+
+
+# Actions
+
+def test_every_tool_call_is_run_not_just_the_first(llm):
+    # "Pause the music and set a ten minute timer" comes back as two tool calls,
+    # and only the first used to be acted on.
+    llm.client = FakeClient(_reply("Okay.", _tool("control_playback", action="pause"),
+                                   _tool("set_timer", duration_seconds=600, is_reminder=False)))
+    result = llm.process_query("pause the music and set a ten minute timer")
+
+    assert [(a["type"], a["command"]) for a in result["actions"]] == [("spotify", "pause"),
+                                                                       ("clock", "set_timer")]
 
 
 # History

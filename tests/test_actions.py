@@ -105,3 +105,9 @@ def test_a_failed_action_says_why_or_falls_back_to_the_models_reply():
     assert confirm([{"success": False, "message": "Spotify is not available right now."}],
                    fallback="Okay.") == ([], ["Spotify is not available right now."])
     assert confirm([{"success": False, "message": None}], fallback="Okay.") == ([], ["Okay."])
+
+
+def test_several_actions_are_each_confirmed_their_own_way():
+    paused = {"success": True, "chime": True, "message": "Paused"}
+    timer = {"success": True, "message": "Timer set for 10 minutes."}
+    assert confirm([paused, timer]) == ([("success_chime.wav", "general")], ["Timer set for 10 minutes."])

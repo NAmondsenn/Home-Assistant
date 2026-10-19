@@ -464,21 +464,24 @@ class SmartAssistant:
         result = self.llm.process_query(text, context=clock_context)
         timeline.mark("llm_done")
         response_text = result["response"]
-        action = result.get("action")
+        actions = result.get("actions", [])
 
-        # If an action was detected, it is run through the action executor.
+        # Every action the model asked for is run through the action executor, in
+        # order - "pause the music and set a ten minute timer" is two of them.
         action_results = []
-        if action:
+        if actions:
             # Music and volume actions talk to Spotify too, so the pause has to have landed first.
             self._wait_for_spotify_pause()
-            action_result = self.actions.execute(action)
-            action_results.append(action_result)
-            timeline.mark("action_done")
-            timeline.note(action=action.get("type"), command=action.get("command"))
+            for action in actions:
+                action_result = self.actions.execute(action)
+                action_results.append(action_result)
 
-            # Cancels auto resume if the user pauses Spotify.
-            if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause" and action_result.get("success"):
-                self.spotify.cancel_resume()
+                # Cancels auto resume if the user pauses Spotify.
+                if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause" and action_result.get("success"):
+                    self.spotify.cancel_resume()
+            timeline.mark("action_done")
+            timeline.note(action=", ".join(str(a.get("type")) for a in actions),
+                          command=", ".join(str(a.get("command")) for a in actions))
 
         # Talking to the assistant at all means the user has heard the timer or
         # alarm, so it stops rather than picking up again behind the reply. Done

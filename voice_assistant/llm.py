@@ -572,13 +572,13 @@ class LLMHandler:
         """
         Processes a user query using the LLM. It maintains a conversation history and constructs an initial prompt to guide the model's behaviour.
         This method checks the query against _parse_action to determine if there are any specific actions (e.g. Spotify commands) to be executed.
-        Finally, it returns a dictionary containing the model's response, any detected action, and whether the transaction was successful.
+        Finally, it returns a dictionary containing the model's response, the list of actions it asked for, and whether the transaction was successful.
         """
         logger.info(f"Processing query: '{text}'")
         use_web_search = self._wants_web_search(text)
         if self.client is None:
             logger.error("Cannot process query: no API key configured")
-            return {"response": "Sorry, I'm not connected to my language model right now.", "action": self._parse_action(text, ""), "success": False}
+            return {"response": "Sorry, I'm not connected to my language model right now.", "actions": self._fallback_actions(text), "success": False}
         try:
             # The time is given already on the 12-hour clock ("7:36 PM"). Given "19:36",
             # the model would sometimes say it straight back despite being asked not to,
@@ -717,23 +717,24 @@ class LLMHandler:
             response_text = re.sub(r"https?://\S+", "", response_text)
             response_text = re.sub(r"\s+", " ", response_text).strip()
 
-            # Picks up any tool the model called. If it didn't call one, there is no action.
-            # the model's judgement is trusted rather than keyword guessing.
-            action = None
-            for block in response.content:
-                if getattr(block, "type", None) == "tool_use":
-                    action = self._action_from_tool_use(block)
-                    break
+            # Picks up every tool the model called, in order - "pause the music and set a
+            # ten minute timer" comes back as two, and only running the first did half of
+            # what was asked. If it didn't call one, there is no action. The model's
+            # judgement is trusted rather than keyword guessing.
+            actions = [action for action in (self._action_from_tool_use(block) for block in response.content
+                                             if getattr(block, "type", None) == "tool_use")
+                       if action]
 
             # An album is only played whole when the user actually asked for one.
             # Titles are often both a song and an album, and the model tends to
             # assume the album, so the user's own words decide it.
-            if action and action.get("search_type") == "album" and not self._asked_for_album(text):
-                logger.info("Album wasn't asked for by name, playing the track instead")
-                action["search_type"] = "track"
+            for action in actions:
+                if action.get("search_type") == "album" and not self._asked_for_album(text):
+                    logger.info("Album wasn't asked for by name, playing the track instead")
+                    action["search_type"] = "track"
 
             # Fallback for when the action is called by the model, but no message is produced.
-            if action and not response_text:
+            if actions and not response_text:
                 response_text = "Okay."
 
             self.history.append({"user": text, "assistant": response_text})
@@ -743,10 +744,10 @@ class LLMHandler:
             if len(self.history) > self.history_length:
                 self.history = self.history[-self.history_length:]
 
-            logger.info(f"LLM response: '{response_text}'" + (f" (action: {action})" if action else ""))
+            logger.info(f"LLM response: '{response_text}'" + (f" (actions: {actions})" if actions else ""))
 
-            # Returns a dictionary containing the model's response, any detected action, and whether the transaction was successful
-            return {"response": response_text, "action": action, "success": True}
+            # Returns a dictionary containing the model's response, the actions it asked for, and whether the transaction was successful
+            return {"response": response_text, "actions": actions, "success": True}
 
         # Catches errors instead of crashing the voice assistant.
         # This logs the error and returns an apology message to the user.
@@ -755,7 +756,20 @@ class LLMHandler:
         except Exception as e:
             logger.error(f"LLM processing failed ({type(e).__name__}): {e}")
             return {"response": self._failure_message(e),
-                    "action": self._parse_action(text, ""), "success": False}
+                    "actions": self._fallback_actions(text), "success": False}
+
+    def _fallback_actions(self, text: str) -> list:
+        """
+        The keyword parser's action, if it found one, for when the model can't be reached.
+
+        Args:
+            text: What the user said.
+
+        Returns:
+            A list holding that one action, or an empty list.
+        """
+        action = self._parse_action(text, "")
+        return [action] if action else []
 
     @staticmethod
     def _failure_message(error: Exception) -> str:
