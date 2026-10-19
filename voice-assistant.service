@@ -25,6 +25,10 @@ Type=simple
 WorkingDirectory=__PROJECT_DIRECTORY__
 ExecStart=__PYTHON__ __PROJECT_DIRECTORY__/main.py
 
+# Anything the assistant writes - the Spotify token cache, saved timers, logs - is
+# readable by this user only, rather than by everyone on the machine.
+UMask=0077
+
 # Restarts the assistant if it crashes, with a short pause to excessive crashing.
 Restart=on-failure
 RestartSec=10

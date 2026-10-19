@@ -87,12 +87,13 @@ class SpotifyController:
                  "playlist-read-collaborative,user-read-recently-played,"
                  "user-library-read")
 
+        self.cache_path = os.path.join(PROJECT_DIRECTORY, ".spotify_cache")
         self.sp_oauth = SpotifyOAuth(
             client_id=self.client_id,
             client_secret=self.client_secret,
             redirect_uri=self.redirect_uri,
             scope=scope,
-            cache_path=os.path.join(PROJECT_DIRECTORY, ".spotify_cache")
+            cache_path=self.cache_path
         )
 
         self.sp = None
@@ -115,6 +116,14 @@ class SpotifyController:
         if not self.sp_oauth.cache_handler.get_cached_token():
             logger.warning("No cached token found. Run authenticate_first_time() to get one.")
             return
+
+        # The cache holds the refresh token - as good as a password to the Spotify
+        # account - but spotipy writes it with the default permissions, which let
+        # anyone on the machine read it. Kept to this user only, like .env (see setup.sh).
+        try:
+            os.chmod(self.cache_path, 0o600)
+        except OSError as e:
+            logger.warning(f"Could not make the Spotify token cache private: {e}")
 
         # Given something which fetches a fresh token for every request, rather than
         # the access token itself. A fixed token only lasts an hour, which is what made
