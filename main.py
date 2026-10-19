@@ -74,6 +74,8 @@ class SmartAssistant:
         self._reminder_offered = False
         # Set while waiting on the answer to "shall I turn that reminder off?".
         self._reminder_answer_pending = False
+        # The background pause of Spotify started at the wake word - see _start_spotify_pause.
+        self._spotify_pause = None
 
         logger.info("Loading modules...")
         
@@ -238,6 +240,33 @@ class SmartAssistant:
             except OSError:
                 pass
 
+    def _start_spotify_pause(self):
+        """
+        Pauses Spotify for the interaction, on a background thread.
+
+        The pause goes through Spotify's servers, which takes a moment - or a lot
+        longer when the network's struggling - so it runs alongside the recording
+        rather than before it. Waiting for it first meant anything said straight
+        after the wake word was lost, since nothing was listening yet.
+        """
+        self._spotify_pause = None
+        if self.spotify:
+            self._spotify_pause = threading.Thread(target=self.spotify.pause_for_speech,
+                                                   daemon=True, name="spotify-pause")
+            self._spotify_pause.start()
+
+    def _wait_for_spotify_pause(self):
+        """
+        Waits for the pause started at the wake word to finish, before anything else
+        is sent to Spotify. Otherwise a slow pause could land after a "play" request
+        and stop the music which was just asked for, or the resume at the end could
+        arrive before the pause it's meant to be undoing. Normally it's long finished
+        by the time this is called, so there's no wait at all.
+        """
+        if self._spotify_pause is not None:
+            # Bounded, so a hung request can't hold the assistant up indefinitely.
+            self._spotify_pause.join(timeout=20)
+
     def _shutdown(self, *args):
         """
         Called automatically when the program receives Ctrl+C or a termination request.
@@ -270,11 +299,10 @@ class SmartAssistant:
                 # matters is what the user could hear when they started talking.
                 self._ringing_at_wake = self.clock.ringing_state()
 
-                # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
-                if self.spotify:
-                    self.spotify.pause_for_speech()
                 # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
                 self._idle.clear()
+                # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
+                self._start_spotify_pause()
                 try:
                     # Reset per conversation, not per question, so a long back and
                     # forth still ends after the cap is reached.
@@ -289,6 +317,7 @@ class SmartAssistant:
                 finally:
                     self._idle.set()
                     if self.spotify:
+                        self._wait_for_spotify_pause()
                         self.spotify.resume_after_speech()
 
             # Catches any unexpected errors during the main loop, logs the error
@@ -387,6 +416,8 @@ class SmartAssistant:
         # Its message is used as the spoken response if one was returned.
         action_result = None
         if action:
+            # Music and volume actions talk to Spotify too, so the pause has to have landed first.
+            self._wait_for_spotify_pause()
             action_result = self.actions.execute(action)
             if action_result.get("message"):
                 response_text = action_result["message"]
