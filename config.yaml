@@ -84,4 +84,6 @@ timers:
 sounds:
   chime_enabled: true
   reminder_enabled: true
+  # A short blip after the wake word (and before a follow-up answer) to say it's listening.
+  listening_enabled: true
   volume_step: 10
