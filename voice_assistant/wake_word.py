@@ -16,6 +16,11 @@ CHUNK_SAMPLES = 1280
 # Fallback wake word phrase if no config is passed in
 DEFAULT_WAKE_WORD = "Hey Nova"
 
+# One of openWakeWord's own models, listened for until the configured wake word's
+# model has been copied into models/. setup.sh downloads it along with the rest.
+STAND_IN_WAKE_WORD = "Hey Jarvis"
+STAND_IN_MODEL = "hey_jarvis"
+
 def _wake_word_filename(phrase):
     """
     Turns a wake word phrase into the model filename convention
@@ -88,6 +93,15 @@ class WakeWordDetector:
         self.wake_word_phrase = assistant_config.get("wake_word", DEFAULT_WAKE_WORD)
         self.wake_word_key = _wake_word_filename(self.wake_word_phrase)
         model_path = os.path.join(PROJECT_DIRECTORY, "models", f"{self.wake_word_key}.onnx")
+
+        # A custom wake word's model is trained separately and copied in by hand (see
+        # the README), so a fresh install doesn't have one - and it used to fail to
+        # start at all. Until it's there, openWakeWord's own "Hey Jarvis" stands in.
+        if not os.path.exists(model_path):
+            logger.warning(f"No wake word model at {model_path}, so listening for "
+                           f"'{STAND_IN_WAKE_WORD}' until it's copied in")
+            self.wake_word_phrase = STAND_IN_WAKE_WORD
+            self.wake_word_key = model_path = STAND_IN_MODEL
 
         logger.info(f"Loading openWakeWord model for '{self.wake_word_phrase}'...")
         # inference_framework is set to "onnx" rather than the default "tflite".

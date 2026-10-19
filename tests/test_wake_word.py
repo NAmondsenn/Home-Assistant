@@ -41,6 +41,7 @@ class FakeModel:
     scores = []
 
     def __init__(self, wakeword_models, inference_framework):
+        self.loaded = wakeword_models
         self.chunks = []
 
     def reset(self):
@@ -51,11 +52,20 @@ class FakeModel:
         return {"hey_nova": FakeModel.scores[len(self.chunks) - 1]}
 
 
-def test_the_wake_word_is_heard_through_the_shared_microphone(monkeypatch, make_config):
+@pytest.fixture
+def models(tmp_path, monkeypatch):
+    """A project folder of its own, with a hey_nova.onnx model in it."""
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "hey_nova.onnx").write_bytes(b"")
+    monkeypatch.setattr(wake_word_module, "PROJECT_DIRECTORY", str(tmp_path))
+    monkeypatch.setattr(wake_word_module, "Model", FakeModel)
+    return tmp_path / "models"
+
+
+def test_the_wake_word_is_heard_through_the_shared_microphone(monkeypatch, make_config, models):
     streams = []
     monkeypatch.setattr(microphone_module.sd, "InputStream",
                         lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
-    monkeypatch.setattr(wake_word_module, "Model", FakeModel)
     FakeModel.scores = [0.1, 0.2, 0.9]
 
     microphone = Microphone(sample_rate=RATE)
@@ -70,6 +80,14 @@ def test_the_wake_word_is_heard_through_the_shared_microphone(monkeypatch, make_
     assert detector.heard_at == started_at + 3 * CHUNK_SAMPLES
     # The shared stream is used, rather than one of its own.
     assert len(streams) == 1
+
+
+def test_without_its_model_a_stock_wake_word_stands_in(make_config, models):
+    # A fresh install has no custom model yet, and used to fail to start at all.
+    (models / "hey_nova.onnx").unlink()
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}))
+    assert detector.wake_word_phrase == "Hey Jarvis"
+    assert detector.model.loaded == ["hey_jarvis"] and detector.wake_word_key == "hey_jarvis"
 
 
 @pytest.mark.parametrize("heard, meant", [

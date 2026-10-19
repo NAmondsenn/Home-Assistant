@@ -320,6 +320,32 @@ if [ ! -f "${MODELS_DIRECTORY}/${VOICE_MODEL}.onnx.json" ]; then
     fi
 fi
 
+# Downloads the Whisper speech recognition models now, into the folder config.yaml
+# names (whisper.download_root), rather than leaving it to the first start - which
+# then needed the internet, and kept them in ~/.cache, where clearing the cache
+# broke the next offline boot. Already-downloaded models are left as they are.
+echo "Downloading the Whisper speech recognition models..."
+if ! "${VENV_DIRECTORY}/bin/python" - "$CONFIG_FILE" "$PROJECT_DIRECTORY" <<'EOF'
+import os
+import sys
+
+import yaml
+from faster_whisper.utils import download_model
+
+config_file, project_directory = sys.argv[1], sys.argv[2]
+with open(config_file) as f:
+    whisper = (yaml.safe_load(f) or {}).get("whisper") or {}
+
+download_root = os.path.join(project_directory, whisper.get("download_root", "models/whisper"))
+for name in filter(None, [whisper.get("model", "base.en"), whisper.get("fallback_model")]):
+    print(f"  {name}")
+    download_model(name, cache_dir=download_root)
+EOF
+then
+    echo "Error: failed to download the Whisper models. Check your internet connection and try again." >&2
+    exit 1
+fi
+
 
 # 9. Gives the user the option to run the assistant on startup.
 

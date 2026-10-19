@@ -111,7 +111,9 @@ class SmartAssistant:
                                 compute_type=whisper_config.get("compute_type", "int8"),
                                 fallback_model=whisper_config.get("fallback_model", "tiny.en"),
                                 initial_prompt=whisper_config.get("initial_prompt"),
-                                beam_size=whisper_config.get("beam_size", 5))
+                                beam_size=whisper_config.get("beam_size", 5),
+                                download_root=os.path.join(PROJECT_DIRECTORY,
+                                                           whisper_config.get("download_root", "models/whisper")))
         
         # Retrieves LLM configuration from config.yaml and passes it to LLMHandler.
         self.llm = LLMHandler(config=self.config, api_key=None)
@@ -148,6 +150,9 @@ class SmartAssistant:
         # Sets up the wake word detector with sensitivity settings from config.
         self.thresholds = self.config.section("thresholds")
         self.wake = WakeWordDetector(config=self.config, microphone=self.microphone)
+        # What's actually listened for, which is a stand-in until the configured wake
+        # word's model is copied in - see WakeWordDetector.
+        self.wake_word = self.wake.wake_word_phrase
 
         # Register _shutdown to run on Ctrl + C (SIGINT) or a termination request (SIGTERM).
         # This ensures resources get cleaned up properly instead of the app dying abruptly .

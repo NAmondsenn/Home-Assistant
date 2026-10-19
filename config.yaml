@@ -27,6 +27,9 @@ spotify:
 
 whisper:
   model: "base.en"
+  # Where the model files are kept, inside the project. setup.sh downloads them here,
+  # so the first start doesn't need the internet.
+  download_root: "models/whisper"
   device: "cpu"
   compute_type: "int8"
   fallback_model: "tiny.en"

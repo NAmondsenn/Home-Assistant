@@ -51,7 +51,9 @@ class SpeechToText:
         compute_type: str = "int8",
         fallback_model: Optional[str] = None,
         initial_prompt: Optional[str] = None,
-        beam_size: int = 3
+        beam_size: int = 3,
+        # Where the model files are kept - see download_root in config.yaml.
+        download_root: Optional[str] = None
     ):
 
        # Initialise the SpeechToText class with the specified model size, 
@@ -71,12 +73,14 @@ class SpeechToText:
         # instead of crashing the entire assistant on startup.
         logger.info(f"Loading Whisper model: {model_size}")
         try:
-            self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            self.model = WhisperModel(model_size, device=device, compute_type=compute_type,
+                                      download_root=download_root)
             logger.info(f"Whisper model loaded: {model_size}")
         except Exception as e:
             if fallback_model:
                 logger.warning(f"Failed to load {model_size}, falling back to {fallback_model}: {e}")
-                self.model = WhisperModel(fallback_model, device=device, compute_type=compute_type)
+                self.model = WhisperModel(fallback_model, device=device, compute_type=compute_type,
+                                          download_root=download_root)
                 logger.info(f"Whisper model loaded: {fallback_model}")
             else:
                 raise

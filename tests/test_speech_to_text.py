@@ -84,3 +84,17 @@ def test_real_requests_are_kept(transcribe, heard):
 def test_clear_speech_is_kept_even_if_whisper_doubted_there_was_any(transcribe):
     # Both have to point the same way before anything is thrown away.
     assert transcribe(_segment(" Pause the music.", no_speech_prob=0.8, avg_logprob=-0.2)) == "Pause the music."
+
+
+def test_the_model_is_kept_where_config_says(monkeypatch):
+    # It used to go to ~/.cache at first start, so a fresh install needed the internet,
+    # and clearing the cache broke the next offline boot.
+    made = {}
+
+    class RememberingWhisper(ScriptedWhisper):
+        def __init__(self, *args, **kwargs):
+            made.update(kwargs)
+
+    monkeypatch.setattr(speech_to_text, "WhisperModel", RememberingWhisper)
+    speech_to_text.SpeechToText(model_size="base.en", download_root="/srv/nova/models/whisper")
+    assert made["download_root"] == "/srv/nova/models/whisper"
