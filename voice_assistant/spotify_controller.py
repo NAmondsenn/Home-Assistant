@@ -1066,13 +1066,18 @@ class SpotifyController:
 
         Only pauses if something is actually playing and remembers that it did,
         so resume_after_speech() won't start music the user had already stopped.
+
+        Only music playing on this speaker counts. Spotify reports whichever device
+        is active on the account, so this used to pause music on a phone in
+        another room just because someone talked to the assistant in this one.
         """
         if not self.sp or not self.pause_while_speaking:
             return
 
         try:
             current = self.sp.current_playback()
-            if current and current.get("is_playing"):
+            playing_here = (current or {}).get("device", {}).get("name", "").lower() == self.device_name.lower()
+            if current and current.get("is_playing") and playing_here:
                 self.sp.pause_playback()
                 self._paused_for_speech = True
                 logger.info("Paused Spotify while speaking")

@@ -86,3 +86,27 @@ def test_without_a_cached_login_it_says_so(make_controller):
     controller = make_controller(cached=None)
     assert controller.sp is None
     assert controller.play("Drake") == {"success": False, "message": "Not authenticated"}
+
+
+class FakePlayback:
+    """Stands in for the parts of the client pause_for_speech uses."""
+
+    def __init__(self, device):
+        self.device = device
+        self.paused = False
+
+    def current_playback(self):
+        return {"is_playing": True, "device": {"name": self.device}}
+
+    def pause_playback(self):
+        self.paused = True
+
+
+@pytest.mark.parametrize("device, paused", [("Kitchen", True), ("kitchen", True), ("Nathaniel's phone", False)])
+def test_only_music_on_this_speaker_is_paused_for_speech(make_controller, device, paused):
+    # Talking to the assistant used to pause music on whichever device was active,
+    # including a phone in another room.
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakePlayback(device)
+    controller.pause_for_speech()
+    assert controller.sp.paused is paused and controller.was_playing() is paused
