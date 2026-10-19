@@ -183,3 +183,62 @@ def test_the_token_cache_is_kept_private(make_controller, monkeypatch, tmp_path)
 
     make_controller(cached=SAVED)
     assert cache.stat().st_mode & 0o777 == 0o600
+
+
+# Picking what to play
+
+def _track(name, *artists):
+    return {"name": name, "artists": [{"name": artist} for artist in artists]}
+
+
+@pytest.mark.parametrize("query, names, matches", [
+    ("Gooba", ("GOOBA", "6ix9ine"), True),
+    ("bohemian rhapsody", ("Shape of You", "Ed Sheeran"), False),
+    # Nothing long enough to judge by, so it's given the benefit of the doubt.
+    ("it", ("Anything", "Anyone"), True),
+])
+def test_a_result_has_to_share_a_word_with_what_was_asked_for(query, names, matches):
+    # Whisper mishears names, and Spotify always returns something.
+    assert spotify_controller.SpotifyController._looks_like_match(query, *names) is matches
+
+
+@pytest.mark.parametrize("name, normalised", [
+    ("The Chronic", "chronic"), ("the", "the"), ("Don't Stop Me Now!", "don t stop me now"),
+])
+def test_titles_are_compared_by_their_words(name, normalised):
+    assert spotify_controller.SpotifyController._normalise(name) == normalised
+
+
+def test_a_karaoke_version_is_skipped_for_the_real_thing(make_controller):
+    controller = make_controller(cached=SAVED)
+    karaoke = _track("Shake It Off (Originally Performed by Taylor Swift)", "Karaoke Hits")
+    real = _track("Shake It Off", "Taylor Swift")
+    assert controller._pick_track([karaoke, real], "shake it off", None) is real
+
+
+def test_karaoke_is_played_when_its_asked_for(make_controller):
+    controller = make_controller(cached=SAVED)
+    karaoke = _track("Shake It Off (Karaoke Version)", "Karaoke Hits")
+    assert controller._pick_track([karaoke], "shake it off karaoke", None) is karaoke
+
+
+def test_a_named_artist_has_to_be_credited_unless_nothing_else_will_do(make_controller):
+    controller = make_controller(cached=SAVED)
+    cover = _track("Hallelujah", "Jeff Buckley")
+    original = _track("Hallelujah", "Leonard Cohen")
+    assert controller._pick_track([cover, original], "hallelujah", "Leonard Cohen") is original
+    # The artist may just have been misheard, so the song is still played.
+    assert controller._pick_track([cover], "hallelujah", "Leonard Coen") is cover
+
+
+def test_nothing_is_picked_when_the_query_was_misheard(make_controller):
+    controller = make_controller(cached=SAVED)
+    assert controller._pick_track([_track("Shape of You", "Ed Sheeran")], "bohemian rhapsody", None) is None
+
+
+@pytest.mark.parametrize("name, liked", [
+    ("liked songs", True), ("Leaked songs", True), ("my favourites", True), ("favourites", True),
+    ("chill vibes", False),
+])
+def test_liked_songs_are_recognised_even_when_misheard(name, liked):
+    assert spotify_controller.SpotifyController._means_liked_songs(name) is liked
