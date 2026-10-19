@@ -57,10 +57,15 @@ class SpeechToText:
         It provides feedback on whether the warm-up was successful or if it encountered any issues.
         """
         logger.info("Warming up Whisper model...")
-        # Provides audio at 16kHz sample rate, which is the expected input for Whisper.
-        dummy_audio = np.zeros(16000, dtype=np.float32)
+        # A second of very quiet noise at 16kHz, which is the expected input for Whisper.
+        # Noise rather than silence, so the decoder has something to work through as well.
+        dummy_audio = (np.random.default_rng(0).standard_normal(16000) * 0.01).astype(np.float32)
         try:
-            list(self.model.transcribe(dummy_audio, beam_size=1))
+            # transcribe() only sets things up - the segments it returns are a generator,
+            # worked out as they're read. So they have to be read here, or the model never
+            # actually runs and the first real query pays the whole start-up cost anyway.
+            segments, _ = self.model.transcribe(dummy_audio, beam_size=1, language="en")
+            list(segments)
             logger.info("Model warm-up complete")
         except Exception as e:
             logger.warning(f"Warm-up failed: {e}")
