@@ -58,3 +58,6 @@ data/
 
 # Exception for UI sounds
 !sounds/*.wav
+
+# Test runner cache
+.pytest_cache/

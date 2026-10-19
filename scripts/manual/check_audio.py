@@ -4,7 +4,7 @@ Audio Manager Test
 Tests AudioManager on its own: device listing, fixed-duration recording,
 silence-triggered recording, resampling, and playback.
 
-Unlike test_pipeline.py and test_integration.py, this doesn't use Whisper,
+Unlike check_pipeline.py and check_integration.py, this doesn't use Whisper,
 the LLM, or TTS. This is just a hardware/AudioManager safety check which is useful
 for confirming the mic and speaker setup works before running the full pipeline.
 """
@@ -14,8 +14,8 @@ import sys
 import logging
 
 # Add the project root to the path so the voice_assistant package imports work
-# no matter where the tests are run from.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# no matter where the scripts are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from voice_assistant.config import Config
 from voice_assistant.audio import AudioManager

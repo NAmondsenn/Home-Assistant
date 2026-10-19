@@ -3,7 +3,7 @@
 Action Executor Test
 Tests the ActionExecutor in isolation (e.g. Spotify / Home Assistant commands).
 
-Unlike test_integration.py, this doesn't go through the LLM at all — it
+Unlike check_integration.py, this doesn't go through the LLM at all — it
 builds action dicts directly, in the same shape LLMHandler._parse_action
 produces, so it can check dispatch logic without needing an API call.
 """
@@ -13,8 +13,8 @@ import sys
 import logging
 
 # Add the project root to the path so the voice_assistant package imports work
-# no matter where the tests are run from.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# no matter where the scripts are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from voice_assistant.actions import ActionExecutor
 from voice_assistant.spotify_controller import SpotifyController

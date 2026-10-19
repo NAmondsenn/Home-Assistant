@@ -14,8 +14,8 @@ import librosa
 import soundfile as sf
 
 # Add the project root to the path so the voice_assistant package imports work
-# no matter where the tests are run from.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# no matter where the scripts are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from voice_assistant.config import Config
 from voice_assistant.audio import AudioManager

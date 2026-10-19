@@ -1,0 +1,10 @@
+# Project tooling settings. Dependencies are still installed from requirements.txt
+# by setup.sh - this file only configures the tools used during development.
+
+[tool.pytest.ini_options]
+# Only tests/ holds automated tests. The scripts in scripts/manual/ need a real
+# microphone, speaker, Spotify account or API key, so they're run by hand instead.
+testpaths = ["tests"]
+# Lets the tests import the voice_assistant package from the project root.
+pythonpath = ["."]
+addopts = "-q"
