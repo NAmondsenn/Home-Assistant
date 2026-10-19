@@ -5,10 +5,55 @@ It then dispatches to the correct handler based on the action's type.
 """
 
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 
 # Logger setup
 logger = logging.getLogger(__name__)
+
+
+def confirm(results: List[Dict], chime_enabled: bool = True,
+            fallback: Optional[str] = None) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """
+    Works out how the actions a request ran should be confirmed to the user.
+
+    An action can confirm itself in three ways - the music changing ("silent"), a
+    sound of its own, such as the volume beep, or the success chime - and otherwise
+    its message is said out loud. A self-confirming action's message is only ever
+    logged, never spoken, even when there's something else to say as well: a
+    reminder offer tacked onto a skipped song used to come out as "That song was
+    shit anyway. Also, your reminder is still going."
+
+    Args:
+        results: What each action returned, in the order they ran.
+        chime_enabled: Whether the success chime is switched on. When it isn't, an
+            action which would have chimed says its message instead.
+        fallback: Said for an action which needs words but didn't give any - the
+            model's own reply.
+
+    Returns:
+        Tuple of (sounds, messages). sounds are (file name, volume category) pairs
+        to play, each at most once. messages are what still needs saying, in order -
+        empty when every action confirmed itself.
+    """
+    sounds, messages = [], []
+    for result in results:
+        sound = None
+        if result.get("success") and result.get("silent"):
+            continue
+        if result.get("success") and result.get("sound"):
+            sound = (result["sound"], result.get("sound_category", "general"))
+        elif result.get("success") and result.get("chime") and chime_enabled:
+            sound = ("success_chime.wav", "general")
+
+        if sound:
+            if sound not in sounds:
+                sounds.append(sound)
+            continue
+
+        message = result.get("message") or fallback
+        if message and message not in messages:
+            messages.append(message)
+    return sounds, messages
 
 class ActionExecutor:
     """

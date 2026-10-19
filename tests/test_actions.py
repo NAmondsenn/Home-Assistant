@@ -7,7 +7,7 @@ temporary folder) and a fake Spotify controller, so nothing plays or goes online
 import pytest
 
 from voice_assistant import volume as volume_module
-from voice_assistant.actions import ActionExecutor
+from voice_assistant.actions import ActionExecutor, confirm
 from voice_assistant.volume import VolumeControl
 
 
@@ -77,3 +77,31 @@ def test_volume_changes_are_confirmed_with_a_beep(make_executor):
 def test_unknown_action_type_is_handled(make_executor):
     result = make_executor().execute({"type": "netflix", "command": "play"})
     assert result["success"] is False
+
+
+# Confirming what was done
+
+def test_an_action_which_confirms_itself_has_nothing_said_about_it():
+    # Even when there's something else to say: a reminder offer after a skipped
+    # song used to come out as "That song was shit anyway. Also, your reminder..."
+    skipped = {"success": True, "silent": True, "message": "That song was shit anyway"}
+    assert confirm([skipped], fallback="Okay.") == ([], [])
+
+
+@pytest.mark.parametrize("result, chime_enabled, sounds", [
+    ({"success": True, "sound": "volume_beep.wav", "sound_category": "alarm"}, True,
+     [("volume_beep.wav", "alarm")]),
+    ({"success": True, "chime": True, "message": "Paused"}, True, [("success_chime.wav", "general")]),
+])
+def test_an_action_with_a_sound_is_confirmed_by_it(result, chime_enabled, sounds):
+    assert confirm([result], chime_enabled) == (sounds, [])
+
+
+def test_a_chimed_action_is_said_out_loud_when_the_chime_is_off():
+    assert confirm([{"success": True, "chime": True, "message": "Paused"}], chime_enabled=False) == ([], ["Paused"])
+
+
+def test_a_failed_action_says_why_or_falls_back_to_the_models_reply():
+    assert confirm([{"success": False, "message": "Spotify is not available right now."}],
+                   fallback="Okay.") == ([], ["Spotify is not available right now."])
+    assert confirm([{"success": False, "message": None}], fallback="Okay.") == ([], ["Okay."])

@@ -17,7 +17,7 @@ from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.spotify_controller import SpotifyController
 from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
-from voice_assistant.actions import ActionExecutor
+from voice_assistant.actions import ActionExecutor, confirm
 from voice_assistant.timeline import Timeline
 
 # Loads environment variables from .env
@@ -467,16 +467,14 @@ class SmartAssistant:
         action = result.get("action")
 
         # If an action was detected, it is run through the action executor.
-        # Its message is used as the spoken response if one was returned.
-        action_result = None
+        action_results = []
         if action:
             # Music and volume actions talk to Spotify too, so the pause has to have landed first.
             self._wait_for_spotify_pause()
             action_result = self.actions.execute(action)
+            action_results.append(action_result)
             timeline.mark("action_done")
             timeline.note(action=action.get("type"), command=action.get("command"))
-            if action_result.get("message"):
-                response_text = action_result["message"]
 
             # Cancels auto resume if the user pauses Spotify.
             if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause" and action_result.get("success"):
@@ -489,6 +487,13 @@ class SmartAssistant:
         # finding it already silent and deleting a pending one instead.
         if was_insistent:
             self.clock.silence_insistent()
+
+        # An action either confirms itself - the music changing, or a sound - or has
+        # its message said in place of the model's own reply, which for a tool call is
+        # usually just "Okay.". See confirm().
+        sounds, messages = confirm(action_results, self.chime_enabled, fallback=response_text)
+        if action_results:
+            response_text = " ".join(messages)
 
         # A reminder is left alone by all of that - it isn't insistent enough to
         # count as heard just because the user happened to speak. One caught in the
@@ -505,33 +510,21 @@ class SmartAssistant:
                               # asking, which would leave two to answer at once.
                               and not response_text.rstrip().endswith("?"))
 
-        # An action which confirms itself with a chime normally skips speaking, but
-        # not when there's a question to ask - that has to be said out loud.
-        if action_result is not None and not reminder_offer:
-            # Actions which are followed by a sound do not require a confirmation chime.
-            if action_result.get("success") and action_result.get("silent"):
-                logger.info(f"Action left to confirm itself: {response_text}")
-                return
-
-            # Confirms simple actions with a chime rather than a spoken response.
-            if action_result.get("success") and action_result.get("sound"):
-                self._play_sound(action_result["sound"],
-                                 volume=self.volume.get(action_result.get("sound_category", "general")))
-                logger.info(f"Action confirmed with a sound: {response_text}")
-                return
-
-            if action_result.get("success") and action_result.get("chime") and self.chime_enabled:
-                self._play_sound("success_chime.wav")
-                logger.info(f"Action confirmed with a chime: {response_text}")
-                return
+        for sound, category in sounds:
+            self._play_sound(sound, volume=self.volume.get(category))
 
         # The offer is added last, so it trails the answer to whatever was actually
-        # asked rather than interrupting it.
+        # asked rather than interrupting it - or follows the confirmation sound on its
+        # own, when the action confirmed itself and there's nothing else to say.
         if reminder_offer:
             self._reminder_offered = True
             self._reminder_answer_pending = True
             response_text = (f"{response_text} Also, your {reminder} reminder is still "
-                             f"going. Shall I turn it off?")
+                             f"going. Shall I turn it off?").strip()
+
+        if not response_text:
+            logger.info(f"Action confirmed itself: {[r.get('message') for r in action_results]}")
+            return
 
         # The model's history only has its own text for this turn - usually "Okay." when
         # it called a tool - so it's told what's actually being said. Otherwise a question
