@@ -154,6 +154,37 @@ def parse_repeat(repeat):
     return ordered
 
 
+def seconds_until(at: str, now: Optional[datetime] = None) -> int:
+    """
+    How many seconds until a local clock time.
+
+    Worked out from the local time on that day, so the clocks going forward or back
+    in between is accounted for.
+
+    Args:
+        at: "HH:MM" for the next time it's that time - later today, or tomorrow if
+            it's already gone - or "YYYY-MM-DD HH:MM" for a particular day, which
+            can be in the past.
+        now: The current local time - only given by the tests.
+
+    Returns:
+        The seconds until then, rounded. Zero or less if a given day has passed.
+
+    Raises:
+        ValueError: If at can't be read.
+    """
+    now = now or datetime.now()
+    text = at.strip().replace("T", " ")
+    if " " in text:
+        target = datetime.fromisoformat(text)
+    else:
+        clock_time = datetime.strptime(text, "%H:%M").time()
+        target = datetime.combine(now.date(), clock_time)
+        if target <= now:
+            target += timedelta(days=1)
+    return round(target.timestamp() - now.timestamp())
+
+
 def _duration_units(text: str) -> set:
     """
     Extracts the (number, unit) pairs mentioned in a duration phrase, e.g.
@@ -1248,13 +1279,13 @@ class Clock:
                 # A failed announcement must not kill the timer thread.
                 logger.error(f"Timer announcement failed: {e}")
 
-    def set_timer(self, duration_seconds: int, label: Optional[str] = None,
-                  is_reminder: bool = False) -> Dict:
+    def set_timer(self, duration_seconds: Optional[int] = None, label: Optional[str] = None,
+                  is_reminder: bool = False, at: Optional[str] = None) -> Dict:
         """
         Start a countdown timer, or a reminder if it carries a label.
 
         Args:
-            duration_seconds: How long to count down for.
+            duration_seconds: How long to count down for. Not needed when at is given.
             label: What to say when it goes off. Without one it's a plain timer,
                    with one it's a reminder.
             is_reminder: True when the user explicitly asked for a "reminder" (or
@@ -1263,10 +1294,22 @@ class Clock:
                          or announced, so one can't be created without one - if
                          this is True and no label was given, the user is asked
                          to name it instead of a nameless reminder being set.
+            at: A clock time to count down to instead - see seconds_until.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
+        # A clock time is turned into a duration here, rather than by the model. Left
+        # to the model, "remind me at 4pm" meant clock arithmetic in seconds from a
+        # time given only to the minute, and slips by a minute (or an hour) happened.
+        if at:
+            try:
+                duration_seconds = seconds_until(at)
+            except ValueError:
+                return {"success": False, "message": "Sorry, I didn't catch what time for."}
+            if duration_seconds <= 0:
+                return {"success": False, "message": "That time has already passed."}
+
         try:
             duration_seconds = int(duration_seconds)
         except (TypeError, ValueError):

@@ -173,10 +173,11 @@ class LLMHandler:
         {
             "name": "set_timer",
             "description": (
-                "Set a countdown timer or reminder. Work out the duration in seconds "
-                "yourself from what the user said, from either a length ('ten minutes' is "
-                "600) or a clock time / date to count down to ('remind me at 4pm', 'set a "
-                "reminder for the 4th'). Include a label only when the user says what it's "
+                "Set a countdown timer or reminder. For a length of time, give "
+                "duration_seconds ('ten minutes' is 600). For a clock time or date to count "
+                "down to, give 'at' instead and leave the arithmetic to the clock - 'remind "
+                "me at 4pm' is '16:00', 'set a reminder for the 4th at 9' is the date and "
+                "time, e.g. '2026-11-04 09:00'. Include a label only when the user says what it's "
                 "for - with a label it becomes a reminder and the label is spoken when it "
                 "goes off, so word it as the reminder itself, e.g. 'Take the pizza out'. "
                 "If the user explicitly said 'reminder' or 'remind me' but didn't say what "
@@ -189,7 +190,15 @@ class LLMHandler:
                 "properties": {
                     "duration_seconds": {
                         "type": "integer",
-                        "description": "How long the timer runs for, in seconds.",
+                        "description": "How long the timer runs for, in seconds. Leave out when giving 'at'.",
+                    },
+                    "at": {
+                        "type": "string",
+                        "description": (
+                            "The local time to go off at, on the 24-hour clock: 'HH:MM' for "
+                            "the next time it's that time, or 'YYYY-MM-DD HH:MM' for a "
+                            "particular day. Leave out when giving duration_seconds."
+                        ),
                     },
                     "label": {
                         "type": "string",
@@ -209,7 +218,7 @@ class LLMHandler:
                         ),
                     },
                 },
-                "required": ["duration_seconds"],
+                "required": [],
             },
         },
         {
@@ -487,6 +496,7 @@ class LLMHandler:
         if block.name == "set_timer":
             return {"type": "clock", "command": "set_timer",
                     "duration_seconds": params.get("duration_seconds"),
+                    "at": params.get("at"),
                     "label": params.get("label") or None,
                     "is_reminder": bool(params.get("is_reminder", False))}
 

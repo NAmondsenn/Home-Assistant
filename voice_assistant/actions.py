@@ -265,7 +265,7 @@ class ActionExecutor:
 
         Args:
             action: Dict with a 'command', plus whatever that command needs -
-                    'duration_seconds', 'label' and 'is_reminder' for set_timer,
+                    'duration_seconds' or 'at', 'label' and 'is_reminder' for set_timer,
                     'label' for cancel_timer, 'hour'/'minute'/'repeat' for
                     set_alarm, 'label'/'cancel_all'/'scope' for cancel_alarm.
 
@@ -278,7 +278,7 @@ class ActionExecutor:
         command = action.get("command")
         if command == "set_timer":
             return self.clock.set_timer(action.get("duration_seconds"), action.get("label"),
-                                        action.get("is_reminder", False))
+                                        action.get("is_reminder", False), at=action.get("at"))
         elif command == "name_reminder":
             return self.clock.name_pending_reminder(action.get("label"))
         elif command == "list_timers":

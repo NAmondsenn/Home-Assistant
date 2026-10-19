@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 import pytest
 
 from voice_assistant import clock as clock_module
-from voice_assistant.clock import Clock, format_duration, parse_repeat, spoken_clock_time, _time_of_day_candidates
+from voice_assistant.clock import (Clock, format_duration, parse_repeat, seconds_until, spoken_clock_time,
+                                   _time_of_day_candidates)
 
 
 @pytest.fixture
@@ -75,6 +76,50 @@ def test_time_of_day_candidates():
     assert _time_of_day_candidates("cancel the 7am alarm") == {(7, 0)}
     # A bare number is a duration, not a time.
     assert _time_of_day_candidates("the 10 minute timer") == set()
+
+
+# Counting down to a clock time
+
+@pytest.fixture
+def london(monkeypatch):
+    """Runs a test on UK time, whatever the machine's own time zone."""
+    monkeypatch.setenv("TZ", "Europe/London")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.parametrize("at, now, seconds", [
+    ("16:00", datetime(2026, 10, 19, 14, 30), 5400),
+    # Already gone today, so it's tomorrow's.
+    ("09:00", datetime(2026, 10, 19, 14, 30), 66600),
+    ("2026-11-04 09:00", datetime(2026, 11, 3, 9, 0), 86400),
+    # The clocks go back an hour overnight, so it's 25 hours away, not 24.
+    ("2026-10-25 12:00", datetime(2026, 10, 24, 12, 0), 90000),
+    ("2026-10-18 09:00", datetime(2026, 10, 19, 9, 0), -86400),
+])
+def test_seconds_until_a_clock_time(london, at, now, seconds):
+    # The model used to do this arithmetic itself, from a time given only to the
+    # minute and with no idea when the clocks change.
+    assert seconds_until(at, now=now) == seconds
+
+
+def test_a_reminder_can_be_set_for_a_clock_time(make_clock):
+    clock = make_clock()
+    target = (datetime.now() + timedelta(hours=2)).replace(second=0, microsecond=0)
+    result = clock.set_timer(label="call mum", at=target.strftime("%H:%M"))
+
+    assert result["success"]
+    assert abs(next(iter(clock._timers.values()))["due_at"] - target.timestamp()) < 1
+
+
+@pytest.mark.parametrize("at, message", [
+    ("teatime", "Sorry, I didn't catch what time for."),
+    ("2020-01-01 09:00", "That time has already passed."),
+])
+def test_a_time_which_cant_be_used_is_refused(make_clock, at, message):
+    assert make_clock().set_timer(label="call mum", at=at)["message"] == message
 
 
 # Timers and reminders
