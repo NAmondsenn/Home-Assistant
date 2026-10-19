@@ -80,6 +80,10 @@ def test_a_timer_for_a_clock_time_is_passed_on_for_the_clock_to_work_out(llm):
     assert action["at"] == "16:00" and action["duration_seconds"] is None
 
 
+def test_weather_questions_become_a_weather_action(llm):
+    assert llm._action_from_tool_use(_tool("get_weather", day="tomorrow")) == {"type": "weather", "day": "tomorrow"}
+
+
 def test_volume_without_a_category_is_left_for_the_executor(llm):
     action = llm._action_from_tool_use(_tool("set_volume", direction="up"))
     assert action["type"] == "volume" and action["category"] is None

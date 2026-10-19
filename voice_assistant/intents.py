@@ -91,6 +91,8 @@ class LocalIntents:
             (r"what(?:'s| is) the time|what time is it(?: now)?|tell me the time", self._time),
             (r"what(?:'s| is) (?:the date|today's date)(?: today)?|what day is it(?: today)?", self._date),
             (r"(?:cancel|stop|delete) (?:the|my) timer", self._cancel_only_timer),
+            (r"what(?:'s| is| will) the weather(?: (?:going to )?be)?(?: like)?(?: (?P<day>today|tomorrow))?"
+             r"|what(?:'s| is) the forecast(?: for)?(?: (?P<day2>today|tomorrow))?", self._weather),
         ]
 
     def match(self, text: str) -> Optional[Dict]:
@@ -164,6 +166,10 @@ class LocalIntents:
     def _date(self, found) -> Dict:
         now = datetime.now()
         return self._result(f"It's {now.strftime('%A')} the {_ordinal(now.day)} of {now.strftime('%B')}.")
+
+    def _weather(self, found) -> Dict:
+        day = found["day"] or found["day2"] or "today"
+        return self._result("Okay.", [{"type": "weather", "day": day}])
 
     def _cancel_only_timer(self, found) -> Optional[Dict]:
         # Only when there's exactly one, so there's no question which was meant.

@@ -76,7 +76,7 @@ class ActionExecutor:
         self.clock = clock
         self.volume = volume
         self.calendar = calendar # TODO
-        self.weather = weather # TODO
+        self.weather = weather
 
     def execute(self, action: Optional[Dict]) -> Dict:
         """
@@ -105,6 +105,8 @@ class ActionExecutor:
             return self._execute_clock(action)
         elif action_type == "volume":
             return self._change_volume(action)
+        elif action_type == "weather":
+            return self._execute_weather(action)
         else:
             # Fallback incase the LLM Handler returns an invalid action type.
             logger.warning(f"Invalid action type: {action_type}")
@@ -258,6 +260,20 @@ class ActionExecutor:
         # Nothing to change, so the current level is reported instead.
         return {"success": True,
                 "message": f"The {category} volume is at {self.volume.percent(category)} percent."}
+
+    def _execute_weather(self, action: Dict) -> Dict:
+        """
+        Gets the forecast.
+
+        Args:
+            action: Dict with 'day' - "today" or "tomorrow".
+
+        Returns:
+            Dict with 'success' and the forecast as the message.
+        """
+        if not self.weather:
+            return {"success": False, "message": "The weather isn't available right now."}
+        return self.weather.forecast(action.get("day") or "today")
 
     def _execute_clock(self, action: Dict) -> Dict:
         """

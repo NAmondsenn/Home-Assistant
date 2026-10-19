@@ -428,6 +428,26 @@ class LLMHandler:
             },
         },
         {
+            "name": "get_weather",
+            "description": (
+                "Get the weather forecast for home - how it is now, and the rest of today, "
+                "or tomorrow. Use it for any question about the weather, including ones "
+                "like 'do I need a coat?' or 'will it rain later?'. The forecast it returns "
+                "is what gets spoken, so just reply 'Okay.'"
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "day": {
+                        "type": "string",
+                        "enum": ["today", "tomorrow"],
+                        "description": "Which day the user asked about. 'today' includes right now.",
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "control_lights",
             "description": "Turn the smart lights on or off.",
             "input_schema": {
@@ -546,6 +566,9 @@ class LLMHandler:
                     "level": params.get("level"),
                     "direction": params.get("direction"),
                     "amount": params.get("amount")}
+
+        if block.name == "get_weather":
+            return {"type": "weather", "day": params.get("day") or "today"}
 
         if block.name == "control_lights":
             command = "turn_on" if params.get("state") == "on" else "turn_off"

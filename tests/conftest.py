@@ -112,6 +112,13 @@ if _module_missing("sounddevice"):
     sys.modules["sounddevice"] = sounddevice
 
 
+# requests: only get(), which the weather tests replace with their own fake.
+if _module_missing("requests"):
+    requests = types.ModuleType("requests")
+    requests.get = None
+    sys.modules["requests"] = requests
+
+
 # faster_whisper: only WhisperModel, which the tests replace with their own fake.
 if _module_missing("faster_whisper"):
     faster_whisper = types.ModuleType("faster_whisper")

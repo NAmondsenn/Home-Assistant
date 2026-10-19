@@ -94,3 +94,11 @@ def test_the_time_and_date_are_answered_without_claude(monkeypatch):
 def test_the_timer_is_only_cancelled_locally_when_theres_just_one(timers, handled):
     clock = SimpleNamespace(timer_count=lambda: timers)
     assert (_actions("Cancel the timer.", clock=clock) is not None) is handled
+
+
+@pytest.mark.parametrize("text, day", [
+    ("What's the weather?", "today"), ("What's the weather like tomorrow?", "tomorrow"),
+    ("What will the weather be like today?", "today"), ("What's the forecast for tomorrow?", "tomorrow"),
+])
+def test_the_weather_is_asked_for_without_claude(text, day):
+    assert _actions(text) == [{"type": "weather", "day": day}]

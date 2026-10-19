@@ -107,3 +107,8 @@ logging:
   # (logs/smart_assistant.log and the system journal). Handy while setting things up;
   # turn it off to keep conversations out of the logs altogether.
   log_transcripts: true
+
+weather:
+  # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
+  # is free and needs no key. Until it's set, Nova says it doesn't know where you are.
+  location: ""

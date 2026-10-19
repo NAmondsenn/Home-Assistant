@@ -111,3 +111,13 @@ def test_several_actions_are_each_confirmed_their_own_way():
     paused = {"success": True, "chime": True, "message": "Paused"}
     timer = {"success": True, "message": "Timer set for 10 minutes."}
     assert confirm([paused, timer]) == ([("success_chime.wav", "general")], ["Timer set for 10 minutes."])
+
+
+
+def test_weather_is_passed_to_the_forecast():
+    class FakeWeather:
+        def forecast(self, day):
+            return {"success": True, "message": f"Forecast for {day}"}
+
+    executor = ActionExecutor(weather=FakeWeather())
+    assert executor.execute({"type": "weather", "day": "tomorrow"})["message"] == "Forecast for tomorrow"

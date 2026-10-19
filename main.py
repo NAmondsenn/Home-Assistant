@@ -13,6 +13,7 @@ from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
 from voice_assistant.intents import LocalIntents
+from voice_assistant.weather import Weather
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.spotify_controller import MusicHold, SpotifyController
@@ -141,7 +142,8 @@ class SmartAssistant:
         self.volume = VolumeControl(config=self.config)
 
         # Sets up the action executor, which dispatches detected actions to the right controller.
-        self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock, volume=self.volume)
+        self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock, volume=self.volume,
+                                      weather=Weather(config=self.config))
         
         # Sets up the wake word detector with sensitivity settings from config.
         self.thresholds = self.config.section("thresholds")
