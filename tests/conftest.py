@@ -104,10 +104,11 @@ for name in ("librosa", "soundfile"):
         sys.modules[name] = types.ModuleType(name)
 
 
-# sounddevice: only its InputStream, which the tests replace with their own fake.
+# sounddevice: only its input and output streams, which the tests replace with their own fakes.
 if _module_missing("sounddevice"):
     sounddevice = types.ModuleType("sounddevice")
     sounddevice.InputStream = None
+    sounddevice.OutputStream = None
     sys.modules["sounddevice"] = sounddevice
 
 

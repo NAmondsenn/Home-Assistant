@@ -7,7 +7,7 @@ PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 # voice_assistant is a proper package sitting next to this file, so its modules
 # are imported through the package rather than via sys.path manipulation.
 from voice_assistant.config import Config
-from voice_assistant.audio import AudioManager
+from voice_assistant.speaker import Speaker
 from voice_assistant.microphone import Microphone
 from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import SpeechToText
@@ -88,9 +88,8 @@ class SmartAssistant:
 
         logger.info("Loading modules...")
         
-        # Sets up the audio manager with mic settings from config.
-        self.audio = AudioManager(sample_rate=self.mic_rate, channels=audio_config.get("channels", 1),
-                                  chunk_size=audio_config.get("chunk_size", 2048))
+        # The one owner of the speaker, which every sound goes through - see speaker.py.
+        self.speaker = Speaker(sample_rate=self.mic_rate)
 
         # One microphone stream for as long as the assistant runs, which the wake word
         # detector and the recorder share - see microphone.py.
@@ -147,7 +146,7 @@ class SmartAssistant:
 
     def _play_sound(self, name, volume=None):
         """
-        Plays one of the assistant's sound effects.
+        Plays one of the assistant's sound effects, waiting for it to finish.
 
         Args:
             name: Filename within the sounds folder, e.g. "success_chime.wav".
@@ -158,7 +157,11 @@ class SmartAssistant:
         """
         if volume is None:
             volume = self.volume.get("general")
-        return self.audio.play_file(str(self.sounds_folder / name), volume=volume)
+        playback = self.speaker.play_file(str(self.sounds_folder / name), volume=volume)
+        if playback is None:
+            return False
+        playback.wait()
+        return True
 
     def _say(self, message, timeline=None):
         """
@@ -175,7 +178,9 @@ class SmartAssistant:
         if timeline:
             timeline.mark("tts_done")
             timeline.note(reply_chars=len(message))
-        self.audio.play_file(self.tts_file, volume=self.volume.get("general"))
+        playback = self.speaker.play_file(self.tts_file, volume=self.volume.get("general"), cache=False)
+        if playback:
+            playback.wait()
         if timeline:
             timeline.mark("playback_done")
 
@@ -202,13 +207,34 @@ class SmartAssistant:
             return False
         return True
 
+    def _play_announcement(self, filename, volume, still_wanted=None, cache=True):
+        """
+        Plays one sound for something which went off by itself, waiting for it to
+        finish - or stopping it the moment it's dismissed, rather than once the
+        whole sound has played. An alarm's sound is 34 seconds long.
+
+        Args:
+            filename: Path to the sound.
+            volume: How loud, from 0 to 1.
+            still_wanted: Checked while it plays - False once it's been dismissed.
+            cache: Keep the file loaded. False for one-off speech.
+        """
+        playback = self.speaker.play_file(filename, volume=volume, kind="announcement", cache=cache)
+        if playback is None:
+            return
+        while not playback.wait(timeout=0.1):
+            if still_wanted is not None and not still_wanted():
+                logger.info("Dismissed part way through, so it's stopped")
+                playback.stop()
+                return
+
     def _announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None):
         """
         Speaks a message which the user has scheduled, e.g. a timer.
 
         Uses its own audio file rather than the one the main loop uses, so a timer
-        firing mid-conversation can't overwrite the reply being spoken. Shared ALSA
-        output means both can play at once without fighting over the speaker.
+        firing mid-conversation can't overwrite the reply being spoken. Played as an
+        "announcement", which the wake word silences straight away - see run().
 
         Args:
             message: What to say. None plays just the sound, with no speech - an
@@ -237,7 +263,7 @@ class SmartAssistant:
 
             # A sound first, so the user knows the assistant is about to speak.
             if sound and self.reminder_sound_enabled:
-                self._play_sound(sound, volume=volume)
+                self._play_announcement(str(self.sounds_folder / sound), volume, still_wanted)
 
             if not message:
                 return
@@ -252,7 +278,7 @@ class SmartAssistant:
                 logger.error("Announcement synthesis failed")
                 return
 
-            self.audio.play_file(announcement_file, volume=volume)
+            self._play_announcement(announcement_file, volume, still_wanted, cache=False)
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
         finally:
@@ -298,7 +324,7 @@ class SmartAssistant:
         self.running = False
         self.clock.stop()
         self.microphone.close()
-        self.audio.close()
+        self.speaker.close()
         sys.exit(0)
 
     def run(self):
@@ -327,6 +353,10 @@ class SmartAssistant:
 
                 # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
                 self._idle.clear()
+                # Anything going off stops the moment the wake word is heard, rather than
+                # playing on over the user - and into the microphone - until its sound
+                # ends. It carries on afterwards unless the conversation dealt with it.
+                self.speaker.silence("announcement")
                 # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
                 self._start_spotify_pause()
                 try:
@@ -345,6 +375,7 @@ class SmartAssistant:
                     self._handle_interaction(timeline=timeline)
                 finally:
                     timeline.save(self.latency_file)
+                    self.speaker.allow("announcement")
                     self._idle.set()
                     if self.spotify:
                         self._wait_for_spotify_pause()
