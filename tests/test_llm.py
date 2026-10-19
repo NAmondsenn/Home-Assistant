@@ -4,7 +4,7 @@ Tests how the model's replies are turned into actions and history, using fake
 responses in place of the API, so no request is ever made.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from types import SimpleNamespace
 
 import anthropic
@@ -94,10 +94,12 @@ def test_volume_without_a_category_is_left_for_the_executor(llm):
 def test_the_time_is_given_on_the_12_hour_clock(llm, monkeypatch):
     # Told it was "19:36", the model would sometimes say that straight back, which
     # Piper reads out as "nineteen thirty-six" - more like a year than a time.
+    # A plain local time, rather than one with a time zone, so it's still 19:36
+    # whatever time zone the machine running the tests is set to.
     class EveningDatetime(datetime):
         @classmethod
         def now(cls, tz=None):
-            return datetime(2026, 10, 19, 19, 36, tzinfo=timezone(timedelta(hours=1), "BST"))
+            return datetime(2026, 10, 19, 19, 36)
 
     monkeypatch.setattr(llm_module, "datetime", EveningDatetime)
     llm.client = FakeClient(_reply("It's 7:36 PM."))
