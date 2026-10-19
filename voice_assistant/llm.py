@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict
 from dotenv import load_dotenv
+import anthropic
 from anthropic import Anthropic
 
 # loads environment variables from a .env file if present.
@@ -21,11 +22,22 @@ class LLMHandler:
         assistant_config = config.section("assistant") if config else {}
         web_search_config = config.section("web_search") if config else {}
 
+        # How long one request may take before it's given up on, in seconds, and how
+        # many times it's retried. The SDK's own default waits up to 10 minutes and
+        # retries twice, so a dropped connection could leave the assistant stuck - music
+        # paused, not listening - for far longer than anyone would wait for an answer.
+        # A web search does more work per request, so it's allowed longer.
+        self.timeout = float(llm_config.get("timeout", 15))
+        self.search_timeout = float(llm_config.get("search_timeout", 45))
+        self.max_retries = int(llm_config.get("max_retries", 1))
+
         # If no API key is provided, ANTHROPIC_API_KEY is taken from .env, falling back to Claude_API_Key.
         # Missing API keys are logged as warnings, the program runs, but the LLM will not be available.
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY") or os.getenv("Claude_API_Key")
         if self.api_key:
-            self.client = Anthropic(api_key=self.api_key)
+            self.client = Anthropic(api_key=self.api_key,
+                                    timeout=anthropic.Timeout(self.timeout, connect=5.0),
+                                    max_retries=self.max_retries)
         else:
             self.client = None
             logger.warning("No API key found (ANTHROPIC_API_KEY), LLM queries will fail until one is set")
@@ -668,8 +680,11 @@ class LLMHandler:
                 # answer gets truncated mid-sentence by max_tokens.
                 request_kwargs["max_tokens"] = max(self.max_tokens, 400)
 
+            # A search is allowed longer than an ordinary reply - see search_timeout.
+            client = self.client.with_options(timeout=self.search_timeout) if use_web_search else self.client
+
             # Sends the system prompt, conversation history, current query and model settings to the LLM
-            response = self.client.messages.create(
+            response = client.messages.create(
                 model=self.model_name, temperature=self.temperature,
                 system=system_prompt, messages=messages, **request_kwargs)
 
@@ -681,7 +696,7 @@ class LLMHandler:
                     break
                 logger.info("Search paused by the API, continuing the turn...")
                 messages.append({"role": "assistant", "content": response.content})
-                response = self.client.messages.create(
+                response = client.messages.create(
                     model=self.model_name, temperature=self.temperature,
                     system=system_prompt, messages=messages, **request_kwargs)
 
@@ -731,9 +746,37 @@ class LLMHandler:
         # The keyword parser is used as a fallback here, so music can still be
         # controlled when the API is unreachable.
         except Exception as e:
-            logger.error(f"LLM processing failed: {e}")
-            return {"response": "Sorry, I'm having trouble connecting right now.",
+            logger.error(f"LLM processing failed ({type(e).__name__}): {e}")
+            return {"response": self._failure_message(e),
                     "action": self._parse_action(text, ""), "success": False}
+
+    @staticmethod
+    def _failure_message(error: Exception) -> str:
+        """
+        What to tell the user when a request to the model failed, depending on why.
+
+        Each cause needs something different from the user - waiting, checking the
+        internet, or fixing the API key - so a single "trouble connecting" for all of
+        them didn't say what was actually wrong.
+
+        Args:
+            error: The exception the request raised.
+
+        Returns:
+            A short spoken message.
+        """
+        # A timeout is a kind of connection error, so it's checked first.
+        if isinstance(error, anthropic.APITimeoutError):
+            return "Sorry, that took too long to answer. Try asking again in a moment."
+        if isinstance(error, anthropic.APIConnectionError):
+            return "Sorry, I can't reach the internet right now."
+        if isinstance(error, anthropic.AuthenticationError):
+            return "Sorry, my Claude API key isn't working. It needs checking in the .env file."
+        if isinstance(error, anthropic.RateLimitError):
+            return "Sorry, I've had too many requests just now. Try again in a minute."
+        if isinstance(error, anthropic.APIStatusError):
+            return "Sorry, Claude is having problems at the moment. Try again shortly."
+        return "Sorry, I'm having trouble connecting right now."
 
     def _parse_action(self, user_text: str, response: str) -> Optional[Dict]:
         """
@@ -792,6 +835,24 @@ class LLMHandler:
 
         # If no specific action is detected, return None
         return None
+
+    def record_reply(self, user_text: str, spoken: str):
+        """
+        Replaces the assistant's side of the latest exchange with what was actually
+        said back to the user.
+
+        For a tool call the model's own text is usually just "Okay.", and the tool's
+        result is what gets spoken instead - often a question, like "What would you
+        like to name this reminder?" or "Which one?". History only ever had the
+        "Okay.", so the model never saw those questions, and the user's answer arrived
+        on the next turn with nothing to say what it was answering.
+
+        Args:
+            user_text: What the user said in that exchange, so only the right one is changed.
+            spoken: What the assistant actually said.
+        """
+        if spoken and self.history and self.history[-1]["user"] == user_text:
+            self.history[-1]["assistant"] = spoken
 
     # Clears the conversation history, used to start a new session or reset context
     def clear_history(self):
