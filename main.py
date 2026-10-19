@@ -16,6 +16,7 @@ from voice_assistant.spotify_controller import SpotifyController
 from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
 from voice_assistant.actions import ActionExecutor
+from voice_assistant.timeline import Timeline
 
 # Loads environment variables from .env
 load_dotenv()
@@ -53,6 +54,10 @@ class SmartAssistant:
         self.temp_folder = Path(PROJECT_DIRECTORY) / "temp_audio"
         self.temp_folder.mkdir(exist_ok=True)
         self.tts_file = str(self.temp_folder / "response.wav")
+
+        # How long each stage of every interaction took, one line per interaction,
+        # for scripts/latency_report.py to summarise.
+        self.latency_file = os.path.join(PROJECT_DIRECTORY, "logs", "latency.jsonl")
 
         # Controls the main loop of the assistant. When set to False, the assistant will stop running.
         self.running = False
@@ -142,18 +147,24 @@ class SmartAssistant:
             volume = self.volume.get("general")
         return self.audio.play_file(str(self.sounds_folder / name), volume=volume)
 
-    def _say(self, message):
+    def _say(self, message, timeline=None):
         """
         Speaks a reply to the user, through the same audio file the main loop uses.
 
         Args:
             message: What to say.
+            timeline: Optional Timeline to mark when the speech was ready and when it finished.
         """
         print(f"{self.name}: {message}")
         if self.tts.synthesise(message, self.tts_file) is None:
             logger.error("TTS synthesis failed, skipping playback")
             return
+        if timeline:
+            timeline.mark("tts_done")
+            timeline.note(reply_chars=len(message))
         self.audio.play_file(self.tts_file, volume=self.volume.get("general"))
+        if timeline:
+            timeline.mark("playback_done")
 
     def _wait_for_turn(self, still_wanted=None):
         """
@@ -290,6 +301,9 @@ class SmartAssistant:
         while self.running:
             try:
                 self.wake.listen_once()
+                # Times the interaction from this moment on - see Timeline.
+                timeline = Timeline(follow_up=False)
+                timeline.mark("wake")
                 print("Listening...")
 
                 # What was audibly going off at the moment the wake word fired,
@@ -311,8 +325,9 @@ class SmartAssistant:
                     # left unanswered doesn't colour the next one.
                     self._reminder_offered = False
                     self._reminder_answer_pending = False
-                    self._handle_interaction()
+                    self._handle_interaction(timeline=timeline)
                 finally:
+                    timeline.save(self.latency_file)
                     self._idle.set()
                     if self.spotify:
                         self._wait_for_spotify_pause()
@@ -324,7 +339,7 @@ class SmartAssistant:
                 logger.error(f"Error: {e}", exc_info=True)
                 time.sleep(1)
 
-    def _handle_interaction(self, follow_up=False):
+    def _handle_interaction(self, follow_up=False, timeline=None):
         """
         Handles one full interaction after the wake word: records the query,
         transcribes it, processes it with the LLM, runs any detected action,
@@ -334,7 +349,11 @@ class SmartAssistant:
             follow_up: True when the assistant has just asked the user a question
                        and is listening for the answer, which allows a little
                        longer to start speaking than a fresh request does.
+            timeline: The Timeline to mark each stage on. The caller saves it.
         """
+        # A throwaway one when none is given, so the marks below never need checking for.
+        timeline = timeline or Timeline()
+
         speech_timeout = self.thresholds.get("speech_timeout", 3.0)
         if follow_up:
             # Answering a question takes a moment's thought, so there's more time to
@@ -345,9 +364,11 @@ class SmartAssistant:
         audio_data = self.audio.record_until_silence(silence_duration=self.thresholds.get("silence_duration", 0.8),
                                                      silence_threshold=self.thresholds.get("silence_threshold", 0.05),
                                                      speech_timeout=speech_timeout,
-                                                     timeout=self.thresholds.get("recording_timeout", 10.0))
+                                                     timeout=self.thresholds.get("recording_timeout", 10.0),
+                                                     timeline=timeline)
 
         if audio_data is None or len(audio_data) == 0:
+            timeline.note(outcome="no_speech")
             return
 
         # Resamples the audio from the microphone's sample rate to the Whisper model's expected sample rate.
@@ -356,11 +377,15 @@ class SmartAssistant:
 
         # Transcribes the recorded audio using Whisper to text, Continues listening if no text is returned.
         transcription = self.stt.transcribe(audio_data)
+        timeline.mark("stt_done")
+        timeline.note(audio_seconds=round(len(audio_data) / self.whisper_rate, 2))
         if not transcription or not transcription.get("text", "").strip():
+            timeline.note(outcome="nothing_transcribed")
             return
 
         # Retrieves and prints the transcribed text.
         text = transcription["text"]
+        timeline.note(text_chars=len(text))
         print(f"You: {text}")
 
         # Answering the assistant's own "shall I turn that reminder off?". Checked
@@ -369,6 +394,7 @@ class SmartAssistant:
         # the same word, told apart only by the question having just been asked.
         if self._reminder_answer_pending:
             self._reminder_answer_pending = False
+            timeline.note(outcome="reminder_answer")
             if self.clock.looks_like_refusal(text):
                 logger.info("Reminder left running at the user's request")
                 self._say("Okay, I'll leave it.")
@@ -388,6 +414,7 @@ class SmartAssistant:
         # here rather than going to the model, making it quicker and easier to silence.
         if self.clock.is_ringing() and self.clock.looks_like_dismissal(text):
             result = self.clock.dismiss()
+            timeline.note(outcome="dismissed_locally")
             logger.info("Dismissed by voice without asking the model")
             if self.chime_enabled:
                 self._play_sound("success_chime.wav")
@@ -407,6 +434,7 @@ class SmartAssistant:
         # "walk the dogs" reminder. Returns a response and any detected actions.
         clock_context = "; ".join(self.clock.describe_all()) or None
         result = self.llm.process_query(text, context=clock_context)
+        timeline.mark("llm_done")
         response_text = result["response"]
         action = result.get("action")
 
@@ -417,6 +445,8 @@ class SmartAssistant:
             # Music and volume actions talk to Spotify too, so the pause has to have landed first.
             self._wait_for_spotify_pause()
             action_result = self.actions.execute(action)
+            timeline.mark("action_done")
+            timeline.note(action=action.get("type"), command=action.get("command"))
             if action_result.get("message"):
                 response_text = action_result["message"]
 
@@ -485,7 +515,7 @@ class SmartAssistant:
 
         # Speaks the response. If synthesis fails, playback is skipped rather than
         # replaying a stale file.
-        self._say(response_text)
+        self._say(response_text, timeline=timeline)
 
         # If the assistant asked something, it listens straight away for the answer.
         # The count is capped so the model doesn't get stuck in an infinite loop.
@@ -493,7 +523,12 @@ class SmartAssistant:
             self._follow_ups += 1
             logger.info("Question asked, listening for a reply")
             print("Listening...")
-            self._handle_interaction(follow_up=True)
+            # The answer is timed on its own, from when listening starts again.
+            follow_up_timeline = Timeline(follow_up=True)
+            try:
+                self._handle_interaction(follow_up=True, timeline=follow_up_timeline)
+            finally:
+                follow_up_timeline.save(self.latency_file)
 
 # Runs the SmartAssistant if this script is executed directly. 
 # This creates an instance of SmartAssistant and calls its run method to start the main loop.

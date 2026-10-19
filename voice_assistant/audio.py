@@ -6,6 +6,7 @@ WAV file saving, and sample rate conversion using PyAudio and Librosa.
 """
 
 import os
+import time
 import wave
 import logging
 import pyaudio
@@ -149,7 +150,8 @@ class AudioManager:
             silence_threshold: float = 0.04,
             silence_duration: float = 2.0,
             speech_chunks_needed: int = 3,
-            speech_timeout: float = 3.0
+            speech_timeout: float = 3.0,
+            timeline=None
     ) -> np.ndarray:
         """
         Record audio until silence is detected or the timeout is reached.
@@ -165,6 +167,8 @@ class AudioManager:
             speech_timeout: How long to wait for the user to start speaking before
                 giving up, so a false wake word trigger doesn't sit recording
                 silence for the full timeout.
+            timeline: Optional Timeline to mark when listening started, when speech
+                started and ended, and when the recording stopped.
 
         Returns:
             Numpy array of normalised float32 audio samples.
@@ -181,10 +185,16 @@ class AudioManager:
             frames_per_buffer=self.chunk_size
         )
 
+        if timeline:
+            timeline.mark("recording_started")
+
         frames = []
         silence_chunks = 0
         speech_chunks = 0
         speech_started = False
+        # When the last loud chunk arrived - the moment the user actually stopped
+        # talking, as opposed to when the silence after it was long enough to stop.
+        last_loud = None
         silence_chunks_needed = int(silence_duration * self.sample_rate / self.chunk_size)
         max_chunks = int(timeout * self.sample_rate / self.chunk_size)
         speech_timeout_chunks = int(speech_timeout * self.sample_rate / self.chunk_size)
@@ -221,13 +231,21 @@ class AudioManager:
                     # the user speaking, rather than a single click or the wake word's tail.
                     speech_chunks += 1
                     silence_chunks = 0
+                    last_loud = time.monotonic()
                     if not speech_started and speech_chunks >= speech_chunks_needed:
                         speech_started = True
                         logger.info("Speech detected, listening for the end of the query...")
+                        if timeline:
+                            timeline.mark("speech_started")
         finally:
             # Safely stop the stream and close the audio device.
             stream.stop_stream()
             stream.close()
+
+        if timeline:
+            if speech_started and last_loud is not None:
+                timeline.mark("speech_ended", at=last_loud)
+            timeline.mark("recording_stopped")
 
         # Join all recorded frames into a single numpy array.
         # This also logs the total number of recorded samples and returns the audio array.
