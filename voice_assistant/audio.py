@@ -282,7 +282,14 @@ class AudioManager:
 
         # Plays the audio samples and handles any exceptions that may occur.
         try:
-            stream.write(audio_int.tobytes())
+            # Followed by a full buffer of silence, because closing the stream throws
+            # away whatever is still buffered rather than playing it. A sound shorter
+            # than the buffer - the 0.14s listening blip, in a quarter of a second -
+            # was dropped whole whenever nothing else was keeping the speaker going,
+            # and every reply lost its last moment. Now only the silence is thrown
+            # away, and this returns as the sound itself finishes.
+            silence = np.zeros(stream.get_write_available() * self.channels, dtype=np.int16)
+            stream.write(audio_int.tobytes() + silence.tobytes())
         finally:
             stream.stop_stream()
             stream.close()
