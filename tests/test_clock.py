@@ -210,6 +210,32 @@ def test_talking_only_silences_what_was_ringing_at_the_wake_word(make_clock):
     assert [entry["timer"]["duration"] for entry in clock._ringing] == [180]
 
 
+def test_a_missed_timer_is_only_announced_once_however_often_it_restarts(make_clock, tmp_path):
+    # The file kept missed timers until something else changed, so a crash loop
+    # announced the same "while I was off" on every start.
+    due = time.time() - 60
+    (tmp_path / "timers.json").write_text(json.dumps(
+        {"next_id": 2, "timers": [{"id": 1, "due_at": due, "duration": 600, "label": None}]}))
+
+    assert len(make_clock()._missed) == 1
+    assert make_clock()._missed == []
+
+
+def test_a_timer_ringing_when_the_assistant_stops_is_reported_as_missed(make_clock, tmp_path):
+    # It had already been taken out of the saved file when it started ringing, so a
+    # restart mid-ring lost it without a word.
+    clock = make_clock()
+    clock.set_timer(60)
+    clock._tick(time.time() + 61)
+    saved = json.loads((tmp_path / "timers.json").read_text())
+    assert [timer["duration"] for timer in saved["ringing"]] == [60]
+
+    # Restarting a minute after it went off.
+    saved["ringing"][0]["due_at"] = time.time() - 60
+    (tmp_path / "timers.json").write_text(json.dumps(saved))
+    assert [timer["duration"] for timer in make_clock()._missed] == [60]
+
+
 def test_timers_are_held_until_the_system_clock_is_set(make_clock):
     clock = make_clock()
     clock.set_timer(60)

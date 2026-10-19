@@ -290,7 +290,8 @@ class Clock:
 
     def _save(self):
         """
-        Writes the pending timers to the disk.
+        Writes the pending timers to the disk, along with any going off right now -
+        so a restart while one is ringing reports it as missed rather than losing it.
 
         Written to a temporary file and then renamed, which is atomic on Linux, so
         losing power mid-write leaves the previous file intact rather than a
@@ -305,7 +306,9 @@ class Clock:
             try:
                 with os.fdopen(handle, "w") as f:
                     json.dump({"next_id": self._next_id,
-                               "timers": list(self._timers.values())}, f)
+                               "timers": list(self._timers.values()),
+                               "ringing": [entry["timer"] for entry in self._ringing
+                                           if entry["kind"] == "clock"]}, f)
                     # Flushed to the disk itself, not just the OS cache, so a power
                     # cut straight after saving can't lose the timer.
                     f.flush()
@@ -342,7 +345,9 @@ class Clock:
         now = time.time()
         restored = missed = dropped = 0
 
-        for timer in data.get("timers", []):
+        # Anything which was going off when the assistant stopped is past its due
+        # time, so it's treated the same as one which came due while it was off.
+        for timer in data.get("timers", []) + data.get("ringing", []):
             # Skips anything malformed rather than trusting the file's contents.
             if not isinstance(timer, dict) or "due_at" not in timer:
                 continue
@@ -373,6 +378,12 @@ class Clock:
 
         if restored or missed or dropped:
             logger.info(f"Restored {restored} timer(s), {missed} missed, {dropped} too old")
+
+        # Saved straight away without the missed ones, which are now only in memory
+        # waiting to be announced. Otherwise a crash loop announced the same "while
+        # I was off" on every start, since the file still had them.
+        if missed or dropped:
+            self._save()
 
     def _save_alarms(self):
         """
@@ -671,6 +682,8 @@ class Clock:
                 "sounding": False}
         with self._lock:
             self._ringing.append(entry)
+            if kind == "clock":
+                self._save()
 
         still_ringing = self._ring_once(entry, repeat=False)
 
@@ -729,6 +742,7 @@ class Clock:
             finished = entry in self._ringing
             if finished:
                 self._ringing.remove(entry)
+                self._save()
         if not finished:
             # Already removed - dismiss() got there first and handled this itself.
             return
@@ -988,6 +1002,8 @@ class Clock:
                 wanted = self._is_insistent(entry) and (heard is None or any(entry is h for h in heard))
                 (silenced if wanted else keep).append(entry)
             self._ringing = keep
+            if silenced:
+                self._save()
 
         if silenced:
             logger.info(f"Silenced {len(silenced)} timer(s)/alarm(s) - the user was talking")
@@ -1091,6 +1107,8 @@ class Clock:
             # Dismissing also clears what was missed, since the user has now heard it.
             missed = len(self._unacknowledged)
             self._unacknowledged = []
+            if ringing:
+                self._save()
 
         if not ringing and not missed:
             return {"success": False, "message": "Nothing's going off."}
