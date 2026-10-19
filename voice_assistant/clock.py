@@ -1463,12 +1463,15 @@ class Clock:
                         "message": f"There are {len(matches)} {kind}s: {options}. "
                                    f"Which would you like to cancel?"}
 
-            # Nothing matched, but with a single timer running there's nothing else
-            # the user could have meant, so it deletes the timer.
+            # Nothing matched. With a single timer running it's probably what was
+            # meant, but deleting it unasked was too surprising - "cancel the pizza
+            # reminder" quietly deleted an unrelated 10 minute timer - so it asks.
+            # The answer comes back through the model, as "which one?" above does.
             if len(self._timers) == 1:
-                timer = self._timers.popitem()[1]
-                self._save()
-                return {"success": True, "message": self._deleted_message(timer)}
+                timer = next(iter(self._timers.values()))
+                return {"success": False,
+                        "message": f"You only have the {self._describe(timer)} for "
+                                   f"{self._spoken_due(timer['due_at'])}. Do you want me to cancel that?"}
 
             return {"success": False, "message": f"I couldn't find a timer for {label}."}
 
@@ -1642,10 +1645,13 @@ class Clock:
                 matches = [a for a in self._alarms.values()
                           if wanted_times and (a["hour"], a["minute"]) in wanted_times]
 
-                # Nothing matched, but with a single alarm set there's nothing
-                # else the user could have meant.
+                # Nothing matched. With a single alarm set it's probably what was
+                # meant, but cancelling it unasked is too surprising, so it asks.
                 if not matches and len(self._alarms) == 1:
-                    matches = list(self._alarms.values())
+                    only = next(iter(self._alarms.values()))
+                    return {"success": False,
+                            "message": f"You only have the {self._describe_alarm(only)}. "
+                                       f"Do you want me to cancel that?"}
 
                 if not matches:
                     return {"success": False, "message": f"I couldn't find an alarm for {label}."}

@@ -112,6 +112,27 @@ def test_cancel_by_length_doesnt_match_a_longer_timer(make_clock):
     assert len(remaining) == 1 and remaining[0].startswith("1 hour and 31 minute timer")
 
 
+def test_cancelling_something_that_doesnt_exist_asks_about_the_only_timer(make_clock):
+    # "Cancel the pizza reminder" with only a 10 minute timer running used to
+    # delete the timer without asking.
+    clock = make_clock()
+    clock.set_timer(600)
+    result = clock.cancel_timer(label="pizza")
+
+    assert result["message"].startswith("You only have the 10 minute timer")
+    assert result["message"].endswith("Do you want me to cancel that?")
+    assert len(clock._timers) == 1
+
+
+def test_cancelling_an_alarm_that_doesnt_exist_asks_about_the_only_one(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0)
+    result = clock.cancel_alarm(label="9pm")
+
+    assert result["message"] == "You only have the 7:00 AM alarm. Do you want me to cancel that?"
+    assert len(clock._alarms) == 1
+
+
 def test_ambiguous_cancel_asks_which(make_clock):
     clock = make_clock()
     clock.set_timer(600)
