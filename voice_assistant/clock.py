@@ -503,6 +503,26 @@ class Clock:
 
         return candidate.timestamp()
 
+    def _alarm_days_overlap(self, repeat, due_at: float, existing: Dict) -> bool:
+        """
+        Whether a new alarm would ever ring on the same day as an existing one at the
+        same time of day.
+
+        Args:
+            repeat: The new alarm's repeat pattern, as from parse_repeat.
+            due_at: The new alarm's next occurrence.
+            existing: The alarm already set.
+        """
+        new_days = self._repeat_weekdays(repeat)
+        old_days = self._repeat_weekdays(existing["repeat"])
+        if new_days and old_days:
+            return bool(new_days & old_days)
+        if new_days:
+            return datetime.fromtimestamp(existing["due_at"]).weekday() in new_days
+        if old_days:
+            return datetime.fromtimestamp(due_at).weekday() in old_days
+        return datetime.fromtimestamp(due_at).date() == datetime.fromtimestamp(existing["due_at"]).date()
+
     @staticmethod
     def _repeat_weekdays(repeat) -> set:
         """
@@ -1162,11 +1182,16 @@ class Clock:
             return {"success": False, "message": "What would you like to name this reminder?"}
 
         with self._lock:
-            # Two timers due in the same minute would be indistinguishable once
-            # they're both running, so this is caught up front rather than
-            # leaving the user with two timers they can't tell apart.
+            # Two plain timers due in the same minute would be indistinguishable
+            # once they're both running, so this is caught up front rather than
+            # leaving the user with two timers they can't tell apart. A reminder is
+            # told apart by its name instead, so it only clashes with another of
+            # the same name - "remind me to take the pizza out in 10 minutes" isn't
+            # refused just because a 10 minute timer was set a moment earlier.
             due_local = time.localtime(due_at)
             for existing in self._timers.values():
+                if (label or "").strip().lower() != (existing["label"] or "").strip().lower():
+                    continue
                 existing_local = time.localtime(existing["due_at"])
                 if (due_local.tm_year, due_local.tm_yday, due_local.tm_hour, due_local.tm_min) == \
                    (existing_local.tm_year, existing_local.tm_yday, existing_local.tm_hour, existing_local.tm_min):
@@ -1524,8 +1549,11 @@ class Clock:
         with self._lock:
             # Same idea as a timer set for the same clock minute as another - two
             # alarms due at once would be indistinguishable once they're ringing.
+            # Only alarms which would actually ring on the same day clash, though:
+            # a one-off 7am on Saturday is fine alongside a weekday 7am.
             for existing in self._alarms.values():
-                if existing["hour"] == hour and existing["minute"] == minute:
+                if (existing["hour"] == hour and existing["minute"] == minute
+                        and self._alarm_days_overlap(repeat, due_at, existing)):
                     return {"success": False,
                             "message": f"You already have a {self._describe_alarm(existing)}."}
 

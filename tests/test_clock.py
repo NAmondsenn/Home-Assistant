@@ -133,6 +133,41 @@ def test_cancelling_an_alarm_that_doesnt_exist_asks_about_the_only_one(make_cloc
     assert len(clock._alarms) == 1
 
 
+def test_two_plain_timers_due_in_the_same_minute_are_refused(make_clock):
+    clock = make_clock()
+    assert clock.set_timer(600)["success"]
+    assert not clock.set_timer(601)["success"]
+
+
+def test_a_reminder_isnt_refused_because_of_a_timer_due_the_same_minute(make_clock):
+    # A reminder is told apart by its name, so "remind me to take the pizza out in
+    # 10 minutes" shouldn't be refused because of a 10 minute timer.
+    clock = make_clock()
+    assert clock.set_timer(600)["success"]
+    assert clock.set_timer(600, label="take the pizza out")["success"]
+    assert clock.set_timer(600, label="feed the cat")["success"]
+    assert not clock.set_timer(600, label="Feed the cat")["success"]
+
+
+@pytest.mark.parametrize("first, second, clash", [
+    ("weekdays", "weekends", False),
+    ("weekdays", "daily", True),
+    (["monday"], ["tuesday"], False),
+])
+def test_alarms_at_the_same_time_only_clash_on_the_same_day(make_clock, first, second, clash):
+    clock = make_clock()
+    assert clock.set_alarm(7, 0, repeat=first)["success"]
+    assert clock.set_alarm(7, 0, repeat=second)["success"] is not clash
+
+
+def test_a_one_off_alarm_only_clashes_with_a_repeating_one_on_its_days(make_clock):
+    # A one-off 7am on a Saturday is fine alongside a weekday 7am.
+    clock = make_clock()
+    clock.set_alarm(7, 0, repeat="weekdays")
+    weekday = datetime.fromtimestamp(clock._next_occurrence(7, 0, None)).weekday()
+    assert clock.set_alarm(7, 0)["success"] is (weekday >= 5)
+
+
 def test_ambiguous_cancel_asks_which(make_clock):
     clock = make_clock()
     clock.set_timer(600)
