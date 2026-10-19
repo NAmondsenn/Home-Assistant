@@ -146,3 +146,13 @@ def test_sound_files_are_resampled_and_kept_once_loaded(streams, tmp_path, monke
 
 def test_a_missing_sound_file_plays_nothing(streams, tmp_path):
     assert Speaker(sample_rate=RATE).play_file(str(tmp_path / "missing.wav")) is None
+
+
+def test_part_of_a_sound_file_can_be_played_as_if_it_looped(streams):
+    # An alarm's bursts carry on through its sound, wrapping round at the end.
+    speaker = Speaker(sample_rate=RATE)
+    sound = np.arange(RATE * 2, dtype=np.float32)
+    assert list(speaker._section(sound, 0.5, 0.25)) == list(sound[RATE // 2:RATE // 2 + RATE // 4])
+    wrapped = speaker._section(sound, 1.75, 0.5)
+    assert list(wrapped) == list(sound[RATE * 7 // 4:]) + list(sound[:RATE // 4])
+    assert list(speaker._section(sound, 2.5, None)) == list(sound[RATE // 2:])

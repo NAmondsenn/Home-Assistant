@@ -46,6 +46,9 @@ REPEAT_WORDS.update({
 # A timer which came due while the assistant was off is still announced if it was
 # recent, anything older is ignored.
 MISSED_TIMER_GRACE_SECONDS = 3600
+
+# How loud an alarm's first burst plays, as a share of full volume - see _alarm_level.
+ALARM_START_LEVEL = 0.3
 # Waits until NTP corrects the time, so the clock is accurate on startup.
 PLAUSIBLE_TIME_AFTER = 1735689600
 
@@ -209,7 +212,8 @@ class Clock:
                  check_interval: float = 0.5, config=None, start: bool = True):
         """
         Args:
-            on_timer_finished: Called with (message, sound, boost, still_wanted=...)
+            on_timer_finished: Called with (message, sound, boost, still_wanted=...),
+                               plus start, length and level for an alarm's bursts,
                                when a timer goes off. This is how the assistant speaks
                                it - the Clock itself has no audio.
             check_interval: How often the background thread checks for due timers.
@@ -266,6 +270,12 @@ class Clock:
         self.alarm_ring_duration = max(10.0, float(timers_config.get("alarm_ring_duration", 150)))
         self.alarm_gap_duration = max(10.0, float(timers_config.get("alarm_gap_duration", 150)))
         self.alarm_max_cycles = max(1, int(timers_config.get("alarm_max_cycles", 3)))
+        # Within a cycle, an alarm rings in short bursts with a gap after each, long
+        # enough to say "Hey Nova, stop" into, and builds up to full volume over
+        # alarm_ramp seconds - see _ring_alarm.
+        self.alarm_burst = max(0.5, float(timers_config.get("alarm_burst", 3)))
+        self.alarm_burst_gap = max(0.0, float(timers_config.get("alarm_burst_gap", 1)))
+        self.alarm_ramp = max(0.0, float(timers_config.get("alarm_ramp", 30)))
 
         self._alarms: Dict[int, Dict] = {}
         self._next_alarm_id = 1
@@ -886,12 +896,16 @@ class Clock:
 
     def _ring_alarm(self, alarm: Dict) -> bool:
         """
-        Rings an alarm for one cycle by looping alarm_sound.wav continuously for
-        alarm_ring_duration, stopping early if dismissed. Each cycle opens with a
-        spoken cut-in (so it's clear what's actually going off, and what time it
-        is, even for a later cycle) then falls back to the raw sound alone, so
-        nothing after that first loop is waiting on speech synthesis while it's
-        trying to be loud.
+        Rings an alarm for one cycle of alarm_ring_duration, stopping early if
+        dismissed. Each cycle opens with a spoken cut-in (so it's clear what's
+        actually going off, and what time it is, even for a later cycle), then
+        carries on through alarm_sound.wav in bursts, so nothing after the cut-in
+        is waiting on speech synthesis while it's trying to be loud.
+
+        It used to play the sound without a break, at full volume from the first
+        second - and right next to the microphone, that could drown out "Hey Nova,
+        stop" altogether. Now each burst is followed by a short gap to say it into,
+        and each cycle starts quieter and builds up to full volume.
 
         Args:
             alarm: The alarm which finished.
@@ -902,18 +916,52 @@ class Clock:
         def still_wanted():
             return self._is_ringing(alarm)
 
+        started = time.time()
         now = datetime.now()
         cutin = f"It's {spoken_clock_time(now.hour, now.minute)}. Time to get up."
-        self._announce(cutin, "alarm_sound.wav", boost=True, still_wanted=still_wanted)
+        self._announce(cutin, "alarm_sound.wav", boost=True, still_wanted=still_wanted,
+                       start=0.0, length=self.alarm_burst, level=self._alarm_level(0.0))
         if not self._is_ringing(alarm):
             return False
 
-        end_at = time.time() + self.alarm_ring_duration
+        # Where the next burst picks up in the sound, so the bursts carry on through
+        # it rather than repeating its first few seconds over and over.
+        position = self.alarm_burst
+        end_at = started + self.alarm_ring_duration
         while time.time() < end_at:
+            if not self._wait_while_ringing(alarm, self.alarm_burst_gap):
+                return False
+            self._announce(None, "alarm_sound.wav", boost=True, still_wanted=still_wanted,
+                           start=position, length=self.alarm_burst,
+                           level=self._alarm_level(time.time() - started))
+            position += self.alarm_burst
+
+        return self._is_ringing(alarm)
+
+    def _alarm_level(self, elapsed: float) -> float:
+        """
+        How loud an alarm burst plays, as a share of full volume: ALARM_START_LEVEL
+        at the start of a cycle, building up to full over alarm_ramp seconds.
+
+        Args:
+            elapsed: Seconds since the cycle started.
+        """
+        if self.alarm_ramp <= 0:
+            return 1.0
+        return min(1.0, ALARM_START_LEVEL + (1.0 - ALARM_START_LEVEL) * elapsed / self.alarm_ramp)
+
+    def _wait_while_ringing(self, alarm: Dict, seconds: float) -> bool:
+        """
+        Waits through the gap after an alarm burst, finishing early if it's dismissed.
+
+        Returns:
+            True if it's still ringing at the end of the gap.
+        """
+        end = time.time() + seconds
+        while time.time() < end:
             if not self._is_ringing(alarm):
                 return False
-            self._announce(None, "alarm_sound.wav", boost=True, still_wanted=still_wanted)
-
+            time.sleep(min(0.1, max(0.0, end - time.time())))
         return self._is_ringing(alarm)
 
     def _is_ringing(self, timer: Dict) -> bool:
@@ -1171,7 +1219,7 @@ class Clock:
         return {"success": True, "message": "You missed " + "; ".join(described) + "."}
 
     def _announce(self, message: str, sound: str = "announcement_sound.wav", boost: bool = False,
-                  still_wanted: Optional[Callable[[], bool]] = None):
+                  still_wanted: Optional[Callable[[], bool]] = None, **playback):
         """
         Passes a message to the callback which speaks it.
 
@@ -1184,12 +1232,18 @@ class Clock:
                           announcement can be held back while the user talks to the
                           assistant, and they may dismiss it in that very conversation -
                           without this it would still play once it was finally let through.
+            playback: Which part of the sound to play, and how loud - start and length
+                      in seconds, and level as a share of the volume. Only an alarm's
+                      bursts give these - see _ring_alarm.
         """
-        logger.info(f"Timer finished: {message}")
+        # An alarm's bursts have no message, and come every few seconds, so they
+        # aren't logged one by one.
+        if message:
+            logger.info(f"Timer finished: {message}")
 
         if self.on_timer_finished:
             try:
-                self.on_timer_finished(message, sound, boost, still_wanted=still_wanted)
+                self.on_timer_finished(message, sound, boost, still_wanted=still_wanted, **playback)
             except Exception as e:
                 # A failed announcement must not kill the timer thread.
                 logger.error(f"Timer announcement failed: {e}")

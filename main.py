@@ -214,7 +214,7 @@ class SmartAssistant:
             return False
         return True
 
-    def _play_announcement(self, filename, volume, still_wanted=None, cache=True):
+    def _play_announcement(self, filename, volume, still_wanted=None, cache=True, start=0.0, length=None):
         """
         Plays one sound for something which went off by itself, waiting for it to
         finish - or stopping it the moment it's dismissed, rather than once the
@@ -225,8 +225,11 @@ class SmartAssistant:
             volume: How loud, from 0 to 1.
             still_wanted: Checked while it plays - False once it's been dismissed.
             cache: Keep the file loaded. False for one-off speech.
+            start: Seconds into the sound to start from.
+            length: Seconds of it to play, or None for the rest of it.
         """
-        playback = self.speaker.play_file(filename, volume=volume, kind="announcement", cache=cache)
+        playback = self.speaker.play_file(filename, volume=volume, kind="announcement", cache=cache,
+                                          start=start, length=length)
         if playback is None:
             return
         while not playback.wait(timeout=0.1):
@@ -235,7 +238,8 @@ class SmartAssistant:
                 playback.stop()
                 return
 
-    def _announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None):
+    def _announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None,
+                  start=0.0, length=None, level=1.0):
         """
         Speaks a message which the user has scheduled, e.g. a timer.
 
@@ -252,19 +256,24 @@ class SmartAssistant:
                    been ringing unanswered a while - see Clock._sound_off.
             still_wanted: Called before anything plays, so a timer or alarm the
                           user dismissed while this was waiting stays quiet.
+            start: Seconds into the sound to start from - an alarm's bursts carry on
+                   through its sound. See Clock._ring_alarm.
+            length: Seconds of the sound to play, or None for all of it.
+            level: How loud the sound plays, as a share of the volume - an alarm
+                   builds up from quiet. The message itself is always at full volume.
         """
         # The music is held from now, before waiting for any conversation to finish,
         # so it doesn't come back in the gap between the two.
         self.music.hold()
         try:
             with self._announcing:
-                self._announce_in_turn(message, sound, boost, still_wanted)
+                self._announce_in_turn(message, sound, boost, still_wanted, start, length, level)
         finally:
             # Let back a few seconds later rather than straight away, since a timer's
             # next round comes three seconds after this one.
             self.music.release(after=5)
 
-    def _announce_in_turn(self, message, sound, boost, still_wanted):
+    def _announce_in_turn(self, message, sound, boost, still_wanted, start, length, level):
         """The body of _announce, run once any other announcement has finished."""
         # Waits for any conversation to finish before making any announcements.
         if not self._wait_for_turn(still_wanted):
@@ -279,11 +288,14 @@ class SmartAssistant:
         volume = 1.0 if boost else self.volume.get("alarm")
 
         try:
-            print(f"\n{self.name}: {message}" if message else f"\n{self.name}: [{sound}]")
+            # An alarm's later bursts aren't printed, since there's one every few seconds.
+            if message or not start:
+                print(f"\n{self.name}: {message}" if message else f"\n{self.name}: [{sound}]")
 
             # A sound first, so the user knows the assistant is about to speak.
             if sound and self.reminder_sound_enabled:
-                self._play_announcement(str(self.sounds_folder / sound), volume, still_wanted)
+                self._play_announcement(str(self.sounds_folder / sound), volume * level, still_wanted,
+                                        start=start, length=length)
 
             if not message:
                 return

@@ -88,6 +88,11 @@ timers:
   alarm_ring_duration: 150
   alarm_gap_duration: 150
   alarm_max_cycles: 3
+  # Within each sound phase, the alarm plays in bursts with a short gap after each, so
+  # "Hey Nova, stop" can be heard over it, and builds up from quiet to full volume.
+  alarm_burst: 3
+  alarm_burst_gap: 1
+  alarm_ramp: 30
 
 sounds:
   chime_enabled: true

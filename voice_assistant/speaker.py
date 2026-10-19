@@ -266,9 +266,9 @@ class Speaker:
         return playback
 
     def play_file(self, filename: str, volume: float = 1.0, kind: str = "reply",
-                  cache: bool = True) -> Optional[Playback]:
+                  cache: bool = True, start: float = 0.0, length: Optional[float] = None) -> Optional[Playback]:
         """
-        Starts playing a sound file, without waiting for it.
+        Starts playing a sound file, or part of one, without waiting for it.
 
         Args:
             filename: Path to the audio file.
@@ -276,6 +276,9 @@ class Speaker:
             kind: What sort of sound it is - see Playback.
             cache: Keep the file once loaded. Right for the assistant's own sounds,
                 wrong for a reply that's only ever played once.
+            start: Seconds into the file to start from. Past the end, it carries on
+                from the beginning again, as if the file were looping.
+            length: Seconds to play, or None for the rest of the file.
 
         Returns:
             The Playback, or None if the file was missing or unreadable.
@@ -297,7 +300,27 @@ class Speaker:
             logger.error(f"Could not play {filename}: {e}")
             return None
 
+        if start or length is not None:
+            audio = self._section(audio, start, length)
         return self.play(audio, volume=volume, kind=kind)
+
+    def _section(self, audio: np.ndarray, start: float, length: Optional[float]) -> np.ndarray:
+        """
+        Part of a sound, as if it were looping - see play_file.
+
+        Args:
+            audio: The whole sound, at the speaker's rate.
+            start: Seconds in to start from.
+            length: Seconds to take, or None for the rest of it.
+        """
+        if len(audio) == 0:
+            return audio
+        begin = int(start * self.sample_rate) % len(audio)
+        if length is None:
+            return audio[begin:]
+        count = int(length * self.sample_rate)
+        repeats = (begin + count) // len(audio) + 1
+        return np.tile(audio, repeats)[begin:begin + count]
 
     def stop(self, kinds: Optional[Iterable[str]] = None):
         """

@@ -298,6 +298,32 @@ def test_alarm_announcement_can_tell_once_its_been_dismissed(make_clock):
     assert len(clock.announced) == 1
 
 
+def test_an_alarm_rings_in_bursts_which_carry_on_through_its_sound(make_clock):
+    # It used to play without a break, at full volume from the first second, which
+    # right by the microphone could drown out "Hey Nova, stop".
+    def dismiss_after_four(clock, announcement):
+        if len(clock.announced) == 4:
+            clock.dismiss()
+
+    clock = make_clock(on_announce=dismiss_after_four, alarm_burst=3, alarm_burst_gap=0)
+    clock.set_alarm(7, 0)
+    for alarm in clock._alarms.values():
+        alarm["due_at"] = time.time() - 5
+    clock._tick(time.time())
+
+    bursts = clock.announced
+    assert bursts[0]["message"].endswith("Time to get up.")
+    assert [b["message"] for b in bursts[1:]] == [None, None, None]
+    assert [(b["start"], b["length"]) for b in bursts] == [(0.0, 3.0), (3.0, 3.0), (6.0, 3.0), (9.0, 3.0)]
+    assert all(b["boost"] for b in bursts)
+    assert bursts[0]["level"] == pytest.approx(clock_module.ALARM_START_LEVEL)
+
+
+@pytest.mark.parametrize("elapsed, level", [(0, 0.3), (15, 0.65), (30, 1.0), (90, 1.0)])
+def test_an_alarm_builds_up_to_full_volume(make_clock, elapsed, level):
+    assert make_clock(alarm_ramp=30)._alarm_level(elapsed) == pytest.approx(level)
+
+
 def _ring_a_timer(clock, seconds=60, label=None):
     """Sets a timer and steps the clock past it, leaving it ringing."""
     clock.set_timer(seconds, label=label)
