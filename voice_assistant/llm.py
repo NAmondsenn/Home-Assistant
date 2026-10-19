@@ -6,6 +6,7 @@ from typing import Optional, Dict
 from dotenv import load_dotenv
 import anthropic
 from anthropic import Anthropic
+from voice_assistant.clock import spoken_clock_time
 
 # loads environment variables from a .env file if present.
 load_dotenv()
@@ -579,6 +580,11 @@ class LLMHandler:
             logger.error("Cannot process query: no API key configured")
             return {"response": "Sorry, I'm not connected to my language model right now.", "action": self._parse_action(text, ""), "success": False}
         try:
+            # The time is given already on the 12-hour clock ("7:36 PM"). Given "19:36",
+            # the model would sometimes say it straight back despite being asked not to,
+            # and Piper reads that out as "nineteen thirty-six" - more like a year than a time.
+            now = datetime.now().astimezone()
+
             # System prompt explaining to the model how to behave, including instructions for formatting and response style.
             system_prompt = (
                 f"You are {self.assistant_name}, a voice assistant running locally with smart home and utility features. "
@@ -604,7 +610,8 @@ class LLMHandler:
                 "so say the useful part and stop. Only go longer if the user explicitly asks for detail. "
                 "Be direct and natural, like a helpful person talking, not a customer service bot. "
                 "If you don't know something, say so plainly rather than guessing. "
-                f"The current date and time is {datetime.now().astimezone().strftime('%A %d %B %Y, %H:%M (%Z)')}. "
+                f"The current date and time is {now.strftime('%A %d %B %Y')}, "
+                f"{spoken_clock_time(now.hour, now.minute)} ({now.strftime('%Z')}). "
                 "Work out any times or dates the user asks about from that, and answer with only the "
                 "part they asked for - the time alone for 'what time is it', the date alone for 'what "
                 "day is it'. Say dates the way they're spoken, such as 'Tuesday the 4th of August 2026'. "

@@ -4,6 +4,7 @@ Tests how the model's replies are turned into actions and history, using fake
 responses in place of the API, so no request is ever made.
 """
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import anthropic
@@ -77,6 +78,25 @@ def test_set_alarm_tool_becomes_a_clock_action(llm, params, repeat):
 def test_volume_without_a_category_is_left_for_the_executor(llm):
     action = llm._action_from_tool_use(_tool("set_volume", direction="up"))
     assert action["type"] == "volume" and action["category"] is None
+
+
+# What the model is told
+
+def test_the_time_is_given_on_the_12_hour_clock(llm, monkeypatch):
+    # Told it was "19:36", the model would sometimes say that straight back, which
+    # Piper reads out as "nineteen thirty-six" - more like a year than a time.
+    class EveningDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 19, 19, 36, tzinfo=timezone(timedelta(hours=1), "BST"))
+
+    monkeypatch.setattr(llm_module, "datetime", EveningDatetime)
+    llm.client = FakeClient(_reply("It's 7:36 PM."))
+    llm.process_query("what time is it")
+
+    system_prompt = llm.client.requests[0]["system"]
+    assert "7:36 PM" in system_prompt
+    assert "19:36" not in system_prompt
 
 
 # Timeouts and failures
