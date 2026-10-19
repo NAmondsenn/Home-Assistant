@@ -274,6 +274,77 @@ class LLMHandler:
             },
         },
         {
+            "name": "set_alarm",
+            "description": (
+                "Set an alarm for a time of day, e.g. 'set an alarm for 7am', 'wake me up at "
+                "quarter past six', 'set an alarm for weekdays at 6:30'. Never give this a "
+                "label - alarms don't take one, that's what a reminder is for. An alarm rings "
+                "insistently until dismissed, so only use this when the user actually means a "
+                "wake-up-style alarm, not a reminder or timer worded loosely as one."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "hour": {"type": "integer", "description": "0-23, 24-hour clock."},
+                    "minute": {"type": "integer", "description": "0-59."},
+                    "repeat": {
+                        "type": "string",
+                        "description": (
+                            "Leave out entirely for a one-off alarm. Otherwise: 'daily' for "
+                            "every day, 'weekdays' for Monday-Friday, 'weekends' for Saturday "
+                            "and Sunday, or a comma-separated list of specific days ('monday, "
+                            "wednesday, friday') for anything else."
+                        ),
+                    },
+                },
+                "required": ["hour", "minute"],
+            },
+        },
+        {
+            "name": "list_alarms",
+            "description": "Report which alarms are set, for 'what alarms do I have' or 'list my alarms'.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "next_alarm",
+            "description": "Report how long until the next alarm, for 'how long until my alarm' or 'when's my next alarm'.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "cancel_alarm",
+            "description": (
+                "Cancel an alarm, identified by its time of day ('cancel my 7am alarm'). If "
+                "the user says 'cancel it'/'turn off my alarm' with only one alarm set or it's "
+                "otherwise unambiguous, leave label out. If the matched alarm repeats and the "
+                "user didn't already say whether they mean just today or the whole schedule "
+                "('just for today', 'stop it repeating', 'cancel it completely'), leave scope "
+                "out too - the user gets asked which they meant rather than it being guessed."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "The alarm's time of day ('7am', '6:30'), or left out when unambiguous.",
+                    },
+                    "cancel_all": {
+                        "type": "boolean",
+                        "description": "True only if the user asked to cancel every alarm.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["today", "all"],
+                        "description": (
+                            "'today' if the user only wants to skip the next occurrence of a "
+                            "repeating alarm; 'all' if they want the whole repeat cancelled. "
+                            "Leave out if they didn't say - only set this from what the user "
+                            "explicitly said, never guessed."
+                        ),
+                    },
+                },
+            },
+        },
+        {
             "name": "set_volume",
             "description": (
                 "Change how loud the assistant is. Always use the 'general' category unless "
@@ -414,6 +485,26 @@ class LLMHandler:
             return {"type": "clock", "command": "cancel_timer",
                     "label": params.get("label") or None,
                     "cancel_all": bool(params.get("cancel_all", False))}
+
+        if block.name == "set_alarm":
+            repeat = params.get("repeat") or None
+            if repeat and repeat not in ("daily", "weekdays", "weekends"):
+                # A specific list of days, given as a comma/"and"-separated string.
+                repeat = [d.strip().lower() for d in re.split(r"[,/&]|\band\b", repeat) if d.strip()]
+            return {"type": "clock", "command": "set_alarm",
+                    "hour": params.get("hour"), "minute": params.get("minute"), "repeat": repeat}
+
+        if block.name == "list_alarms":
+            return {"type": "clock", "command": "list_alarms"}
+
+        if block.name == "next_alarm":
+            return {"type": "clock", "command": "next_alarm"}
+
+        if block.name == "cancel_alarm":
+            return {"type": "clock", "command": "cancel_alarm",
+                    "label": params.get("label") or None,
+                    "cancel_all": bool(params.get("cancel_all", False)),
+                    "scope": params.get("scope") or None}
 
         if block.name == "set_volume":
             return {"type": "volume",

@@ -57,18 +57,24 @@ thresholds:
   wake_word_confidence: 0.5
 
 timers:
-  # Every announcement (timer, reminder, or alarm) is said twice in quick succession.
+  # Reminders are announced twice in quick succession.
   announcements: 2
   repeat_gap: 1.5
-  # Reminders come back every 30 seconds for 3 minutes, then give up.
-  reminder_rounds: 7
+  # Reminders come back every 30 seconds for 5 minutes, then expire.
   reminder_round_gap: 30
-  # Timers and alarms never give up on their own - they ring until dismissed -
-  # so this is just the breather between rounds while that keeps going.
+  reminder_give_up_after: 300
+  # Breather between rounds while a timer keeps ringing. Not a cap.
   timer_repeat_gap: 3
-  # How long a timer/alarm can ring unanswered before it jumps to full volume
-  # regardless of the alarm level below. Reminders are unaffected by this.
+  # Duration the timer goes unanswered before setting max volume.
   timer_volume_boost_after: 120
+  # How long a timer rings before giving up, so nothing rings indefinitely.
+  # Measured in time, not rounds, since a round's length varies with the message.
+  timer_give_up_after: 600
+  # Alarms ring in cycles rather than continuously. This has a 2.5 minute sound phase, followed by 2.5 minutes of silence.
+  # This repeats 3 time, lasting about 15 minutes in total.
+  alarm_ring_duration: 150
+  alarm_gap_duration: 150
+  alarm_max_cycles: 3
 
 sounds:
   chime_enabled: true

@@ -202,11 +202,13 @@ class ActionExecutor:
 
     def _execute_clock(self, action: Dict) -> Dict:
         """
-        Runs a timer command (set / list / cancel).
+        Runs a timer, reminder or alarm command (set / list / cancel).
 
         Args:
-            action: Dict with a 'command', plus 'duration_seconds', 'label' and
-                    'is_reminder' for set_timer, or 'label' for cancel.
+            action: Dict with a 'command', plus whatever that command needs -
+                    'duration_seconds', 'label' and 'is_reminder' for set_timer,
+                    'label' for cancel_timer, 'hour'/'minute'/'repeat' for
+                    set_alarm, 'label'/'cancel_all'/'scope' for cancel_alarm.
 
         Returns:
             Dict with 'success' and a relevant message.
@@ -228,6 +230,15 @@ class ActionExecutor:
             return self.clock.missed()
         elif command == "cancel_timer":
             return self.clock.cancel_timer(action.get("label"), action.get("cancel_all", False))
+        elif command == "set_alarm":
+            return self.clock.set_alarm(action.get("hour"), action.get("minute"), action.get("repeat"))
+        elif command == "list_alarms":
+            return self.clock.list_alarms()
+        elif command == "next_alarm":
+            return self.clock.next_alarm()
+        elif command == "cancel_alarm":
+            return self.clock.cancel_alarm(action.get("label"), action.get("cancel_all", False),
+                                           action.get("scope"))
 
         logger.warning(f"Unknown clock command: {command}")
         return {"success": False, "message": f"I don't know how to '{command}' a timer."}
