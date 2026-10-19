@@ -888,6 +888,20 @@ class LLMHandler:
             logger.info(f"Forgot {len(self.history) - len(kept)} old exchange(s)")
         self.history = kept
 
+    def remember(self, user_text: str, reply: str):
+        """
+        Adds an exchange the model wasn't asked about to its history - one handled
+        locally (see intents.py) - so a follow-up like "actually, make it fifteen"
+        still makes sense to it.
+
+        Args:
+            user_text: What the user said.
+            reply: What the assistant replied.
+        """
+        self.history.append({"user": user_text, "assistant": reply, "at": time.monotonic()})
+        if len(self.history) > self.history_length:
+            self.history = self.history[-self.history_length:]
+
     def record_reply(self, user_text: str, spoken: str):
         """
         Replaces the assistant's side of the latest exchange with what was actually

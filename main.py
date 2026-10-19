@@ -12,6 +12,7 @@ from voice_assistant.microphone import Microphone
 from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
+from voice_assistant.intents import LocalIntents
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.spotify_controller import MusicHold, SpotifyController
@@ -132,6 +133,9 @@ class SmartAssistant:
 
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
         self.clock = Clock(on_timer_finished=self._announce, config=self.config)
+
+        # The everyday commands handled without Claude - see intents.py.
+        self.intents = LocalIntents(clock=self.clock)
 
         # Sets up volume control. The music's own volume isn't set here - Spotify keeps
         # that itself, so a level the user chose by voice survives a restart.
@@ -521,11 +525,20 @@ class SmartAssistant:
         # isn't silenced along with it.
         heard_ringing = self._ringing_at_wake.get("insistent_entries", [])
 
-        # Sends transcribed text to the LLM for processing, along with what's currently on the
-        # clock, so a mangled label like "walk the frogs" can still be matched to the real
-        # "walk the dogs" reminder. Returns a response and any detected actions.
-        clock_context = "; ".join(self.clock.describe_all()) or None
-        result = self.llm.process_query(text, context=clock_context)
+        # The everyday commands which don't need a language model - timers, pause, skip,
+        # volume, the time - are handled straight away without going to Claude, so they
+        # still work offline. Not the answer to a question the assistant asked, though,
+        # which needs the conversation so far to make sense of. See intents.py.
+        result = None if follow_up else self.intents.match(text)
+        if result:
+            timeline.note(local_intent=True)
+            self.llm.remember(text, result["response"])
+        else:
+            # Sends transcribed text to the LLM for processing, along with what's currently on the
+            # clock, so a mangled label like "walk the frogs" can still be matched to the real
+            # "walk the dogs" reminder. Returns a response and any detected actions.
+            clock_context = "; ".join(self.clock.describe_all()) or None
+            result = self.llm.process_query(text, context=clock_context)
         timeline.mark("llm_done")
         response_text = result["response"]
         actions = result.get("actions", [])

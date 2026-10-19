@@ -1397,6 +1397,11 @@ class Clock:
 
         return self.set_timer(remaining, label, is_reminder=True)
 
+    def timer_count(self) -> int:
+        """How many timers and reminders are counting down."""
+        with self._lock:
+            return len(self._timers)
+
     def describe_all(self) -> List[str]:
         """
         Plain-text descriptions of every running timer, reminder and alarm - the
