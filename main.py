@@ -457,12 +457,6 @@ class SmartAssistant:
             if action_result.get("message"):
                 response_text = action_result["message"]
 
-            # The model's history only has its own "Okay." for this turn, so it's told
-            # what was really said - otherwise a question the action asked ("Which
-            # one?") would be missing when the answer comes back on the next turn.
-            if result.get("success"):
-                self.llm.record_reply(text, response_text)
-
             # Cancels auto resume if the user pauses Spotify.
             if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause" and action_result.get("success"):
                 self.spotify.cancel_resume()
@@ -517,8 +511,14 @@ class SmartAssistant:
             self._reminder_answer_pending = True
             response_text = (f"{response_text} Also, your {reminder} reminder is still "
                              f"going. Shall I turn it off?")
-            if result.get("success"):
-                self.llm.record_reply(text, response_text)
+
+        # The model's history only has its own text for this turn - usually "Okay." when
+        # it called a tool - so it's told what's actually being said. Otherwise a question
+        # an action asked ("Which one?") would be missing when the answer comes back on
+        # the next turn. Only what's spoken is recorded: an action confirmed by a chime
+        # or by the music changing keeps the model's own "Okay.".
+        if result.get("success"):
+            self.llm.record_reply(text, response_text)
 
         # Speaks the response. If synthesis fails, playback is skipped rather than
         # replaying a stale file.
