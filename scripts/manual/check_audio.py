@@ -1,130 +1,83 @@
 #!/usr/bin/env python3
 """
-Audio Manager Test
-Tests AudioManager on its own: device listing, fixed-duration recording,
-silence-triggered recording, resampling, and playback.
+Audio Check
+Checks the microphone and speaker on their own: lists the sound devices, records
+until you stop talking, saves it, and plays it back - through the same Microphone
+and Speaker the assistant uses.
 
-Unlike check_pipeline.py and check_integration.py, this doesn't use Whisper,
-the LLM, or TTS. This is just a hardware/AudioManager safety check which is useful
-for confirming the mic and speaker setup works before running the full pipeline.
+Unlike check_pipeline.py and check_integration.py, this doesn't use Whisper, the
+LLM, or TTS. It's a quick hardware check, useful for confirming the mic and speaker
+setup works before running the full pipeline.
 """
 
 import os
 import sys
 import logging
 
+import sounddevice as sd
+import soundfile as sf
+
 # Add the project root to the path so the voice_assistant package imports work
 # no matter where the scripts are run from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from voice_assistant.config import Config
-from voice_assistant.audio import AudioManager
 from voice_assistant.microphone import RATE, Microphone
+from voice_assistant.speaker import Speaker
 from voice_assistant.vad import make_detector
 
-def test_audio():
-    """Runs a series of manual AudioManager checks: devices, recording, resampling, playback."""
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+def check_audio():
+    """Lists the devices, then records, saves and plays back one recording."""
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     print("\n" + "=" * 60)
-    print("AUDIO MANAGER TEST")
+    print("AUDIO CHECK")
     print("=" * 60 + "\n")
 
-    # Load config via the same Config class the rest of the app uses.
-    print("Loading configuration...")
     config = Config()
-
     audio_config = config.section('audio')
     thresholds_config = config.section('thresholds')
     mic_rate = audio_config.get('sample_rate', 48000)
-    whisper_rate = 16000  # Whisper's expected sample rate.
 
-    print("Initialising AudioManager...")
-    audio = AudioManager(
-        sample_rate=mic_rate,
-        channels=audio_config.get('channels', 1),
-        chunk_size=audio_config.get('chunk_size', 2048),
-        input_device=audio_config.get('input_device', 'default'),
-        output_device=audio_config.get('output_device', 'default')
-    )
-    print("AudioManager initialised\n")
+    # Lists the sound devices, to check the input and output are the expected ones.
+    print("-" * 60)
+    print("[1/3] Sound devices")
+    print(sd.query_devices())
 
+    microphone = Microphone(sample_rate=mic_rate)
+    speaker = Speaker(sample_rate=mic_rate)
     try:
-        # Lists available audio devices.
-        # This is to check that the input/output devices are correct.
-        print("-" * 60)
-        print("[1/5] Listing available audio devices")
-        audio.list_devices()
-
-        # Records audio for a known duration and saves it.
-        # Allows users to manually check the recorded audio.
-        print("-" * 60)
-        print("[2/5] Fixed-duration recording (3 seconds)")
-        input("Press Enter, then speak for 3 seconds...")
-        fixed_audio = audio.record(duration=3.0)
-        audio.save_wav(fixed_audio, "test_audio_fixed.wav")
-        print(f"Recorded {len(fixed_audio)} samples, saved to test_audio_fixed.wav")
-        print("Play with: aplay test_audio_fixed.wav\n")
-
-        # Tests the recording_until_silence function to ensure silence-triggered recording works.
-        print("-" * 60)
-        print("[3/5] Silence-triggered recording (say something, then go quiet)")
-        input("Press Enter, then speak and pause when you're done...")
-        # Goes through the same microphone stream and speech detector main.py uses,
+        # Records through the same microphone stream and speech detector main.py uses,
         # which keep their audio at 16kHz.
-        microphone = Microphone(sample_rate=mic_rate)
-        silence_audio = microphone.record_until_silence(
+        print("-" * 60)
+        print("[2/3] Recording until you stop talking")
+        input("Press Enter, then speak and pause when you're done...")
+        recording = microphone.record_until_silence(
             make_detector(config),
-            silence_duration=thresholds_config.get('silence_duration', 2.0),
+            silence_duration=thresholds_config.get('silence_duration', 0.6),
             timeout=10.0
         )
-        microphone.close()
-        audio.save_wav(silence_audio, "test_audio_silence.wav", sample_rate=RATE)
-        duration_recorded = len(silence_audio) / RATE
-        print(f"Recorded {len(silence_audio)} samples ({duration_recorded:.1f}s), saved to test_audio_silence.wav")
-        print("Play with: aplay test_audio_silence.wav\n")
+        sf.write("test_audio.wav", recording, RATE)
+        print(f"Recorded {len(recording) / RATE:.1f}s, saved to test_audio.wav")
+        print("Play with: aplay test_audio.wav\n")
 
-        # This is a test to see if audio resampling works correctly.
-        # This resamples recorded audio from the configured mic rate to Whisper's expected rate.
+        # Plays it back through the shared speaker, confirming the round trip works.
         print("-" * 60)
-        print("[4/5] Resample round-trip check")
-        resampled = audio.resample(fixed_audio, mic_rate, whisper_rate)
-        expected_samples = int(len(fixed_audio) * whisper_rate / mic_rate)
-
-        # Allow a small tolerance since resampling doesn't always land on an exact count.
-        tolerance = whisper_rate * 0.05  # 5% of a second's worth of samples
-        if abs(len(resampled) - expected_samples) <= tolerance:
-            print(f"Resample OK: {len(fixed_audio)} samples @ {mic_rate}Hz -> {len(resampled)} samples @ {whisper_rate}Hz")
-        else:
-            print(f"Resample looks incorrect: expected ~{expected_samples} samples, received {len(resampled)}")
-        print()
-
-        # Plays the fixed-duration recording back through the configured
-        # output device, confirming the full record -> play round trip works.
-        print("-" * 60)
-        print("[5/5] Playback")
-        input("Press Enter to play back the 3-second recording...")
-        audio.play(fixed_audio, sample_rate=mic_rate)
+        print("[3/3] Playback")
+        input("Press Enter to play it back...")
+        speaker.play(recording, sample_rate=RATE).wait()
         print("Playback complete\n")
 
         print("=" * 60)
-        print("AUDIO TEST COMPLETE")
+        print("AUDIO CHECK COMPLETE")
         print("=" * 60)
-
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
-    except Exception as e:
-        print(f"\nError: {e}")
-        import traceback
-        traceback.print_exc()
     finally:
-        # Always release PyAudio resources, even if a step above failed.
-        audio.close()
-        print("\nAudioManager closed")
+        speaker.close()
+        microphone.close()
+
 
 if __name__ == "__main__":
-    test_audio()
+    check_audio()

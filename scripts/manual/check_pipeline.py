@@ -10,16 +10,14 @@ the wake word detector.
 import sys
 import os
 import logging
-import librosa
-import soundfile as sf
 
 # Add the project root to the path so the voice_assistant package imports work
 # no matter where the scripts are run from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from voice_assistant.config import Config
-from voice_assistant.audio import AudioManager
 from voice_assistant.microphone import Microphone
+from voice_assistant.speaker import Speaker
 from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
@@ -52,16 +50,10 @@ def test_pipeline():
     audio_config = config.section('audio')
     mic_rate = audio_config.get('sample_rate', 48000)
 
-    audio = AudioManager(
-        sample_rate=mic_rate,
-        channels=audio_config.get('channels', 1),
-        chunk_size=audio_config.get('chunk_size', 2048),
-        input_device=audio_config.get('input_device', 'default'),
-        output_device=audio_config.get('output_device', 'default')
-    )
-
-    # Recording goes through the same microphone stream and speech detector main.py uses.
+    # Recording and playback go through the same microphone stream, speech detector
+    # and speaker main.py uses.
     microphone = Microphone(sample_rate=mic_rate)
+    speaker = Speaker(sample_rate=mic_rate)
     speech_detector = make_detector(config)
 
     # Retrieves Whisper config
@@ -105,7 +97,7 @@ def test_pipeline():
             # Already at Whisper's rate, since the microphone keeps its audio at 16kHz.
             audio_data = microphone.record_until_silence(
                 speech_detector,
-                silence_duration=2.0,
+                silence_duration=config.section('thresholds').get('silence_duration', 0.6),
                 timeout=10.0
             )
             print("Recording complete")
@@ -130,35 +122,18 @@ def test_pipeline():
             llm_response = llm.process_query(text)
 
             response_text = llm_response['response']
-            action = llm_response.get('action')
+            actions = llm_response.get('actions')
 
             print(f"Response: '{response_text}'")
 
-            if action:
-                print(f"Action: {action}")
+            if actions:
+                print(f"Actions: {actions}")
 
             # Step 4: Text-to-speech
             if tts_available:
-                print("\n[4/4] Generating speech...")
-                tts_file = "test_response.wav"
-                tts.synthesise(response_text, tts_file)
-
-                print("Speech generated")
-                print("\nPlaying response...")
-
-                # Load the WAV file and resample to match the playback rate.
-                tts_audio, tts_sr = sf.read(tts_file)
-
-                if tts_sr != mic_rate:
-                    print(f"Resampling TTS {tts_sr}Hz -> {mic_rate}Hz...")
-                    tts_audio = librosa.resample(
-                        tts_audio.astype('float32'),
-                        orig_sr=tts_sr,
-                        target_sr=mic_rate
-                    )
-
-                audio.play(tts_audio, sample_rate=mic_rate)
-
+                print("\n[4/4] Speaking the response...")
+                # Played as each sentence is synthesised, just as the assistant does.
+                speaker.play_stream(tts.stream(response_text), tts.sample_rate).wait()
                 print("Playback complete")
             else:
                 print("\n[4/4] TTS not available, skipping speech generation")
@@ -176,6 +151,10 @@ def test_pipeline():
             import traceback
             traceback.print_exc()
 
+    speaker.close()
+    microphone.close()
+    if tts_available:
+        tts.close()
     print("\nGoodbye!\n")
 
 if __name__ == "__main__":

@@ -1,9 +1,8 @@
 # Audio processing
-pyaudio==0.2.14
 numpy>=1.24.0
-librosa>=0.10.0
 soundfile>=0.12.0
 sounddevice>=0.5.0
+soxr>=0.3.0
 
 # Speech recognition
 faster-whisper>=0.10.0
@@ -11,9 +10,9 @@ faster-whisper>=0.10.0
 # Wake word detection:
 # openwakeword is installed separately in setup.sh (pip install --no-deps),
 # because it pins tflite-runtime on Linux which has no wheels for Python 3.12+.
-# The assistant uses openwakeword's ONNX runtime instead, and every package
-# openwakeword actually needs (onnxruntime, scipy, scikit-learn, tqdm, requests)
-# is already installed via faster-whisper / librosa below.
+# The assistant uses openwakeword's ONNX runtime instead, and every package the
+# parts of openwakeword it uses need (onnxruntime, tqdm, requests) is already
+# installed via faster-whisper and requests below.
 
 # LLM
 anthropic>=0.120.0

@@ -88,20 +88,9 @@ if _module_missing("spotipy"):
     sys.modules["spotipy.oauth2"] = oauth2
 
 
-# pyaudio: the PyAudio class and the one sample format audio.py uses. The tests give
-# AudioManager their own fake PyAudio, so nothing ever opens a sound card.
-if _module_missing("pyaudio"):
-    pyaudio = types.ModuleType("pyaudio")
-    pyaudio.paInt16 = 8
-    pyaudio.PyAudio = lambda: None
-    sys.modules["pyaudio"] = pyaudio
-
-
-# librosa and soundfile: only used by audio.py to read and resample sound files,
-# which none of the tests do.
-for name in ("librosa", "soundfile"):
-    if _module_missing(name):
-        sys.modules[name] = types.ModuleType(name)
+# soundfile: only used to read sound files, which the tests that need it skip without.
+if _module_missing("soundfile"):
+    sys.modules["soundfile"] = types.ModuleType("soundfile")
 
 
 # sounddevice: only its input and output streams, which the tests replace with their own fakes.
