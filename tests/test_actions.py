@@ -154,8 +154,8 @@ def test_a_controllers_flags_are_read_into_one_way_of_confirming():
 
 def test_an_action_which_confirms_itself_has_nothing_said_about_it():
     # Even when there's something else to say: a reminder offer after a skipped
-    # song used to come out as "That song was shit anyway. Also, your reminder..."
-    skipped = ActionResult(True, "That song was shit anyway", confirm="music")
+    # song used to have the skip's own message read out in front of it.
+    skipped = ActionResult(True, "Skipped", confirm="music")
     assert confirm([skipped], fallback="Okay.") == ([], [])
 
 

@@ -116,8 +116,7 @@ def confirm(results: List[ActionResult], chime_enabled: bool = True,
 
     A self-confirming action's message is only ever logged, never spoken, even when
     there's something else to say as well: a reminder offer tacked onto a skipped
-    song used to come out as "That song was shit anyway. Also, your reminder is
-    still going."
+    song used to have the skip's own message read out in front of it.
 
     Args:
         results: What each action returned, in the order they ran.

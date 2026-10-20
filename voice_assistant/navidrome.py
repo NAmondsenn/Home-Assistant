@@ -393,7 +393,7 @@ class NavidromePlayer:
             if following >= len(self._queue) and self._repeat == "all":
                 following = 0
             self._jump(following)
-        return {"success": True, "message": "That song was shit anyway", "silent": True}
+        return {"success": True, "message": "Skipped", "silent": True}
 
     def previous(self) -> Dict:
         with self._lock:
