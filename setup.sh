@@ -30,6 +30,17 @@ PIPER_VERSION="2023.11.14-2"
 VOICE_MODEL="en_GB-alan-medium"
 VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium"
 
+# The SHA-256 of everything downloaded and then run or trusted, so a tampered
+# release or mirror stops setup rather than being run on the Pi. Taken from the
+# files themselves on 20 October 2026: the voice's match Hugging Face's own, and
+# the Piper binary inside the aarch64 archive matched the one Nova had been using.
+# Changing PIPER_VERSION or VOICE_MODEL means updating these too.
+PIPER_SHA256_AARCH64="fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb"
+PIPER_SHA256_X86_64="a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
+VOICE_SHA256_MODEL="0a309668932205e762801f1efc2736cd4b0120329622adf62be09e56339d3330"
+VOICE_SHA256_CONFIG="c0f0d124e5895c00e7c03b35dcc8287f319a6998a365b182deb5c8e752ee8c1e"
+RASPOTIFY_KEY_SHA256="36dd5aadd073950d55c404f0e0c6c2e0555259bf38bd8b6448c35591a3cc9cfd"
+
 ASSUME_YES=false
 WITH_SPOTIFY=true
 WITH_SERVICE=true
@@ -39,6 +50,16 @@ done_() { echo "  ✓ $*"; }
 skipped() { echo "  – $*"; }
 problem() { echo "  ✗ $*" >&2; }
 step() { echo ""; echo "$*"; }
+
+# Stops setup, removing the file, if a download isn't the one its hash was taken from.
+check_sha256() {
+    local file="$1" expected="$2"
+    if ! echo "${expected}  ${file}" | sha256sum -c --status; then
+        rm -f "$file"
+        problem "$(basename "$file") isn't the file Nova expects - its SHA-256 doesn't match, so it may have been tampered with. Stopping."
+        exit 1
+    fi
+}
 
 # Asks a question, or takes the default without asking under --yes.
 ask() {
@@ -197,10 +218,10 @@ download_models() {
     step "Models"
     mkdir -p "$MODELS_DIRECTORY"
     if [ ! -x "${MODELS_DIRECTORY}/piper/piper" ]; then
-        local archive
+        local archive hash
         case "$(uname -m)" in
-            aarch64) archive="piper_linux_aarch64.tar.gz" ;;
-            x86_64) archive="piper_linux_x86_64.tar.gz" ;;
+            aarch64) archive="piper_linux_aarch64.tar.gz"; hash="$PIPER_SHA256_AARCH64" ;;
+            x86_64) archive="piper_linux_x86_64.tar.gz"; hash="$PIPER_SHA256_X86_64" ;;
             *) problem "No ready-made Piper for $(uname -m)"; exit 1 ;;
         esac
         if ! wget -q "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/${archive}" \
@@ -209,17 +230,21 @@ download_models() {
             problem "Couldn't download Piper - check the internet connection, and run this again."
             exit 1
         fi
+        check_sha256 "${MODELS_DIRECTORY}/${archive}" "$hash"
         tar -xzf "${MODELS_DIRECTORY}/${archive}" -C "$MODELS_DIRECTORY"
         rm -f "${MODELS_DIRECTORY}/${archive}"
         done_ "Piper ${PIPER_VERSION}"
     fi
     for file in "${VOICE_MODEL}.onnx" "${VOICE_MODEL}.onnx.json"; do
         if [ ! -f "${MODELS_DIRECTORY}/${file}" ]; then
+            local hash="$VOICE_SHA256_MODEL"
+            [ "$file" = "${VOICE_MODEL}.onnx.json" ] && hash="$VOICE_SHA256_CONFIG"
             if ! wget -q "${VOICE_URL}/${file}" -O "${MODELS_DIRECTORY}/${file}.part"; then
                 rm -f "${MODELS_DIRECTORY}/${file}.part"
                 problem "Couldn't download the voice - check the internet connection, and run this again."
                 exit 1
             fi
+            check_sha256 "${MODELS_DIRECTORY}/${file}.part" "$hash"
             mv "${MODELS_DIRECTORY}/${file}.part" "${MODELS_DIRECTORY}/${file}"
             done_ "${file}"
         fi
@@ -352,8 +377,17 @@ install_raspotify() {
     fi
     local speaker
     speaker=$(cd "$PROJECT_DIRECTORY" && "$PYTHON" -c 'from voice_assistant.config import Config; print(Config().section("spotify")["device_name"])')
-    curl -sSL https://dtcooper.github.io/raspotify/key.asc | sudo tee /usr/share/keyrings/raspotify_key.asc > /dev/null
-    sudo chmod 644 /usr/share/keyrings/raspotify_key.asc
+    # The key apt trusts for raspotify's packages, so it's checked before it's trusted.
+    local key
+    key=$(mktemp)
+    if ! curl -sSfL https://dtcooper.github.io/raspotify/key.asc -o "$key"; then
+        rm -f "$key"
+        problem "Couldn't download raspotify's key - check the internet connection, and run this again."
+        exit 1
+    fi
+    check_sha256 "$key" "$RASPOTIFY_KEY_SHA256"
+    sudo install -m 644 "$key" /usr/share/keyrings/raspotify_key.asc
+    rm -f "$key"
     echo 'deb [signed-by=/usr/share/keyrings/raspotify_key.asc] https://dtcooper.github.io/raspotify raspotify main' \
         | sudo tee /etc/apt/sources.list.d/raspotify.list > /dev/null
     sudo apt-get update -qq
