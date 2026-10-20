@@ -126,6 +126,11 @@ def test_a_wav_can_still_be_written_for_trying_the_voice(tts, tmp_path):
     # Which it reads properly, so are left alone.
     ("from 3:30 PM until 11:30 PM", "from 3:30 PM until 11:30 PM"),
     ("It's 10:45 PM.", "It's 10:45 PM."),
+    # Midnight and noon are said as words, as Nova's own times are.
+    ("You're on from 4 PM until 12 AM.", "You're on from 4 PM until midnight."),
+    ("Lunch at 12:00 PM today.", "Lunch at noon today."),
+    ("It's 12 a.m. now.", "It's midnight now."), ("Until 12 a.m.", "Until midnight."),
+    ("It's 12:30 AM.", "It's 12:30 AM."), ("12 amps", "12 amps"),
 ])
 def test_times_are_written_so_piper_reads_them_properly(written, said):
     from voice_assistant.text_to_speech import speakable

@@ -85,12 +85,16 @@ def format_duration(seconds: int) -> str:
 
 def spoken_clock_time(hour: int, minute: int) -> str:
     """
-    Formats a time of day for speech on the 12-hour clock, e.g. "7:05 AM".
+    Formats a time of day for speech on the 12-hour clock, e.g. "7:05 AM", or
+    "midnight" and "noon" - "12 AM" is how a computer says midnight, not a person,
+    and which of "12 AM" and "12 PM" is which isn't something everyone knows.
 
     Built by hand rather than with strftime's "%-I", which drops the leading zero
     but only exists on Linux and macOS - Windows rejects it outright, which would
     stop this module (and its tests) running anywhere but the Pi.
     """
+    if minute == 0 and hour in (0, 12):
+        return "midnight" if hour == 0 else "noon"
     return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
 
 
@@ -226,6 +230,12 @@ def _time_of_day_candidates(text: str) -> set:
         hour = int(hour_s)
         if 1 <= hour <= 12:
             candidates.add(((hour % 12) + (12 if meridiem == "pm" else 0), 0))
+
+    # As Nova says them itself - see spoken_clock_time.
+    if re.search(r"\bmidnight\b", text):
+        candidates.add((0, 0))
+    if re.search(r"\b(noon|midday)\b", text):
+        candidates.add((12, 0))
 
     return candidates
 
@@ -1415,10 +1425,19 @@ class Clock:
         """
         Formats an absolute due time for speech, e.g. "5:40 PM", or "5:40 PM on
         Tuesday" if it's due on a different day to today.
+
+        Midnight is named by the night it ends - "midnight tonight", "midnight on
+        Tuesday night" - since "midnight on Wednesday", for the moment Wednesday
+        begins, is just as often taken to mean the end of it.
         """
         due = time.localtime(due_at)
         now = time.localtime()
         spoken = spoken_clock_time(due.tm_hour, due.tm_min)
+        if (due.tm_hour, due.tm_min) == (0, 0):
+            night = time.localtime(due_at - 12 * 3600)
+            if (night.tm_year, night.tm_yday) == (now.tm_year, now.tm_yday):
+                return "midnight tonight"
+            return time.strftime("midnight on %A night", night)
         if (due.tm_year, due.tm_yday) != (now.tm_year, now.tm_yday):
             spoken += time.strftime(" on %A", due)
         return spoken

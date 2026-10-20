@@ -64,6 +64,7 @@ def test_format_duration(seconds, spoken):
 
 @pytest.mark.parametrize("hour, minute, spoken", [
     (0, 5, "12:05 AM"), (7, 0, "7:00 AM"), (12, 30, "12:30 PM"), (23, 59, "11:59 PM"),
+    (0, 0, "midnight"), (12, 0, "noon"),
 ])
 def test_spoken_clock_time(hour, minute, spoken):
     assert spoken_clock_time(hour, minute) == spoken
@@ -76,6 +77,20 @@ def test_time_of_day_candidates():
     assert _time_of_day_candidates("cancel the 7am alarm") == {(7, 0)}
     # A bare number is a duration, not a time.
     assert _time_of_day_candidates("the 10 minute timer") == set()
+    # As Nova says them itself.
+    assert _time_of_day_candidates("cancel the midnight one") == {(0, 0)}
+    assert _time_of_day_candidates("the noon reminder") == _time_of_day_candidates("midday") == {(12, 0)}
+
+
+def test_midnight_is_named_by_the_night_it_ends(make_clock):
+    # "Midnight on Wednesday", for the moment Wednesday begins, is as often taken
+    # to mean the end of it.
+    clock = make_clock()
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    tonight, tomorrow_night = today + timedelta(days=1), today + timedelta(days=2)
+    assert clock._spoken_due(tonight.timestamp()) == "midnight tonight"
+    assert clock._spoken_due(tomorrow_night.timestamp()) == \
+        f"midnight on {(today + timedelta(days=1)).strftime('%A')} night"
 
 
 # Counting down to a clock time

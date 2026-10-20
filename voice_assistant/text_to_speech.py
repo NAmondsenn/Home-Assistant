@@ -44,14 +44,18 @@ def speakable(text: str) -> str:
     Rewrites what Piper reads wrongly. Its text reader takes a time on the hour
     digit by digit - "2:00 PM" came out as "two zero zero P M", "7:05" as "seven
     zero five" - whether the time came from the clock or from Claude. "3:30 PM" it
-    reads properly, so that's left alone.
+    reads properly, so that's left alone. Claude's "12 AM" and "12 PM" become
+    "midnight" and "noon", as Nova's own times are (see clock.spoken_clock_time).
 
     Args:
         text: What's to be said.
 
     Returns:
-        e.g. "from 2 PM until 10 PM", "7 oh 5 AM", "the 6 o'clock one".
+        e.g. "from 2 PM until 10 PM", "7 oh 5 AM", "the 6 o'clock one", "until midnight".
     """
+    # The full stop of "a.m." goes too, unless it also ends the sentence.
+    text = re.sub(r"\b12(?::00)?\s*([AaPp])\.?\s?[Mm]\b(?:\.(?=\s+[a-z]))?",
+                  lambda match: "midnight" if match.group(1) in "Aa" else "noon", text)
     text = re.sub(r"\b(\d{1,2}):00(?=\s*[AaPp]\.?\s?[Mm]\b)", r"\1", text)
     text = re.sub(r"\b(\d{1,2}):00\b", r"\1 o'clock", text)
     return re.sub(r"\b(\d{1,2}):0(\d)\b", r"\1 oh \2", text)
