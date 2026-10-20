@@ -51,7 +51,7 @@ class SpeechToText:
         compute_type: str = "int8",
         fallback_model: Optional[str] = None,
         initial_prompt: Optional[str] = None,
-        beam_size: int = 3,
+        beam_size: int = 1,
         # Where the model files are kept - see download_root in config.yaml.
         download_root: Optional[str] = None
     ):

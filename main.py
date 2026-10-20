@@ -112,7 +112,7 @@ class SmartAssistant:
                                 compute_type=whisper_config.get("compute_type", "int8"),
                                 fallback_model=whisper_config.get("fallback_model", "tiny.en"),
                                 initial_prompt=whisper_config.get("initial_prompt"),
-                                beam_size=whisper_config.get("beam_size", 5),
+                                beam_size=whisper_config.get("beam_size", 1),
                                 download_root=os.path.join(PROJECT_DIRECTORY,
                                                            whisper_config.get("download_root", "models/whisper")))
         
@@ -498,7 +498,7 @@ class SmartAssistant:
         audio_data = self.microphone.record_until_silence(
             self.speech_detector, listen_from=listen_from,
             keep_before=0.0 if follow_up else self.pre_roll,
-            silence_duration=self.thresholds.get("silence_duration", 0.8),
+            silence_duration=self.thresholds.get("silence_duration", 0.6),
             speech_timeout=speech_timeout,
             timeout=self.thresholds.get("recording_timeout", 10.0),
             timeline=timeline)

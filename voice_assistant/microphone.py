@@ -278,7 +278,7 @@ class Microphone:
 
     def record_until_silence(self, detector, listen_from: Optional[int] = None,
                              keep_before: float = 0.0, timeout: float = 10.0,
-                             silence_duration: float = 0.8, speech_timeout: float = 3.0,
+                             silence_duration: float = 0.6, speech_timeout: float = 3.0,
                              min_speech: float = 0.12, timeline=None) -> np.ndarray:
         """
         Records until the user has spoken and then gone quiet, or a timeout is reached.

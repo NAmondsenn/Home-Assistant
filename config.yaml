@@ -33,8 +33,11 @@ whisper:
   device: "cpu"
   compute_type: "int8"
   fallback_model: "tiny.en"
-  # Higher is more accurate and slower.
-  beam_size: 5
+  # How many guesses at the words Whisper keeps open as it goes. Higher is meant to be
+  # more accurate, but on 20 spoken commands on the Pi, 1 heard them as well as 5 did
+  # and was 0.15s quicker - nearly all of Whisper's time goes on listening to the
+  # audio, not on choosing the words.
+  beam_size: 1
   # Words the model is told to expect, which biases it towards the names this
   # assistant actually hears rather than similar sounding ones.
   initial_prompt: >-
@@ -55,8 +58,10 @@ web_search:
   max_uses: 3
 
 thresholds:
-  # How long the user has to be quiet before the recording stops.
-  silence_duration: 0.8
+  # How long the user has to be quiet before the recording stops. Every bit of this is
+  # waited out before Nova can answer, but too short and a pause mid-sentence ends it -
+  # raise it if Nova cuts you off.
+  silence_duration: 0.6
   # How sure the voice activity model has to be that it's hearing speech, from 0 to 1.
   # Raise it if background noise keeps recordings going; lower it if quiet speech is missed.
   vad_threshold: 0.5
