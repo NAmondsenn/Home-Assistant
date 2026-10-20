@@ -199,7 +199,7 @@ class MoonshineSpeechToText:
     4.5% - with neither making words up from silence or noise. Whisper spends most
     of its time on a 30 second window however short the command; Moonshine works on
     just the audio there is. Its one slip worth knowing: a lone "stop" came back as
-    "soap", which is allowed for - see Clock.STOP_WORDS and intents.py.
+    "soap", or "so", which is allowed for - see Clock.STOP_WORDS and intents.py.
     """
 
     def __init__(self, model: str = "small-streaming", download_root: Optional[str] = None,

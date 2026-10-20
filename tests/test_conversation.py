@@ -143,6 +143,14 @@ def test_stop_while_ringing_is_handled_without_claude():
     assert reply.sounds == [("success_chime.wav", "general")]
 
 
+def test_stop_heard_as_so_while_ringing_is_still_a_stop():
+    # Heard over a ringing timer on the Pi, "So" went to Claude, which replied "Your
+    # message just says 'So'" and asked what was wanted.
+    clock, llm = FakeClock(ringing=True), FakeLLM()
+    _conversation(clock=clock, llm=llm).handle("So")
+    assert clock.dismissed == 1 and llm.asked == []
+
+
 def test_without_the_chime_a_dismissal_is_shown_not_said():
     reply = _conversation(clock=FakeClock(ringing=True), chime_enabled=False).handle("Stop.")
     assert (reply.sounds, reply.shown, reply.say) == ([], "Okay, stopped.", "")
@@ -205,7 +213,7 @@ def test_stop_said_over_a_reply_only_stops_the_talking():
     actions = FakeActions()
     conversation = _conversation(intents=intents, llm=llm, actions=actions)
     conversation.start(talked_over=True)
-    for said in ("Stop.", "Okay, thanks.", "Shut up.", "Soap."):
+    for said in ("Stop.", "Okay, thanks.", "Shut up.", "Soap.", "So."):
         reply = conversation.handle(said)
         assert (reply.say, reply.sounds, reply.listen_again) == ("", [], False)
     assert actions.run == [] and llm.asked == [] and llm.remembered == []

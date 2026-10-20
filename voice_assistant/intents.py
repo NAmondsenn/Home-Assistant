@@ -123,9 +123,9 @@ class LocalIntents:
              self._timer),
             (r"(?:(?:set|start) (?:me )?(?:a |an )?)?(?P<amount>[a-z0-9 ]+?) (?P<unit>second|minute|hour) timer",
              self._timer),
-            # "Soap", "scap" and "quiter" are how Moonshine heard "stop", "skip" and
-            # "quieter" said on their own - see speech_to_text.py.
-            (r"(?:pause|stop|soap)(?: the)?(?: music| song| spotify)?", self._playback("pause")),
+            # "Soap" or "so", "scap" and "quiter" are how Moonshine heard "stop", "skip"
+            # and "quieter" said on their own - see speech_to_text.py.
+            (r"(?:pause|stop|soap|so)(?: the)?(?: music| song| spotify)?", self._playback("pause")),
             (r"(?:resume|unpause|play)(?: the)?(?: music| spotify)?|carry on playing", self._resume),
             (r"(?:skip|next|scap)(?: (?:this|the))?(?: song| track| one)?", self._playback("skip")),
             (r"(?:previous|last) (?:song|track)|go back(?: a (?:song|track))?", self._playback("previous")),
