@@ -23,6 +23,7 @@ from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
 from voice_assistant.actions import ActionExecutor, confirm
 from voice_assistant.timeline import Timeline
+from voice_assistant import watchdog
 from voice_assistant.logging_setup import TRANSCRIPT, log_transcripts, setup_logging, transcripts_logged
 
 # Loads environment variables from .env
@@ -370,6 +371,8 @@ class SmartAssistant:
         # Sets self.running to True to start the main loop and prints a confirmation message
         self.running = True
         print(f"\n{self.name} is ready. Say {self.wake_word} to activate.\n")
+        # Tells systemd it has started, and from here on that it's still working.
+        watchdog.start()
 
         # However the loop ends - a stop signal (see _shutdown) or something
         # unexpected - everything is closed down here, once, on the main thread.

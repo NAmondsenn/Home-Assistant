@@ -64,6 +64,13 @@ The failure is said out loud: "took too long" (a slow connection), "can't reach 
 
 Set `weather.location` in `config.yaml` to your town or city, then restart.
 
+## Nova restarted by itself
+
+If the main loop stops moving for two and a half minutes - stuck on something
+which should have timed out - systemd restarts Nova, rather than leaving it deaf.
+The log says `The main loop hasn't moved for ...s` just before. Whatever it was
+doing then is the thing to look at.
+
 ## It's slow
 
 ```bash

@@ -23,6 +23,8 @@ import numpy as np
 import sounddevice as sd
 import soxr
 
+from voice_assistant import watchdog
+
 # Logger setup
 logger = logging.getLogger(__name__)
 
@@ -237,6 +239,9 @@ class Microphone:
             than asked for if the start had already dropped out of the buffer.
         """
         while True:
+            # Waiting on the microphone, even one being reopened, is the main loop
+            # working as it should - see watchdog.py.
+            watchdog.beat()
             with self._condition:
                 if self._total < start + count:
                     # Waits in short slices, so a dead stream is noticed, and so a
