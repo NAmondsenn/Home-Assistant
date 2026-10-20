@@ -29,6 +29,10 @@
 
 * { box-sizing: border-box; }
 
+/* Hidden means hidden - without this, the restart banner's own display: flex won over
+   it, and asked for a restart when nothing needed one. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--background);
