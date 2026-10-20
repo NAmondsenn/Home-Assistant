@@ -359,7 +359,9 @@ class LiveTranscription:
     doesn't clear what its speech detection last heard (Moonshine 0.1.5 resizes its
     memory of it to the same size, which keeps what was there), so a recording which
     ended mid-word left the next one starting with a made-up "Yeah." - "Yeah. Turn off
-    the kitchen lights", which then isn't an everyday command.
+    the kitchen lights", which then isn't an everyday command. Reported to Moonshine as
+    https://github.com/moonshine-ai/moonshine/issues/231 - once that's fixed, one stream
+    could do for every recording again.
     """
 
     def __init__(self, moonshine: MoonshineSpeechToText):
