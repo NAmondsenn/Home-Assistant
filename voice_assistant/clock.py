@@ -1025,11 +1025,11 @@ class Clock:
         "understood", "silence", "mute", "no",
     }
 
-    # Words which carry no request of their own, so they don't stop something being
-    # a bare acknowledgement. Several of the dismissal words above are ordinary
-    # English ("off", "no", "right", "thanks"), so a phrase is only treated as a
-    # dismissal when everything in it is one of these two sets - otherwise "turn
-    # off the lights" would silence a timer and never reach the lights.
+    # Said last, these mean "stop" whatever Whisper heard before them. "Stop" alone,
+    # over a timer, has come back as "It's a little bus stop" - which still went to
+    # Claude, and only stopped the timer by the roundabout route of being talked over.
+    STOP_WORDS = {"stop", "enough", "cancel", "dismiss", "quiet", "shush", "silence", "mute"}
+
     # Words which turn down an offer. "no" is a dismissal word too - said to a
     # ringing timer it means "make it stop" - so when the assistant has just asked
     # a yes/no question, this is checked first and wins, or answering "no" to
@@ -1039,6 +1039,11 @@ class Clock:
         "ignore", "nevermind", "never",
     }
 
+    # Words which carry no request of their own, so they don't stop something being
+    # a bare acknowledgement. Several of the dismissal words above are ordinary
+    # English ("off", "no", "right", "thanks"), so a phrase is only treated as a
+    # dismissal when everything in it is one of these two sets - otherwise "turn
+    # off the lights" would silence a timer and never reach the lights.
     FILLER_WORDS = {
         "a", "all", "am", "an", "and", "are", "as", "at", "be", "been", "but",
         "can", "could", "did", "do", "for", "from", "have", "has", "had", "hey", "i",
@@ -1153,6 +1158,9 @@ class Clock:
         # mis-transcription which happens to be all common words from counting.
         if not words or len(words) > 6:
             return False
+        # Ending in "stop" or the like, it's taken as that - unless it's "don't stop".
+        if words[-1] in cls.STOP_WORDS and not set(words) & cls.REFUSAL_WORDS:
+            return True
         # Has to actually acknowledge something - filler alone isn't a dismissal.
         if not set(words) & cls.DISMISSAL_WORDS:
             return False

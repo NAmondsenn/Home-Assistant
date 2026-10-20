@@ -457,6 +457,9 @@ def test_stopping_a_ringing_alarm_repeating_removes_the_schedule(make_clock):
     ("stop", True), ("okay thanks", True), ("Alright, alright.", True), ("yes I heard it", True),
     ("turn off the lights", False), ("no music please", False), ("play Spotify", False),
     ("um", False), ("", False),
+    # "Stop" over a ringing timer, as Whisper heard it on the Pi.
+    ("It's a little bus stop.", True), ("Okay, that's enough.", True),
+    ("Don't stop.", False), ("Stop the music and play something else instead", False),
 ])
 def test_looks_like_dismissal(text, dismissal):
     assert Clock.looks_like_dismissal(text) is dismissal
