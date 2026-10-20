@@ -1,11 +1,11 @@
 import os, time, logging, signal, threading
 from pathlib import Path
-from dotenv import load_dotenv
 
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 # voice_assistant is a proper package sitting next to this file, so its modules
 # are imported through the package rather than via sys.path manipulation.
+from voice_assistant import paths
 from voice_assistant.config import Config
 from voice_assistant.speaker import Speaker
 from voice_assistant.microphone import Microphone
@@ -27,15 +27,15 @@ from voice_assistant.timeline import Timeline
 from voice_assistant import watchdog
 from voice_assistant.logging_setup import log_transcripts, setup_logging, transcripts_logged
 
-# Loads environment variables from .env
-load_dotenv()
 # Logger for the SmartAssistant class. Where its lines go is set up when the
 # assistant is run (see the bottom of this file), not on import.
 logger = logging.getLogger(__name__)
 
 class SmartAssistant:
     def __init__(self):
-        # Loads settings from config.yaml
+        # Keys and passwords from ~/.config/nova/.env, then the settings - the
+        # repository's config.yaml with this install's own on top. See paths.py.
+        paths.load_secrets()
         self.config = Config()
         # Whether what's said, and the replies, are kept in the logs - see logging_setup.py.
         log_transcripts(self.config.section("logging").get("log_transcripts", True))
@@ -53,14 +53,14 @@ class SmartAssistant:
 
         # The assistant's own sound effects, kept with the rest of the project.
         sounds_config = self.config.section("sounds")
-        self.sounds_folder = Path(PROJECT_DIRECTORY) / "sounds"
+        self.sounds_folder = Path(paths.SOUNDS_DIR)
         self.chime_enabled = sounds_config.get("chime_enabled", True)
         self.reminder_sound_enabled = sounds_config.get("reminder_enabled", True)
         self.listening_sound_enabled = sounds_config.get("listening_enabled", True)
 
         # How long each stage of every interaction took, one line per interaction,
         # for scripts/latency_report.py to summarise.
-        self.latency_file = os.path.join(PROJECT_DIRECTORY, "logs", "latency.jsonl")
+        self.latency_file = os.path.join(paths.LOGS_DIR, "latency.jsonl")
 
         # Controls the main loop of the assistant. When set to False, the assistant will stop running.
         self.running = False
@@ -513,5 +513,10 @@ class SmartAssistant:
 # Runs the SmartAssistant if this script is executed directly. 
 # This creates an instance of SmartAssistant and calls its run method to start the main loop.
 if __name__ == "__main__":
-    setup_logging(os.path.join(PROJECT_DIRECTORY, "logs", "smart_assistant.log"))
+    # Anything an older install kept in the repository folder - settings, keys, saved
+    # timers, the Spotify sign-in, logs - is moved to where it now belongs first.
+    moved = paths.migrate()
+    setup_logging(os.path.join(paths.LOGS_DIR, "smart_assistant.log"))
+    if moved:
+        logger.info(f"Moved out of the repository folder: {', '.join(moved)} - see voice_assistant/paths.py")
     SmartAssistant().run()

@@ -3,7 +3,7 @@ Timeline Module
 Records how long each stage of an interaction takes, so a slow response can be
 pinned on the stage actually responsible rather than guessed at.
 
-One line of JSON per interaction is appended to logs/latency.jsonl. Each mark is
+One line of JSON per interaction is appended to latency.jsonl in the logs folder. Each mark is
 the number of milliseconds since the wake word (or, for a follow-up question, since
 listening started again), and summarise() turns a pile of them into typical (p50)
 and bad-day (p95) times for each stage - see scripts/latency_report.py.

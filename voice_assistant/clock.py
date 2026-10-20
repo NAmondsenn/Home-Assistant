@@ -21,15 +21,15 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
+from voice_assistant import paths
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
 logger = logging.getLogger(__name__)
 
 # Resolves paths relative to the project root, so saved timers live inside the project like everything else.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TIMERS_FILE = os.path.join(PROJECT_DIRECTORY, "data", "timers.json")
-ALARMS_FILE = os.path.join(PROJECT_DIRECTORY, "data", "alarms.json")
+TIMERS_FILE = os.path.join(paths.DATA_DIR, "timers.json")
+ALARMS_FILE = os.path.join(paths.DATA_DIR, "alarms.json")
 
 # The days an alarm's repeat pattern can mean, as weekday() indices (0=Monday).
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")

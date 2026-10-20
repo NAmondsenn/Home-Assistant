@@ -57,7 +57,7 @@ def models(tmp_path, monkeypatch):
     """A project folder of its own, with a hey_nova.onnx model in it."""
     (tmp_path / "models").mkdir()
     (tmp_path / "models" / "hey_nova.onnx").write_bytes(b"")
-    monkeypatch.setattr(wake_word_module, "PROJECT_DIRECTORY", str(tmp_path))
+    monkeypatch.setattr(wake_word_module.paths, "MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setattr(wake_word_module, "Model", FakeModel)
     return tmp_path / "models"
 

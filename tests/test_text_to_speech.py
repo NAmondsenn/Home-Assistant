@@ -43,7 +43,7 @@ def tts(tmp_path, monkeypatch, make_config):
     (tmp_path / "models" / "en_GB-alan-medium.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 16000}}))
     log = tmp_path / "piper.log"
     monkeypatch.setenv("FAKE_PIPER_LOG", str(log))
-    monkeypatch.setattr(text_to_speech, "PROJECT_DIRECTORY", str(tmp_path))
+    monkeypatch.setattr(text_to_speech.paths, "MODELS_DIR", str(tmp_path / "models"))
 
     made = TextToSpeech(make_config())
     made.started = lambda: log.read_text().count("started")

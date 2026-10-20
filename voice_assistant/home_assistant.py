@@ -84,7 +84,7 @@ class HomeAssistant:
             logger.warning("home_assistant.url is set but HA_TOKEN isn't in .env, so Home Assistant is off")
             return None
         logger.info(f"Home Assistant at {url}")
-        return cls(url, token, settings.get("agent") or DEFAULT_AGENT, settings.get("calendars"))
+        return cls(url, token, calendars=settings.get("calendars"))
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         response = self._session.request(method, self.url + path, timeout=REQUEST_TIMEOUT, **kwargs)

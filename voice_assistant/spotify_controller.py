@@ -15,18 +15,13 @@ import difflib
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict
-from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
+from voice_assistant import paths
 from voice_assistant.music import means_liked_songs
 
-load_dotenv()
 logger = logging.getLogger(__name__)
-
-# Resolves paths relative to the project root (the parent of the voice_assistant
-# package), so the token cache lives inside the project rather than at ~.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # How long a single Spotify request may take, in seconds, and how many times it's
 # retried. spotipy's own defaults (5 seconds, retried 3 times with back-off) could
@@ -104,7 +99,7 @@ class SpotifyController:
                  "playlist-read-collaborative,user-read-recently-played,"
                  "user-library-read")
 
-        self.cache_path = os.path.join(PROJECT_DIRECTORY, ".spotify_cache")
+        self.cache_path = paths.SPOTIFY_TOKEN_FILE
         self.sp_oauth = SpotifyOAuth(
             client_id=self.client_id,
             client_secret=self.client_secret,
@@ -1163,6 +1158,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     from voice_assistant.config import Config
+
+    # An older install's sign-in is moved to where it now belongs first, rather
+    # than asking to sign in again.
+    paths.migrate()
+    paths.load_secrets()
 
     # Config is passed in for the device name.
     controller = SpotifyController(config=Config())

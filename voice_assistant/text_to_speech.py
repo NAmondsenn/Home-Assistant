@@ -23,16 +23,11 @@ from typing import Callable, Iterator, Optional
 
 import numpy as np
 
-# The same marker as logging_setup.TRANSCRIPT, for lines holding what's said.
-# Written out rather than imported, so this file can still be run on its own (see main).
-TRANSCRIPT = {"transcript": True}
+from voice_assistant import paths
+from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
 logger = logging.getLogger(__name__)
-
-# Resolves paths relative to the project root (the parent of the voice_assistant
-# package), matching where setup.sh installs models/ and where main.py runs.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Seconds to wait for Piper's next sentence before giving up on it. A long sentence
 # takes about a second on the Pi, so this only ever runs out if Piper has hung.
@@ -56,8 +51,8 @@ class TextToSpeech:
 
         # Stores the config and resolves the paths to Piper TTS and the voice model.
         self.config = config
-        self.piper_path = os.path.join(PROJECT_DIRECTORY, "models", "piper", "piper")
-        self.model_path = os.path.join(PROJECT_DIRECTORY, "models", "en_GB-alan-medium.onnx")
+        self.piper_path = os.path.join(paths.MODELS_DIR, "piper", "piper")
+        self.model_path = os.path.join(paths.MODELS_DIR, "en_GB-alan-medium.onnx")
 
         # Reads the assistant's name from the "assistant" section in config.yaml.
         assistant_config = self.config.section("assistant")
@@ -277,14 +272,10 @@ class TextToSpeech:
 
 def main():
     """
-    Manual testing which only runs if text_to_speech.py is run directly.
+    Manual testing, run from the project folder as "python -m voice_assistant.text_to_speech".
     This synthesises a list of sample phrases with Piper.
     The audio is not played upon test completion but is saved to a file which can be opened manually.
     """
-    # Allows this file to be run directly (python voice_assistant/text_to_speech.py)
-    # by putting the project root on the path before importing from the package.
-    import sys
-    sys.path.insert(0, PROJECT_DIRECTORY)
     from voice_assistant.config import Config
 
     # Loads config.yaml

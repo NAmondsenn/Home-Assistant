@@ -7,7 +7,7 @@ restart in the night, shows up rather than going unnoticed.
 
 Run on the Pi alongside the assistant's service, and use the assistant as normal:
     venv/bin/python scripts/soak_monitor.py --hours 72
-It samples every 10 minutes into logs/soak.csv, and says at the end (or on Ctrl+C)
+It samples every 10 minutes into soak.csv in the logs folder, and says at the end (or on Ctrl+C)
 whether anything grew that shouldn't have.
 """
 
@@ -15,13 +15,16 @@ import argparse
 import csv
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
-# Add the project root, to find the logs folder no matter where it's run from.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOGS_DIRECTORY = os.path.join(PROJECT_DIRECTORY, "logs")
+# Add the project root, so the package - and with it the logs folder - is found no
+# matter where it's run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from voice_assistant.paths import LOGS_DIR as LOGS_DIRECTORY  # noqa: E402
 
 SERVICE = "voice-assistant"
 FIELDS = ["time", "pid", "rss_mb", "cpu_percent", "threads", "open_files", "restarts",

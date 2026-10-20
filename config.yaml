@@ -1,9 +1,18 @@
+# Every setting, with its default. Don't change them here: put just the ones you want
+# different in ~/.config/nova/config.yaml, in the same sections - e.g.
+#
+#   weather:
+#     location: "Leeds"
+#
+# That file is this install's own, outside the repository, so an update never touches
+# it. It's checked against this one as Nova starts, so a misspelt setting is caught.
+# Keys and passwords go in ~/.config/nova/.env. See voice_assistant/paths.py.
+
 assistant:
   name: "Nova"
   wake_word: "Hey Nova"
 
 llm:
-  provider: "claude"
   model: "claude-haiku-4-5-20251001"
   max_tokens: 150
   temperature: 0.7
@@ -15,8 +24,6 @@ llm:
 
 audio:
   sample_rate: 48000
-  channels: 1
-  chunk_size: 2048
   # Seconds of audio from just before the wake word was detected which are kept,
   # so "Hey Nova what time is it", said in one breath, isn't cut short.
   pre_roll: 0.3
@@ -28,7 +35,7 @@ music:
 
 navidrome:
   # Navidrome's address, e.g. "http://navidrome.local:4533", and the user Nova signs in
-  # as - set them in config.local.yaml. The password goes in .env as NAVIDROME_PASSWORD.
+  # as. The password goes in ~/.config/nova/.env as NAVIDROME_PASSWORD.
   url: ""
   username: ""
 
@@ -124,15 +131,15 @@ sounds:
 
 logging:
   # Whether what's said to the assistant, and its replies, are written to the logs
-  # (logs/smart_assistant.log and the system journal). Handy while setting things up;
+  # (smart_assistant.log in ~/.local/share/nova/logs, and the system journal). Handy while setting things up;
   # turn it off to keep conversations out of the logs altogether.
   log_transcripts: true
 
 home_assistant:
-  # Home Assistant's address, e.g. "http://homeassistant.local:8123" - set it in
-  # config.local.yaml. Nova signs in with a long-lived access token, as HA_TOKEN in
-  # .env, made by a Home Assistant user of its own rather than an administrator. It
-  # can only reach the devices exposed to Assist - see the README.
+  # Home Assistant's address, e.g. "http://homeassistant.local:8123". Nova signs in
+  # with a long-lived access token, as HA_TOKEN in ~/.config/nova/.env, made by a Home
+  # Assistant user of its own rather than an administrator. It can only reach the
+  # devices exposed to Assist - see the README.
   url: ""
   # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
   # Left empty, every calendar Home Assistant has is read.
@@ -141,5 +148,4 @@ home_assistant:
 weather:
   # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
   # is free and needs no key. Until it's set, Nova says it doesn't know where you are.
-  # Set it in config.local.yaml rather than here, to keep where you live out of Git.
   location: ""

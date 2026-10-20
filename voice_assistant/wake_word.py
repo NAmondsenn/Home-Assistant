@@ -2,13 +2,10 @@ import os
 import re
 import logging
 from openwakeword.model import Model
+from voice_assistant import paths
 from voice_assistant.microphone import RATE, Microphone
 
 logger = logging.getLogger(__name__)
-
-# Resolves paths relative to the project root (the parent of the voice_assistant
-# package), matching where setup.sh installs models/ and where main.py runs.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # openWakeWord works through audio 80ms at a time - this many samples at 16kHz.
 CHUNK_SAMPLES = 1280
@@ -109,7 +106,7 @@ class WakeWordDetector:
                                                                                              0.5)
         self.wake_word_phrase = assistant_config.get("wake_word", DEFAULT_WAKE_WORD)
         self.wake_word_key = _wake_word_filename(self.wake_word_phrase)
-        model_path = os.path.join(PROJECT_DIRECTORY, "models", f"{self.wake_word_key}.onnx")
+        model_path = os.path.join(paths.MODELS_DIR, f"{self.wake_word_key}.onnx")
 
         # A custom wake word's model is trained separately and copied in by hand (see
         # the README), so a fresh install doesn't have one - and it used to fail to

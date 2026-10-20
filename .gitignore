@@ -10,7 +10,8 @@ env/
 # .env
 .env
 
-# Settings for one machine only - see voice_assistant/config.py
+# Where an install kept its own settings, keys, data and logs before they moved out
+# of the repository (see voice_assistant/paths.py) - still ignored, in case any are left.
 config.local.yaml
 
 # Logs and data

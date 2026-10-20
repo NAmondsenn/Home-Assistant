@@ -4,7 +4,6 @@ import time
 import logging
 from datetime import datetime
 from typing import Optional
-from dotenv import load_dotenv
 import anthropic
 from anthropic import Anthropic
 from voice_assistant.actions import Action
@@ -16,8 +15,6 @@ from voice_assistant import network
 # waiting out the timeouts (see network.py), and pointing at what still works.
 OFFLINE_MESSAGE = "Sorry, I can't reach the internet right now. Timers, alarms and the time still work."
 
-# loads environment variables from a .env file if present.
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +37,8 @@ class LLMHandler:
         self.search_timeout = float(llm_config.get("search_timeout", 45))
         self.max_retries = int(llm_config.get("max_retries", 1))
 
-        # If no API key is provided, ANTHROPIC_API_KEY is taken from .env, falling back to Claude_API_Key.
+        # If no API key is provided, ANTHROPIC_API_KEY is taken from the environment - .env
+        # (see paths.load_secrets) - falling back to Claude_API_Key.
         # Missing API keys are logged as warnings, the program runs, but the LLM will not be available.
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY") or os.getenv("Claude_API_Key")
         if self.api_key:

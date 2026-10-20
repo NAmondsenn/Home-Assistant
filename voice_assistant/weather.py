@@ -62,7 +62,7 @@ class Weather:
         """
         if not self.location:
             return {"success": False,
-                    "message": "I don't know where you are yet. Set weather location in config.yaml."}
+                    "message": "I don't know where you are yet. Set weather location in Nova's settings."}
         if not network.online():
             return {"success": False, "message": "I can't get the weather without the internet."}
 

@@ -10,7 +10,7 @@ There are three separate levels, and changing one never affects the others:
     music - music the assistant plays itself, from Navidrome. Spotify keeps
             its own volume
 
-Levels are saved to data/volumes.json, so a change made by voice survives a
+Levels are saved to volumes.json in the data folder (see paths.py), so a change made by voice survives a
 restart. They deliberately aren't in config.yaml: they're changed by speaking
 rather than by editing a file, and a config setting which quietly stopped taking
 effect after the first volume change would be misleading.
@@ -22,12 +22,12 @@ import logging
 import tempfile
 from typing import Dict, Optional
 
+from voice_assistant import paths
+
 # Logger setup
 logger = logging.getLogger(__name__)
 
-# Resolves paths relative to the project root.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-VOLUMES_FILE = os.path.join(PROJECT_DIRECTORY, "data", "volumes.json")
+VOLUMES_FILE = os.path.join(paths.DATA_DIR, "volumes.json")
 
 
 class VolumeControl:

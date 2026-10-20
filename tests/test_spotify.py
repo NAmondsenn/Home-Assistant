@@ -118,10 +118,10 @@ def test_only_music_on_this_speaker_is_paused_for_speech(make_controller, device
 
 def test_the_token_cache_is_kept_private(make_controller, monkeypatch, tmp_path):
     # It holds the refresh token, but spotipy wrote it readable by anyone on the machine.
-    cache = tmp_path / ".spotify_cache"
+    cache = tmp_path / "spotify_token.json"
     cache.write_text("{}")
     cache.chmod(0o644)
-    monkeypatch.setattr(spotify_controller, "PROJECT_DIRECTORY", str(tmp_path))
+    monkeypatch.setattr(spotify_controller.paths, "SPOTIFY_TOKEN_FILE", str(cache))
 
     make_controller(cached=SAVED)
     assert cache.stat().st_mode & 0o777 == 0o600

@@ -56,13 +56,13 @@ bash setup.sh
 
 Navidrome or Spotify - `music.player` in `config.yaml` says which, and it's Spotify unless you change it.
 
-**Navidrome.** Make a Navidrome user for Nova (or use your own), then on the Pi add its password to `.env` yourself:
+**Navidrome.** Make a Navidrome user for Nova (or use your own), then on the Pi add its password to `~/.config/nova/.env` yourself:
 
 ```
 NAVIDROME_PASSWORD=the-password
 ```
 
-and point Nova at it in `config.local.yaml`:
+and point Nova at it in `~/.config/nova/config.yaml`:
 
 ```yaml
 music:
@@ -86,12 +86,12 @@ Nova asks Home Assistant for things in plain words, through its own Assist, so i
 
 1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in, **not** an administrator.
 2. Log in as that user, and under its profile > Security, make a long-lived access token.
-3. On the Pi, add it to `.env` yourself - it's a password, so don't paste it anywhere else:
+3. On the Pi, add it to `~/.config/nova/.env` yourself - it's a password, so don't paste it anywhere else:
 
    ```
    HA_TOKEN=the-token
    ```
-4. Put Home Assistant's address in `config.local.yaml`:
+4. Put Home Assistant's address in `~/.config/nova/config.yaml`:
 
    ```yaml
    home_assistant:
@@ -116,27 +116,29 @@ venv/bin/pip install --no-deps -r requirements.lock
 
 ## Configuring
 
-Everything you'd want to change is in `config.yaml`, with a comment on each setting - the wake word, the voice, how long to wait for you to talk, timer and alarm behaviour, where the weather is for, and whether conversations are kept in the logs. Keys and secrets go in `.env`, never in `config.yaml`.
+The repository's `config.yaml` has every setting, with its default and a comment saying what it's for - the wake word, how long to wait for you to talk, timer and alarm behaviour, the music player, and more. Don't change it there: put just the settings you want different in **`~/.config/nova/config.yaml`**, in the same sections, and they're used on top:
+
+```yaml
+weather:
+  location: "Leeds"
+music:
+  player: "navidrome"
+```
+
+That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, or one of the wrong kind, stops it with a message naming it - `journalctl --user -u voice-assistant` shows it - rather than being quietly ignored.
+
+Keys and passwords go in **`~/.config/nova/.env`**, readable only by you, never in a settings file. Everything Nova saves - timers, alarms, volume levels, the Spotify sign-in and its logs - is in **`~/.local/share/nova/`**. An install from before this layout has its files moved there the first time it starts.
 
 The settings most likely to need changing:
 
 | Setting | What it's for |
 | --- | --- |
-| `weather.location` | Your town or city - in `config.local.yaml`. Empty until you set it. |
+| `weather.location` | Your town or city. Empty until you set it. |
 | `music.player` | `navidrome` or `spotify`. |
 | `thresholds.vad_threshold` | How sure Nova must be that it's hearing speech. Raise it if noise keeps it listening; lower it if quiet speech is missed. |
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
-
-Settings for this one machine - where you live, for the weather - go in `config.local.yaml` beside it instead. It's never committed, so they stay out of the public repository, and an update can't overwrite them. Anything in it overrides `config.yaml`, setting by setting:
-
-```yaml
-weather:
-  location: "Leeds"
-```
-
-Volume levels set by voice are saved in `data/volumes.json`, and timers and alarms in `data/`.
 
 ## Running it
 
@@ -155,7 +157,7 @@ Or by hand, to watch what it's doing:
 venv/bin/python main.py
 ```
 
-Logs are in `logs/smart_assistant.log`, trimmed at 5 MB. How long each stage of every interaction takes is kept in `logs/latency.jsonl`, and summarised by:
+Logs are in `~/.local/share/nova/logs/smart_assistant.log`, trimmed at 5 MB. How long each stage of every interaction takes is kept in `latency.jsonl` beside it, and summarised by:
 
 ```bash
 venv/bin/python scripts/latency_report.py

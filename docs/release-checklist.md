@@ -59,4 +59,4 @@ For a soak test, leave it running as normal for a few days, with this in another
 venv/bin/python scripts/soak_monitor.py --hours 72
 ```
 
-It samples the assistant's memory, CPU, restarts and log size every 10 minutes into `logs/soak.csv`, and says at the end whether anything grew that shouldn't have.
+It samples the assistant's memory, CPU, restarts and log size every 10 minutes into `soak.csv` in `~/.local/share/nova/logs`, and says at the end whether anything grew that shouldn't have.
