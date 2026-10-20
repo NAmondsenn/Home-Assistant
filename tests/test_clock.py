@@ -179,7 +179,11 @@ def test_cancelling_an_alarm_that_doesnt_exist_asks_about_the_only_one(make_cloc
     assert len(clock._alarms) == 1
 
 
-def test_two_plain_timers_due_in_the_same_minute_are_refused(make_clock):
+def test_two_plain_timers_due_in_the_same_minute_are_refused(make_clock, monkeypatch):
+    # Set at the start of a minute, since at 59 seconds past, 600 and 601 seconds
+    # from now fall in different minutes - which failed this one time in sixty.
+    start_of_minute = time.time() // 60 * 60
+    monkeypatch.setattr(clock_module.time, "time", lambda: start_of_minute)
     clock = make_clock()
     assert clock.set_timer(600)["success"]
     assert not clock.set_timer(601)["success"]
