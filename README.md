@@ -11,10 +11,11 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Music** - from your own [Navidrome](https://www.navidrome.org/) server, or from Spotify: play a song, artist, album, genre or playlist (or your liked songs), pause, skip, go back, shuffle, repeat, "what's this song?". The music pauses while Nova is talking, and comes back when it's done. Navidrome's plays through Nova itself, so it pauses instantly and keeps working with the internet down.
 - **Volume** - for Nova's voice, for timers and alarms, and for the music, each kept separately.
 - **The lights** - "turn off the kitchen lights", "set the living room lights to 30 percent", through Home Assistant.
-- **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar. And "what time do I have work tomorrow?" or "when do I finish uni today?" - say what each is called on the calendar in `home_assistant.activities`.
+- **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar. "What have I got on this week?" is an overview - which days there's work or uni, and anything else by day - rather than every time of every day. "When's my MOT?" looks for one thing, up to three months ahead. And "what time do I have work tomorrow?", "when's my next shift?" or "when do I finish uni today?" - say what each is called on the calendar in `home_assistant.activities`.
 - **The weather** - now, today or tomorrow, from Open-Meteo.
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
+- **Talking over it** - "Hey Nova" is heard over the music Nova plays and over its own replies, which stop the moment it's said. "Hey Nova, stop" stops whatever it's saying or playing.
 - **Remembering you** - mention something about yourself ("I've started a new job at Aldi", "my sister's called Amy") and Nova keeps it, says "I'll remember that", and uses it from then on. "What do you know about me?" reads it back; "forget that..." or "forget everything you know about me" takes it away. It's kept in `~/.local/share/nova/memory.json`, and goes to Claude with each request so it can use it.
 
 The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume, the time, the lights and Navidrome carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
@@ -50,8 +51,8 @@ bash setup.sh
 4. Asks for the assistant's name, wake word and Spotify speaker name, saving any you change to `~/.config/nova/config.yaml`.
 5. Asks for your API keys and writes them to `~/.config/nova/.env`, readable only by you. An existing one is left as it is.
 6. Finds your wake word model (see below) and copies it into `models/`.
-7. Downloads Piper (the voice), the Whisper models and openWakeWord's own models into `models/`.
-8. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone, backing up the old one.
+7. Downloads Piper (the voice), the Moonshine and Whisper models and openWakeWord's own models into `models/`. Piper, its voice and raspotify's key are checked against pinned SHA-256 hashes, so a tampered download stops setup rather than being run.
+8. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone - in short bursts, so a sound stops quickly and the wake word reacts sooner - backing up the old one.
 9. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.
 10. Sets the assistant to start at boot, as a user service, and starts it.
 
@@ -144,7 +145,7 @@ music:
 
 That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, or one of the wrong kind, stops it with a message naming it - `journalctl --user-unit voice-assistant` shows it - rather than being quietly ignored.
 
-Keys and passwords go in **`~/.config/nova/.env`**, readable only by you, never in a settings file. Everything Nova saves - timers, alarms, volume levels, the Spotify sign-in and its logs - is in **`~/.local/share/nova/`**. An install from before this layout has its files moved there the first time it starts.
+Keys and passwords go in **`~/.config/nova/.env`**, readable only by you, never in a settings file. Everything Nova saves - timers, alarms, volume levels, what it remembers about you, the Spotify sign-in and its logs - is in **`~/.local/share/nova/`**. An install from before this layout has its files moved there the first time it starts.
 
 The settings most likely to need changing:
 
