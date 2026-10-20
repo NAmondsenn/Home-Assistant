@@ -8,6 +8,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - `phase-1` - Phase 1, tested on the Pi.
 - `phase-2` - Phase 2, built on `phase-1`, tested on the Pi.
 - `phase-3` - Phase 3, the Home Assistant and Navidrome work, and fixes from testing, built on `phase-2`, running on the Pi.
+- `phase-4` - Phase 4, built on `phase-3`. The plan so far is in [decisions/0004](decisions/0004-pve2-backend.md).
 
 ## Phase 0: housekeeping - done
 
