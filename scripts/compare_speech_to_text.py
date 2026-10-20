@@ -27,6 +27,10 @@ The models it can try, each followed by a colon and a model name if not the usua
                                           sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2,
                                           from the asr-models release of k2-fsa/sherpa-onnx on GitHub,
                                           into the project's models folder.
+    backend[:<name:port>]                 Nova's own backend - backend.py - used as a Pi uses it, at
+                                          backend.address unless given another. Fed at the
+                                          microphone's pace and timed from the end of each recording,
+                                          network and all. Wants its password in NOVA_BACKEND_TOKEN.
 
 Moonshine and Whisper are set up from Nova's settings, keyterms and all - point
 NOVA_CONFIG at a copy of another machine's settings folder to use its. Each model is
@@ -294,6 +298,18 @@ def make_model(choice: str) -> Tuple[str, Transcribe]:
         chunks = re.search(r"-(\d+ms)-", name)
         label = f"Nemotron streaming, {chunks[1]} chunks" if chunks else f"Nemotron {name}"
         return label, lambda audio: _streamed(nemotron, audio)
+    if kind == "backend":
+        from voice_assistant import speech_to_text
+
+        address = model or Config().section("backend").get("address")
+
+        def no_fallback():
+            # A Pi would hear for itself instead; measuring that here would pass off
+            # Moonshine's results as the backend's.
+            raise RuntimeError(f"The backend at {address} didn't answer, and it's the backend being measured")
+
+        stt = speech_to_text.BackendSpeechToText(address, os.getenv("NOVA_BACKEND_TOKEN", ""), fallback=no_fallback)
+        return f"The backend at {address}", lambda audio: _live(stt, audio)
     raise ValueError(f"Not a model this can try: '{choice}' - see the top of {os.path.basename(__file__)}")
 
 
@@ -402,7 +418,7 @@ def main(argv: Optional[List[str]] = None):
     for choice in arguments.models:
         label, transcribe = make_model(choice)
         summary = summarise(measure(transcribe, samples))
-        live = choice.startswith(("moonshine-live", "nemotron"))
+        live = choice.startswith(("moonshine-live", "nemotron", "backend"))
         print("\n".join(report(label, summary, len(samples), live=live)) + "\n")
 
 

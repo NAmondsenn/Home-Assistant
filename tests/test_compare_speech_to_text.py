@@ -272,6 +272,28 @@ def test_moonshine_is_set_up_as_novas_settings_say(monkeypatch, make_config):
     assert compare.make_model("moonshine-live:tiny-streaming")[0] == "Moonshine tiny-streaming, live"
 
 
+def test_novas_backend_is_measured_as_a_pi_would_use_it(monkeypatch, make_config):
+    from voice_assistant import speech_to_text
+
+    made = {}
+
+    class Backend:
+        def __init__(self, address, token, fallback):
+            made.update(address=address, token=token, fallback=fallback)
+
+    monkeypatch.setattr(speech_to_text, "BackendSpeechToText", Backend)
+    monkeypatch.setenv("NOVA_BACKEND_TOKEN", "the-password-for-it")
+    monkeypatch.setattr(compare, "Config", lambda: make_config(backend={"address": "nova:10400"}))
+
+    label, transcribe = compare.make_model("backend")
+    assert label == "The backend at nova:10400"
+    assert (made["address"], made["token"]) == ("nova:10400", "the-password-for-it")
+    # It's the backend being measured, so it's never quietly Moonshine instead.
+    with pytest.raises(RuntimeError):
+        made["fallback"]()
+    assert compare.make_model("backend:100.64.0.7:10400")[0] == "The backend at 100.64.0.7:10400"
+
+
 def test_a_model_it_doesnt_know_is_refused():
     with pytest.raises(ValueError):
         compare.make_model("siri")
