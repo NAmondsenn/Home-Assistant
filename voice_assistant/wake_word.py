@@ -2,7 +2,7 @@ import os
 import re
 import logging
 from openwakeword.model import Model
-from voice_assistant.microphone import Microphone
+from voice_assistant.microphone import RATE, Microphone
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,12 @@ PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # openWakeWord works through audio 80ms at a time - this many samples at 16kHz.
 CHUNK_SAMPLES = 1280
+
+# Seconds of the audio just gone which the model works through before listening for
+# real. It judges each moment on the second or so before it, so started from nothing
+# it couldn't hear "Hey Nova" for about a second - just when someone answering a
+# reply is most likely to say it.
+CATCH_UP_SECONDS = 2.0
 
 # Fallback wake word phrase if no config is passed in
 DEFAULT_WAKE_WORD = "Hey Nova"
@@ -136,10 +142,16 @@ class WakeWordDetector:
         logger.info(f"Listening for '{self.wake_word_phrase}'...")
         self.model.reset()
 
-        reader = self.microphone.listen()
+        # The model catches up on the last couple of seconds first - but never from
+        # before the last wake word, which would only be heard again - and only what
+        # comes after now can wake it.
+        now = self.microphone.position
+        reader = self.microphone.listen(start=max(0, now - int(CATCH_UP_SECONDS * RATE), self.heard_at or 0))
         while True:
             # Feeds audio into the openWakeWord model and gets the prediction score for the configured wake word
             prediction = self.model.predict(reader.read(CHUNK_SAMPLES))
+            if reader.position <= now:
+                continue
             score = prediction.get(self.wake_word_key, 0)
 
             # Returns the confidence score and logs it if the wake word is detected

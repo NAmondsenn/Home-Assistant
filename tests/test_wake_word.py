@@ -82,6 +82,40 @@ def test_the_wake_word_is_heard_through_the_shared_microphone(monkeypatch, make_
     assert len(streams) == 1
 
 
+def test_the_last_couple_of_seconds_are_caught_up_on_but_cant_wake_it(monkeypatch, make_config, models):
+    # Started from nothing, the model couldn't hear "Hey Nova" for about a second
+    # after each reply.
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    streams[0].feed(5 * RATE)
+    caught_up = int(wake_word_module.CATCH_UP_SECONDS * RATE) // CHUNK_SAMPLES
+    # High scores while catching up are the past - Nova's own reply, say - and are ignored.
+    FakeModel.scores = [0.9] * caught_up + [0.1, 0.95]
+
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    threading.Timer(0.05, streams[0].feed, args=(3 * CHUNK_SAMPLES,)).start()
+    assert detector.listen_once() == 0.95
+    assert len(detector.model.chunks) == caught_up + 2
+
+
+def test_the_last_wake_word_is_never_heard_again(monkeypatch, make_config, models):
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    streams[0].feed(5 * RATE)
+    FakeModel.scores = [0.9, 0.95]
+
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    detector.heard_at = microphone.position - CHUNK_SAMPLES
+    threading.Timer(0.05, streams[0].feed, args=(CHUNK_SAMPLES,)).start()
+    # Only the one chunk since the last wake word is caught up on, then the new audio.
+    assert detector.listen_once() == 0.95
+    assert len(detector.model.chunks) == 2
+
+
 def test_without_its_model_a_stock_wake_word_stands_in(make_config, models):
     # A fresh install has no custom model yet, and used to fail to start at all.
     (models / "hey_nova.onnx").unlink()
