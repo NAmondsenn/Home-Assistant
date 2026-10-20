@@ -60,7 +60,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] Tried by voice: a lone "stop" heard by Moonshine, and talking over a reply
 - [ ] Go through the [release checklist](release-checklist.md) on the Pi with Phase 3 on it
 - [ ] Streaming Claude's reply into speech - looked at, left for now: about a tenth of a second, for guessing whether a tool call is coming
-- [ ] SEC-05, ARCH-05 to ARCH-08, BUG-26, BUG-29, BUG-31
+- [x] SEC-05 downloads checked against pinned hashes · ARCH-05 one atomic JSON save · ARCH-06, ARCH-07 dead code and stale comments · ARCH-08 LF everywhere · BUG-29 mixed yes/no answers · BUG-31 `max_tokens` used as set · BUG-26 already fixed with BUG-14
 - [ ] Shorter bursts on the shared input and output (`/etc/asound.conf` and `setup.sh`), currently 125ms - quicker wake word and end of speech, and stopping sounds sooner
 
 ## Phase 4 onwards
