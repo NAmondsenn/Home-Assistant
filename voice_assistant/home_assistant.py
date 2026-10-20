@@ -189,7 +189,8 @@ class HomeAssistant:
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": describe_agenda(events, first, days, today or date.today())}
 
-    def activity(self, name: str, first: date, days: int = 1, today: Optional[date] = None) -> Dict:
+    def activity(self, name: str, first: date, days: int = 1, today: Optional[date] = None,
+                 count: Optional[int] = None, now: Optional[datetime] = None) -> Dict:
         """
         When the user has one of their activities - work, uni - from the events named as it.
 
@@ -198,6 +199,8 @@ class HomeAssistant:
             first: The first day asked about.
             days: How many days.
             today: Today's date - only given by the tests.
+            count: Only say the next this many times, for "when's my next shift?".
+            now: The time now - only given by the tests.
 
         Returns:
             Dict with 'success' and the times as the 'message'.
@@ -216,8 +219,42 @@ class HomeAssistant:
         # "Night shift", but neither turns up inside some other word.
         pattern = re.compile(r"\b(?:" + "|".join(re.escape(word) for word in called) + ")", re.IGNORECASE)
         found = [event for event in events if pattern.search(event["summary"])]
-        return {"success": True, "message": describe_activity(name.strip().lower(), found, first, days,
-                                                              today or date.today())}
+        name = name.strip().lower()
+        if count:
+            return {"success": True, "message": describe_next(name, found, count, first,
+                                                              now or datetime.now().astimezone())}
+        return {"success": True, "message": describe_activity(name, found, first, days, today or date.today())}
+
+
+def _by_day(events: List[Dict], first: date) -> Dict[date, List[Dict]]:
+    """Events grouped by the day they start on - or the first day, for one already going."""
+    by_day: Dict[date, List[Dict]] = {}
+    for event in events:
+        day = event["start"] if event["all_day"] else event["start"].date()
+        by_day.setdefault(max(day, first), []).append(event)
+    return by_day
+
+
+def _stretches(events: List[Dict]) -> List[List]:
+    """
+    A day's timed events as stretches of time. Back-to-back sessions - uni's 2:30
+    until 3:30, then 3:30 until 5:30 - are one stretch, 2:30 until 5:30, rather than
+    read out one by one.
+    """
+    stretches = []
+    for event in sorted((event for event in events if not event["all_day"]), key=lambda e: e["start"]):
+        end = event.get("end") or event["start"]
+        if stretches and event["start"] <= stretches[-1][1]:
+            stretches[-1][1] = max(stretches[-1][1], end)
+        else:
+            stretches.append([event["start"], end])
+    return stretches
+
+
+def _span(start: datetime, end: datetime) -> str:
+    """'from 2:30 PM until 5:30 PM', or 'at 2:30 PM' for something with no length."""
+    said = spoken_clock_time(start.hour, start.minute)
+    return f"from {said} until {spoken_clock_time(end.hour, end.minute)}" if end > start else f"at {said}"
 
 
 def describe_activity(name: str, events: List[Dict], first: date, days: int, today: date) -> str:
@@ -235,26 +272,11 @@ def describe_activity(name: str, events: List[Dict], first: date, days: int, tod
         e.g. "Tomorrow, you've got work from 9:00 AM until 5:30 PM." or "You haven't
         got uni tomorrow."
     """
-    by_day = {}
-    for event in events:
-        day = event["start"] if event["all_day"] else event["start"].date()
-        by_day.setdefault(max(day, first), []).append(event)
-
+    by_day = _by_day(events, first)
     sentences = []
     for day in sorted(by_day):
         times = ["all day"] if any(event["all_day"] for event in by_day[day]) else []
-        # Back-to-back sessions - uni's 2:30 until 3:30, then 3:30 until 5:30 - are
-        # said as one stretch, 2:30 until 5:30, rather than read out one by one.
-        stretches = []
-        for event in sorted((event for event in by_day[day] if not event["all_day"]), key=lambda e: e["start"]):
-            end = event.get("end") or event["start"]
-            if stretches and event["start"] <= stretches[-1][1]:
-                stretches[-1][1] = max(stretches[-1][1], end)
-            else:
-                stretches.append([event["start"], end])
-        for start, end in stretches:
-            said = spoken_clock_time(start.hour, start.minute)
-            times.append(f"from {said} until {spoken_clock_time(end.hour, end.minute)}" if end > start else f"at {said}")
+        times += [_span(start, end) for start, end in _stretches(by_day[day])]
         listed = times[0] if len(times) == 1 else ", ".join(times[:-1]) + ", and " + times[-1]
         on = _on(day, today)
         sentences.append(f"{on[0].upper()}{on[1:]}, you've got {name} {listed}.")
@@ -265,6 +287,44 @@ def describe_activity(name: str, events: List[Dict], first: date, days: int, tod
     if days == 1:
         return f"You haven't got {name} {spoken_day(first, today)}."
     return f"You haven't got {name} between {spoken_day(first, today)} and {spoken_day(last, today)}."
+
+
+def describe_next(name: str, events: List[Dict], count: int, first: date, now: datetime) -> str:
+    """
+    Says when the user next has an activity - once, or the next few times.
+
+    Asked "when do I next have work?", every shift for the next fortnight used to be
+    read out, when only the next one was wanted.
+
+    Args:
+        name: The activity, e.g. "work".
+        events: Its events from the first day on, earliest first.
+        count: How many times to say.
+        first: The first day looked at - usually today.
+        now: The time now, so one already over today isn't counted.
+
+    Returns:
+        e.g. "You're next at work tomorrow, from 3:30 PM until 11:30 PM." or "Your
+        next 2 times at work: tomorrow, from ...; and on Saturday, from ...".
+    """
+    today = now.date()
+    upcoming = []
+    by_day = _by_day(events, first)
+    for day in sorted(by_day):
+        if any(event["all_day"] for event in by_day[day]) and day >= today:
+            upcoming.append((day, "all day", None, None))
+        upcoming += [(day, _span(start, end), start, end) for start, end in _stretches(by_day[day]) if end > now]
+    upcoming = upcoming[:count]
+
+    if not upcoming:
+        return f"You haven't got {name} in the next two weeks."
+    if len(upcoming) == 1:
+        day, span, start, end = upcoming[0]
+        if start is not None and start <= now:
+            return f"You're at {name} now, until {spoken_clock_time(end.hour, end.minute)}."
+        return f"You're next at {name} {_on(day, today)}, {span}."
+    said = [f"{_on(day, today)}, {span}" for day, span, _, _ in upcoming]
+    return f"Your next {len(upcoming)} times at {name}: {'; '.join(said[:-1])}; and {said[-1]}."
 
 
 def _read_event(event: Dict) -> Dict:

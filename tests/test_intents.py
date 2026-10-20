@@ -164,3 +164,19 @@ def test_work_and_uni_are_read_from_the_calendar_without_claude(text, activity, 
 
     monkeypatch.setattr(intents_module, "date", Tuesday)
     assert _actions(text) == [Action("get_activity", {"activity": activity, "start": start, "days": 1})]
+
+
+@pytest.mark.parametrize("text, activity, count", [
+    ("When do I next have work?", "work", 1),
+    ("When's my next shift?", "work", 1),
+    ("What are my next three shifts?", "work", 3),
+    ("When is my next lecture?", "uni", 1),
+])
+def test_the_next_time_is_asked_for_without_claude(text, activity, count, monkeypatch):
+    class Tuesday(intents_module.date):
+        @classmethod
+        def today(cls):
+            return intents_module.date(2026, 10, 20)
+
+    monkeypatch.setattr(intents_module, "date", Tuesday)
+    assert _actions(text) == [Action("get_activity", {"activity": activity, "start": "2026-10-20", "count": count})]

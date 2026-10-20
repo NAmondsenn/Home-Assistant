@@ -232,3 +232,14 @@ def test_an_activity_is_asked_of_home_assistant_for_the_days_given():
     home = FakeHome()
     result = ActionExecutor(home=home).execute(Action("get_activity", {"activity": "uni", "start": "2026-10-21"}))
     assert home.asked == ("uni", "2026-10-21", 1) and result.say == "You haven't got uni tomorrow."
+
+
+def test_the_next_times_are_looked_for_across_a_fortnight():
+    class FakeHome:
+        def activity(self, name, first, days, count=None):
+            self.asked = (name, first.isoformat(), days, count)
+            return {"success": True, "message": "You're next at work tomorrow."}
+
+    home = FakeHome()
+    ActionExecutor(home=home).execute(Action("get_activity", {"activity": "work", "start": "2026-10-20", "count": 50}))
+    assert home.asked == ("work", "2026-10-20", 14, 10)

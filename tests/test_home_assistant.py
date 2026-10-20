@@ -238,3 +238,40 @@ def test_just_work_called_work_unless_set(make_config):
     home = HomeAssistant.from_config(make_config(home_assistant={
         "url": "http://ha:8123", "activities": {"Work": ["Shift"], "uni": ["CSC"]}}), "token")
     assert home.activities == {"work": ["shift"], "uni": ["csc"]}
+
+
+# The next time
+
+def _shift(day, start_hour, end_hour):
+    return {"summary": "Shift", "start": datetime(2026, 10, day, start_hour, 0).astimezone(),
+            "end": datetime(2026, 10, day, end_hour, 0).astimezone(), "all_day": False}
+
+
+NOW = datetime(2026, 10, 20, 12, 0).astimezone()
+SHIFTS = [_shift(20, 8, 11), _shift(21, 15, 23), _shift(24, 14, 22), _shift(25, 14, 21)]
+
+
+def test_the_next_time_is_just_the_one():
+    # Asked "when do I next have work?", every shift for a fortnight used to be read out.
+    from voice_assistant.home_assistant import describe_next
+    # This morning's shift is over, so it's tomorrow's.
+    assert describe_next("work", SHIFTS, 1, date(2026, 10, 20), NOW) == \
+        "You're next at work tomorrow, from 3:00 PM until 11:00 PM."
+
+
+def test_the_next_few_times_are_said_together():
+    from voice_assistant.home_assistant import describe_next
+    assert describe_next("work", SHIFTS, 3, date(2026, 10, 20), NOW) == (
+        "Your next 3 times at work: tomorrow, from 3:00 PM until 11:00 PM; on Saturday, from 2:00 PM until "
+        "10:00 PM; and on Sunday, from 2:00 PM until 9:00 PM.")
+
+
+def test_being_there_now_says_so():
+    from voice_assistant.home_assistant import describe_next
+    assert describe_next("work", SHIFTS, 1, date(2026, 10, 20), datetime(2026, 10, 20, 9, 30).astimezone()) == \
+        "You're at work now, until 11:00 AM."
+
+
+def test_nothing_coming_up_says_so():
+    from voice_assistant.home_assistant import describe_next
+    assert describe_next("uni", [], 1, date(2026, 10, 20), NOW) == "You haven't got uni in the next two weeks."

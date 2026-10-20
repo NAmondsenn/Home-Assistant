@@ -47,8 +47,9 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 # The regular things asked about on the calendar - "what time do I have work?". What
 # each is called on the calendar is up to Home Assistant's settings; anything else is
 # left to Claude.
-ACTIVITIES = {"work": "work", "working": "work", "uni": "uni", "university": "uni", "college": "college",
-              "school": "school", "lectures": "uni", "class": "uni", "classes": "uni"}
+ACTIVITIES = {"work": "work", "working": "work", "shift": "work", "shifts": "work", "uni": "uni",
+              "university": "uni", "college": "college", "school": "school", "lecture": "uni", "lectures": "uni",
+              "class": "uni", "classes": "uni"}
 ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
 
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
@@ -156,6 +157,11 @@ class LocalIntents:
             (rf"(?:what time|when) (?:do i|am i|is)(?: have| start| finish| have to be at| got)? (?:at |in )?"
              rf"{ACTIVITY}(?:(?: on| for)? {DAY})?", self._activity),
             (rf"(?:am i|do i have|have i got) (?:at |in )?{ACTIVITY}(?:(?: on| for)? {DAY})?", self._activity),
+            # When it's next - "when's my next shift?" is just the one, "what are my
+            # next three shifts?" three.
+            (rf"when (?:do i|am i) next (?:have |at |in |got )?{ACTIVITY}", self._next_activity),
+            (rf"(?:when|what)(?:'s| is) my next {ACTIVITY}", self._next_activity),
+            (rf"(?:when|what)(?:'re| are) my next (?P<count>[a-z0-9]+) {ACTIVITY}", self._next_activity),
         ]
 
     def match(self, text: str) -> Optional[Dict]:
@@ -238,6 +244,13 @@ class LocalIntents:
         first, days = calendar_days(found["day"], date.today())
         return self._result("Okay.", [Action("get_activity", {"activity": ACTIVITIES[found["activity"]],
                                                               "start": first.isoformat(), "days": days})])
+
+    def _next_activity(self, found) -> Optional[Dict]:
+        count = _number(found.groupdict().get("count") or "one")
+        if not count:
+            return None
+        return self._result("Okay.", [Action("get_activity", {"activity": ACTIVITIES[found["activity"]],
+                                                              "start": date.today().isoformat(), "count": count})])
 
     def _weather(self, found) -> Dict:
         day = found["day"] or found["day2"] or "today"

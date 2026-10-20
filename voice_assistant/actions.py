@@ -39,8 +39,10 @@ UNAVAILABLE = {
     "memory": "I can't remember things right now.",
 }
 
-# The most days of calendar read at once - a fortnight is already a lot to listen to.
+# The most days of calendar read at once - a fortnight is already a lot to listen to -
+# and the most "next" times said at once.
 MOST_CALENDAR_DAYS = 14
+MOST_NEXT = 10
 
 
 @dataclass
@@ -750,9 +752,11 @@ class ActionExecutor:
     @tool(
         "When the user has something regular on their calendar - work, uni and the like - "
         "for 'what time do I have work tomorrow?', 'am I working on Saturday?', 'when do I "
-        "finish uni today?' or 'what shifts have I got this week?'. Give the activity, the "
-        "first day, worked out from today's date, and how many days. The times are read "
-        "out to the user, so just reply 'Okay.'",
+        "finish uni today?', 'what shifts have I got this week?' - or when they next have "
+        "it, for 'when's my next shift?' or 'what are my next three lectures?'. Give the "
+        "activity, the first day, worked out from today's date (today, for 'next'), and "
+        "how many days, or for 'next', how many times. The times are read out to the user, "
+        "so just reply 'Okay.'",
         needs="home",
         required=["activity", "start"],
         activity={
@@ -760,9 +764,19 @@ class ActionExecutor:
             "description": "One word for it, as the user said it: 'work' (also for shifts or working), 'uni'.",
         },
         start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
-        days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
+        days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day, or for 'next'."},
+        count={
+            "type": "integer",
+            "description": ("Only for 'next': how many times to say - 1 for 'when do I next have work?' or "
+                            "'when's my next shift?', 3 for 'my next three shifts'. Leave out otherwise."),
+        },
     )
-    def get_activity(self, activity: Optional[str] = None, start: Optional[str] = None, days: Optional[int] = None):
+    def get_activity(self, activity: Optional[str] = None, start: Optional[str] = None, days: Optional[int] = None,
+                     count: Optional[int] = None):
+        if count:
+            # Looked for across the next fortnight, and only the first few said.
+            return self._calendar_days(start, MOST_CALENDAR_DAYS, lambda first, days: self.home.activity(
+                activity or "work", first, days, count=max(1, min(int(count), MOST_NEXT))))
         return self._calendar_days(start, days,
                                    lambda first, days: self.home.activity(activity or "work", first, days))
 
