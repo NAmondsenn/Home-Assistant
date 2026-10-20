@@ -337,3 +337,28 @@ def test_a_song_is_decoded_to_stereo_at_the_speakers_rate(make_player, monkeypat
     audio = np.concatenate(pieces)
     assert audio.shape[1] == 2 and abs(len(audio) - 48000) < 2000
     assert np.allclose(audio[:, 0], audio[:, 1])
+
+
+def test_music_stopped_before_talking_stays_stopped(make_player):
+    # Stopped, then the next thing said to the assistant started it again, since
+    # every conversation ended by un-pausing it.
+    player = make_player()
+    player._start(SONGS)
+    playing = _playing(player)
+    player.pause()
+    player.pause_for_speech()
+    player.resume_after_speech()
+    assert playing.paused and not player.was_playing()
+
+
+def test_resume_asked_for_while_talking_carries_on_after(make_player):
+    player = make_player()
+    player._start(SONGS)
+    playing = _playing(player)
+    player.pause()
+    player.pause_for_speech()
+    player.play()
+    assert playing.paused
+    player.resume_after_speech()
+    assert not playing.paused
+

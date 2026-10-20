@@ -150,8 +150,10 @@ class NavidromePlayer:
         self._turn = 0
         self._playback = None
         self._paused = False
-        # While the assistant is talking - see pause_for_speech.
-        self._held = False
+        # While the assistant is talking, and whether the music carries on after it -
+        # see pause_for_speech.
+        self._talking = False
+        self._resume_after = False
         self._interrupted = False
         self._repeat = "off"
         self._shuffle = False
@@ -317,7 +319,7 @@ class NavidromePlayer:
             if not query:
                 with self._lock:
                     if self._index < len(self._queue):
-                        self._set_paused(self._held)
+                        self._carry_on()
                         return {"success": True, "message": "Resumed playback", "silent": True}
                 songs, said = self._liked_songs()
                 if not songs:
@@ -442,20 +444,35 @@ class NavidromePlayer:
         """
         with self._lock:
             self._interrupted = self._index < len(self._queue) and not self._paused
-            self._held = True
+            # Only music which was actually playing comes back afterwards. Music the
+            # user had already stopped used to start again after the next thing they
+            # said, because every conversation ended by un-pausing it.
+            self._resume_after = self._interrupted
+            self._talking = True
             self._set_paused(True)
 
     def resume_after_speech(self):
-        """Lets the music carry on, unless the user paused it in the meantime."""
+        """Lets the music carry on, if it was playing or asked for while the assistant talked."""
         with self._lock:
-            if self._held:
-                self._held = False
+            self._talking = False
+            if self._resume_after:
+                self._resume_after = False
                 self._set_paused(False)
 
     def cancel_resume(self):
         """Keeps the music paused once the assistant has finished - it was asked to pause."""
         with self._lock:
-            self._held = False
+            self._resume_after = False
+
+    def _carry_on(self):
+        """
+        Plays on - straight away, or once the assistant has finished talking. Called
+        with the lock held.
+        """
+        if self._talking:
+            self._resume_after = True
+        else:
+            self._set_paused(False)
 
     def was_playing(self) -> bool:
         """Whether music was playing when the user started speaking."""
@@ -479,7 +496,9 @@ class NavidromePlayer:
         with self._lock:
             self._unshuffled = list(songs)
             self._queue = list(songs)
-            self._paused = self._held
+            self._paused = self._talking
+            if self._talking:
+                self._resume_after = True
             self._jump(0)
 
     def _jump(self, index: int):
