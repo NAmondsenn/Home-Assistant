@@ -57,6 +57,17 @@ def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
     pattern = rf"^\W*{pattern}{re.escape(words[-1])}\b\W*"
 
     rest = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
+
+    # Whisper often mishears the end of the wake word, too, and puts it in front of
+    # the request as a little clause of its own - "In Nova, what's the weather?",
+    # "Turn over, set a one minute timer". Up to two words ending in the wake word,
+    # or in what "Nova" most often turns into, are taken off as well - but only with
+    # punctuation straight after, so "Over the weekend, remind me..." is left alone.
+    if rest == text:
+        endings = [re.escape(words[-1])] + (["over"] if words[-1].lower() == "nova" else [])
+        misheard = rf"^\W*(?:\w+\W+)?(?:{'|'.join(endings)})[.,!?]+\s*"
+        rest = re.sub(misheard, "", text, count=1, flags=re.IGNORECASE)
+
     return rest[:1].upper() + rest[1:]
 
 class WakeWordDetector:
