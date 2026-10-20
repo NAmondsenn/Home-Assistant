@@ -748,17 +748,23 @@ class ActionExecutor:
         return self._calendar_days(start, days, self.home.agenda)
 
     @tool(
-        "When the user is working, from their calendar, for 'what time do I have work "
-        "tomorrow?', 'am I working on Saturday?', 'when do I finish work today?' or 'what "
-        "shifts have I got this week?'. Give the first day, worked out from today's date, "
-        "and how many days. The times are read out to the user, so just reply 'Okay.'",
+        "When the user has something regular on their calendar - work, uni and the like - "
+        "for 'what time do I have work tomorrow?', 'am I working on Saturday?', 'when do I "
+        "finish uni today?' or 'what shifts have I got this week?'. Give the activity, the "
+        "first day, worked out from today's date, and how many days. The times are read "
+        "out to the user, so just reply 'Okay.'",
         needs="home",
-        required=["start"],
+        required=["activity", "start"],
+        activity={
+            "type": "string",
+            "description": "One word for it, as the user said it: 'work' (also for shifts or working), 'uni'.",
+        },
         start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
         days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
     )
-    def get_work(self, start: Optional[str] = None, days: Optional[int] = None):
-        return self._calendar_days(start, days, self.home.work)
+    def get_activity(self, activity: Optional[str] = None, start: Optional[str] = None, days: Optional[int] = None):
+        return self._calendar_days(start, days,
+                                   lambda first, days: self.home.activity(activity or "work", first, days))
 
     @staticmethod
     def _calendar_days(start: Optional[str], days: Optional[int], read) -> Dict:

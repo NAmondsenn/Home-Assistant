@@ -223,12 +223,12 @@ def test_without_home_assistant_the_lights_say_so():
     assert "control_home" in {schema["name"] for schema in ActionExecutor(home=object()).tool_schemas()}
 
 
-def test_work_is_asked_of_home_assistant_for_the_days_given():
+def test_an_activity_is_asked_of_home_assistant_for_the_days_given():
     class FakeHome:
-        def work(self, first, days):
-            self.asked = (first.isoformat(), days)
-            return {"success": True, "message": "You're not working tomorrow."}
+        def activity(self, name, first, days):
+            self.asked = (name, first.isoformat(), days)
+            return {"success": True, "message": "You haven't got uni tomorrow."}
 
     home = FakeHome()
-    result = ActionExecutor(home=home).execute(Action("get_work", {"start": "2026-10-21"}))
-    assert home.asked == ("2026-10-21", 1) and result.say == "You're not working tomorrow."
+    result = ActionExecutor(home=home).execute(Action("get_activity", {"activity": "uni", "start": "2026-10-21"}))
+    assert home.asked == ("uni", "2026-10-21", 1) and result.say == "You haven't got uni tomorrow."

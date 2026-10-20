@@ -44,6 +44,13 @@ POLITE_END = r"(?: please| thanks| thank you)+$"
 LIGHT = r"(?:all )?(?:the |my )?(?:(?!and\b)[a-z']+ ){0,3}(?:lights?|lamps?)"
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+# The regular things asked about on the calendar - "what time do I have work?". What
+# each is called on the calendar is up to Home Assistant's settings; anything else is
+# left to Claude.
+ACTIVITIES = {"work": "work", "working": "work", "uni": "uni", "university": "uni", "college": "college",
+              "school": "school", "lectures": "uni", "class": "uni", "classes": "uni"}
+ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
+
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
 DAY = r"(?P<day>today|tonight|tomorrow|this weekend|the weekend|" + "|".join(WEEKDAYS) + ")"
@@ -142,11 +149,11 @@ class LocalIntents:
              self._calendar),
             (rf"(?:am i|are we) (?:busy|free)(?: (?:on|for))? {DAY}", self._calendar),
             (rf"do i have anything(?: on| planned)?(?: (?:on|for))? {DAY}", self._calendar),
-            # Work, from the calendar - "what time do I have work tomorrow?". Without a
-            # day, it's today.
-            (rf"(?:what time|when) (?:do i|am i|is)(?: have| start| finish| have to be at)? (?:at )?(?:work|working)"
-             rf"(?:(?: on| for)? {DAY})?", self._work),
-            (rf"(?:am i|do i have|have i got) (?:working|work|at work)(?:(?: on| for)? {DAY})?", self._work),
+            # Work, uni and the like, from the calendar - "what time do I have work
+            # tomorrow?". Without a day, it's today.
+            (rf"(?:what time|when) (?:do i|am i|is)(?: have| start| finish| have to be at| got)? (?:at |in )?"
+             rf"{ACTIVITY}(?:(?: on| for)? {DAY})?", self._activity),
+            (rf"(?:am i|do i have|have i got) (?:at |in )?{ACTIVITY}(?:(?: on| for)? {DAY})?", self._activity),
         ]
 
     def match(self, text: str) -> Optional[Dict]:
@@ -225,9 +232,10 @@ class LocalIntents:
         first, days = calendar_days(found["day"], date.today())
         return self._result("Okay.", [Action("get_calendar", {"start": first.isoformat(), "days": days})])
 
-    def _work(self, found) -> Dict:
+    def _activity(self, found) -> Dict:
         first, days = calendar_days(found["day"], date.today())
-        return self._result("Okay.", [Action("get_work", {"start": first.isoformat(), "days": days})])
+        return self._result("Okay.", [Action("get_activity", {"activity": ACTIVITIES[found["activity"]],
+                                                              "start": first.isoformat(), "days": days})])
 
     def _weather(self, found) -> Dict:
         day = found["day"] or found["day2"] or "today"

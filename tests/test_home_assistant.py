@@ -167,21 +167,41 @@ def test_a_day_further_off_is_said_in_full():
     assert describe_agenda([], date(2026, 10, 30), 1, TODAY) == "You've got nothing on Friday the 30th of October."
 
 
-# Work
+# Work, uni and the like
 
-def test_work_is_found_by_its_name_and_said_with_its_hours(make_home):
+def test_an_activity_is_found_by_its_name_and_said_with_its_hours(make_home):
     home = make_home({
-        "/api/calendars": [{"entity_id": "calendar.personal"}],
-        "/api/calendars/calendar.personal": [
+        "/api/calendars": [{"entity_id": "calendar.work"}],
+        "/api/calendars/calendar.work": [
             {"summary": "Dentist", "start": {"dateTime": "2026-10-21T08:00:00+01:00"},
              "end": {"dateTime": "2026-10-21T08:30:00+01:00"}},
-            {"summary": "Shift - Tesco", "start": {"dateTime": "2026-10-21T09:00:00+01:00"},
-             "end": {"dateTime": "2026-10-21T17:30:00+01:00"}},
+            {"summary": "Shift", "start": {"dateTime": "2026-10-21T15:30:00+01:00"},
+             "end": {"dateTime": "2026-10-21T22:00:00+01:00"}},
         ],
     })
-    home.work_events = ["tesco"]
-    result = home.work(date(2026, 10, 21), today=date(2026, 10, 20))
-    assert result == {"success": True, "message": "Tomorrow, you've got work from 9:00 AM until 5:30 PM."}
+    home.activities = {"work": ["shift"]}
+    result = home.activity("work", date(2026, 10, 21), today=date(2026, 10, 20))
+    assert result == {"success": True, "message": "Tomorrow, you've got work from 3:30 PM until 10:00 PM."}
+
+
+def test_uni_sessions_back_to_back_are_said_as_one_stretch(make_home):
+    # From the user's calendar: a practical, a tutorial, then a lecture straight after it.
+    home = make_home({
+        "/api/calendars": [{"entity_id": "calendar.uni"}],
+        "/api/calendars/calendar.uni": [
+            {"summary": "CSC2035/P01/01 <04-07>", "start": {"dateTime": "2026-10-20T11:30:00+01:00"},
+             "end": {"dateTime": "2026-10-20T12:30:00+01:00"}},
+            {"summary": "CSC2032/T01/01", "start": {"dateTime": "2026-10-20T14:30:00+01:00"},
+             "end": {"dateTime": "2026-10-20T15:30:00+01:00"}},
+            {"summary": "CSC2035/L01/01 <04-07>", "start": {"dateTime": "2026-10-20T15:30:00+01:00"},
+             "end": {"dateTime": "2026-10-20T17:30:00+01:00"}},
+            {"summary": "Discussion group", "start": {"dateTime": "2026-10-20T18:00:00+01:00"},
+             "end": {"dateTime": "2026-10-20T19:00:00+01:00"}},
+        ],
+    })
+    home.activities = {"uni": ["csc"]}
+    assert home.activity("uni", date(2026, 10, 20), today=date(2026, 10, 20))["message"] == \
+        "Today, you've got uni from 11:30 AM until 12:30 PM, and from 2:30 PM until 5:30 PM."
 
 
 def test_a_day_off_says_so(make_home):
@@ -189,26 +209,32 @@ def test_a_day_off_says_so(make_home):
                       "/api/calendars/calendar.personal": [
                           {"summary": "Football", "start": {"dateTime": "2026-10-24T10:00:00+01:00"},
                            "end": {"dateTime": "2026-10-24T11:00:00+01:00"}}]})
-    assert home.work(date(2026, 10, 24), 2, today=date(2026, 10, 20))["message"] == \
-        "You're not working between Saturday and Sunday."
-    assert home.work(date(2026, 10, 21), today=date(2026, 10, 20))["message"] == "You're not working tomorrow."
+    assert home.activity("work", date(2026, 10, 24), 2, today=date(2026, 10, 20))["message"] == \
+        "You haven't got work between Saturday and Sunday."
+    assert home.activity("work", date(2026, 10, 21), today=date(2026, 10, 20))["message"] == \
+        "You haven't got work tomorrow."
+
+
+def test_an_activity_it_doesnt_know_says_where_to_add_it(make_home):
+    result = make_home({}).activity("gym", date(2026, 10, 21))
+    assert result["success"] is False and "home_assistant.activities" in result["message"]
 
 
 def test_split_shifts_and_all_day_work_are_both_said():
-    from voice_assistant.home_assistant import describe_work
-    events = [{"summary": "Work", "start": datetime(2026, 10, 22, 9, 0), "end": datetime(2026, 10, 22, 13, 0),
+    from voice_assistant.home_assistant import describe_activity
+    events = [{"summary": "Shift", "start": datetime(2026, 10, 22, 9, 0), "end": datetime(2026, 10, 22, 13, 0),
                "all_day": False},
-              {"summary": "Work", "start": datetime(2026, 10, 22, 14, 0), "end": datetime(2026, 10, 22, 18, 0),
+              {"summary": "Shift", "start": datetime(2026, 10, 22, 14, 0), "end": datetime(2026, 10, 22, 18, 0),
                "all_day": False},
-              {"summary": "Work", "start": date(2026, 10, 23), "end": None, "all_day": True}]
-    assert describe_work(events, date(2026, 10, 22), 2, TODAY) == (
+              {"summary": "Shift", "start": date(2026, 10, 23), "end": None, "all_day": True}]
+    assert describe_activity("work", events, date(2026, 10, 22), 2, TODAY) == (
         "On Thursday, you've got work from 9:00 AM until 1:00 PM, and from 2:00 PM until 6:00 PM. "
         "On Friday, you've got work all day.")
 
 
-def test_work_is_called_work_unless_set(make_config):
+def test_just_work_called_work_unless_set(make_config):
     home = HomeAssistant.from_config(make_config(home_assistant={"url": "http://ha:8123"}), "token")
-    assert home.work_events == ["work"]
-    home = HomeAssistant.from_config(make_config(home_assistant={"url": "http://ha:8123", "work_events": ["Tesco"]}),
-                                     "token")
-    assert home.work_events == ["tesco"]
+    assert home.activities == {"work": ["work"]}
+    home = HomeAssistant.from_config(make_config(home_assistant={
+        "url": "http://ha:8123", "activities": {"Work": ["Shift"], "uni": ["CSC"]}}), "token")
+    assert home.activities == {"work": ["shift"], "uni": ["csc"]}
