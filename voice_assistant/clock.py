@@ -1031,10 +1031,15 @@ class Clock:
     # Moonshine (see speech_to_text.py) hears a lone "stop" as "soap", or "sop".
     STOP_WORDS = {"stop", "enough", "cancel", "dismiss", "quiet", "shush", "silence", "mute", "soap", "sop"}
 
+    # A plain answer to a yes/no question - see answer_to_offer. "Okay" and "right"
+    # aren't here, since "okay, leave it" turns an offer down.
+    YES_WORDS = {"yes", "yeah", "yep", "yup", "aye", "sure", "definitely"}
+    NO_WORDS = {"no", "nope", "nah"}
+
     # Words which turn down an offer. "no" is a dismissal word too - said to a
     # ringing timer it means "make it stop" - so when the assistant has just asked
-    # a yes/no question, this is checked first and wins, or answering "no" to
-    # "shall I turn that reminder off?" would turn it off.
+    # a yes/no question, refusals are weighed first, or answering "no" to "shall I
+    # turn that reminder off?" would turn it off.
     REFUSAL_WORDS = {
         "no", "nope", "nah", "not", "dont", "don't", "leave", "keep", "later",
         "ignore", "nevermind", "never",
@@ -1169,49 +1174,44 @@ class Clock:
                    for word in words)
 
     @classmethod
-    def looks_like_agreement(cls, text: str) -> bool:
+    def answer_to_offer(cls, text: str) -> Optional[bool]:
         """
-        Whether a short answer to a yes/no question the assistant just asked was a
-        yes.
+        Whether a short answer to a yes/no question the assistant just asked ("shall
+        I turn that reminder off?") was a yes, a no, or neither.
 
-        Deliberately looser than looks_like_dismissal. That one has to guard
-        against swallowing a real request, so it insists every word be an
-        acknowledgement or filler; here the assistant has just asked a question, so
-        a stray content word ("yeah go on", "yes turn it off") doesn't make it any
-        less of an answer. Refusals are checked first, since "no" is in both.
+        A plain "yes" or "no" decides it wherever it comes, so "yes, I don't need it
+        any more" is a yes despite the "don't", and "no, turn it off" a no despite
+        the "off". Saying both, as in "yeah, no", is taken as neither rather than
+        guessed at. Only without one are the softer words weighed: a refusal ("leave
+        it", "not now") first, since "okay, leave it" is turning the offer down, then
+        an acknowledgement ("turn it off", "okay"). Deliberately looser than
+        looks_like_dismissal - the assistant has just asked a question, so a stray
+        content word ("yeah go on") doesn't make it any less of an answer.
 
         Args:
             text: What the user said.
 
         Returns:
-            True if it should be read as "yes".
+            True for yes, False for no, or None when it isn't a clear answer - which
+            is then handled as a fresh request.
         """
         words = re.findall(r"[a-z']+", text.lower())
-        if not words or len(words) > 6:
+        if not words:
+            return None
+        said = set(words)
+        # "Why not?" means yes, though "not" on its own turns an offer down.
+        if " ".join(words) in ("why not", "go on then", "go on"):
+            return True
+        yes, no = bool(said & cls.YES_WORDS), bool(said & cls.NO_WORDS)
+        if yes != no and (len(words) <= 10 or words[0] in cls.YES_WORDS | cls.NO_WORDS):
+            return yes
+        if yes or len(words) > 6:
+            return None
+        if said & cls.REFUSAL_WORDS:
             return False
-        return bool(set(words) & cls.DISMISSAL_WORDS)
-
-    @classmethod
-    def looks_like_refusal(cls, text: str) -> bool:
-        """
-        Whether a short answer was turning down an offer the assistant just made,
-        e.g. "no", "leave it", "not now".
-
-        Only meaningful straight after the assistant has asked a yes/no question,
-        and checked before looks_like_dismissal in that case - the two overlap on
-        "no", which means opposite things depending on whether it's answering a
-        question or being said to something that's ringing.
-
-        Args:
-            text: What the user said.
-
-        Returns:
-            True if it should be read as "no".
-        """
-        words = re.findall(r"[a-z']+", text.lower())
-        if not words or len(words) > 6:
-            return False
-        return bool(set(words) & cls.REFUSAL_WORDS)
+        if said & cls.DISMISSAL_WORDS:
+            return True
+        return None
 
     def dismiss(self) -> Dict:
         """

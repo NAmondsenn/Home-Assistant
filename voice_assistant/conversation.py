@@ -121,10 +121,11 @@ class Conversation:
         if self.reminder_answer_pending:
             self.reminder_answer_pending = False
             timeline.note(outcome="reminder_answer")
-            if self.clock.looks_like_refusal(text):
+            answer = self.clock.answer_to_offer(text)
+            if answer is False:
                 logger.info("Reminder left running at the user's request")
                 return Reply(say="Okay, I'll leave it.")
-            if self.clock.looks_like_agreement(text):
+            if answer:
                 self.clock.dismiss()
                 logger.info("Reminder dismissed after being offered")
                 return self._chime("Okay.")

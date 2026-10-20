@@ -467,6 +467,25 @@ def test_looks_like_dismissal(text, dismissal):
     assert Clock.looks_like_dismissal(text) is dismissal
 
 
+# Answers to "shall I turn that reminder off?" - True to turn it off, False to leave
+# it, None for anything which isn't a clear answer.
+@pytest.mark.parametrize("text, answer", [
+    ("Yes.", True), ("yes please", True), ("Yeah, go on.", True), ("Yep.", True), ("Sure.", True),
+    ("Okay.", True), ("Turn it off.", True), ("Alright, thanks.", True), ("Go on then.", True),
+    # A plain "yes" wins over a "don't" or "not" elsewhere in the answer.
+    ("Yes, I don't need it any more.", True), ("Yeah, I'm not going to forget now.", True),
+    ("Why not?", True), ("Yes, don't bother keeping it going.", True),
+    ("No.", False), ("Nope.", False), ("Nah, keep it.", False), ("No thanks.", False),
+    ("Leave it.", False), ("Not now.", False), ("Later.", False), ("Don't turn it off.", False),
+    ("Okay, leave it.", False), ("No, turn it off later.", False), ("Keep it going.", False),
+    ("Never mind.", False), ("No, I'm still doing it.", False),
+    # Both at once, or neither, isn't an answer - it's handled as a fresh request.
+    ("Yeah, no.", None), ("What's the weather?", None), ("Play some music.", None), ("", None),
+])
+def test_answer_to_offer(text, answer):
+    assert Clock.answer_to_offer(text) is answer
+
+
 # Alarms
 
 def test_alarm_next_occurrence_respects_weekdays(make_clock):

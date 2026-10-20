@@ -14,8 +14,7 @@ class FakeClock:
     """Stands in for the Clock: what's ringing, and the word rules it really uses."""
 
     looks_like_dismissal = staticmethod(Clock.looks_like_dismissal)
-    looks_like_agreement = staticmethod(Clock.looks_like_agreement)
-    looks_like_refusal = staticmethod(Clock.looks_like_refusal)
+    answer_to_offer = staticmethod(Clock.answer_to_offer)
 
     def __init__(self, ringing=False):
         self.ringing = ringing
