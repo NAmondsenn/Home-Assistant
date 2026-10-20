@@ -36,7 +36,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] README and these docs
 - [x] Live test on the Pi - [release-checklist.md](release-checklist.md)
 - [x] Set `weather.location`
-- [ ] 72-hour soak test, with `scripts/soak_monitor.py` running
+- [ ] 72-hour soak test, with `scripts/soak_monitor.py` running - started Tuesday 20 October at 17:09, with all of Phase 3 on the Pi, until Friday 23 October at 17:09
 - [ ] UX-04 physical stop button - needs a button and a GPIO pin
 - [ ] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means
 
@@ -57,11 +57,12 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] Work and uni times from the calendar, and the next shift or the next few · one thing looked for, "when's my MOT?" · calendar answers kept short
 - [x] Memory: facts picked up as they come up, with "I'll remember that", heard back and forgotten by voice
 - [x] From testing: liked songs, stopped music staying stopped, clarifying questions asked as questions, times on the hour read as "2 PM"
+- [x] "Midnight" and "noon" rather than "12 AM" and "12 PM" · three days or more of the calendar as an overview, a week in 14 seconds rather than 52
 - [x] Tried by voice: a lone "stop" heard by Moonshine, and talking over a reply
-- [ ] Go through the [release checklist](release-checklist.md) on the Pi with Phase 3 on it
+- [x] Went through the [release checklist](release-checklist.md) on the Pi with Phase 3 on it, 20 October - all passed, once a lone "so" counted as "stop", Home Assistant and Navidrome gave up at once with no network, and "set of one minute timer" was understood
 - [ ] Streaming Claude's reply into speech - looked at, left for now: about a tenth of a second, for guessing whether a tool call is coming
 - [x] SEC-05 downloads checked against pinned hashes · ARCH-05 one atomic JSON save · ARCH-06, ARCH-07 dead code and stale comments · ARCH-08 LF everywhere · BUG-29 mixed yes/no answers · BUG-31 `max_tokens` used as set · BUG-26 already fixed with BUG-14
-- [ ] Shorter bursts on the shared input and output (`/etc/asound.conf` and `setup.sh`), currently 125ms - quicker wake word and end of speech, and stopping sounds sooner
+- [x] Shorter bursts on the shared input and output - 21ms rather than 125ms, measured on the Pi: the microphone's audio reaches the wake word in about 50ms rather than 130ms, and a stopped sound goes quiet in under 200ms rather than 240ms. The times the speaker runs dry, or the microphone overflows, are logged
 
 ## Phase 4 onwards
 
