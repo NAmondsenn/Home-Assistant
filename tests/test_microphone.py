@@ -290,3 +290,20 @@ def test_recording_stops_at_the_timeout_if_the_user_keeps_talking(streams):
     feed_frames(streams[0], 120, SPEECH)
 
     assert len(record(microphone, listen_from=listen_from, timeout=50 * FRAME / RATE)) == 50 * FRAME
+
+
+def test_a_pause_after_the_wake_word_drops_what_came_before_it(streams):
+    # Kept from before listening started, the end of "Nova" came out of Whisper as
+    # "Turn over, set a one minute timer", which then wasn't recognised as a timer.
+    microphone = Microphone(sample_rate=RATE)
+    feed_frames(streams[0], 10, SPEECH)           # the end of the wake word
+    listen_from = microphone.position
+    feed_frames(streams[0], 15, QUIET)            # waiting for the listening sound
+    feed_frames(streams[0], 20, SPEECH)
+    feed_frames(streams[0], 100, QUIET)
+
+    audio = record(microphone, listen_from=listen_from, keep_before=10 * FRAME / RATE)
+
+    lead_in = int(microphone_module.LEAD_IN_SECONDS * RATE)
+    assert len(audio) == lead_in + (20 + 10) * FRAME
+    assert np.all(np.abs(audio[:lead_in]) < 0.01)

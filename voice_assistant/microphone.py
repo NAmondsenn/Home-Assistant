@@ -49,6 +49,14 @@ FRAME = 480
 # "silence" and end the recording early.
 SILENCE_MARGIN = 0.15
 
+# A pause at least this long before the user starts talking means the moment kept
+# from before listening started is no longer wanted - see record_until_silence.
+PAUSE_SECONDS = 0.2
+
+# How much is kept from just before the user started talking, once anything earlier
+# has been dropped, so the first sound of their first word isn't clipped.
+LEAD_IN_SECONDS = 0.15
+
 # The longest wait between attempts to reopen a microphone which has gone quiet.
 MAX_RETRY_SECONDS = 30.0
 
@@ -321,6 +329,11 @@ class Microphone:
         # Where the user last made a sound - the moment they actually stopped talking,
         # as opposed to when the silence after it was long enough to stop recording.
         speech_ended_at = None
+        # Whether there was a pause before the user started talking, and where to keep
+        # the recording from if so - see below.
+        quiet_frames = 0
+        paused = False
+        keep_from = None
 
         for i in range(max_frames):
             frame = reader.read(FRAME)
@@ -335,9 +348,19 @@ class Microphone:
                     return np.array([], dtype=np.float32)
 
                 speech_frames = speech_frames + 1 if probability >= detector.threshold else 0
+                quiet_frames = 0 if speech_frames else quiet_frames + 1
+                paused = paused or quiet_frames * FRAME >= PAUSE_SECONDS * RATE
                 if speech_frames >= frames_to_start:
                     speech_started = True
                     speech_ended_at = reader.position
+                    # The moment kept from before listening started is there for "Hey
+                    # Nova what time is it" said in one breath. When the user paused
+                    # after the wake word instead - for the listening sound, usually -
+                    # it only holds the end of "Nova", which Whisper hears as "Turn
+                    # over," or "Get over." and which then stops a plain "set a timer"
+                    # being recognised. So everything before the pause is dropped.
+                    if paused:
+                        keep_from = reader.position - speech_frames * FRAME - int(LEAD_IN_SECONDS * RATE)
                     logger.info("Speech detected, listening for the end of the query...")
                     if timeline:
                         timeline.mark("speech_started",
@@ -357,6 +380,8 @@ class Microphone:
             timeline.mark("recording_stopped")
 
         audio = np.concatenate(kept).astype(np.float32) / 32768.0
+        if keep_from is not None:
+            audio = audio[max(0, keep_from - (reader.position - len(audio))):]
         logger.info(f"Recorded {len(audio)} samples")
         return audio
 
