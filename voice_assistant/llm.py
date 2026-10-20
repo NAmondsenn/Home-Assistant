@@ -49,7 +49,7 @@ class LLMHandler:
             self.client = None
             logger.warning("No API key found (ANTHROPIC_API_KEY), LLM queries will fail until one is set")
 
-        self.model_name = model or llm_config.get("model", "claude-haiku-4-5-20251001")
+        self.model_name = model or llm_config.get("model", "claude-haiku-5-5")
         self.max_tokens = max_tokens if max_tokens is not None else llm_config.get("max_tokens", 150)
         # None leaves it to the model - Haiku 5.5 refuses any request which sets one.
         self.temperature = temperature if temperature is not None else llm_config.get("temperature")
