@@ -44,7 +44,8 @@ STALL_SECONDS = 2.0
 class Playback:
     """One sound being played, which can be waited for or stopped part way through."""
 
-    def __init__(self, audio: np.ndarray, volume: float, kind: str, sample_rate: int):
+    def __init__(self, audio: np.ndarray, volume: float, kind: str, sample_rate: int,
+                 streaming: bool = False):
         """
         Args:
             audio: float32 samples at the speaker's rate.
@@ -52,16 +53,31 @@ class Playback:
             kind: What sort of sound it is, e.g. "reply" or "announcement" - so a
                 whole kind can be stopped at once.
             sample_rate: The speaker's rate, for working out how long it lasts.
+            streaming: True if more of it is still to come - see Speaker.play_stream.
         """
         self.audio = audio
         self.volume = volume
         self.kind = kind
         self.position = 0
         self.stopped = False
-        self.duration = len(audio) / sample_rate
+        self.sample_rate = sample_rate
+        self.streaming = streaming
         self._finished = threading.Event()
         # When the last of it will have actually left the speaker - see _finish.
         self._heard_by = 0.0
+
+    @property
+    def duration(self) -> float:
+        """How long it lasts, in seconds - so far, for one still streaming in."""
+        return len(self.audio) / self.sample_rate
+
+    def _append(self, audio: np.ndarray):
+        """
+        Adds the next piece of a streamed sound. The whole array is swapped for a
+        longer one rather than changed in place, so the speaker's thread - which
+        reads it without a lock - only ever sees one or the other.
+        """
+        self.audio = np.concatenate((self.audio, audio))
 
     def stop(self):
         """Stops it straight away, part way through or not."""
@@ -99,7 +115,11 @@ class Playback:
             True if it finished (or was stopped), False if the timeout came first.
         """
         if timeout is None:
-            timeout = self.duration + OUTPUT_LATENCY + STALL_SECONDS
+            # How long a streamed sound lasts isn't known until the last of it has
+            # arrived. Whatever is feeding it gives up by itself if it hangs.
+            while self.streaming and not self._finished.wait(0.1):
+                pass
+            timeout = (len(self.audio) - self.position) / self.sample_rate + OUTPUT_LATENCY + STALL_SECONDS
             if not self._finished.wait(timeout):
                 logger.warning(f"A {self.duration:.1f}s {self.kind} sound never finished playing")
                 self.stop()
@@ -211,7 +231,9 @@ class Speaker:
                 chunk = playback.audio[playback.position:playback.position + frames]
                 mix[:len(chunk)] += chunk * playback.volume
                 playback.position += len(chunk)
-                if playback.position >= len(playback.audio):
+                # One still streaming in which has caught up with what's arrived
+                # just goes quiet until the next piece does.
+                if playback.position >= len(playback.audio) and not playback.streaming:
                     finished.append(playback)
 
             np.clip(mix, -1.0, 1.0, out=mix)
@@ -228,7 +250,7 @@ class Speaker:
             logger.error(f"Speaker audio dropped: {e}")
 
     def play(self, audio: np.ndarray, sample_rate: Optional[int] = None,
-             volume: float = 1.0, kind: str = "reply") -> Playback:
+             volume: float = 1.0, kind: str = "reply", streaming: bool = False) -> Playback:
         """
         Starts playing a sound, without waiting for it.
 
@@ -237,6 +259,7 @@ class Speaker:
             sample_rate: The audio's rate, if it isn't the speaker's.
             volume: How loud, from 0 (silent) to 1 (as recorded).
             kind: What sort of sound it is - see Playback.
+            streaming: True if more is still to come - see play_stream.
 
         Returns:
             The Playback, to wait for or stop. Already finished if this kind of
@@ -248,7 +271,7 @@ class Speaker:
         if sample_rate and sample_rate != self.sample_rate:
             audio = soxr.resample(audio, sample_rate, self.sample_rate)
 
-        playback = Playback(audio, max(0.0, min(1.0, float(volume))), kind, self.sample_rate)
+        playback = Playback(audio, max(0.0, min(1.0, float(volume))), kind, self.sample_rate, streaming)
 
         # A stream which has stopped asking for audio has died - usually because
         # the speaker was unplugged - so it's reopened before anything is lost to it.
@@ -264,6 +287,63 @@ class Speaker:
                 return playback
             self._playing.append(playback)
         return playback
+
+    def play_stream(self, pieces: Iterable[np.ndarray], sample_rate: Optional[int] = None,
+                    volume: float = 1.0, kind: str = "reply") -> Playback:
+        """
+        Starts playing a sound which is still being made, each piece as soon as it
+        arrives. A reply used to be synthesised whole, written to the SD card and
+        read back before any of it played - so the user heard nothing until the
+        last word of it had been worked out.
+
+        Args:
+            pieces: float32 mono pieces of the sound, in order, read on a thread of
+                their own. Closed early, if it has a close(), once the sound is
+                stopped - so a generator can stop whatever is making them.
+            sample_rate: Their rate, if it isn't the speaker's.
+            volume: How loud, from 0 (silent) to 1 (as recorded).
+            kind: What sort of sound it is - see Playback.
+
+        Returns:
+            The Playback, to wait for or stop.
+        """
+        playback = self.play(np.zeros(0, dtype=np.float32), volume=volume, kind=kind, streaming=True)
+        if playback.done:
+            playback.streaming = False
+            self._close_pieces(pieces)
+            return playback
+        threading.Thread(target=self._feed, args=(playback, pieces, sample_rate),
+                         daemon=True, name="speaker-feed").start()
+        return playback
+
+    def _feed(self, playback: Playback, pieces: Iterable[np.ndarray], sample_rate: Optional[int]):
+        """Hands a streamed sound to its Playback as it arrives - see play_stream."""
+        # Resampled as one continuous stream, since resampling each piece on its own
+        # leaves a click at every join.
+        resampler = None
+        if sample_rate and sample_rate != self.sample_rate:
+            resampler = soxr.ResampleStream(sample_rate, self.sample_rate, 1, dtype="float32")
+        try:
+            for piece in pieces:
+                if playback.done:
+                    break
+                piece = np.asarray(piece, dtype=np.float32)
+                playback._append(resampler.resample_chunk(piece) if resampler else piece)
+            else:
+                if resampler:
+                    playback._append(resampler.resample_chunk(np.zeros(0, dtype=np.float32), last=True))
+        except Exception as e:
+            logger.error(f"A streamed {playback.kind} sound failed part way: {e}")
+        finally:
+            playback.streaming = False
+            self._close_pieces(pieces)
+
+    @staticmethod
+    def _close_pieces(pieces):
+        """Closes a streamed sound's source, if it can be closed."""
+        close = getattr(pieces, "close", None)
+        if close is not None:
+            close()
 
     def play_file(self, filename: str, volume: float = 1.0, kind: str = "reply",
                   cache: bool = True, start: float = 0.0, length: Optional[float] = None) -> Optional[Playback]:

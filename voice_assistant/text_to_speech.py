@@ -1,13 +1,27 @@
 """
 Text-to-Speech Module
 Handles converting text responses to speech using Piper.
+
+Piper used to be started afresh for every reply, loading its voice each time, and
+the whole reply was written to a WAV file on the SD card before any of it could
+play. Measured on the Pi, loading the voice alone took 0.35s of every reply. Now a
+Piper process is started ahead of time, so its voice is already loaded when there's
+something to say, and its audio is handed over as each sentence is ready, straight
+from memory.
 """
 
-import subprocess
-import os
-import wave
+import json
 import logging
-from pathlib import Path
+import os
+import select
+import subprocess
+import threading
+import time
+import wave
+from collections import OrderedDict
+from typing import Callable, Iterator, Optional
+
+import numpy as np
 
 # The same marker as logging_setup.TRANSCRIPT, for lines holding what's said.
 # Written out rather than imported, so this file can still be run on its own (see main).
@@ -19,6 +33,15 @@ logger = logging.getLogger(__name__)
 # Resolves paths relative to the project root (the parent of the voice_assistant
 # package), matching where setup.sh installs models/ and where main.py runs.
 PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Seconds to wait for Piper's next sentence before giving up on it. A long sentence
+# takes about a second on the Pi, so this only ever runs out if Piper has hung.
+SENTENCE_TIMEOUT = 10.0
+
+# How many recent things said are kept, already synthesised. A timer says the same
+# "Your 10 minute timer is done" every round until it's dismissed.
+RECENT_PHRASES = 8
+
 
 class TextToSpeech:
     """Synthesises and outputs speech from text given to Piper TTS."""
@@ -35,10 +58,6 @@ class TextToSpeech:
         self.config = config
         self.piper_path = os.path.join(PROJECT_DIRECTORY, "models", "piper", "piper")
         self.model_path = os.path.join(PROJECT_DIRECTORY, "models", "en_GB-alan-medium.onnx")
-
-        # Creates / reuses a temporary folder for generated audio.
-        self.temp_dir = Path(PROJECT_DIRECTORY) / "temp_audio"
-        self.temp_dir.mkdir(exist_ok=True)
 
         # Reads the assistant's name from the "assistant" section in config.yaml.
         assistant_config = self.config.section("assistant")
@@ -58,31 +77,176 @@ class TextToSpeech:
                 "Run setup.sh to install Piper TTS"
             )
 
+        # The voice's own rate, from the settings file which comes with it.
+        self.sample_rate = self._voice_rate(self.model_path + ".json")
+
+        self._lock = threading.Lock()
+        # A Piper process with its voice loaded, waiting for something to say.
+        self._waiting: Optional[subprocess.Popen] = None
+        self._recent: "OrderedDict[str, np.ndarray]" = OrderedDict()
+
         logger.info(f"Piper TTS initialised with model: {self.model_path}")
 
         # Test Piper on startup using _warmup().
         self._warmup()
 
-    def _warmup(self):
+    @staticmethod
+    def _voice_rate(settings_file: str) -> int:
         """
-        Method which is used to warm up the Piper TTS model.
-        This is to avoid cold-start latency for the first actual response.
+        The sample rate a Piper voice speaks at.
+
+        Args:
+            settings_file: The voice's .onnx.json file.
+
+        Returns:
+            Its rate - or 22050, which every medium-quality voice uses, if the file
+            can't be read.
         """
         try:
-            logger.info("Warming up Piper TTS...")
-            test_file = self.temp_dir / "warmup.wav"
-            self.synthesise("Ready.", str(test_file))
-            test_file.unlink()  # Deletes the warmup file
-            logger.info("Piper warmup complete")
+            with open(settings_file, encoding="utf-8") as file:
+                return int(json.load(file)["audio"]["sample_rate"])
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            logger.warning(f"Couldn't read the voice's sample rate, assuming 22050Hz: {e}")
+            return 22050
 
-        # Catches an error and logs warmup failure.
-        # This prevents the system crashing on startup if the warmup fails.
+    def _warmup(self):
+        """
+        Says something to nobody at startup, so a broken Piper shows up in the log
+        straight away rather than at the first reply - and leaves the next process
+        loaded and waiting.
+        """
+        logger.info("Warming up Piper TTS...")
+        if list(self.stream("Ready.", remember=False)):
+            logger.info("Piper warmup complete")
+        else:
+            logger.warning("Warmup failed: Piper said nothing")
+
+    def _start_piper(self) -> subprocess.Popen:
+        """Starts a Piper process, which loads its voice and then waits for text."""
+        return subprocess.Popen(
+            [self.piper_path, "--model", self.model_path, "--output_raw", "--quiet"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _take_piper(self) -> subprocess.Popen:
+        """
+        A Piper process ready for some text: the one already loaded and waiting if
+        there is one, or a fresh one if two things are being said at once.
+        """
+        with self._lock:
+            process, self._waiting = self._waiting, None
+        if process is None or process.poll() is not None:
+            process = self._start_piper()
+        return process
+
+    def _prepare_next(self):
+        """
+        Starts the next Piper loading its voice, ready for the next thing to say.
+        Only once the last has finished, since loading while it was still speaking
+        would slow it down.
+        """
+        with self._lock:
+            if self._waiting is not None and self._waiting.poll() is None:
+                return
+            try:
+                self._waiting = self._start_piper()
+            except OSError as e:
+                logger.error(f"Couldn't start Piper: {e}")
+                self._waiting = None
+
+    def stream(self, text: str, on_start: Optional[Callable[[], None]] = None,
+               remember: bool = True) -> Iterator[np.ndarray]:
+        """
+        Synthesises text, a sentence at a time, as Piper works through it.
+
+        Args:
+            text: What to say.
+            on_start: Called once the first of the audio is ready, e.g. to time it.
+            remember: Keep it in case the same is said again soon - see RECENT_PHRASES.
+
+        Yields:
+            The audio, as float32 samples at self.sample_rate. Nothing if synthesis
+            failed, which is logged.
+        """
+        # Quotation marks and new lines are taken out - a new line would be taken
+        # as the start of something else to say.
+        text = text.replace('"', "'").replace("\n", " ").strip()
+        if not text:
+            logger.warning("No text provided.")
+            return
+
+        with self._lock:
+            recent = self._recent.get(text)
+            if recent is not None:
+                self._recent.move_to_end(text)
+        if recent is not None:
+            if on_start:
+                on_start()
+            yield recent
+            return
+
+        logger.info(f"Synthesising: '{text[:50]}...'", extra=TRANSCRIPT)
+        process = None
+        pieces = []
+        try:
+            process = self._take_piper()
+            # Passed on stdin rather than as an argument or through a shell, so
+            # nothing in a reply can ever be run as a command.
+            process.stdin.write(text.encode("utf-8") + b"\n")
+            process.stdin.close()
+
+            leftover = b""
+            while True:
+                ready, _, _ = select.select([process.stdout], [], [], SENTENCE_TIMEOUT)
+                if not ready:
+                    logger.error("Piper stopped responding part way through")
+                    return
+                data = os.read(process.stdout.fileno(), 65536)
+                if not data:
+                    break
+                # Samples are two bytes each, and a read can end between the two.
+                data = leftover + data
+                whole = len(data) - len(data) % 2
+                leftover = data[whole:]
+                if not whole:
+                    continue
+                piece = np.frombuffer(data[:whole], dtype="<i2").astype(np.float32) / 32768
+                if on_start and not pieces:
+                    on_start()
+                pieces.append(piece)
+                yield piece
+
+            if process.wait(timeout=2) != 0:
+                logger.error(f"Piper failed: {process.stderr.read().decode(errors='replace').strip()}")
+                return
+            audio = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
+            logger.info(f"Generated {len(audio) / self.sample_rate:.2f}s of audio")
+            if remember and len(audio):
+                self._remember(text, audio)
         except Exception as e:
-            logger.warning(f"Warmup failed: {e}")
+            logger.error(f"TTS error: {e}")
+        finally:
+            # Also reached when whoever was reading stops early - the reply was
+            # silenced part way - so Piper isn't left working on it.
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    pipe.close()
+            self._prepare_next()
+
+    def _remember(self, text: str, audio: np.ndarray):
+        """Keeps something just said, dropping the least recently said once full."""
+        with self._lock:
+            self._recent[text] = audio
+            self._recent.move_to_end(text)
+            while len(self._recent) > RECENT_PHRASES:
+                self._recent.popitem(last=False)
 
     def synthesise(self, text, output_file):
         """
-        Convert text to speech using Piper and save it as a WAV file.
+        Convert text to speech using Piper and save it as a WAV file. The assistant
+        itself streams instead (see stream) - this is for trying the voice out.
 
         Args:
             text: Text to synthesise.
@@ -91,84 +255,25 @@ class TextToSpeech:
         Returns:
             The output file path on success, or None if synthesis failed.
         """
-        try:
-            # Cleans the text, removing special characters that may break Piper TTS.
-            # This also strips quotation marks and new lines.
-            text = text.replace('"', "'").replace('\n', ' ').strip()
-
-            if not text:
-                logger.warning("No text provided.")
-                return None
-
-            logger.info(f"Synthesising: '{text[:50]}...'", extra=TRANSCRIPT)
-
-            # Runs Piper directly (no shell) and feeds the text via stdin.
-            # Passing the text as stdin rather than interpolating it into a shell
-            # command means LLM output can never be executed as shell code.
-            result = subprocess.run(
-                [self.piper_path, "--model", self.model_path, "--output_file", output_file],
-                input=text,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-
-            # Logs non-zero return codes as this means Piper reported an error.
-            if result.returncode != 0:
-                logger.error(f"Piper failed: {result.stderr}")
-                return None
-
-            # Safety check to verify the output file exists.
-            if not os.path.exists(output_file):
-                logger.error(f"No output file found: {output_file}")
-                return None
-
-            # Retrieves and logs the audio duration.
-            with wave.open(output_file, 'rb') as wf:
-                frames = wf.getnframes()
-                rate = wf.getframerate()
-                duration = frames / float(rate)
-
-            logger.info(f"Generated {duration:.2f}s of audio")
-            return output_file
-
-        # Exception handling for timeouts or other unexpected errors.
-        except subprocess.TimeoutExpired:
-            logger.error("Piper synthesis timed out")
+        pieces = list(self.stream(text))
+        if not pieces:
             return None
-        except Exception as e:
-            logger.error(f"TTS error: {e}")
-            return None
+        audio = np.concatenate(pieces)
+        with wave.open(output_file, "wb") as file:
+            file.setnchannels(1)
+            file.setsampwidth(2)
+            file.setframerate(self.sample_rate)
+            file.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+        return output_file
 
-    def synthesise_to_array(self, text):
-        """
-        Synthesise text and return the audio as a numpy array instead of a file.
+    def close(self):
+        """Stops the Piper process waiting for something to say."""
+        with self._lock:
+            process, self._waiting = self._waiting, None
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
 
-        Args:
-            text: Text to synthesise.
-
-        Returns:
-            Tuple of (audio_array, sample_rate), or (None, None) on failure.
-        """
-        try:
-            import soundfile as sf
-
-            # Creates a temporary file which Piper writes to, this is deleted upon use.
-            temp_file = self.temp_dir / f"temp_{os.getpid()}.wav"
-            result = self.synthesise(text, str(temp_file))
-
-            if result is None:
-                return None, None
-
-            audio_array, sample_rate = sf.read(str(temp_file))
-
-            temp_file.unlink()
-
-            return audio_array, sample_rate
-        # Exception handling which logs any unexpected errors.
-        except Exception as e:
-            logger.error(f"Error converting to array: {e}")
-            return None, None
 
 def main():
     """
@@ -210,15 +315,17 @@ def main():
         print(f"[{i}/{len(test_phrases)}] Synthesising: '{phrase}'")
         output_file = f"test_tts_{i}.wav"
 
+        started = time.monotonic()
         result = tts.synthesise(phrase, output_file)
 
         if result:
-            print(f"Saved to: {output_file}")
+            print(f"Saved to: {output_file} ({time.monotonic() - started:.2f}s)")
             # Terminal command to play the test file.
             print(f"Play with: aplay {output_file}")
         else:
             print("Failed.")
         print()
+    tts.close()
 
 # Tests the TextToSpeech class manually.
 if __name__ == "__main__":

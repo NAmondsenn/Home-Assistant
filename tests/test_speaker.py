@@ -156,3 +156,75 @@ def test_part_of_a_sound_file_can_be_played_as_if_it_looped(streams):
     wrapped = speaker._section(sound, 1.75, 0.5)
     assert list(wrapped) == list(sound[RATE * 7 // 4:]) + list(sound[:RATE // 4])
     assert list(speaker._section(sound, 2.5, None)) == list(sound[RATE // 2:])
+
+
+def test_a_streamed_sound_plays_each_piece_as_it_arrives(streams):
+    # A reply used to be synthesised whole, and written to the SD card, before any
+    # of it played.
+    import queue
+    arriving = queue.Queue()
+
+    def pieces():
+        while (piece := arriving.get()) is not None:
+            yield piece
+
+    speaker = Speaker(sample_rate=RATE)
+    playback = speaker.play_stream(pieces())
+    assert not np.any(streams[0].pull())
+
+    arriving.put(np.full(480, 0.5, dtype=np.float32))
+    time.sleep(0.05)
+    assert np.allclose(streams[0].pull(), 0.5)
+    # Catching up with what's arrived so far isn't the end of it.
+    assert not np.any(streams[0].pull()) and not playback.done
+
+    arriving.put(np.full(480, 0.25, dtype=np.float32))
+    arriving.put(None)
+    time.sleep(0.05)
+    assert np.allclose(streams[0].pull(), 0.25)
+    streams[0].pull()
+    assert playback.wait(timeout=1)
+
+
+def test_stopping_a_streamed_sound_stops_whatever_is_making_it(streams):
+    closed = []
+
+    def pieces():
+        try:
+            while True:
+                yield np.full(480, 0.5, dtype=np.float32)
+                time.sleep(0.01)
+        finally:
+            closed.append(True)
+
+    speaker = Speaker(sample_rate=RATE)
+    playback = speaker.play_stream(pieces())
+    time.sleep(0.05)
+    playback.stop()
+    time.sleep(0.05)
+    assert closed == [True]
+
+
+def test_a_silenced_streamed_sound_never_starts_its_source(streams):
+    started = []
+
+    def pieces():
+        started.append(True)
+        yield np.full(480, 0.5, dtype=np.float32)
+
+    speaker = Speaker(sample_rate=RATE)
+    speaker.silence("announcement")
+    assert speaker.play_stream(pieces(), kind="announcement").wait(timeout=1)
+    assert started == []
+
+
+def test_a_streamed_sound_is_resampled_without_gaps(streams):
+    # Resampling each piece on its own would leave a click at every join.
+    speaker = Speaker(sample_rate=RATE)
+    playback = speaker.play_stream(iter([np.full(2205, 0.5, dtype=np.float32)] * 10), sample_rate=22050)
+    while playback.streaming:
+        time.sleep(0.01)
+
+    assert abs(len(playback.audio) - RATE) < 100
+    middle = playback.audio[1000:-1000]
+    assert np.allclose(middle, 0.5, atol=0.01)

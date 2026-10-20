@@ -29,9 +29,10 @@ STAGES = (
     ("Speech-to-text", ("recording_stopped",), "stt_done"),
     ("Claude", ("stt_done",), "llm_done"),
     ("Action", ("llm_done",), "action_done"),
+    # Speech plays as each sentence is ready, so this is how long until the first one is.
     ("Text-to-speech", ("action_done", "llm_done"), "tts_done"),
     ("Playback", ("tts_done",), "playback_done"),
-    # The one which matters most: from the user going quiet to the reply being ready to play.
+    # The one which matters most: from the user going quiet to the reply starting to play.
     ("End of speech to reply ready", ("speech_ended",), "tts_done"),
 )
 

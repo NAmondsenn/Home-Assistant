@@ -34,6 +34,7 @@ def assistant():
     made.clock = Recorder("clock", made.closed)
     made.speaker = Recorder("speaker", made.closed)
     made.microphone = Recorder("microphone", made.closed)
+    made.tts = Recorder("tts", made.closed)
     made.name, made.wake_word = "Nova", "Hey Nova"
     made.running = False
     made._stopping = False
@@ -49,7 +50,7 @@ def test_a_stop_signal_ends_the_loop_and_everything_is_closed_once_in_order(assi
         assistant.run()
 
     assert stopped.value.code == 0
-    assert assistant.closed == ["clock", "speaker", "microphone"]
+    assert assistant.closed == ["clock", "speaker", "microphone", "tts"]
 
 
 def test_a_second_stop_signal_doesnt_cut_the_cleanup_short(assistant):
@@ -62,7 +63,7 @@ def test_a_second_stop_signal_doesnt_cut_the_cleanup_short(assistant):
     assistant._listen_forever = stop_twice
     with pytest.raises(SystemExit):
         assistant.run()
-    assert assistant.closed == ["clock", "speaker", "microphone"]
+    assert assistant.closed == ["clock", "speaker", "microphone", "tts"]
 
 
 def test_importing_main_writes_nothing(tmp_path):

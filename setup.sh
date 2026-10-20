@@ -114,7 +114,7 @@ echo ""
 
 # 3. Prepare Directory structure, all inside the project folder.
 echo "[3/11] Preparing Directory structure..."
-mkdir -p "$MODELS_DIRECTORY" "$LOGS_DIRECTORY" "$TEMP_DIRECTORY" "$BIN_DIRECTORY"
+mkdir -p "$MODELS_DIRECTORY" "$LOGS_DIRECTORY" "$BIN_DIRECTORY"
 
 # 4. Locate and install the wake word model.
 echo "[4/11] Wake word model"
