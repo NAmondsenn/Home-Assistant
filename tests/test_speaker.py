@@ -45,11 +45,11 @@ class FakeOutputStream:
     def close(self, ignore_errors=False):
         self.closed = True
 
-    def pull(self, frames=480):
-        """What the speaker would be given next."""
-        out = np.zeros((frames, 1), dtype=np.float32)
+    def pull(self, frames=480, both=False):
+        """What the speaker would be given next - the left side, or both."""
+        out = np.zeros((frames, self.settings["channels"]), dtype=np.float32)
         self.callback(out, frames, None, None)
-        return out[:, 0]
+        return out if both else out[:, 0]
 
 
 @pytest.fixture
@@ -136,7 +136,7 @@ def test_sound_files_are_resampled_and_kept_once_loaded(streams, tmp_path, monke
     speaker = Speaker(sample_rate=RATE)
 
     playback = speaker.play_file(path)
-    assert abs(len(playback.audio) - RATE) < 100
+    assert abs(playback.duration - 1) < 0.01
 
     reads = []
     monkeypatch.setattr(speaker_module.sf, "read", lambda *args, **kwargs: reads.append(args))
@@ -225,6 +225,48 @@ def test_a_streamed_sound_is_resampled_without_gaps(streams):
     while playback.streaming:
         time.sleep(0.01)
 
-    assert abs(len(playback.audio) - RATE) < 100
-    middle = playback.audio[1000:-1000]
+    assert abs(playback.duration - 1) < 0.01
+    middle = np.concatenate(playback._take(RATE))[1000:-1000]
     assert np.allclose(middle, 0.5, atol=0.01)
+
+
+def test_mono_sounds_play_on_both_sides_and_stereo_keeps_its_sides(streams):
+    speaker = Speaker(sample_rate=RATE)
+    speaker.play(np.full(480, 0.5))
+    assert np.allclose(streams[0].pull(both=True), 0.5)
+
+    stereo = np.column_stack([np.full(480, 0.25), np.full(480, -0.25)]).astype(np.float32)
+    speaker.play_stream(iter([stereo]))
+    time.sleep(0.05)
+    out = streams[0].pull(both=True)
+    assert np.allclose(out[:, 0], 0.25) and np.allclose(out[:, 1], -0.25)
+
+
+def test_a_paused_sound_keeps_its_place(streams):
+    speaker = Speaker(sample_rate=RATE)
+    playback = speaker.play(np.arange(960, dtype=np.float32) / 1000)
+    first = streams[0].pull()
+    playback.paused = True
+    assert not np.any(streams[0].pull()) and not playback.done
+    playback.paused = False
+    assert np.allclose(streams[0].pull(), np.arange(480, 960) / 1000)
+    assert np.allclose(first, np.arange(480) / 1000)
+
+
+def test_a_long_stream_is_only_read_a_little_ahead(streams):
+    # A song decoded all at once would be a hundred megabytes in memory.
+    read = []
+
+    def pieces():
+        for n in range(100):
+            read.append(n)
+            yield np.zeros(RATE // 10, dtype=np.float32)
+
+    speaker = Speaker(sample_rate=RATE)
+    playback = speaker.play_stream(pieces(), most_ahead=0.5)
+    time.sleep(0.2)
+    assert len(read) <= 8
+    streams[0].pull(RATE // 2)
+    time.sleep(0.2)
+    assert 8 < len(read) <= 14
+    playback.stop()
