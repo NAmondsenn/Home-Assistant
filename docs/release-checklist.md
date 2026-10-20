@@ -51,7 +51,7 @@ With Navidrome (`music.player: navidrome`), and again with Spotify if you still 
 19c. "Hey Nova, remember that my favourite colour is green" - "I'll remember that". "What do you know about me?" includes it; "forget my favourite colour" - and it's gone.
 20. Unplug the microphone for 5 seconds, plug it back in, wait 10, then "Hey Nova" - it works without a restart.
 21. Unplug the network cable, wait 10 seconds, then "Hey Nova", wait for the blip, "set a one minute timer" - it's set straight away. "Hey Nova, how far away is the moon?" - straight away, it says it can't reach the internet. Plug the cable back in.
-21a. With the network cable out: the lights, and Navidrome, still work.
+21a. With the network cable out: "turn on the lamp" says straight away that it can't reach Home Assistant, and Navidrome that it can't reach Navidrome - with no network at all, neither can be. With only the internet down (the router's own connection out, the Pi still on the network), the lights and Navidrome still work.
 22. `systemctl --user restart voice-assistant` - it stops within a second or two, rather than hanging for 20.
 23. `kill -STOP $(systemctl --user show -p MainPID --value voice-assistant)` - within about a minute, systemd restarts it (`journalctl --user-unit voice-assistant` says "Watchdog timeout").
 
