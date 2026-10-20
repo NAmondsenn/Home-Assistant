@@ -194,3 +194,33 @@ def test_a_new_conversation_forgets_an_unanswered_offer():
     conversation.start()
     conversation.handle("no")
     assert llm.asked[-1] == "no"
+
+
+# Talked over
+
+def test_stop_said_over_a_reply_only_stops_the_talking():
+    # Taken as a command, "stop" paused the music too - which was only quiet while
+    # the assistant was talking.
+    llm = FakeLLM()
+    intents = FakeIntents({"Stop.": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    actions = FakeActions()
+    conversation = _conversation(intents=intents, llm=llm, actions=actions)
+    conversation.start(talked_over=True)
+    for said in ("Stop.", "Okay, thanks.", "Shut up.", "Soap."):
+        reply = conversation.handle(said)
+        assert (reply.say, reply.sounds, reply.listen_again) == ("", [], False)
+    assert actions.run == [] and llm.asked == [] and llm.remembered == []
+
+
+def test_a_request_said_over_a_reply_is_answered_as_usual():
+    llm = FakeLLM(_answer("Paris."))
+    conversation = _conversation(llm=llm)
+    conversation.start(talked_over=True)
+    assert conversation.handle("what's the capital of France").say == "Paris."
+
+
+def test_stop_said_after_the_reply_has_finished_is_still_a_command():
+    intents = FakeIntents({"Stop.": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    actions = FakeActions()
+    _conversation(intents=intents, actions=actions).handle("Stop.")
+    assert actions.run == ["control_playback"]

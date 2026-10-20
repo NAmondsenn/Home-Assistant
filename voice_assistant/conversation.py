@@ -74,7 +74,7 @@ class Conversation:
         self.max_follow_ups = max_follow_ups
         self.start()
 
-    def start(self, ringing: Optional[Dict] = None):
+    def start(self, ringing: Optional[Dict] = None, talked_over: bool = False):
         """
         Starts a new conversation, as the wake word is heard.
 
@@ -82,8 +82,11 @@ class Conversation:
             ringing: What was audibly going off at that moment - Clock.ringing_state(),
                 read before the conversation quietens anything, since what matters is
                 what the user could hear when they started talking.
+            talked_over: True when the wake word was said over the assistant's last
+                reply, which was stopped there and then.
         """
         self.ringing = ringing or dict(NOTHING_RINGING)
+        self.talked_over = talked_over
         # Counted per conversation, not per question, so a long back and forth still
         # ends after the cap is reached.
         self.follow_ups = 0
@@ -136,6 +139,14 @@ class Conversation:
             timeline.note(outcome="dismissed_locally")
             logger.info("Dismissed by voice without asking the model")
             return self._chime(result["message"])
+
+        # "Hey Nova, stop" or "Hey Nova, okay" over a reply only means stop talking,
+        # which the wake word already did. Taken as a command, "stop" would pause the
+        # music as well - which was only quiet while the assistant was talking.
+        if self.talked_over and not follow_up and self.clock.looks_like_dismissal(text):
+            timeline.note(outcome="stopped_talking")
+            logger.info("Told to stop talking, so said nothing more")
+            return Reply()
 
         # A timer or alarm going off is silenced by the user saying anything at all,
         # since talking to the assistant means they've heard it. Read from the wake

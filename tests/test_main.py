@@ -1,9 +1,12 @@
 """
 Main Loop Test
-Checks how the assistant shuts down, using fakes in place of the clock, speaker and
-microphone, so nothing is loaded or opened. Needs numpy and soxr installed (as they
-are on the Pi), and is skipped anywhere they aren't.
+Checks how the assistant shuts down, and that a reply can be talked over, using fakes
+in place of the clock, speaker and microphone, so nothing is loaded or opened. Needs
+numpy and soxr installed (as they are on the Pi), and is skipped anywhere they aren't.
 """
+
+import threading
+import time
 
 import pytest
 
@@ -118,3 +121,77 @@ def test_saying_sorry_can_never_fail_in_turn(assistant):
 
     assistant._say = broken_speech
     assistant._apologise()
+
+
+class FakeReply:
+    """Stands in for a reply being played, which lasts until it's stopped or let finish."""
+
+    def __init__(self):
+        self.ended = threading.Event()
+        self.stopped = False
+
+    def wait(self, timeout=None):
+        return self.ended.wait(timeout)
+
+    def stop(self):
+        self.stopped = True
+        self.ended.set()
+
+
+def _speaking(assistant, wake_word_heard):
+    """Sets the assistant up to say a reply, with the wake word heard over it or not."""
+    from types import SimpleNamespace
+
+    reply = FakeReply()
+    assistant.speaker = SimpleNamespace(play_stream=lambda *args, **kwargs: reply)
+    assistant.tts = SimpleNamespace(stream=lambda message, on_start=None: iter(()), sample_rate=22050)
+    assistant.volume = SimpleNamespace(get=lambda category: 0.5)
+
+    def listen_once(until=None):
+        if wake_word_heard:
+            return 0.8
+        threading.Timer(0.05, reply.ended.set).start()
+        while not until():
+            time.sleep(0.01)
+        return None
+
+    assistant.wake = SimpleNamespace(listen_once=listen_once)
+    return reply
+
+
+def test_saying_the_wake_word_over_a_reply_stops_it(assistant):
+    # A reply couldn't be talked over, so a fortnight of the calendar - three and a
+    # half minutes of it - had to be sat through.
+    reply = _speaking(assistant, wake_word_heard=True)
+    timeline = FakeTimeline()
+    assert assistant._say("Today, you've got...", timeline=timeline, listen=True) is True
+    assert reply.stopped
+    assert timeline.notes == {"talked_over": True}
+
+
+def test_a_reply_nobody_talks_over_plays_to_the_end(assistant):
+    reply = _speaking(assistant, wake_word_heard=False)
+    assert assistant._say("It's sunny.", listen=True) is False
+    assert reply.ended.is_set() and not reply.stopped
+
+
+def test_talking_over_a_reply_starts_the_next_request_with_the_music_still_held(assistant, tmp_path):
+    from types import SimpleNamespace
+
+    held = []
+    assistant._idle = threading.Event()
+    assistant.music = SimpleNamespace(hold=lambda: held.append("hold"), release=lambda: held.append("release"))
+    assistant.speaker = SimpleNamespace(silence=lambda kind: None, allow=lambda kind: None)
+    assistant.clock = SimpleNamespace(ringing_state=lambda: None)
+    started = []
+    assistant.conversation = SimpleNamespace(start=lambda ringing, talked_over: started.append(talked_over))
+    assistant.latency_file = str(tmp_path / "latency.jsonl")
+    talked_over = [True, False]
+    assistant._handle_interaction = lambda timeline: talked_over.pop(0)
+
+    assistant._converse()
+    # The second request knows the first reply was talked over.
+    assert started == [False, True]
+    # The music stays paused between the two, rather than coming back for a moment.
+    assert held == ["hold", "release"]
+    assert assistant._idle.is_set()

@@ -124,19 +124,26 @@ class WakeWordDetector:
         self.model = Model(wakeword_models=[model_path], inference_framework="onnx")
         logger.info(f"openWakeWord initialised with '{self.wake_word_key}' model")
 
-    def listen_once(self):
+    def listen_once(self, until=None):
         """
         Listens for the wake word, reading the shared microphone stream 80ms at a
         time from the moment this is called. Loops until the wake word is heard.
 
+        Args:
+            until: Called between each 80ms - listening stops once it returns True.
+                For hearing the wake word over a reply, until the reply has
+                finished. None listens until the wake word is heard.
+
         Returns:
-            The confidence score as a float. heard_at is set to the microphone
-            position at that moment, so a recording can carry on from there.
+            The confidence score as a float, or None if `until` stopped it first.
+            heard_at is set to the microphone position the wake word was heard
+            at, so a recording can carry on from there.
         """
         if self.microphone is None:
             self.microphone = Microphone(sample_rate=self.mic_rate)
 
-        logger.info(f"Listening for '{self.wake_word_phrase}'...")
+        if until is None:
+            logger.info(f"Listening for '{self.wake_word_phrase}'...")
         self.model.reset()
 
         # The model catches up on the last couple of seconds first - but never from
@@ -145,6 +152,8 @@ class WakeWordDetector:
         now = self.microphone.position
         reader = self.microphone.listen(start=max(0, now - int(CATCH_UP_SECONDS * RATE), self.heard_at or 0))
         while True:
+            if until is not None and until():
+                return None
             # Feeds audio into the openWakeWord model and gets the prediction score for the configured wake word
             prediction = self.model.predict(reader.read(CHUNK_SAMPLES))
             if reader.position <= now:

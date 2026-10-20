@@ -116,6 +116,38 @@ def test_the_last_wake_word_is_never_heard_again(monkeypatch, make_config, model
     assert len(detector.model.chunks) == 2
 
 
+def test_listening_over_a_reply_stops_once_the_reply_has_finished(monkeypatch, make_config, models):
+    # Listened for over a reply, so it can be talked over - but only until it ends.
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    FakeModel.scores = [0.1, 0.2, 0.9]
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    detector.heard_at = microphone.position
+    streams[0].feed(2 * CHUNK_SAMPLES)
+
+    checks = []
+    assert detector.listen_once(until=lambda: checks.append(1) or len(checks) > 2) is None
+    assert len(detector.model.chunks) == 2
+    # Where the last wake word was heard is left alone, for the recording.
+    assert detector.heard_at == microphone.position - 2 * CHUNK_SAMPLES
+
+
+def test_the_wake_word_said_over_a_reply_is_heard(monkeypatch, make_config, models):
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    FakeModel.scores = [0.1, 0.9]
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    started_at = microphone.position
+    threading.Timer(0.05, streams[0].feed, args=(2 * CHUNK_SAMPLES,)).start()
+
+    assert detector.listen_once(until=lambda: False) == 0.9
+    assert detector.heard_at == started_at + 2 * CHUNK_SAMPLES
+
+
 def test_without_its_model_a_stock_wake_word_stands_in(make_config, models):
     # A fresh install has no custom model yet, and used to fail to start at all.
     (models / "hey_nova.onnx").unlink()

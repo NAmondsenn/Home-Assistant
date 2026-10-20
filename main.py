@@ -197,13 +197,20 @@ class SmartAssistant:
         except Exception as e:
             logger.error(f"Couldn't even say so: {e}")
 
-    def _say(self, message, timeline=None):
+    def _say(self, message, timeline=None, listen=False):
         """
         Speaks a reply to the user, starting as soon as its first sentence is ready.
 
         Args:
             message: What to say.
             timeline: Optional Timeline to mark when the speech started and when it finished.
+            listen: Listen for the wake word while it's said, and stop the moment it's
+                heard. A reply couldn't be talked over at all, so the user had to sit
+                through every word of it - three and a half minutes, once, for a
+                fortnight of their calendar.
+
+        Returns:
+            True if the wake word was heard over it, and it was stopped part way.
         """
         self._show(f"{self.name}: {message}")
         started = None
@@ -211,10 +218,26 @@ class SmartAssistant:
             def started():
                 timeline.mark("tts_done")
                 timeline.note(reply_chars=len(message))
-        self.speaker.play_stream(self.tts.stream(message, on_start=started), self.tts.sample_rate,
-                                 volume=self.volume.get("general")).wait()
+        playback = self.speaker.play_stream(self.tts.stream(message, on_start=started), self.tts.sample_rate,
+                                            volume=self.volume.get("general"))
+        if not listen:
+            playback.wait()
+            talked_over = False
+        else:
+            # Waited for on a thread of its own, so the wake word can be listened for
+            # here meanwhile - and so a reply which never finishes, because the
+            # speaker has died part way, is still given up on as it always was.
+            finished = threading.Thread(target=playback.wait, daemon=True, name="reply-wait")
+            finished.start()
+            talked_over = self.wake.listen_once(until=lambda: not finished.is_alive()) is not None
+            if talked_over:
+                logger.info("Talked over, so stopped part way")
+                playback.stop()
         if timeline:
             timeline.mark("playback_done")
+            if talked_over:
+                timeline.note(talked_over=True)
+        return talked_over
 
     def _wait_for_turn(self, still_wanted=None):
         """
@@ -263,7 +286,7 @@ class SmartAssistant:
         Speaks a message which the user has scheduled, e.g. a timer.
 
         Played as an "announcement", which the wake word silences straight away -
-        see run().
+        see _answer().
 
         Args:
             message: What to say. None plays just the sound, with no speech - an
@@ -385,47 +408,75 @@ class SmartAssistant:
         while self.running:
             try:
                 self.wake.listen_once()
-                # Times the interaction from this moment on - see Timeline.
-                timeline = Timeline(follow_up=False)
-                timeline.mark("wake")
-                print("Listening...")
-
-                # What was audibly going off at the moment the wake word fired,
-                # read before the interaction quietens anything, since what
-                # matters is what the user could hear when they started talking.
-                ringing = self.clock.ringing_state()
-
-                # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
-                self._idle.clear()
-                # Anything going off stops the moment the wake word is heard, rather than
-                # playing on over the user - and into the microphone - until its sound
-                # ends. It carries on afterwards unless the conversation dealt with it.
-                self.speaker.silence("announcement")
-                # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
-                # The pause goes through Spotify's servers, so it runs alongside the
-                # recording rather than holding it up - see MusicHold.
-                self.music.hold()
-                try:
-                    self.conversation.start(ringing)
-                    self._handle_interaction(timeline=timeline)
-                except Exception as e:
-                    # Said out loud, rather than only logged, so it isn't taken for the
-                    # assistant not having heard. Only for something which went wrong
-                    # during a conversation - one waiting for the wake word could
-                    # repeat every second.
-                    logger.error(f"Interaction failed: {e}", exc_info=True)
-                    self._apologise()
-                finally:
-                    timeline.save(self.latency_file)
-                    self.speaker.allow("announcement")
-                    self._idle.set()
-                    self.music.release()
+                self._converse()
 
             # Catches any unexpected errors during the main loop, logs the error
             # and pauses briefly before continuing to listen for the wake word again.
             except Exception as e:
                 logger.error(f"Error: {e}", exc_info=True)
                 time.sleep(1)
+
+    def _converse(self):
+        """
+        Everything from the wake word until the assistant has nothing left to say:
+        one request, or several, when the user says the wake word over a reply -
+        each of which starts straight away, as if the wake word had just been heard.
+        """
+        # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
+        self._idle.clear()
+        # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
+        # The pause goes through Spotify's servers, so it runs alongside the
+        # recording rather than holding it up - see MusicHold. Held across every
+        # request, so it doesn't come back for a moment when a reply is talked over.
+        self.music.hold()
+        try:
+            talked_over = self._answer()
+            while talked_over:
+                talked_over = self._answer(talked_over=True)
+        finally:
+            self.speaker.allow("announcement")
+            self._idle.set()
+            self.music.release()
+
+    def _answer(self, talked_over=False):
+        """
+        Answers one request, from the moment the wake word was heard.
+
+        Args:
+            talked_over: True when the wake word was said over the last reply - see
+                Conversation.start.
+
+        Returns:
+            True if the wake word was said over this reply too, so the next request
+            has already begun.
+        """
+        # Times the interaction from this moment on - see Timeline.
+        timeline = Timeline(follow_up=False)
+        timeline.mark("wake")
+        print("Listening...")
+
+        # What was audibly going off at the moment the wake word fired,
+        # read before the interaction quietens anything, since what
+        # matters is what the user could hear when they started talking.
+        ringing = self.clock.ringing_state()
+
+        # Anything going off stops the moment the wake word is heard, rather than
+        # playing on over the user - and into the microphone - until its sound
+        # ends. It carries on afterwards unless the conversation dealt with it.
+        self.speaker.silence("announcement")
+        try:
+            self.conversation.start(ringing, talked_over=talked_over)
+            return self._handle_interaction(timeline=timeline)
+        except Exception as e:
+            # Said out loud, rather than only logged, so it isn't taken for the
+            # assistant not having heard. Only for something which went wrong
+            # during a conversation - one waiting for the wake word could
+            # repeat every second.
+            logger.error(f"Interaction failed: {e}", exc_info=True)
+            self._apologise()
+            return False
+        finally:
+            timeline.save(self.latency_file)
 
     def _handle_interaction(self, follow_up=False, timeline=None):
         """
@@ -438,6 +489,9 @@ class SmartAssistant:
                        and is listening for the answer, which allows a little
                        longer to start speaking than a fresh request does.
             timeline: The Timeline to mark each stage on. The caller saves it.
+
+        Returns:
+            True if the user said the wake word over the reply - see _say.
         """
         # A throwaway one when none is given, so the marks below never need checking for.
         timeline = timeline or Timeline()
@@ -474,7 +528,7 @@ class SmartAssistant:
         if audio_data is None or len(audio_data) == 0:
             timeline.note(outcome="no_speech")
             self._not_heard()
-            return
+            return False
 
         # Transcribes the recorded audio using Whisper to text, Continues listening if no text is returned.
         # The audio is already at Whisper's rate, since the microphone keeps it at 16kHz.
@@ -488,7 +542,7 @@ class SmartAssistant:
         if not text.strip():
             timeline.note(outcome="nothing_transcribed")
             self._not_heard()
-            return
+            return False
 
         timeline.note(text_chars=len(text))
         self._show(f"You: {text}")
@@ -500,8 +554,8 @@ class SmartAssistant:
             self._play_sound(sound, volume=self.volume.get(category))
         if reply.shown:
             self._show(f"{self.name}: {reply.shown}")
-        if reply.say:
-            self._say(reply.say, timeline=timeline)
+        if reply.say and self._say(reply.say, timeline=timeline, listen=True):
+            return True
 
         # The assistant asked something, so it listens straight away for the answer.
         if reply.listen_again:
@@ -510,9 +564,10 @@ class SmartAssistant:
             # The answer is timed on its own, from when listening starts again.
             follow_up_timeline = Timeline(follow_up=True)
             try:
-                self._handle_interaction(follow_up=True, timeline=follow_up_timeline)
+                return self._handle_interaction(follow_up=True, timeline=follow_up_timeline)
             finally:
                 follow_up_timeline.save(self.latency_file)
+        return False
 
 # Runs the SmartAssistant if this script is executed directly. 
 # This creates an instance of SmartAssistant and calls its run method to start the main loop.
