@@ -7,7 +7,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - `main` - the version from before the audit fixes.
 - `phase-1` - Phase 1, tested on the Pi.
 - `phase-2` - Phase 2, built on `phase-1`, tested on the Pi.
-- `phase-3` - Phase 3, the Home Assistant and Navidrome work, and fixes from testing, built on `phase-2`.
+- `phase-3` - Phase 3, the Home Assistant and Navidrome work, and fixes from testing, built on `phase-2`, running on the Pi.
 
 ## Phase 0: housekeeping - done
 
@@ -40,7 +40,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [ ] UX-04 physical stop button - needs a button and a GPIO pin
 - [ ] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means
 
-## Phase 3: code quality, speed, and the home - built on `phase-3`, not yet on the Pi
+## Phase 3: code quality, speed, and the home - built on `phase-3`, running on the Pi
 
 - [x] PERF-03 one Whisper guess, measured · a 0.6s end-of-speech pause
 - [x] PERF-01 Piper kept loaded, speech played a sentence at a time from memory (PERF-06) · PERF-02 Claude's instructions cached
@@ -50,15 +50,22 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] From testing: "...stop" while ringing, "Hey Nova" straight after a reply
 - [x] PERF-05 librosa and PyAudio gone · PERF-07 fewer Spotify calls · DEP-05 watchdog · SEC-07 service hardening
 - [x] ARCH-02, ARCH-03 settings, keys and data outside the repository, checked as they're read · DEP-04 install, update and uninstall
-- [ ] On the Pi: `HA_TOKEN` and `NAVIDROME_PASSWORD` in `~/.config/nova/.env`, the addresses in `~/.config/nova/config.yaml`, then the release checklist
+- [x] On the Pi: `HA_TOKEN` and `NAVIDROME_PASSWORD` in `~/.config/nova/.env`, the addresses in `~/.config/nova/config.yaml`
+- [x] Claude Haiku 5.5, with thinking off
+- [x] Moonshine for speech-to-text - 0.83s and 1.5% of words wrong, against Whisper's 2.16s and 4.5%, measured on the Pi
+- [x] Echo cancelling, so "Hey Nova" is heard over music, and over Nova's own replies, which stop when it's said
+- [x] Work and uni times from the calendar, and the next shift or the next few · one thing looked for, "when's my MOT?" · calendar answers kept short
+- [x] Memory: facts picked up as they come up, with "I'll remember that", heard back and forgotten by voice
+- [x] From testing: liked songs, stopped music staying stopped, clarifying questions asked as questions, times on the hour read as "2 PM"
+- [ ] Try by voice: a lone "stop" heard by Moonshine, and talking over a reply
+- [ ] Go through the [release checklist](release-checklist.md) on the Pi with Phase 3 on it
 - [ ] Streaming Claude's reply into speech - looked at, left for now: about a tenth of a second, for guessing whether a tool call is coming
-- [ ] A faster speech-to-text model - Whisper's 1.9s is now the biggest wait; Moonshine is worth measuring (needs a download)
 - [ ] SEC-05, ARCH-05 to ARCH-08, BUG-26, BUG-29, BUG-31
 - [ ] Shorter bursts on the shared input and output (`/etc/asound.conf` and `setup.sh`), currently 125ms - quicker wake word and end of speech, and stopping sounds sooner
 
 ## Phase 4 onwards
 
-- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback.
+- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Speech-to-text there could be Parakeet, if PVE2 has a GPU - measured against Moonshine first.
 - Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
