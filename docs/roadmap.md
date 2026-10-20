@@ -60,13 +60,13 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] "Midnight" and "noon" rather than "12 AM" and "12 PM" · three days or more of the calendar as an overview, a week in 14 seconds rather than 52
 - [x] Tried by voice: a lone "stop" heard by Moonshine, and talking over a reply
 - [x] Went through the [release checklist](release-checklist.md) on the Pi with Phase 3 on it, 20 October - all passed, once a lone "so" counted as "stop", Home Assistant and Navidrome gave up at once with no network, and "set of one minute timer" was understood
-- [ ] Streaming Claude's reply into speech - looked at, left for now: about a tenth of a second, for guessing whether a tool call is coming
+- Deferred to Phase 4, agreed 20 October: streaming the reply into speech. With Haiku it would save about a tenth of a second - the whole reply takes a median 1.1s, and is usually one sentence - but with a slower or local model it would save seconds. To be built behind `llm.py`, for every model, with tool calls told apart as they arrive
 - [x] SEC-05 downloads checked against pinned hashes · ARCH-05 one atomic JSON save · ARCH-06, ARCH-07 dead code and stale comments · ARCH-08 LF everywhere · BUG-29 mixed yes/no answers · BUG-31 `max_tokens` used as set · BUG-26 already fixed with BUG-14
 - [x] Shorter bursts on the shared input and output - 21ms rather than 125ms, measured on the Pi: the microphone's audio reaches the wake word in about 50ms rather than 130ms, and a stopped sound goes quiet in under 200ms rather than 240ms. The times the speaker runs dry, or the microphone overflows, are logged
 
 ## Phase 4 onwards
 
-- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Speech-to-text there could be Parakeet, if PVE2 has a GPU - measured against Moonshine first.
+- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Streaming the model's reply into speech, deferred from Phase 3, comes with any slower or local model. Speech-to-text there could be Parakeet, if PVE2 has a GPU - measured against Moonshine first.
 - Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
