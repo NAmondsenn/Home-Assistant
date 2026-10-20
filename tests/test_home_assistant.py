@@ -4,13 +4,29 @@ Checks the lights and the calendar through Home Assistant, using a fake in place
 its API, so nothing is sent anywhere.
 """
 
+import time
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 import requests
 
 from voice_assistant import network
 from voice_assistant.home_assistant import HomeAssistant, describe_agenda, describe_found
+
+
+@pytest.fixture(autouse=True)
+def london(monkeypatch):
+    """
+    Runs every test on UK time, whatever the machine's own time zone. Calendar times
+    are said in the Pi's own time, and the events here are written in BST - so on
+    GitHub, which runs on UTC, uni "from 11:30 AM" came out as "from 10:30 AM".
+    """
+    monkeypatch.setenv("TZ", "Europe/London")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 class FakeResponse:
@@ -339,12 +355,17 @@ def test_just_work_called_work_unless_set(make_config):
 
 # The next time
 
+# Made as the file is read, before the london fixture has set the time zone, so
+# given it themselves.
+LONDON = ZoneInfo("Europe/London")
+
+
 def _shift(day, start_hour, end_hour):
-    return {"summary": "Shift", "start": datetime(2026, 10, day, start_hour, 0).astimezone(),
-            "end": datetime(2026, 10, day, end_hour, 0).astimezone(), "all_day": False}
+    return {"summary": "Shift", "start": datetime(2026, 10, day, start_hour, 0, tzinfo=LONDON),
+            "end": datetime(2026, 10, day, end_hour, 0, tzinfo=LONDON), "all_day": False}
 
 
-NOW = datetime(2026, 10, 20, 12, 0).astimezone()
+NOW = datetime(2026, 10, 20, 12, 0, tzinfo=LONDON)
 SHIFTS = [_shift(20, 8, 11), _shift(21, 15, 23), _shift(24, 14, 22), _shift(25, 14, 21)]
 
 
@@ -365,7 +386,7 @@ def test_the_next_few_times_are_said_together():
 
 def test_being_there_now_says_so():
     from voice_assistant.home_assistant import describe_next
-    assert describe_next("work", SHIFTS, 1, date(2026, 10, 20), datetime(2026, 10, 20, 9, 30).astimezone()) == \
+    assert describe_next("work", SHIFTS, 1, date(2026, 10, 20), datetime(2026, 10, 20, 9, 30, tzinfo=LONDON)) == \
         "You're at work now, until 11:00 AM."
 
 
