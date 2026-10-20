@@ -198,6 +198,6 @@ python -m pytest
 ruff check .
 ```
 
-Both also run on GitHub for every push (`.github/workflows/checks.yml`), along with a weekly check of `requirements.lock` for packages with known security problems. The scripts in `scripts/manual/` need real hardware or accounts, so they're run by hand, and `scripts/soak_monitor.py` keeps an eye on a long-running assistant - see [docs/release-checklist.md](docs/release-checklist.md) for when to use them.
+Both also run on GitHub for every push (`.github/workflows/checks.yml`), along with a weekly check of `requirements.lock` for packages with known security problems. The scripts in `scripts/manual/` need real hardware or accounts, so they're run by hand, and `scripts/soak_monitor.py` keeps an eye on a long-running assistant - see [docs/release-checklist.md](docs/release-checklist.md) for when to use them. Before changing the speech-to-text model, record yourself with `scripts/record_samples.py`, and measure the models on those recordings with `scripts/compare_speech_to_text.py`.
 
 When picking work back up after a break, start with [docs/roadmap.md](docs/roadmap.md).
