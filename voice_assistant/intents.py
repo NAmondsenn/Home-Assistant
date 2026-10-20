@@ -119,9 +119,11 @@ class LocalIntents:
         self.clock = clock
         # Each pattern has to match the whole request, after politeness is taken off.
         self._rules = [
-            (r"(?:(?:set|start) (?:me )?(?:a |an )?)?timer for (?P<amount>[a-z0-9 ]+?) (?P<unit>second|minute|hour)s?",
+            # "Set of one minute timer" is how Moonshine heard "set a one minute timer"
+            # with the network cable out - so it went to Claude, who couldn't be asked.
+            (r"(?:(?:set|start) (?:me )?(?:a |an |of )?)?timer for (?P<amount>[a-z0-9 ]+?) (?P<unit>second|minute|hour)s?",
              self._timer),
-            (r"(?:(?:set|start) (?:me )?(?:a |an )?)?(?P<amount>[a-z0-9 ]+?) (?P<unit>second|minute|hour) timer",
+            (r"(?:(?:set|start) (?:me )?(?:a |an |of )?)?(?P<amount>[a-z0-9 ]+?) (?P<unit>second|minute|hour) timer",
              self._timer),
             # "Soap" or "so", "scap" and "quiter" are how Moonshine heard "stop", "skip"
             # and "quieter" said on their own - see speech_to_text.py.

@@ -24,7 +24,7 @@ def _actions(text, clock=None):
     ("Set a timer for ten minutes.", 600),
     ("set a timer for 10 minutes", 600),
     ("Timer for 30 seconds", 30),
-    ("Set a 5 minute timer.", 300),
+    ("Set a 5 minute timer.", 300), ("Set of one minute timer,", 60),
     ("Start a timer for twenty five minutes, please.", 1500),
     ("Set a timer for an hour.", 3600),
     ("Set a timer for half an hour.", 1800),
