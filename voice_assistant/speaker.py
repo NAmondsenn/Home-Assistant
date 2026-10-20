@@ -36,9 +36,12 @@ BLOCK_SECONDS = 0.02
 # How much audio PortAudio may hold ahead of the speaker, in seconds. This is
 # how long a stopped sound can still be heard for, so it's kept short - but too
 # short and the shared output (dmix, in /etc/asound.conf) runs dry and crackles.
-# Measured on the Pi, dmix works in 125ms periods, so anything up to that gives
-# 125ms, which ran for 10 seconds without once running dry.
-OUTPUT_LATENCY = 0.1
+# It's rounded to whole periods of the shared output, 21ms each (see setup.sh):
+# this gives four, so the audio thread can be held up by about 64ms without
+# running dry, and a stopped sound was measured on the Pi to go quiet 115-185ms
+# after Nova decided to stop it, against 240ms with ALSA's own 125ms periods.
+# The times it does run dry are logged (see dropouts.py).
+OUTPUT_LATENCY = 0.08
 
 # Seconds without the stream asking for audio before it's taken to have died.
 STALL_SECONDS = 2.0

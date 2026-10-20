@@ -298,10 +298,17 @@ write_asound_conf() {
         problem "Couldn't find a USB speaker and microphone - plug them in and run this again."
         return
     fi
-    if [ -f /etc/asound.conf ] && grep -q "pcm.shared_out" /etc/asound.conf \
-        && [ "$(ask "/etc/asound.conf is already set up. Write it again? (y/n)" "n")" != "y" ]; then
-        skipped "Left as it is"
-        return
+    if [ -f /etc/asound.conf ] && grep -q "pcm.shared_out" /etc/asound.conf; then
+        # One written before the shorter bursts is worth writing again.
+        local again="n" question="/etc/asound.conf is already set up. Write it again? (y/n)"
+        if ! grep -q "period_size" /etc/asound.conf; then
+            again="y"
+            question="/etc/asound.conf is from before Nova's shorter audio bursts. Write it again? (y/n)"
+        fi
+        if [ "$(ask "$question" "$again")" != "y" ]; then
+            skipped "Left as it is"
+            return
+        fi
     fi
     playback=$(ask "Speaker card" "$playback")
     capture=$(ask "Microphone card" "$capture")
@@ -312,6 +319,13 @@ write_asound_conf() {
 # Lets several programs - Spotify playing music, the assistant speaking - share the
 # speaker and microphone at once, rather than whoever opens one first locking the
 # others out. ipc_perm 0666 lets the root-owned raspotify service share them too.
+#
+# Both work in 1024-frame (21ms) bursts. ALSA's own choice was 6000 (125ms), which
+# was how late the microphone's audio reached the wake word, and how long a sound
+# Nova had stopped carried on playing - measured on the Pi, 130ms and 240ms
+# typically, against 50ms and 125-150ms with these. The 8192-frame buffer behind
+# them is only slack, and adds no delay of its own. Changes here take effect once
+# everything using the speaker and microphone - Nova and raspotify - has restarted.
 pcm.!default {
     type asym
     playback.pcm "plug:shared_out"
@@ -327,6 +341,8 @@ pcm.shared_out {
         rate 48000
         format S16_LE
         channels 2
+        period_size 1024
+        buffer_size 8192
     }
 }
 
@@ -339,6 +355,8 @@ pcm.shared_in {
         rate 48000
         format S16_LE
         channels 1
+        period_size 1024
+        buffer_size 8192
     }
 }
 
@@ -348,6 +366,9 @@ ctl.!default {
 }
 EOF
     done_ "Speaker ${playback}, microphone ${capture} (the old one is kept as /etc/asound.conf.backup.*)"
+    if systemctl is-active -q raspotify 2> /dev/null; then
+        sudo systemctl restart raspotify
+    fi
 }
 
 # Sets (or replaces) a key in /etc/raspotify/conf, whether it's currently missing,

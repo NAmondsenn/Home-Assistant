@@ -37,6 +37,12 @@ done_ "On $(git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(git -C
 install_python_packages
 download_models
 
+# /etc/asound.conf is only ever written by setup.sh, so one written before the
+# shorter audio bursts is pointed out rather than changed behind the user's back.
+if grep -q "pcm.shared_out" /etc/asound.conf 2> /dev/null && ! grep -q "period_size" /etc/asound.conf; then
+    problem "/etc/asound.conf is from before Nova's shorter audio bursts - run 'bash setup.sh' and let it write it again, for quicker stopping and wake word."
+fi
+
 # Stopped before its files are moved, so the old version can't write to where they
 # used to be in the meantime.
 step "Restarting"

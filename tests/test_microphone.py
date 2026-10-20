@@ -130,8 +130,8 @@ def test_a_reader_left_too_far_behind_skips_to_the_oldest_audio(streams):
 
 
 def test_the_input_buffer_holds_more_than_one_burst_from_the_pi(streams):
-    # The Pi's shared input hands audio over 125ms at a time. A buffer of just that
-    # overflowed at the slightest delay, losing about a fifth of everything heard.
+    # The Pi's shared input once handed audio over 125ms at a time, and a buffer of
+    # just that overflowed at the slightest delay, losing a fifth of what was heard.
     Microphone(sample_rate=48000)
     assert streams[0].settings["latency"] >= 0.25
 

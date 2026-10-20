@@ -35,11 +35,13 @@ RATE = 16000
 # How often the stream hands over audio, in seconds of it.
 BLOCK_SECONDS = 0.03
 
-# How much audio PortAudio may hold before it has to be handed over, in seconds. The
-# Pi's shared input (dsnoop, in /etc/asound.conf) delivers audio in 125ms bursts,
-# and PortAudio's default buffer holds only one burst, so the slightest delay
-# overflowed it - measured on the Pi, about a fifth of the audio went missing that
-# way, while arecord on the same input lost nothing. Two bursts' worth loses none.
+# How much audio PortAudio may hold before it has to be handed over, in seconds -
+# slack, not delay, since each burst is handed over as soon as it arrives. With
+# ALSA's own 125ms bursts, PortAudio's default buffer held only one, and the
+# slightest delay overflowed it - about a fifth of the audio went missing that way
+# on the Pi. setup.sh now has the shared input (dsnoop, in /etc/asound.conf) work
+# in 21ms bursts, so audio reaches the wake word about 50ms after it was heard
+# rather than 130ms, and this leaves room for several of them.
 INPUT_LATENCY = 0.25
 
 # The recorder checks for speech 30ms at a time, the frame length openWakeWord's
