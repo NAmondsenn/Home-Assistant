@@ -167,13 +167,44 @@ def test_a_day_further_off_is_said_in_full():
     assert describe_agenda([], date(2026, 10, 30), 1, TODAY) == "You've got nothing on Friday the 30th of October."
 
 
-def test_a_fortnight_is_cut_short():
+def _activity(name, day):
+    """An activity's day, as _as_activities gives it."""
+    start = datetime.combine(day, datetime.min.time()).replace(hour=9)
+    return {"summary": name, "start": start, "all_day": False, "spans": [[start, start + timedelta(hours=4)]],
+            "activity": True}
+
+
+def test_a_week_is_an_overview_without_the_times():
+    # Every time of every day, "uni from 11:30 AM until 1 PM and from 2:30 PM until
+    # 4:30 PM", took 52 seconds for a week.
+    events = sorted([_activity("uni", TODAY), _activity("uni", date(2026, 10, 22)), _activity("uni", date(2026, 10, 26)),
+                     _activity("work", date(2026, 10, 21)), _activity("work", date(2026, 10, 24)),
+                     _event("Payday", datetime(2026, 10, 21, 16)), _event("Haircut", datetime(2026, 10, 23, 12, 20))],
+                    key=lambda event: event["start"])
+    assert describe_agenda(events, TODAY, 7, TODAY) == (
+        "Over the next week, you've got uni today, Thursday and Monday, and work tomorrow and Saturday. "
+        "There's also Payday tomorrow, and Haircut on Friday.")
+
+
+def test_a_fortnight_counts_the_days_and_names_only_a_few_things():
     # Read out whole, a fortnight once took three and a half minutes.
-    events = [_event(f"Meeting {n}", datetime(2026, 10, 20, 9 + n % 2) + timedelta(days=n // 2)) for n in range(28)]
+    events = ([_activity("work", TODAY + timedelta(days=n)) for n in range(14)]
+              + [_activity("uni", TODAY + timedelta(days=n)) for n in (0, 2, 7)]
+              + [_event(f"Meeting {n}", datetime(2026, 10, 21, 10) + timedelta(days=n)) for n in range(7)])
+    events.sort(key=lambda event: event["start"])
     said = describe_agenda(events, TODAY, 14, TODAY)
-    assert said.count("Meeting") == 10
-    assert said.endswith("On Saturday, you've got Meeting 8 at 9:00 AM, and Meeting 9 at 10:00 AM. "
-                         "And 18 more after that.")
+    assert said.startswith("Over the next two weeks, you've got work every day, and uni on 3 days. There's also "
+                           "Meeting 0 tomorrow, Meeting 1 on Thursday,")
+    assert said.count("Meeting") == 5 and said.endswith(", and 2 more.")
+
+
+def test_an_overview_of_another_week_says_which_one():
+    events = [_activity("uni", date(2026, 10, 27)), _event("Dentist", datetime(2026, 10, 29, 9, 30))]
+    assert describe_agenda(events, date(2026, 10, 26), 7, TODAY) == (
+        "From Monday to Sunday the 1st of November, you've got uni on Tuesday. "
+        "There's also Dentist on Thursday the 29th of October.")
+    assert describe_agenda([], date(2026, 10, 26), 7, TODAY) == \
+        "You've got nothing on from Monday to Sunday the 1st of November."
 
 
 UNI_DAY = [

@@ -45,9 +45,16 @@ SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\
 # Most events said for one day before the rest are only counted.
 MOST_EVENTS_SAID = 5
 
-# Most said in all, over however many days were asked about. A fortnight, read out
-# whole, once took three and a half minutes.
-MOST_EVENTS_SAID_IN_ALL = 10
+# From this many days, what's on is given as an overview - which days there's uni
+# or work, and the rest by name - rather than every time of every day. A week said
+# in full, as "uni from 11:30 AM until 1 PM and from 2:30 PM until 4:30 PM" a day
+# at a time, took 52 seconds; as an overview, about 18. A fortnight, read out
+# whole, once took three and a half minutes. "What about Friday?" still gets that
+# day in full.
+OVERVIEW_FROM_DAYS = 3
+
+# Most things other than the activities named in an overview.
+MOST_OTHERS_IN_OVERVIEW = 5
 
 # How far ahead to look for one thing on the calendar - "when's my MOT?" - and the
 # most matches said.
@@ -292,10 +299,11 @@ def _as_activities(events: List[Dict], activities: Dict[str, re.Pattern], first:
     for name, its_events in theirs.items():
         for day, on_day in _by_day(its_events, first).items():
             if any(event["all_day"] for event in on_day):
-                kept.append({"summary": name, "start": day, "end": None, "all_day": True})
+                kept.append({"summary": name, "start": day, "end": None, "all_day": True, "activity": True})
             spans = _stretches(on_day)
             if spans:
-                kept.append({"summary": name, "start": spans[0][0], "end": None, "all_day": False, "spans": spans})
+                kept.append({"summary": name, "start": spans[0][0], "end": None, "all_day": False, "spans": spans,
+                             "activity": True})
     return sorted(kept, key=lambda event: _sort_key(event["start"]))
 
 
@@ -440,7 +448,7 @@ def _on(day: date, today: date) -> str:
 
 def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> str:
     """
-    Says what's on, a day at a time.
+    Says what's on - a day at a time for a day or two, or as an overview for more.
 
     Args:
         events: From HomeAssistant.events, earliest first - with the activities
@@ -451,8 +459,28 @@ def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> 
 
     Returns:
         e.g. "On Thursday, you've got the dentist at 9:30 AM, and dinner with Sam at
-        7:00 PM." or "You've got nothing on tomorrow."
+        7:00 PM.", "Over the next week, you've got uni today and Thursday. There's
+        also the dentist on Friday." or "You've got nothing on tomorrow."
     """
+    if not events:
+        return _nothing_on(first, days, today)
+    if days >= OVERVIEW_FROM_DAYS:
+        return _overview(events, first, days, today)
+    return _day_by_day(events, first, days, today)
+
+
+def _nothing_on(first: date, days: int, today: date) -> str:
+    """What's said when there's nothing on - "You've got nothing on tomorrow", say."""
+    last = first + timedelta(days=days - 1)
+    if days == 1:
+        return f"You've got nothing on {spoken_day(first, today)}."
+    if days == 2:
+        return f"You've got nothing on {spoken_day(first, today)} or {spoken_day(last, today)}."
+    return f"You've got nothing on from {spoken_day(first, today)} to {spoken_day(last, today)}."
+
+
+def _day_by_day(events: List[Dict], first: date, days: int, today: date) -> str:
+    """What's on, each day in full - see describe_agenda."""
     by_day = {first + timedelta(days=offset): [] for offset in range(days)}
     for event in events:
         when = event["start"]
@@ -460,16 +488,11 @@ def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> 
         # An event which started before the days asked about, and runs into them.
         by_day.setdefault(max(day, first), []).append(event)
 
-    sentences, left = [], MOST_EVENTS_SAID_IN_ALL
+    sentences = []
     for day, on_day in by_day.items():
         if not on_day:
             continue
-        if left <= 0:
-            unsaid = sum(len(later) for later_day, later in by_day.items() if later_day >= day)
-            sentences.append(f"And {unsaid} more after that.")
-            break
-        shown = on_day[:min(MOST_EVENTS_SAID, left)]
-        left -= len(shown)
+        shown = on_day[:MOST_EVENTS_SAID]
         said = [_event_said(event) for event in shown]
         if len(on_day) > len(shown):
             said.append(f"{len(on_day) - len(shown)} more")
@@ -477,14 +500,56 @@ def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> 
         on = _on(day, today)
         sentences.append(f"{on[0].upper()}{on[1:]}, you've got {listed}.")
 
-    if sentences:
-        return " ".join(sentences)
+    return " ".join(sentences) if sentences else _nothing_on(first, days, today)
+
+
+def _overview(events: List[Dict], first: date, days: int, today: date) -> str:
+    """
+    What's on over several days, without the times - see describe_agenda. Each
+    activity is said with the days it's on - by name within a week, or as a count
+    over longer - and then the other things, each with its day.
+    """
     last = first + timedelta(days=days - 1)
-    if days == 1:
-        return f"You've got nothing on {spoken_day(first, today)}."
-    if days == 2:
-        return f"You've got nothing on {spoken_day(first, today)} or {spoken_day(last, today)}."
-    return f"You've got nothing on from {spoken_day(first, today)} to {spoken_day(last, today)}."
+    if first == today:
+        over = {7: "Over the next week", 14: "Over the next two weeks"}.get(days, f"Over the next {days} days")
+    else:
+        over = f"From {spoken_day(first, today)} to {spoken_day(last, today)}"
+
+    activity_days: Dict[str, List[date]] = {}
+    others = []
+    for event in events:
+        day = max(event["start"] if event["all_day"] else event["start"].date(), first)
+        if event.get("activity"):
+            if day not in activity_days.setdefault(event["summary"], []):
+                activity_days[event["summary"]].append(day)
+        else:
+            others.append((event, day))
+
+    activities = []
+    for name, on in activity_days.items():
+        if len(on) == days:
+            activities.append(f"{name} every day")
+        elif days > 7:
+            activities.append(f"{name} on {len(on)} day{'s' if len(on) != 1 else ''}")
+        else:
+            # Within a week a day's name is enough, even one further off than
+            # spoken_day would name alone - the opening has already said which week.
+            names = [spoken_day(day, today) if day <= today + timedelta(days=1) else day.strftime("%A")
+                     for day in sorted(on)]
+            listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            activities.append(f"{name} {'' if names[0] in ('today', 'tomorrow') else 'on '}{listed}")
+
+    named = [f"{event['summary']} {_on(day, today)}" for event, day in others[:MOST_OTHERS_IN_OVERVIEW]]
+    if len(others) > len(named):
+        named.append(f"{len(others) - len(named)} more")
+
+    def joined(items: List[str]) -> str:
+        return items[0] if len(items) == 1 else ", ".join(items[:-1]) + ", and " + items[-1]
+
+    if not activities:
+        return f"{over}, you've got {joined(named)}."
+    said = f"{over}, you've got {joined(activities)}."
+    return f"{said} There's also {joined(named)}." if named else said
 
 
 def _event_said(event: Dict) -> str:
