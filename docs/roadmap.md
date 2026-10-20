@@ -57,7 +57,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] Work and uni times from the calendar, and the next shift or the next few · one thing looked for, "when's my MOT?" · calendar answers kept short
 - [x] Memory: facts picked up as they come up, with "I'll remember that", heard back and forgotten by voice
 - [x] From testing: liked songs, stopped music staying stopped, clarifying questions asked as questions, times on the hour read as "2 PM"
-- [ ] Try by voice: a lone "stop" heard by Moonshine, and talking over a reply
+- [x] Tried by voice: a lone "stop" heard by Moonshine, and talking over a reply
 - [ ] Go through the [release checklist](release-checklist.md) on the Pi with Phase 3 on it
 - [ ] Streaming Claude's reply into speech - looked at, left for now: about a tenth of a second, for guessing whether a tool call is coming
 - [ ] SEC-05, ARCH-05 to ARCH-08, BUG-26, BUG-29, BUG-31
