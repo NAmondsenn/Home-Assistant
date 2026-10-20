@@ -86,7 +86,7 @@ class HomeAssistant:
         logger.info(f"Home Assistant at {url}")
         return cls(url, token, settings.get("agent") or DEFAULT_AGENT, settings.get("calendars"))
 
-    def _request(self, method: str, path: str, **kwargs) -> "requests.Response":
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         response = self._session.request(method, self.url + path, timeout=REQUEST_TIMEOUT, **kwargs)
         response.raise_for_status()
         return response

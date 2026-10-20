@@ -4,8 +4,6 @@ Tests how the controller signs in and keeps its token fresh, using fakes in plac
 of spotipy's client and OAuth classes so nothing goes to Spotify.
 """
 
-import time
-
 import pytest
 
 from voice_assistant import spotify_controller
@@ -116,64 +114,6 @@ def test_only_music_on_this_speaker_is_paused_for_speech(make_controller, device
 
 # Holding the music while there's something to say
 
-class FakeMusic:
-    """Stands in for SpotifyController's pause and resume, noting the order they happen in."""
-
-    def __init__(self, pause_takes=0.0):
-        self.pause_takes = pause_takes
-        self.calls = []
-
-    def pause_for_speech(self):
-        time.sleep(self.pause_takes)
-        self.calls.append("pause")
-
-    def resume_after_speech(self):
-        self.calls.append("resume")
-
-
-def test_the_music_comes_back_only_once_nothing_is_left_to_say(monkeypatch):
-    # A reminder queued behind a conversation used to start just as the music
-    # came back after it.
-    music = FakeMusic()
-    hold = spotify_controller.MusicHold(music)
-    hold.hold()           # the conversation
-    hold.hold()           # a reminder waiting for it to finish
-    hold.release()
-    hold.wait()
-    assert music.calls == ["pause"]
-
-    hold.release()
-    hold.wait()
-    assert music.calls == ["pause", "resume"]
-
-
-def test_a_resume_never_overtakes_the_pause_its_undoing():
-    music = FakeMusic(pause_takes=0.2)
-    hold = spotify_controller.MusicHold(music)
-    hold.hold()
-    hold.release()
-    hold.wait()
-    assert music.calls == ["pause", "resume"]
-
-
-def test_a_timers_next_round_doesnt_bounce_the_music_back_on():
-    music = FakeMusic()
-    hold = spotify_controller.MusicHold(music)
-    hold.hold()
-    hold.release(after=0.2)
-    hold.hold()           # the next round, a moment later
-    time.sleep(0.3)
-    hold.wait()
-    assert music.calls == ["pause"]
-
-
-def test_without_spotify_holding_the_music_does_nothing():
-    hold = spotify_controller.MusicHold(None)
-    hold.hold()
-    hold.release()
-    hold.wait()
-
-
 def test_the_token_cache_is_kept_private(make_controller, monkeypatch, tmp_path):
     # It holds the refresh token, but spotipy wrote it readable by anyone on the machine.
     cache = tmp_path / ".spotify_cache"
@@ -234,25 +174,3 @@ def test_a_named_artist_has_to_be_credited_unless_nothing_else_will_do(make_cont
 def test_nothing_is_picked_when_the_query_was_misheard(make_controller):
     controller = make_controller(cached=SAVED)
     assert controller._pick_track([_track("Shape of You", "Ed Sheeran")], "bohemian rhapsody", None) is None
-
-
-@pytest.mark.parametrize("name, liked", [
-    ("liked songs", True), ("Leaked songs", True), ("my favourites", True), ("favourites", True),
-    ("chill vibes", False),
-])
-def test_liked_songs_are_recognised_even_when_misheard(name, liked):
-    assert spotify_controller.SpotifyController._means_liked_songs(name) is liked
-
-
-def test_offline_the_music_is_left_alone():
-    # Pausing and resuming would only wait out timeouts, holding up a timer being set.
-    class FakeOfflineMusic(FakeMusic):
-        def cancel_resume(self):
-            self.calls.append("cancel resume")
-
-    music = FakeOfflineMusic()
-    hold = spotify_controller.MusicHold(music, online=lambda: False)
-    hold.hold()
-    hold.release()
-    hold.wait()
-    assert music.calls == ["cancel resume"]

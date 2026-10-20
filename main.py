@@ -18,7 +18,7 @@ from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.network import online
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
-from voice_assistant.spotify_controller import MusicHold, SpotifyController
+from voice_assistant.music import MusicHold, make_player
 from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
 from voice_assistant.actions import ActionExecutor, confirm
@@ -115,17 +115,16 @@ class SmartAssistant:
         # Sets up text-to-speech with settings from config.
         self.tts = TextToSpeech(self.config)
         
-        logger.info("Loading Spotify...")
-        # Attempts to initialise the SpotifyController. If it fails, a warning is logged,
-        # self.spotify falls back to None, and the assistant will continue to run without Spotify.
-        try:
-            self.spotify = SpotifyController(config=self.config)
-        except Exception as e:
-            logger.warning(f"Spotify initialisation failed: {e}")
-            self.spotify = None
+        # Sets up volume control. Levels changed by voice are saved, so they survive a restart.
+        self.volume = VolumeControl(config=self.config)
+
+        # Navidrome or Spotify, whichever music.player says - or None, and the
+        # assistant carries on without music. See music.py.
+        logger.info("Loading the music player...")
+        self.music_player = make_player(self.config, self.speaker, self.volume)
 
         # Keeps the music paused while there's something to say - see MusicHold.
-        self.music = MusicHold(self.spotify, online=online)
+        self.music = MusicHold(self.music_player, online=online)
 
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
         self.clock = Clock(on_timer_finished=self._announce, config=self.config)
@@ -133,13 +132,9 @@ class SmartAssistant:
         # The everyday commands handled without Claude - see intents.py.
         self.intents = LocalIntents(clock=self.clock)
 
-        # Sets up volume control. The music's own volume isn't set here - Spotify keeps
-        # that itself, so a level the user chose by voice survives a restart.
-        self.volume = VolumeControl(config=self.config)
-
         # Everything the assistant can do for the user - see actions.py. The lights and
         # the calendar are only there once Home Assistant is set up.
-        self.actions = ActionExecutor(music=self.spotify, clock=self.clock, volume=self.volume,
+        self.actions = ActionExecutor(music=self.music_player, clock=self.clock, volume=self.volume,
                                       weather=Weather(config=self.config),
                                       home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")))
 
@@ -355,10 +350,13 @@ class SmartAssistant:
     def _clean_up(self):
         """
         Closes everything down in order - the clock, so nothing else starts ringing,
-        then the speaker and the microphone, so neither device is left locked, and
-        the Piper process kept waiting for the next reply.
+        and the music, so it doesn't play on into the next song - then the speaker
+        and the microphone, so neither device is left locked, and the Piper process
+        kept waiting for the next reply.
         """
         self.clock.stop()
+        if self.music_player:
+            self.music_player.close()
         self.speaker.close()
         self.microphone.close()
         self.tts.close()

@@ -13,11 +13,12 @@ import time
 import random
 import difflib
 import logging
-import threading
 from typing import Optional, Dict
 from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+
+from voice_assistant.music import means_liked_songs
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ REQUEST_TIMEOUT = 4
 REQUEST_RETRIES = 1
 
 # Said when there's no Spotify login to use, rather than a bare "not authenticated" -
-# signing in again is done by hand, by running this file on the Pi (see the bottom).
+# signing in again is done by hand, by running this module on the Pi (see the bottom).
 NOT_SIGNED_IN = "Spotify needs signing in again on the Pi."
 
 
@@ -56,7 +57,7 @@ class _RefreshingAuth:
         # Reads the cache and refreshes the token if it's run out.
         token_info = self.oauth.get_cached_token()
         if not token_info:
-            raise RuntimeError("Spotify needs authorising again - run voice_assistant/spotify_controller.py")
+            raise RuntimeError("Spotify needs authorising again - run python -m voice_assistant.spotify_controller")
         return token_info if as_dict else token_info["access_token"]
 
 
@@ -991,30 +992,6 @@ class SpotifyController:
 
     # What the user might call their saved tracks. Spotify treats these as a
     # library rather than a playlist, so they never appear in the playlist list.
-    LIKED_SONGS_NAMES = ("liked songs", "liked music", "my likes", "likes",
-                         "saved songs", "saved tracks", "saved music",
-                         "favourites", "favorites", "favourite songs", "favorite songs")
-
-    @classmethod
-    def _means_liked_songs(cls, name: str) -> bool:
-        """
-        Whether a requested "playlist" is really the user's saved tracks.
-
-        Matched loosely, since this arrives from speech like anything else -
-        "liked songs" comes back as "leaked songs" often enough to be worth
-        allowing for.
-
-        Args:
-            name: The playlist name as the user said it.
-
-        Returns:
-            True if they meant their liked songs.
-        """
-        wanted = name.strip().lower()
-        return any(wanted == liked
-                   or difflib.SequenceMatcher(None, wanted, liked).ratio() >= 0.8
-                   for liked in cls.LIKED_SONGS_NAMES)
-
     def play_playlist(self, name: str) -> Dict:
         """
         Play one of the user's own playlists.
@@ -1041,7 +1018,7 @@ class SpotifyController:
             # Liked songs aren't a playlist, so they're never in the list searched
             # above - without this the request falls through to the closest name
             # instead, which is how "play Liked Songs" played "car songs".
-            if not playlist and self._means_liked_songs(name):
+            if not playlist and means_liked_songs(name):
                 logger.info(f"'{name}' means the liked songs library, not a playlist")
                 result = self._play_liked_songs(device_id)
                 if result.get("success"):
@@ -1104,6 +1081,9 @@ class SpotifyController:
             # Never let this stop the assistant from replying.
             logger.warning(f"Could not pause for speech: {e}")
 
+    def close(self):
+        """Nothing to stop: raspotify plays the music, and carries on by itself."""
+
     def was_playing(self) -> bool:
         """
         Whether music was playing when the user started speaking - that is, whether
@@ -1134,102 +1114,12 @@ class SpotifyController:
             self._paused_for_speech = False
 
 
-class MusicHold:
-    """
-    Keeps the music paused while the assistant has something to say - a
-    conversation, or a timer or reminder going off - and lets it back only once
-    nothing is left to say.
-
-    Announcements used to play over the music at full music volume, and one queued
-    behind a conversation started just as the music came back afterwards. Now each
-    holds the music, and holds are counted, so a reminder waiting for a
-    conversation to finish keeps the music paused through both.
-    """
-
-    def __init__(self, spotify: Optional[SpotifyController], online=None):
-        """
-        Args:
-            spotify: The SpotifyController, or None, when this does nothing.
-            online: Says whether the internet can be reached - network.online, passed
-                in rather than imported, so this file can still be run on its own to
-                sign in. With no network, the music is left alone rather than everything
-                waiting out a request which can't get through.
-        """
-        self.spotify = spotify
-        self._online = online or (lambda: True)
-        self._holds = 0
-        self._lock = threading.Lock()
-        # The last pause or resume started. Each waits for the one before it, so a
-        # resume can never overtake the pause it's undoing.
-        self._change: Optional[threading.Thread] = None
-
-    def hold(self):
-        """Pauses the music, if this is the first hold. Doesn't wait for Spotify."""
-        with self._lock:
-            self._holds += 1
-            if self._holds == 1 and self.spotify and self._online():
-                self._start_change(self.spotify.pause_for_speech)
-
-    def release(self, after: float = 0.0):
-        """
-        Lets go of a hold, resuming the music if it was the last.
-
-        Args:
-            after: Seconds to wait first, in case something else is about to be
-                said - a plain timer's next round comes three seconds later, and
-                the music shouldn't bounce on and off in between.
-        """
-        if after > 0:
-            timer = threading.Timer(after, self.release)
-            timer.daemon = True
-            timer.start()
-            return
-
-        with self._lock:
-            self._holds = max(0, self._holds - 1)
-            if self._holds == 0 and self.spotify:
-                if self._online():
-                    self._start_change(self.spotify.resume_after_speech)
-                else:
-                    self.spotify.cancel_resume()
-
-    def wait(self):
-        """
-        Waits for any pause or resume still on its way to Spotify. Anything else sent
-        to Spotify waits for this first, so a slow pause can't land after a "play"
-        request and stop the music which was just asked for.
-        """
-        change = self._change
-        if change is not None:
-            # Bounded, so a hung request can't hold the assistant up indefinitely.
-            change.join(timeout=20)
-
-    def _start_change(self, change):
-        """
-        Sends a pause or resume to Spotify on a thread of its own - it goes through
-        Spotify's servers, which takes a moment, or much longer when the network's
-        struggling. Called with the lock held, so they start in the order asked.
-        """
-        previous = self._change
-
-        def run():
-            if previous is not None:
-                previous.join(timeout=20)
-            change()
-
-        self._change = threading.Thread(target=run, daemon=True, name="spotify-music")
-        self._change.start()
-
-
-# Runs a first-time authentication if this file is executed directly.
-# This is the one-off step needed before the assistant can control Spotify.
+# Runs a first-time authentication, as "python -m voice_assistant.spotify_controller"
+# from the project folder. This is the one-off step needed before the assistant can
+# control Spotify.
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # Allows this file to be run directly by putting the project
-    # root on the path before importing from the package.
-    import sys
-    sys.path.insert(0, PROJECT_DIRECTORY)
     from voice_assistant.config import Config
 
     # Config is passed in for the device name.

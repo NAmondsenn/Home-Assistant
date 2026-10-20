@@ -1,6 +1,6 @@
 # Nova
 
-A self-hosted voice assistant for the Raspberry Pi 5. Say "Hey Nova", ask for something, and it answers out loud - timers, reminders, alarms, Spotify, the lights and your calendar through Home Assistant, the weather, and general questions through Claude. Everything except the questions themselves, and Spotify, runs on the Pi.
+A self-hosted voice assistant for the Raspberry Pi 5. Say "Hey Nova", ask for something, and it answers out loud - timers, reminders, alarms, music from your own Navidrome server or Spotify, the lights and your calendar through Home Assistant, the weather, and general questions through Claude. Everything except the questions themselves, the weather and Spotify stays on your own network.
 
 It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standalone Pi version comes first. Later, the heavy lifting moves to a home server, and the Pi becomes one of several satellites around the house.
 
@@ -8,7 +8,7 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 
 - **Timers and reminders** - "set a timer for ten minutes", "remind me to take the pizza out in 20 minutes", "remind me at 4pm to call mum". Timers ring until they're answered, for up to ten minutes; reminders come back every half a minute for five. Both survive a restart.
 - **Alarms** - "wake me up at 7 on weekdays". They ring in bursts, building up from quiet, with gaps for "Hey Nova, stop" to be heard in.
-- **Spotify** - play a song, artist, album or playlist (or your liked songs), pause, skip, go back, shuffle, repeat, "what's this song?". The music pauses while Nova is talking, and comes back when it's done.
+- **Music** - from your own [Navidrome](https://www.navidrome.org/) server, or from Spotify: play a song, artist, album, genre or playlist (or your liked songs), pause, skip, go back, shuffle, repeat, "what's this song?". The music pauses while Nova is talking, and comes back when it's done. Navidrome's plays through Nova itself, so it pauses instantly and keeps working with the internet down.
 - **Volume** - for Nova's voice, for timers and alarms, and for the music, each kept separately.
 - **The lights** - "turn off the kitchen lights", "set the living room lights to 30 percent", through Home Assistant.
 - **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar.
@@ -16,7 +16,7 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
 
-The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume, the time and the lights carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
+The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume, the time, the lights and Navidrome carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
 
 ## How it works
 
@@ -26,7 +26,7 @@ microphone ─► wake word ─► record until you stop talking ─► Whisper 
 ```
 
 - `main.py` runs the loop above, and decides how each request is answered and confirmed.
-- `voice_assistant/` holds everything else, one module per job: `microphone.py` and `speaker.py` own the audio devices, `wake_word.py`, `vad.py`, `speech_to_text.py` and `text_to_speech.py` handle speech, `intents.py` the commands handled locally, `llm.py` Claude, `actions.py` everything Nova can do - each tool Claude is offered, declared beside the code which carries it out - and `clock.py`, `spotify_controller.py`, `home_assistant.py`, `volume.py` and `weather.py` the features themselves.
+- `voice_assistant/` holds everything else, one module per job: `microphone.py` and `speaker.py` own the audio devices, `wake_word.py`, `vad.py`, `speech_to_text.py` and `text_to_speech.py` handle speech, `intents.py` the commands handled locally, `llm.py` Claude, `actions.py` everything Nova can do - each tool Claude is offered, declared beside the code which carries it out - and `clock.py`, `music.py` with `navidrome.py` and `spotify_controller.py`, `home_assistant.py`, `volume.py` and `weather.py` the features themselves.
 - The microphone is opened once and never closed, keeping the last few seconds of audio, so nothing said straight after "Hey Nova" is lost. The speaker is opened once too, and everything that plays goes through it, so a timer or alarm can be stopped the moment you speak.
 
 The reasons behind the bigger choices are in [docs/decisions/](docs/decisions/).
@@ -52,10 +52,32 @@ bash setup.sh
 7. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.
 8. Offers to start the assistant at boot, as a user service.
 
-Then sign in to Spotify once - it prints a link to open in a browser:
+### Music
+
+Navidrome or Spotify - `music.player` in `config.yaml` says which, and it's Spotify unless you change it.
+
+**Navidrome.** Make a Navidrome user for Nova (or use your own), then on the Pi add its password to `.env` yourself:
+
+```
+NAVIDROME_PASSWORD=the-password
+```
+
+and point Nova at it in `config.local.yaml`:
+
+```yaml
+music:
+  player: "navidrome"
+navidrome:
+  url: "http://navidrome.local:4533"
+  username: "nova"
+```
+
+Songs are fetched as MP3 - Navidrome converts anything else as it sends it - and played through ffmpeg, which `setup.sh` installs. Your liked songs are the ones starred in Navidrome. Nova never sends the password itself, only a salted hash of it, as Navidrome's API has it.
+
+**Spotify.** Spotify Premium is needed. Sign in once - it prints a link to open in a browser:
 
 ```bash
-venv/bin/python voice_assistant/spotify_controller.py
+venv/bin/python -m voice_assistant.spotify_controller
 ```
 
 ### Home Assistant, for the lights and the calendar
@@ -101,6 +123,7 @@ The settings most likely to need changing:
 | Setting | What it's for |
 | --- | --- |
 | `weather.location` | Your town or city - in `config.local.yaml`. Empty until you set it. |
+| `music.player` | `navidrome` or `spotify`. |
 | `thresholds.vad_threshold` | How sure Nova must be that it's hearing speech. Raise it if noise keeps it listening; lower it if quiet speech is missed. |
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |

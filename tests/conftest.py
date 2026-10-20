@@ -131,6 +131,7 @@ if _module_missing("requests"):
     requests.ConnectionError = type("ConnectionError", (RequestException,), {})
     requests.Timeout = type("Timeout", (RequestException,), {})
     requests.Session = Session
+    requests.Response = type("Response", (), {})
     requests.get = None
     sys.modules["requests"] = requests
 

@@ -21,6 +21,17 @@ audio:
   # so "Hey Nova what time is it", said in one breath, isn't cut short.
   pre_roll: 0.3
 
+music:
+  # What plays the music: "navidrome" - your own music server, set up below - or
+  # "spotify", which needs Spotify Premium.
+  player: "spotify"
+
+navidrome:
+  # Navidrome's address, e.g. "http://navidrome.local:4533", and the user Nova signs in
+  # as - set them in config.local.yaml. The password goes in .env as NAVIDROME_PASSWORD.
+  url: ""
+  username: ""
+
 spotify:
   device_name: "Voice-Assistant"
   pause_while_speaking: true
@@ -41,9 +52,10 @@ whisper:
   # Words the model is told to expect, which biases it towards the names this
   # assistant actually hears rather than similar sounding ones.
   initial_prompt: >-
-    Hey Nova. Play Spotify. Pause the music, skip this track, shuffle,
+    Hey Nova. Play some music. Pause Spotify, skip this track, shuffle,
     repeat, play my playlist. Set a timer, set a reminder, cancel the timer.
-    Turn on the lights. What time is it? What's the weather?
+    Turn off the kitchen lights. What have I got on Thursday? What time is it?
+    What's the weather?
 
 conversation:
   history_length: 5

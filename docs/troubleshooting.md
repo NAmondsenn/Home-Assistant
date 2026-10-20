@@ -37,7 +37,11 @@ Whisper sometimes finds words in noise. The obvious ones ("Thank you.", "Thanks 
 
 ## Music doesn't play
 
-- **"Spotify needs signing in again on the Pi"** - run the sign-in again: `venv/bin/python voice_assistant/spotify_controller.py`.
+- **"The music isn't available right now"** - the music player didn't start. The log says why, near the top: for Navidrome, `navidrome.url`, `navidrome.username` or `NAVIDROME_PASSWORD` is missing; for Spotify, its sign-in.
+- **"I can't reach Navidrome right now"** - check Navidrome is running, and that its address in `config.local.yaml` opens from the Pi: `curl -I http://navidrome.local:4533`.
+- **"Navidrome didn't accept my password"** - check `NAVIDROME_PASSWORD` in `.env` against the Navidrome user named in `navidrome.username`.
+- **A song is skipped straight away** - the log says `Couldn't play '...'` with ffmpeg's reason. Usually a file Navidrome can't convert to MP3; check its transcoding settings.
+- **"Spotify needs signing in again on the Pi"** - run the sign-in again: `venv/bin/python -m voice_assistant.spotify_controller`.
 - **"I can't find the ... speaker"** - raspotify isn't running, or its name doesn't match `spotify.device_name`. Check `systemctl status raspotify`. It's restarted every night anyway (`raspotify-restart.timer`), since its connection can drop silently.
 
 ## The lights or the calendar don't work

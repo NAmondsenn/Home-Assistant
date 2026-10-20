@@ -2,11 +2,13 @@
 Volume Module
 Keeps track of how loud each kind of sound should be.
 
-There are two separate levels, and changing one never affects the other:
+There are three separate levels, and changing one never affects the others:
 
     general - the assistant's voice
     alarm - anything which goes off by itself: timers, reminders and alarms.
             Kept separate so they can stay loud when everything else is quiet
+    music - music the assistant plays itself, from Navidrome. Spotify keeps
+            its own volume
 
 Levels are saved to data/volumes.json, so a change made by voice survives a
 restart. They deliberately aren't in config.yaml: they're changed by speaking
@@ -34,11 +36,11 @@ class VolumeControl:
     This remembers changes made by voice, so a restart doesn't change them.
     """
 
-    CATEGORIES = ("general", "alarm")
+    CATEGORIES = ("general", "alarm", "music")
 
     # Starting levels for a machine which has never had a volume change. Alarms
     # start at full, since something which goes off unprompted is no use unheard.
-    DEFAULT_LEVELS = {"general": 0.7, "alarm": 1.0}
+    DEFAULT_LEVELS = {"general": 0.7, "alarm": 1.0, "music": 0.5}
 
     def __init__(self, config=None):
         """
@@ -55,7 +57,8 @@ class VolumeControl:
         # Anything the user has changed by voice overrides those defaults.
         self._load()
 
-        logger.info(f"Volume: general {self.percent('general')}%, alarm {self.percent('alarm')}%")
+        logger.info(f"Volume: general {self.percent('general')}%, alarm {self.percent('alarm')}%, "
+                    f"music {self.percent('music')}%")
 
     @staticmethod
     def _clamp_step(step) -> float:
@@ -121,7 +124,7 @@ class VolumeControl:
         The level for a kind of sound, as a number between 0 and 1.
 
         Args:
-            category: 'general' or 'alarm'.
+            category: 'general', 'alarm' or 'music'.
 
         Returns:
             The level to multiply audio by.
@@ -138,7 +141,7 @@ class VolumeControl:
         Set a level.
 
         Args:
-            category: 'general' or 'alarm'.
+            category: 'general', 'alarm' or 'music'.
             percent: The new level, 0 to 100.
 
         Returns:
@@ -167,7 +170,7 @@ class VolumeControl:
         Move a level up or down, for "turn it up a bit" rather than a specific number.
 
         Args:
-            category: 'general' or 'alarm'.
+            category: 'general', 'alarm' or 'music'.
             change_percent: How much to change by, positive or negative.
 
         Returns:
