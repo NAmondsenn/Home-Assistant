@@ -1,6 +1,6 @@
 # 4. PVE2 as a backend, with the Pi keeping everything that has to be instant
 
-20 October 2026 · Phase 4 · Proposed - stage 1's model still to be chosen
+20 October 2026 · Phase 4 · Stage 1 agreed, with Nemotron, and being built
 
 **Context.** Phase 4 moves the heavy work off the Pi and onto PVE2. A look at PVE2 found an Intel i5-8400 (6 cores, AVX2), 31GB of memory with about 24GB free, and no NVIDIA graphics card - just the processor's own Intel graphics. It already runs six containers (Jellyfin, Immich, Navidrome and others) and is mostly idle. So there's no Parakeet on a graphics card, and no local language model quick enough to replace Claude. What PVE2 does have is a faster processor for speech-to-text, and room for the things several devices will share later.
 
@@ -19,6 +19,8 @@ It's done in two stages:
 
 1. **Speech-to-text.** Only if PVE2 measurably beats the Pi on recordings of the user's own voice. The Pi sends the recording as it's made, as it already gives it to Moonshine, and gets the words back. Moonshine on the Pi leaves next to nothing to wait for once the user stops, so PVE2 has to win on getting the words right.
 2. **The conversation.** Only once something needs it in one place - a second Pi, a push-to-talk client, the settings page or ntfy. Anything that belongs to the Pi - a timer, the volume, the music, "stop" - comes back to the Pi to be done, so the clock never leaves it.
+
+**Stage 1, as built**, uses NVIDIA's Nemotron Speech Streaming, in a container of its own on PVE2 called `nova` - see `backend.py` and `voice_assistant/nemotron.py`. It listens on its own machine only, and Tailscale passes the tailnet's connections on to it, so the user's voice is encrypted on its way there and only their own devices can reach it. Each Pi gives a password first as well. The messages are in `voice_assistant/protocol.py`. A Pi uses the backend once `backend.address` is set.
 
 **Standalone mode** is the Nova which runs today, with the backend switched off. The Pi checks PVE2 every few seconds. If it isn't answering, requests go straight to Moonshine and Claude from the Pi. While PVE2 is working, Moonshine isn't kept loaded - it's loaded when PVE2 stops answering, so the first request after that waits a few seconds, and the rest don't. If a request to PVE2 is sent but not answered within about a second, the same recording is transcribed on the Pi instead. Timers, alarms and everyday commands never wait on PVE2.
 

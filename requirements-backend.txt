@@ -1,0 +1,11 @@
+# Exact versions of every package Nova's backend needs - backend.py, in its own
+# container on PVE2 (Debian 13, Python 3.13) - see docs/decisions/0004. It needs far
+# less than a Pi: no microphone, speaker, wake word or Claude, just Nemotron.
+#
+# Install it without dependency resolution, since it already lists everything:
+#   venv/bin/pip install --no-deps -r requirements-backend.txt
+numpy==2.4.6
+python-dotenv==1.2.2
+PyYAML==6.0.3
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8

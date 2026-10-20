@@ -2,6 +2,7 @@ import logging
 import os
 import queue
 import re
+import socket
 import threading
 import numpy as np
 from faster_whisper import WhisperModel
@@ -9,6 +10,7 @@ from typing import Any, Callable, List, Optional, Dict, Union
 import time
 from voice_assistant import paths
 from voice_assistant.logging_setup import TRANSCRIPT
+from voice_assistant.protocol import ProtocolError, receive, send
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -44,6 +46,28 @@ def looks_like_hallucination(text: str, segments) -> bool:
     return bool(segments) and all(segment.no_speech_prob > NO_SPEECH_PROBABILITY
                                   and segment.avg_logprob < LOW_AVERAGE_LOGPROB
                                   for segment in segments)
+
+
+def _heard(text: str, duration: float, after_recording: bool = False) -> Dict[str, Any]:
+    """
+    What Moonshine or the backend heard, logged, and as transcribe() returns it.
+
+    Args:
+        text: The words.
+        duration: How long it took, in seconds.
+        after_recording: Whether that was only the time since the recording stopped,
+            the rest having been done while the user was talking.
+
+    Returns:
+        The 'text' - empty if it's one of the things speech models imagine in noise -
+        and the 'duration'.
+    """
+    took = f"{duration:.2f}s after the recording stopped" if after_recording else f"{duration:.2f}s"
+    logger.info(f"Transcription complete ({took}): '{text}'", extra=TRANSCRIPT)
+    if text and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS:
+        logger.info(f"Ignoring '{text}' - most likely words imagined in noise", extra=TRANSCRIPT)
+        text = ""
+    return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration}
 
 
 class Transcription:
@@ -312,13 +336,7 @@ class MoonshineSpeechToText:
             after_recording: Whether that was only the time since the recording
                 stopped, the rest having been done while the user was talking.
         """
-        text = " ".join(line.text.strip() for line in transcript.lines).strip()
-        took = f"{duration:.2f}s after the recording stopped" if after_recording else f"{duration:.2f}s"
-        logger.info(f"Transcription complete ({took}): '{text}'", extra=TRANSCRIPT)
-        if text and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS:
-            logger.info(f"Ignoring '{text}' - most likely words imagined in noise", extra=TRANSCRIPT)
-            text = ""
-        return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration}
+        return _heard(" ".join(line.text.strip() for line in transcript.lines).strip(), duration, after_recording)
 
 
 class LiveTranscription:
@@ -422,7 +440,233 @@ class LiveTranscription:
                 stream.close()
 
 
+class BackendSpeechToText:
+    """
+    Speech-to-text on Nova's backend on PVE2 - see docs/decisions/0004 and backend.py
+    - with this Pi's own to fall back on whenever the backend can't be reached.
+
+    The backend is checked every few seconds. When it stops answering, this Pi's own
+    model is loaded straight away, so it's ready by the next request rather than
+    loaded then. A recording the backend doesn't answer for in time is transcribed
+    here instead, from the whole of it.
+    """
+
+    def __init__(self, address: str, token: str, fallback: Callable[[], Any],
+                 check_every: float = 5.0, answer_within: float = 1.5):
+        """
+        Args:
+            address: The backend's "name:port" on the tailnet - backend.address in
+                config.yaml.
+            token: The password it wants first.
+            fallback: Loads this Pi's own speech-to-text, when it's needed.
+            check_every: Seconds between checks that the backend is still answering.
+            answer_within: Seconds to wait for it to answer anything, including the
+                words once a recording is over - Nemotron took 0.75s at worst.
+        """
+        host, _, port = address.rpartition(":")
+        self.address = (host, int(port))
+        self.token = token
+        self.answer_within = answer_within
+        self.reachable = False
+        self._make_fallback = fallback
+        self._fallback = None
+        self._fallback_lock = threading.Lock()
+        # Held while a recording is being heard, so a check never comes in the middle.
+        self._busy = threading.Lock()
+        self._socket = None
+        self.connection = None
+        self._stop = threading.Event()
+
+        # Checked once now, so Nova starts knowing which to use.
+        with self._busy:
+            answering = self._check()
+        if not answering:
+            self._local()
+        self._checker = threading.Thread(target=self._keep_checking, args=(check_every,),
+                                         name="backend", daemon=True)
+        self._checker.start()
+
+    def listen(self) -> Union["RemoteTranscription", Transcription, "LiveTranscription"]:
+        """Speech-to-text for the next recording - on the backend if it's answering, here if not."""
+        if self.reachable:
+            self._busy.acquire()
+            if self.connection is not None:
+                try:
+                    send(self.connection, "listen")
+                    return RemoteTranscription(self)
+                except OSError as e:
+                    logger.warning(f"Lost the backend ({e}), so this recording is heard on this Pi")
+                    self._drop()
+            self._busy.release()
+        return self._local().listen()
+
+    def transcribe(self, audio: np.ndarray) -> Dict[str, Any]:
+        """Transcribes a whole recording on this Pi - for when the backend didn't answer for it."""
+        return self._local().transcribe(audio)
+
+    def close(self):
+        """Stops checking on the backend, and lets go of it."""
+        self._stop.set()
+        with self._busy:
+            self._drop()
+
+    def _local(self):
+        """This Pi's own speech-to-text, loaded the first time it's needed."""
+        with self._fallback_lock:
+            if self._fallback is None:
+                logger.info("Loading this Pi's own speech-to-text, for while the backend isn't answering...")
+                self._fallback = self._make_fallback()
+            return self._fallback
+
+    def _keep_checking(self, every: float):
+        """Checks on the backend every few seconds, unless a recording is being heard."""
+        while not self._stop.wait(every):
+            if not self._busy.acquire(blocking=False):
+                continue
+            try:
+                answering = self._check()
+            finally:
+                self._busy.release()
+            if not answering:
+                self._local()
+
+    def _check(self) -> bool:
+        """
+        Pings the backend, connecting first if need be. Called holding _busy.
+
+        Returns:
+            Whether it answered.
+        """
+        try:
+            if self.connection is None:
+                self._connect()
+            send(self.connection, "ping")
+            self._expect("pong")
+        except (OSError, ProtocolError) as e:
+            if self.reachable or self._fallback is None:
+                logger.warning(f"The backend at {self.address[0]} isn't answering ({e}), so speech-to-text "
+                               f"is done on this Pi until it is")
+            self._drop()
+            return False
+        if not self.reachable:
+            logger.info(f"The backend at {self.address[0]} is answering, so speech-to-text is done there")
+        self.reachable = True
+        return True
+
+    def _connect(self):
+        """Connects to the backend, and gives it the password."""
+        self._socket = socket.create_connection(self.address, timeout=self.answer_within)
+        self.connection = self._socket.makefile("rwb")
+        send(self.connection, "hello", token=self.token)
+        self._expect("ready")
+
+    def _expect(self, kind: str) -> Dict:
+        """The backend's answer, if it's the one expected."""
+        message, _ = receive(self.connection)
+        if message["type"] != kind:
+            raise ProtocolError(f"it answered '{message['type']}', not '{kind}'")
+        return message
+
+    def _drop(self):
+        """Lets go of the connection, so the next check starts afresh."""
+        self.reachable = False
+        for thing in (self.connection, self._socket):
+            if thing is not None:
+                try:
+                    thing.close()
+                except OSError:
+                    pass
+        self.connection = self._socket = None
+
+
+class RemoteTranscription:
+    """
+    One recording, heard by the backend as it's made - see BackendSpeechToText. Made
+    holding its _busy, which is let go once the recording is finished or cancelled.
+    """
+
+    def __init__(self, backend: BackendSpeechToText):
+        """
+        Args:
+            backend: Its connection to the backend.
+        """
+        self.backend = backend
+        self._failed: Optional[Exception] = None
+        self._done = False
+
+    def add(self, audio: np.ndarray):
+        """
+        More of the recording, as it's made, sent straight on.
+
+        Args:
+            audio: float32 samples at 16kHz, carrying on from the last.
+        """
+        if self._failed is not None:
+            return
+        try:
+            samples = np.clip(np.round(audio * 32768), -32768, 32767).astype("<i2")
+            send(self.backend.connection, "audio", samples.tobytes())
+        except OSError as e:
+            self._failed = e
+
+    def finish(self, audio: np.ndarray) -> Dict[str, Any]:
+        """
+        The words, once the backend has them.
+
+        Args:
+            audio: The whole recording, transcribed on this Pi if the backend doesn't
+                answer in time.
+
+        Returns:
+            What MoonshineSpeechToText.transcribe() returns - its 'duration' only how
+            long the backend took once the recording stopped.
+        """
+        started = time.time()
+        try:
+            if self._failed is not None:
+                raise self._failed
+            send(self.backend.connection, "finish")
+            message = self.backend._expect("text")
+            return _heard(str(message.get("text", "")).strip(), time.time() - started, after_recording=True)
+        except (OSError, ProtocolError) as e:
+            logger.warning(f"The backend didn't answer ({e}), so this recording is transcribed on this Pi")
+            self.backend._drop()
+        finally:
+            self._let_go()
+        return self.backend.transcribe(audio)
+
+    def cancel(self):
+        """The recording came to nothing."""
+        try:
+            if self._failed is None:
+                send(self.backend.connection, "cancel")
+        except OSError:
+            self.backend._drop()
+        finally:
+            self._let_go()
+
+    def _let_go(self):
+        if not self._done:
+            self._done = True
+            self.backend._busy.release()
+
+
 def make_speech_to_text(config):
+    """
+    Speech-to-text on Nova's backend, if backend.address in config.yaml says where it
+    is, with this machine's own to fall back on - or just this machine's own.
+
+    Args:
+        config: Configs loaded from config.yaml.
+    """
+    address = config.section("backend").get("address")
+    if address:
+        return BackendSpeechToText(address, os.getenv("NOVA_BACKEND_TOKEN", ""),
+                                   fallback=lambda: _this_machines(config))
+    return _this_machines(config)
+
+
+def _this_machines(config):
     """
     The speech-to-text model speech_to_text.engine in config.yaml names - Moonshine
     or Whisper - falling back to Whisper if Moonshine can't be loaded.
