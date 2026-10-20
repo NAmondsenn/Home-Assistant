@@ -78,11 +78,18 @@ The settings most likely to need changing:
 
 | Setting | What it's for |
 | --- | --- |
-| `weather.location` | Your town or city. Empty until you set it. |
+| `weather.location` | Your town or city - in `config.local.yaml`. Empty until you set it. |
 | `thresholds.vad_threshold` | How sure Nova must be that it's hearing speech. Raise it if noise keeps it listening; lower it if quiet speech is missed. |
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
+
+Settings for this one machine - where you live, for the weather - go in `config.local.yaml` beside it instead. It's never committed, so they stay out of the public repository, and an update can't overwrite them. Anything in it overrides `config.yaml`, setting by setting:
+
+```yaml
+weather:
+  location: "Leeds"
+```
 
 Volume levels set by voice are saved in `data/volumes.json`, and timers and alarms in `data/`.
 

@@ -4,10 +4,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Settings for this one machine, kept beside config.yaml but never committed (see
+# .gitignore) - things like the town the weather is for, which have no business in
+# a public repository, and which an update shouldn't overwrite.
+LOCAL_FILENAME = "config.local.yaml"
+
 class Config:
     """
-    Loads settings from config.yaml. This throws an error if the file is missing or invalid.
-    Config exposes sections via .section(name) for easy access to specific parts of the configuration.
+    Loads settings from config.yaml, then anything in config.local.yaml on top. This throws an error if
+    config.yaml is missing or invalid. Config exposes sections via .section(name) for easy access to
+    specific parts of the configuration.
     """
 
     def __init__(self, path=None):
@@ -28,6 +34,19 @@ class Config:
             raise ValueError(f"Config file at {self.path} is empty or invalid")
         
         logger.info(f"Config loaded from {self.path}")
+
+        # Only the settings it names are changed - "weather: {location: ...}" leaves
+        # the rest of config.yaml's weather section as it is.
+        local_path = os.path.join(os.path.dirname(self.path), LOCAL_FILENAME)
+        if os.path.exists(local_path):
+            with open(local_path) as f:
+                local = yaml.safe_load(f) or {}
+            for name, settings in local.items():
+                if isinstance(settings, dict) and isinstance(self.data.get(name), dict):
+                    self.data[name] = {**self.data[name], **settings}
+                else:
+                    self.data[name] = settings
+            logger.info(f"Local settings loaded from {local_path}")
 
     def section(self, name):
         """

@@ -10,6 +10,9 @@ env/
 # .env
 .env
 
+# Settings for one machine only - see voice_assistant/config.py
+config.local.yaml
+
 # Logs and data
 logs/
 *.log

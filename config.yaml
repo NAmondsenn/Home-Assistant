@@ -114,4 +114,5 @@ logging:
 weather:
   # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
   # is free and needs no key. Until it's set, Nova says it doesn't know where you are.
+  # Set it in config.local.yaml rather than here, to keep where you live out of Git.
   location: ""
