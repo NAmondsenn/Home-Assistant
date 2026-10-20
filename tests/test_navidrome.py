@@ -362,3 +362,11 @@ def test_resume_asked_for_while_talking_carries_on_after(make_player):
     player.resume_after_speech()
     assert not playing.paused
 
+
+def test_sharing_only_songs_isnt_a_playlist_match(make_player):
+    # "Light songs" - Whisper's "liked songs" - played "Car Songs".
+    player = make_player({"getPlaylists": {"playlists": {"playlist": [{"id": "p1", "name": "Car Songs"}]}},
+                          "getPlaylist": {"playlist": {"entry": SONGS}},
+                          "getSongsByGenre": {"songsByGenre": {"song": []}}})
+    assert player.play("rainy day songs", search_type="playlist")["success"] is False
+    assert player.play_playlist("car songs")["message"] == "Playing Car Songs"

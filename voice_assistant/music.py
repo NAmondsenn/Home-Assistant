@@ -22,11 +22,13 @@ logger = logging.getLogger(__name__)
 
 PLAYERS = ("navidrome", "spotify")
 
-# What people call their saved or starred songs when asking for them like a playlist.
+# What people call their saved or starred songs when asking for them like a playlist -
+# and, since it arrives from speech, what Whisper makes of "liked songs": "light songs"
+# is too far from it to be caught by the likeness below, and "car songs" too near.
 LIKED_SONGS_NAMES = ("liked songs", "liked music", "my likes", "likes",
                      "saved songs", "saved tracks", "saved music",
                      "favourites", "favorites", "favourite songs", "favorite songs",
-                     "starred songs", "starred")
+                     "starred songs", "starred", "light songs", "lite songs")
 
 
 def means_liked_songs(name: str) -> bool:
@@ -43,6 +45,8 @@ def means_liked_songs(name: str) -> bool:
         True if they meant their liked songs.
     """
     wanted = name.strip().lower()
+    if wanted.startswith("my "):
+        wanted = wanted[3:]
     return any(wanted == liked or difflib.SequenceMatcher(None, wanted, liked).ratio() >= 0.8
                for liked in LIKED_SONGS_NAMES)
 

@@ -57,6 +57,12 @@ MOST_FAILURES = 3
 # Subsonic's error code for a wrong username or password.
 WRONG_LOGIN = 40
 
+# Words too common in playlist names to tell one from another on their own. Asked
+# for "light songs" - Whisper's "liked songs" - "Car Songs" was played, on the
+# strength of "songs" alone.
+GENERIC_PLAYLIST_WORDS = {"songs", "song", "music", "playlist", "playlists", "mix", "tracks", "track",
+                          "list", "my", "some", "tunes"}
+
 
 class NavidromeError(Exception):
     """Navidrome answered, but with an error - a wrong password, say."""
@@ -99,6 +105,14 @@ def split_by(query: str) -> Tuple[str, Optional[str]]:
     if len(parts) >= 2 and parts[-1]:
         return " by ".join(parts[:-1]), parts[-1]
     return query.strip(), None
+
+
+def distinctive(name: str) -> str:
+    """
+    A playlist name without the words almost every playlist name has - "Car Songs"
+    -> "car" - so sharing only "songs" doesn't make two names a match.
+    """
+    return " ".join(word for word in normalise(name).split() if word not in GENERIC_PLAYLIST_WORDS)
 
 
 def best(items: List[Dict], name_key: str, name: str, artist: Optional[str]) -> Optional[Dict]:
@@ -279,7 +293,9 @@ class NavidromePlayer:
         if means_liked_songs(name):
             return self._liked_songs()
         playlists = self._call("getPlaylists").get("playlists", {}).get("playlist") or []
-        playlist = best(playlists, "name", name, None)
+        wanted = distinctive(name)
+        playlist = wanted and best([{**playlist, "distinctive": distinctive(playlist.get("name", ""))}
+                                    for playlist in playlists], "distinctive", wanted, None)
         if not playlist:
             return [], ""
         songs = self._call("getPlaylist", id=playlist["id"]).get("playlist", {}).get("entry") or []

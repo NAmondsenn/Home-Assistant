@@ -101,4 +101,5 @@ def test_navidrome_without_its_settings_means_no_music(make_config, monkeypatch)
 
 def test_liked_songs_are_recognised_when_misheard():
     assert means_liked_songs("leaked songs") and means_liked_songs("my favourites")
-    assert not means_liked_songs("workout")
+    assert means_liked_songs("light songs") and means_liked_songs("my light songs")
+    assert not means_liked_songs("workout") and not means_liked_songs("car songs")
