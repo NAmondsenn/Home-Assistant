@@ -41,16 +41,32 @@ cd Home-Assistant
 bash setup.sh
 ```
 
-`setup.sh` asks a few questions as it goes, and is safe to run again - anything already set up is left alone. In order, it:
+`setup.sh` asks a few questions as it goes, and is safe to run again - anything already set up is left alone, and each step says whether it was done (✓), skipped (–) or needs you (✗). In order, it:
 
-1. Asks for the assistant's name, wake word and Spotify speaker name, and saves them to `config.yaml`.
-2. Asks for your API keys and writes them to `.env`, readable only by you. An existing `.env` is left as it is.
-3. Finds your wake word model (see below) and copies it into `models/`.
-4. Installs the system packages, makes a Python environment in `venv/`, and installs the Python packages.
-5. Downloads Piper (the voice), the Whisper models and openWakeWord's own models into `models/`.
-6. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone. It asks which card is which - see `aplay -l` and `arecord -l`.
-7. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.
-8. Offers to start the assistant at boot, as a user service.
+1. Checks this is Raspberry Pi OS or Debian, with Python 3.11 or newer, a speaker and a microphone.
+2. Installs the system packages, makes a Python environment in `venv/`, and installs the Python packages - the exact versions in `requirements.lock`.
+3. Moves anything an older install kept in the repository folder to its new place (see Configuring).
+4. Asks for the assistant's name, wake word and Spotify speaker name, saving any you change to `~/.config/nova/config.yaml`.
+5. Asks for your API keys and writes them to `~/.config/nova/.env`, readable only by you. An existing one is left as it is.
+6. Finds your wake word model (see below) and copies it into `models/`.
+7. Downloads Piper (the voice), the Whisper models and openWakeWord's own models into `models/`.
+8. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone, backing up the old one.
+9. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.
+10. Sets the assistant to start at boot, as a user service, and starts it.
+
+`bash setup.sh --yes` asks nothing, taking what it finds and the defaults; `--no-spotify` leaves raspotify out, and `--no-service` doesn't start Nova at boot.
+
+To update to the latest code later - it never touches your settings, keys or saved data:
+
+```bash
+bash update.sh
+```
+
+and to take Nova off the Pi, asking before removing anything which can't be got back:
+
+```bash
+bash uninstall.sh
+```
 
 ### Music
 

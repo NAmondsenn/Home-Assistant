@@ -5,16 +5,10 @@ Run through this on the Pi whenever a branch is put on it, before relying on it.
 ## Putting a branch on the Pi
 
 ```bash
-git fetch && git switch <branch> && git pull --ff-only
-```
-```bash
-venv/bin/pip install --no-deps -r requirements.lock
-```
-```bash
-systemctl --user restart voice-assistant && journalctl --user -u voice-assistant -n 30
+git fetch && git switch <branch> && bash update.sh
 ```
 
-The log should end with `Nova ready!` and `Listening for 'Hey Nova'...`, with no errors above. If the service file changed (`voice-assistant.service`), rebuild it first - `setup.sh` does that.
+`update.sh` brings the branch up to date, installs `requirements.lock`, fetches any new models, rewrites the service file and restarts Nova, then shows the end of the log. It should end with `Nova ready!` and `Listening for 'Hey Nova'...`, with no errors above. To go back, switch to the previous branch or tag and run it again.
 
 ## Hearing you
 
