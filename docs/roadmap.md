@@ -74,7 +74,8 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
   - [x] Parakeet's speed on PVE2's processor: 0.58s typically once the recording stopped, 1.35s at worst, with 4.5% of words wrong - and a third of a millisecond to the Pi and back. More accurate than Moonshine, but slower than Moonshine working the words out as they're said
   - [x] NVIDIA's streaming Nemotron Speech on PVE2, which works as it hears: 0.29s once the recording stopped, 0.75s at worst, with 5.1% of words wrong and 23 of 25 everyday commands still handled - nearly Parakeet's accuracy at nearly live Moonshine's speed. It needs half a second of silence before each recording and 1.2s after
   - [x] Stage 1's model chosen, 20 October: Nemotron - see [decisions/0004](decisions/0004-pve2-backend.md)
-  - [ ] Stage 1: the backend, `backend.py`, in its own container on PVE2 (`nova`, reached over the tailnet), and the Pi hearing through it, with Moonshine to fall back on - built on `phase-4`. The Pi's side goes in after the soak
+  - [x] Stage 1's backend: `backend.py`, running in its own container on PVE2 (`nova`, reached over the tailnet only). Measured from the Pi with the user's 38 recordings, before they were deleted: 0.33s to wait once the recording stopped, 0.53s at worst, with 5.1% of words wrong - and next to no work for the Pi
+  - [ ] The Pi hearing through the backend, with Moonshine to fall back on - built on `phase-4`, to go in after the soak: `backend.address` set to `nova:10400`, and the password in the Pi's `~/.config/nova/.env`
 - Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
