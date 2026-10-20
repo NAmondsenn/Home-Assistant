@@ -998,7 +998,7 @@ class Clock:
         "understood", "silence", "mute", "no",
     }
 
-    # Said last, these mean "stop" whatever Whisper heard before them. "Stop" alone,
+    # Said last, these mean "stop" whatever was heard before them. "Stop" alone,
     # over a timer, has come back as "It's a little bus stop" - which still went to
     # Claude, and only stopped the timer by the roundabout route of being talked over.
     # Moonshine (see speech_to_text.py) hears a lone "stop" as "soap", "sop", or

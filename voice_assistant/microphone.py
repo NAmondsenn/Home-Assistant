@@ -3,7 +3,7 @@ Microphone Module.
 
 One input stream, opened once at startup and left running, which everything that
 listens reads from - first the wake word detector, then the recorder. The last few
-seconds of audio are kept at 16kHz, the rate openWakeWord, Silero and Whisper all
+seconds of audio are kept at 16kHz, the rate openWakeWord, Silero and speech-to-text all
 expect, so nothing downstream needs to resample.
 
 Opening the microphone afresh for each stage used to lose words: the wake word's
@@ -303,7 +303,7 @@ class Microphone:
             listen_from: Position to start listening from (see position), such as
                 the moment the wake word was heard. Now if None.
             keep_before: Seconds of audio from before listen_from to keep as well.
-                It isn't listened to for speech, but goes to Whisper with the rest,
+                It isn't listened to for speech, but goes to speech-to-text with the rest,
                 so words said straight after the wake word - which can come before
                 it's even been detected - aren't cut off.
             timeout: Maximum recording duration in seconds, from listen_from.

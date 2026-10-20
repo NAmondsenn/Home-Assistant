@@ -439,7 +439,7 @@ class SpotifyController:
         """
         Loose check that a search result actually relates to what was asked for.
 
-        Whisper mishears song and artist names fairly often, and Spotify's search
+        Speech-to-text mishears song and artist names fairly often, and Spotify's search
         always returns *something*, so without this an unrecognised query quietly
         plays an unrelated track.
 

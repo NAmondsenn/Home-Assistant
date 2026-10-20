@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 PLAYERS = ("navidrome", "spotify")
 
 # What people call their saved or starred songs when asking for them like a playlist -
-# and, since it arrives from speech, what Whisper makes of "liked songs": "light songs"
+# and, since it arrives from speech, what speech-to-text makes of "liked songs": "light songs"
 # is too far from it to be caught by the likeness below, and "car songs" too near.
 LIKED_SONGS_NAMES = ("liked songs", "liked music", "my likes", "likes",
                      "saved songs", "saved tracks", "saved music",

@@ -361,7 +361,7 @@ class NavidromePlayer:
         if not songs:
             return {"success": False, "message": f"I couldn't find {query or 'anything to play'} on Navidrome."}
         self._start(songs[:MOST_SONGS])
-        logger.info(f"Playing {said} ({len(songs)} songs queued)")
+        logger.info(f"Playing {said} ({len(songs)} song{'s' if len(songs) != 1 else ''} queued)")
         return {"success": True, "message": f"Playing {said}"}
 
     def play_playlist(self, name: str) -> Dict:

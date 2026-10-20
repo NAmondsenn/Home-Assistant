@@ -8,7 +8,7 @@ PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 from voice_assistant import paths
 from voice_assistant.config import Config
 from voice_assistant.speaker import Speaker
-from voice_assistant.microphone import Microphone
+from voice_assistant.microphone import RATE, Microphone
 from voice_assistant.echo import make_echo_canceller
 from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import make_speech_to_text
@@ -48,10 +48,8 @@ class SmartAssistant:
         self.wake_word = assistant_config.get("wake_word", "Hey Assistant")
 
         # Retrieves the audio configuration section from config.yaml.
-        # whisper_rate is set to a constant 16000 Hz, which is expected by Whisper.
         audio_config = self.config.section("audio")
         self.mic_rate = audio_config.get("sample_rate", 48000)
-        self.whisper_rate = 16000
 
         # The assistant's own sound effects, kept with the rest of the project.
         sounds_config = self.config.section("sounds")
@@ -530,11 +528,11 @@ class SmartAssistant:
             self._not_heard()
             return False
 
-        # Transcribes the recorded audio using Whisper to text, Continues listening if no text is returned.
-        # The audio is already at Whisper's rate, since the microphone keeps it at 16kHz.
+        # Transcribes the recorded audio, carrying on listening if no text comes back.
+        # The audio is already at the 16kHz speech-to-text expects, since the microphone keeps it at that.
         transcription = self.stt.transcribe(audio_data)
         timeline.mark("stt_done")
-        timeline.note(audio_seconds=round(len(audio_data) / self.whisper_rate, 2))
+        timeline.note(audio_seconds=round(len(audio_data) / RATE, 2))
 
         # Retrieves the transcribed text, without the end of the wake word which the
         # recording sometimes catches - see strip_wake_word.

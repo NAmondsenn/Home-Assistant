@@ -477,7 +477,7 @@ class LLMHandler:
                 play_index = user_lower.find("play ")
                 if play_index != -1 and len(user_text) > play_index + 5:
 
-                    # Whisper strips punctuation that could end up in the search query.
+                    # Speech-to-text punctuates, and that could end up in the search query.
                     query = user_text[play_index + 5:].strip().strip(".,!?").strip()
                     for filler in ("some ", "me ", "the ", "a "):
                         if query.lower().startswith(filler):

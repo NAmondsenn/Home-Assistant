@@ -41,7 +41,7 @@ def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
     dismissing a timer, since every word of one has to be a dismissal.
 
     Args:
-        text: What Whisper heard.
+        text: What speech-to-text heard.
         phrase: The wake word, e.g. "Hey Nova".
 
     Returns:
@@ -52,7 +52,7 @@ def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
         return text
 
     # Matches the whole phrase or only the end of it ("Hey Nova" or just "Nova"),
-    # along with whatever punctuation Whisper put around it - but only as whole
+    # along with whatever punctuation speech-to-text put around it - but only as whole
     # words, so "Novak Djokovic" is left as it is.
     pattern = ""
     for word in words[:-1]:
@@ -61,7 +61,7 @@ def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
 
     rest = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
 
-    # Whisper often mishears the end of the wake word, too, and puts it in front of
+    # Speech-to-text often mishears the end of the wake word, too, and puts it in front of
     # the request as a little clause of its own - "In Nova, what's the weather?",
     # "Turn over, set a one minute timer". Up to two words ending in the wake word,
     # or in what "Nova" most often turns into, are taken off as well - but only with

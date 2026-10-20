@@ -23,8 +23,9 @@ Lining them up is the hard part, for two reasons found on the Pi:
   and what was played is stretched onto the microphone's timeline before it's
   taken out.
 - The gap between a sound being played and being heard was 55ms one run and
-  145ms the next, as the shared output and input's 125ms periods fell differently
-  each time they were opened. So it's measured as the assistant runs, by matching
+  145ms the next, as the shared output and input's periods - 125ms each, then -
+  fell differently each time they were opened. With 21ms ones it's 20-40ms, but
+  still not the same twice. So it's measured as the assistant runs, by matching
   what was played against what was heard, every couple of seconds - and since one
   measurement can be a few milliseconds out, the middle of the last few is used,
   once enough of them agree.
