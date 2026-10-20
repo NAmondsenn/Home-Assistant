@@ -26,6 +26,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 import numpy as np
 import requests
 
+from voice_assistant import network
 from voice_assistant.music import means_liked_songs
 
 # Logger setup
@@ -219,6 +220,11 @@ class NavidromePlayer:
             requests.RequestException: If Navidrome couldn't be reached.
             NavidromeError: If it answered with an error.
         """
+        # On the local network, so it's still asked with only the internet down - but
+        # not with no network at all, which only waited out looking its name up. See
+        # HomeAssistant._request.
+        if not network.online():
+            raise requests.ConnectionError("No network connection")
         response = self._session.get(f"{self.url}/rest/{endpoint}", params={**self._sign_in(), **params},
                                      timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
@@ -556,6 +562,8 @@ class NavidromePlayer:
 
     def _open_song(self, song_id: str) -> requests.Response:
         """Starts downloading a song from Navidrome, as an MP3 whatever it's stored as."""
+        if not network.online():
+            raise requests.ConnectionError("No network connection")
         response = self._session.get(f"{self.url}/rest/stream",
                                      params={**self._sign_in(), "id": song_id, "format": "mp3", "maxBitRate": 320},
                                      timeout=REQUEST_TIMEOUT, stream=True)

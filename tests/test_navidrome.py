@@ -18,6 +18,7 @@ import requests
 
 np = pytest.importorskip("numpy")
 
+from voice_assistant import network
 from voice_assistant import volume as volume_module
 from voice_assistant.navidrome import NavidromePlayer, best, likeness, split_by
 from voice_assistant.volume import VolumeControl
@@ -201,6 +202,13 @@ def test_a_failed_request_never_logs_the_token(make_player, caplog):
     player = make_player({"search3": requests.ConnectionError("http://nd/rest/search3?t=abc123token")})
     assert player.play("Drake")["message"] == "I can't reach Navidrome right now."
     assert "abc123token" not in caplog.text
+
+
+def test_with_no_network_it_isnt_asked_at_all(make_player, monkeypatch):
+    monkeypatch.setattr(network, "online", lambda: False)
+    player = make_player()
+    assert player.play("Drake")["message"] == "I can't reach Navidrome right now."
+    assert player._session.requests == []
 
 
 # Playing the queue

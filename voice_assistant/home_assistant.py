@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 
 import requests
 
+from voice_assistant import network
 from voice_assistant.clock import spoken_clock_time
 
 # Logger setup
@@ -110,6 +111,12 @@ class HomeAssistant:
         return cls(url, token, calendars=settings.get("calendars"), activities=settings.get("activities"))
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        # Home Assistant is on the local network, so it's still asked with only the
+        # internet down - but with no network at all, there's no reaching it. Found
+        # with the Pi's cable out: "turn on the lamp" waited 20 seconds for its name
+        # to fail to be looked up before saying so.
+        if not network.online():
+            raise requests.ConnectionError("No network connection")
         response = self._session.request(method, self.url + path, timeout=REQUEST_TIMEOUT, **kwargs)
         response.raise_for_status()
         return response

@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 import pytest
 import requests
 
+from voice_assistant import network
 from voice_assistant.home_assistant import HomeAssistant, describe_agenda, describe_found
 
 
@@ -99,6 +100,15 @@ def test_a_failed_request_says_what_went_wrong(make_home, failure, said):
     home = make_home({"/api/conversation/process": failure})
     result = home.command("turn on the lights")
     assert result["success"] is False and said in result["message"]
+
+
+def test_with_no_network_it_isnt_asked_at_all(make_home, monkeypatch):
+    # With the Pi's cable out, "turn on the lamp" waited 20 seconds for Home
+    # Assistant's name to fail to be looked up.
+    monkeypatch.setattr(network, "online", lambda: False)
+    home = make_home({})
+    assert home.command("turn on the lamp")["message"] == "I can't reach Home Assistant right now."
+    assert home._session.requests == []
 
 
 def test_without_an_address_and_a_token_its_off(make_config):
