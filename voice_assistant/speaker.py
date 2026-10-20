@@ -37,11 +37,13 @@ BLOCK_SECONDS = 0.02
 # how long a stopped sound can still be heard for, so it's kept short - but too
 # short and the shared output (dmix, in /etc/asound.conf) runs dry and crackles.
 # It's rounded to whole periods of the shared output, 21ms each (see setup.sh):
-# this gives four, so the audio thread can be held up by about 64ms without
-# running dry, and a stopped sound was measured on the Pi to go quiet 115-185ms
-# after Nova decided to stop it, against 240ms with ALSA's own 125ms periods.
-# The times it does run dry are logged (see dropouts.py).
-OUTPUT_LATENCY = 0.08
+# this gives five, so the audio thread can be held up by about 85ms without
+# running dry. Four ran dry once in the release checklist, just as a reply was
+# being made. A stopped sound was measured on the Pi to go quiet 115-185ms after
+# Nova decided to stop it with four, against 240ms with ALSA's own 125ms periods
+# - a period more, with five. The times it does run dry are logged (see
+# dropouts.py).
+OUTPUT_LATENCY = 0.1
 
 # Seconds without the stream asking for audio before it's taken to have died.
 STALL_SECONDS = 2.0

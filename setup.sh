@@ -323,7 +323,7 @@ write_asound_conf() {
 # Both work in 1024-frame (21ms) bursts. ALSA's own choice was 6000 (125ms), which
 # was how late the microphone's audio reached the wake word, and how long a sound
 # Nova had stopped carried on playing - measured on the Pi, 130ms and 240ms
-# typically, against 50ms and 125-150ms with these. The 8192-frame buffer behind
+# typically, against 50ms and under 200ms with these. The 8192-frame buffer behind
 # them is only slack, and adds no delay of its own. Changes here take effect once
 # everything using the speaker and microphone - Nova and raspotify - has restarted.
 pcm.!default {
