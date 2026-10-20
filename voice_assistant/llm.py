@@ -270,9 +270,18 @@ class LLMHandler:
 
     def process_query(self, text, context=None):
         """
-        Processes a user query using the LLM. It maintains a conversation history and constructs an initial prompt to guide the model's behaviour.
-        This method checks the query against _parse_action to determine if there are any specific actions (e.g. Spotify commands) to be executed.
-        Finally, it returns a dictionary containing the model's response, the list of actions it asked for, and whether the transaction was successful.
+        Asks Claude to answer what the user said, with the recent conversation and
+        the tools it may call. The keyword parser (_parse_action) is only used when
+        Claude can't be reached - no API key, no network, or a failed request - so
+        "pause the music" still works offline.
+
+        Args:
+            text: What the user said.
+            context: The timers and reminders running, as said to Claude.
+
+        Returns:
+            Dict with 'response' (what to say), 'actions' (the Actions asked for)
+            and 'success' (False if Claude couldn't be asked, or the request failed).
         """
         logger.info(f"Processing query: '{text}'", extra=TRANSCRIPT)
         use_web_search = self._wants_web_search(text)

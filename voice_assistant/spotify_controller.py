@@ -152,7 +152,9 @@ class SpotifyController:
     def authenticate_first_time(self):
         """
         First-time authentication - prints a URL for the user to visit.
-        Run this once to get the initial token, after which tokens auto-refresh.
+        Run this once to get the first token. After that the cached refresh token
+        keeps Nova signed in (see _RefreshingAuth), as long as the client is built
+        with auth_manager rather than a fixed access token.
 
         The redirect page is expected to fail to load; only the URL it redirects
         to matters, since that carries the authorisation code.
