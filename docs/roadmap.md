@@ -6,7 +6,8 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 - `main` - the version from before the audit fixes.
 - `phase-1` - Phase 1, tested on the Pi.
-- `phase-2` - Phase 2, built on `phase-1`.
+- `phase-2` - Phase 2, built on `phase-1`, tested on the Pi.
+- `phase-3` - Phase 3, the Home Assistant and Navidrome work, and fixes from testing, built on `phase-2`.
 
 ## Phase 0: housekeeping - done
 
@@ -22,7 +23,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] UX-01 listening sound
 - [x] Found while testing: the time read out as "nineteen thirty-six", the listening sound silent unless music was playing
 
-## Phase 2: Raspberry Pi completion - built, being tested on the Pi
+## Phase 2: Raspberry Pi completion - built, tested on the Pi
 
 - [x] PERF-04 one microphone stream with pre-roll, which also fixed the microphone going deaf when replugged, and about a fifth of its audio being lost
 - [x] BUG-25 Silero voice activity · BUG-24 no wrap-around on loud audio
@@ -33,25 +34,32 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] BUG-40 weather · UX-02 clearer failures · SEC-03 log rotation and transcripts switch · SEC-04 private token cache · DEP-03 fresh install starts
 - [x] TEST-02 clock above 80% coverage, Spotify matching tested · TEST-03 ruff and GitHub checks
 - [x] README and these docs
-- [ ] Live test on the Pi - [release-checklist.md](release-checklist.md)
+- [x] Live test on the Pi - [release-checklist.md](release-checklist.md)
+- [x] Set `weather.location`
 - [ ] 72-hour soak test, with `scripts/soak_monitor.py` running
 - [ ] UX-04 physical stop button - needs a button and a GPIO pin
-- [ ] Set `weather.location`
 - [ ] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means
 
-## Phase 3: code quality and performance
+## Phase 3: code quality, speed, and the home - built on `phase-3`, not yet on the Pi
 
-- [ ] PERF-01, PERF-02 Piper kept running, Claude's reply streamed into speech a sentence at a time, prompt caching
-- [ ] ARCH-01 a `Conversation` class out of `main.py` · ARCH-04 action registry · ARCH-09 action results
-- [ ] ARCH-02, ARCH-03 one paths module, validated config kept outside the repository · DEP-04 install, update and uninstall scripts
-- [ ] PERF-03 Whisper settings A/B · PERF-05 drop librosa · PERF-07 fewer Spotify calls · DEP-05 watchdog
-- [ ] SEC-05, SEC-07, ARCH-05 to ARCH-08, BUG-26, BUG-29, BUG-31
+- [x] PERF-03 one Whisper guess, measured · a 0.6s end-of-speech pause
+- [x] PERF-01 Piper kept loaded, speech played a sentence at a time from memory (PERF-06) · PERF-02 Claude's instructions cached
+- [x] ARCH-04, ARCH-09 each action declared once, with one way of confirming it · ARCH-01 `Conversation` out of `main.py`
+- [x] Home Assistant lights and calendar, through Assist and a user of Nova's own (brought forward from Phase 5)
+- [x] Navidrome music through Nova's own speaker, Spotify kept as an option
+- [x] From testing: "...stop" while ringing, "Hey Nova" straight after a reply
+- [x] PERF-05 librosa and PyAudio gone · PERF-07 fewer Spotify calls · DEP-05 watchdog · SEC-07 service hardening
+- [x] ARCH-02, ARCH-03 settings, keys and data outside the repository, checked as they're read · DEP-04 install, update and uninstall
+- [ ] On the Pi: `HA_TOKEN` and `NAVIDROME_PASSWORD` in `~/.config/nova/.env`, the addresses in `~/.config/nova/config.yaml`, then the release checklist
+- [ ] Streaming Claude's reply into speech - looked at, left for now: about a tenth of a second, for guessing whether a tool call is coming
+- [ ] A faster speech-to-text model - Whisper's 1.9s is now the biggest wait; Moonshine is worth measuring (needs a download)
+- [ ] SEC-05, ARCH-05 to ARCH-08, BUG-26, BUG-29, BUG-31
 - [ ] Shorter bursts on the shared input and output (`/etc/asound.conf` and `setup.sh`), currently 125ms - quicker wake word and end of speech, and stopping sounds sooner
 
 ## Phase 4 onwards
 
 - Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback.
-- Phase 5 - Home Assistant for the lights and devices, with confirmations for anything security-sensitive.
+- Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
 ## Outside the code
