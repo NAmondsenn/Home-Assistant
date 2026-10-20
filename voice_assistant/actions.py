@@ -37,6 +37,7 @@ UNAVAILABLE = {
     "weather": "The weather isn't available right now.",
     "home": "Home Assistant isn't set up yet.",
     "memory": "I can't remember things right now.",
+    "ntfy": "Notifications aren't set up yet.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -194,7 +195,7 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
 class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
-    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None):
+    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -204,6 +205,8 @@ class ActionExecutor:
             home: HomeAssistant instance, for the lights and the calendar, or None
                 if it isn't set up.
             memory: Memory instance, for what the assistant knows about the user.
+            ntfy: Ntfy instance, for the user's notifications, or None if it isn't
+                set up.
         """
         self.music = music
         self.clock = clock
@@ -211,6 +214,10 @@ class ActionExecutor:
         self.weather = weather
         self.home = home
         self.memory = memory
+        self.ntfy = ntfy
+        # What was last asked, and what the assistant said - or the last alert, and
+        # all of it - for "send that to my phone". Kept up to date by the Conversation.
+        self.last_answer: Optional[Tuple[str, str]] = None
 
     @classmethod
     def tools(cls) -> Dict[str, Callable]:
@@ -846,3 +853,43 @@ class ActionExecutor:
     )
     def list_memories(self):
         return self.memory.describe()
+
+    # Notifications
+
+    @tool(
+        "Send something to the user's phone, as a notification - for 'send that to my phone', "
+        "'text me the recipe', 'put the shopping list on my phone'. Write out in full what "
+        "they'd want to read there: it isn't said out loud, so it can be longer and more "
+        "detailed than a spoken reply. Leave text out to send exactly what you last said.",
+        needs="ntfy",
+        text={"type": "string", "description": "What to send, written to be read."},
+        title={"type": "string", "description": "A few words saying what it is, e.g. 'Pancake recipe'."},
+    )
+    def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None):
+        if not self.ntfy.phone:
+            return {"success": False, "message": "There's nowhere set up to send things to your phone."}
+        if not text:
+            if self.last_answer is None:
+                return {"success": False, "message": "There's nothing to send yet."}
+            asked, text = self.last_answer
+            title = title or asked
+        if self.ntfy.send(self.ntfy.phone, text, title=(title or "From Nova")[:100]):
+            return {"success": True, "message": "Sent.", "chime": True}
+        return {"success": False, "message": "I couldn't reach your notifications."}
+
+    @tool(
+        "Read out the notifications which came in without being said - at night, or while "
+        "they couldn't be fetched - for 'any notifications?' or 'what are my notifications?'. "
+        "They're read out for you, so just reply 'Okay.'",
+        needs="ntfy",
+    )
+    def read_notifications(self):
+        return self.ntfy.unheard()
+
+    @tool(
+        "Read out the whole of the last notification, for 'tell me more' or 'what was that "
+        "about?' just after one was said. It's read out for you, so just reply 'Okay.'",
+        needs="ntfy",
+    )
+    def tell_me_more(self):
+        return self.ntfy.tell_more()

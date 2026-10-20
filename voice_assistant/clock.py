@@ -250,18 +250,25 @@ class Clock:
     """
 
     def __init__(self, on_timer_finished: Optional[Callable[..., None]] = None,
-                 check_interval: float = 0.5, config=None, start: bool = True):
+                 check_interval: float = 0.5, config=None, start: bool = True,
+                 on_unanswered: Optional[Callable[[Dict, str], None]] = None):
         """
         Args:
             on_timer_finished: Called with (message, sound, boost, still_wanted=...),
                                plus start, length and level for an alarm's bursts,
                                when a timer goes off. This is how the assistant speaks
                                it - the Clock itself has no audio.
+            on_unanswered: Called with a timer, reminder or alarm which stopped
+                           ringing without anyone answering it, and which it was -
+                           "clock" or "alarm" - so a reminder can be sent to the
+                           user's phone. Called on the clock's own thread, so it
+                           mustn't wait on anything.
             check_interval: How often the background thread checks for due timers.
             start: Whether to start the background thread. Only the tests turn
                    this off, so they can step the clock along with _tick() instead.
         """
         self.on_timer_finished = on_timer_finished
+        self.on_unanswered = on_unanswered
         self.check_interval = check_interval
 
         self._timers: Dict[int, Dict] = {}
@@ -800,6 +807,12 @@ class Clock:
             return
 
         self._record_unacknowledged(entry["timer"])
+        if self.on_unanswered:
+            try:
+                self.on_unanswered(entry["timer"], entry["kind"])
+            except Exception as e:
+                # Passing it on must never stop the clock's thread.
+                logger.error(f"Couldn't pass on an unanswered {entry['kind']}: {e}")
 
     def _repeat_settings(self, item: Dict, kind: str = "clock"):
         """

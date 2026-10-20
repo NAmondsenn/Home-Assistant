@@ -255,3 +255,65 @@ def test_the_next_times_are_looked_for_across_a_fortnight():
     home = FakeHome()
     ActionExecutor(home=home).execute(Action("get_activity", {"activity": "work", "start": "2026-10-20", "count": 50}))
     assert home.asked == ("work", "2026-10-20", 14, 10)
+
+
+# Notifications
+
+class FakeNtfy:
+    """Stands in for the user's ntfy server, keeping what was sent to it."""
+
+    def __init__(self, phone="clipboard", works=True):
+        self.phone = phone
+        self.works = works
+        self.sent = []
+
+    def send(self, topic, message, title="", priority=0):
+        self.sent.append({"topic": topic, "title": title, "message": message})
+        return self.works
+
+    def unheard(self):
+        return {"success": True, "message": "No new notifications."}
+
+    def tell_more(self):
+        return {"success": True, "message": "Backup failed. Error 5."}
+
+
+def test_send_that_to_my_phone_sends_what_was_last_said_under_what_was_asked():
+    ntfy = FakeNtfy()
+    executor = ActionExecutor(ntfy=ntfy)
+    executor.last_answer = ("What's the recipe for pancakes?", "Mix flour, eggs and milk, then fry them.")
+    result = executor.execute(Action("send_to_phone"))
+
+    assert (result.ok, result.confirm) == (True, "chime")
+    assert ntfy.sent == [{"topic": "clipboard", "title": "What's the recipe for pancakes?",
+                          "message": "Mix flour, eggs and milk, then fry them."}]
+
+
+def test_claude_can_send_more_than_it_said():
+    ntfy = FakeNtfy()
+    ActionExecutor(ntfy=ntfy).execute(Action("send_to_phone", {"text": "100g flour, 2 eggs, 300ml milk...",
+                                                              "title": "Pancake recipe"}))
+    assert ntfy.sent == [{"topic": "clipboard", "title": "Pancake recipe", "message": "100g flour, 2 eggs, 300ml milk..."}]
+
+
+def test_theres_nothing_to_send_before_anything_was_said():
+    result = ActionExecutor(ntfy=FakeNtfy()).execute(Action("send_to_phone"))
+    assert (result.ok, result.say) == (False, "There's nothing to send yet.")
+
+
+def test_sending_says_when_it_couldnt():
+    executor = ActionExecutor(ntfy=FakeNtfy(works=False))
+    executor.last_answer = ("asked", "said")
+    assert executor.execute(Action("send_to_phone")).say == "I couldn't reach your notifications."
+    # Nor with nowhere set up to send it.
+    assert ActionExecutor(ntfy=FakeNtfy(phone="")).execute(Action("send_to_phone")).ok is False
+
+
+def test_notifications_are_only_offered_once_ntfy_is_set_up():
+    def offered(executor):
+        return {schema["name"] for schema in executor.tool_schemas()}
+
+    tools = {"send_to_phone", "read_notifications", "tell_me_more"}
+    assert tools <= offered(ActionExecutor(ntfy=FakeNtfy()))
+    assert not tools & offered(ActionExecutor())
+    assert ActionExecutor().execute(Action("read_notifications")).say == "Notifications aren't set up yet."

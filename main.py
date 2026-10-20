@@ -18,6 +18,8 @@ from voice_assistant.weather import Weather
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.memory import Memory
 from voice_assistant.network import online
+from voice_assistant.ntfy import Ntfy
+from voice_assistant import storage
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.music import MusicHold, make_player
@@ -32,6 +34,15 @@ from voice_assistant.logging_setup import log_transcripts, setup_logging, transc
 # Logger for the SmartAssistant class. Where its lines go is set up when the
 # assistant is run (see the bottom of this file), not on import.
 logger = logging.getLogger(__name__)
+
+# Left while the assistant runs, and taken away when it stops properly - so finding
+# it when starting means the last run didn't: it crashed, the watchdog restarted it,
+# or the power went. See _note_start.
+RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
+
+# The least time between telling the user's phone the assistant had to restart, so a
+# crash which keeps happening doesn't flood it.
+RESTART_NOTICE_GAP = 3600
 
 class SmartAssistant:
     def __init__(self):
@@ -111,11 +122,15 @@ class SmartAssistant:
         # Keeps the music paused while there's something to say - see MusicHold.
         self.music = MusicHold(self.music_player, online=online)
 
+        # The user's own ntfy server, both ways: alerts said out loud as they arrive,
+        # and things sent to their phone. None if it isn't set up - see ntfy.py.
+        self.ntfy = Ntfy.from_config(self.config, os.getenv("NTFY_TOKEN"), on_alert=self._alert)
+
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
-        self.clock = Clock(on_timer_finished=self._announce, config=self.config)
+        self.clock = Clock(on_timer_finished=self._announce, on_unanswered=self._unanswered, config=self.config)
 
         # The everyday commands handled without Claude - see intents.py.
-        self.intents = LocalIntents(clock=self.clock)
+        self.intents = LocalIntents(clock=self.clock, ntfy=self.ntfy)
 
         # What the assistant knows about the user, learnt as they talk - see memory.py.
         self.memory = Memory()
@@ -125,7 +140,7 @@ class SmartAssistant:
         self.actions = ActionExecutor(music=self.music_player, clock=self.clock, volume=self.volume,
                                       weather=Weather(config=self.config),
                                       home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")),
-                                      memory=self.memory)
+                                      memory=self.memory, ntfy=self.ntfy)
 
         # Claude, offered whichever of those tools can actually work here, and told
         # what's known about the user.
@@ -349,6 +364,54 @@ class SmartAssistant:
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
 
+    def _alert(self, alert):
+        """
+        Says an alert from ntfy out loud as it arrives - see ntfy.py. Like a timer, it
+        waits for any conversation to finish, and pauses the music.
+
+        Args:
+            alert: The ntfy Alert.
+        """
+        # "Send that to my phone" straight afterwards sends the whole of it.
+        self.actions.last_answer = (alert.title or f"From {alert.topic}", alert.details)
+        self._announce(f"{alert.topic.capitalize()}: {alert.headline}")
+
+    def _unanswered(self, timer, kind):
+        """
+        Sends a reminder nobody answered to the user's phone, once it's stopped ringing.
+        Only a reminder: a plain timer or an alarm going unanswered has nothing more
+        to say there.
+
+        Args:
+            timer: What stopped ringing.
+            kind: "clock" for a timer or reminder, "alarm" for an alarm.
+        """
+        if self.ntfy and self.ntfy.reminders and kind == "clock" and timer.get("label"):
+            label = timer["label"]
+            self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")
+
+    def _note_start(self):
+        """
+        Leaves RUNNING_MARK, which _clean_up takes away - telling the user's phone if
+        the last run left one too, since then it never stopped properly.
+        """
+        try:
+            last = storage.load_json(RUNNING_MARK)
+        except (OSError, ValueError):
+            # Half written as the power went, most likely - which is a restart too.
+            last = {}
+        told_at = (last or {}).get("told_at", 0)
+        if (last is not None and self.ntfy and self.ntfy.restarts
+                and time.time() - told_at >= RESTART_NOTICE_GAP):
+            logger.warning("The last run didn't stop properly, so telling the user's phone")
+            self.ntfy.send_soon(self.ntfy.restarts, f"{self.name} stopped unexpectedly, and has started again.",
+                                title=f"{self.name} restarted")
+            told_at = time.time()
+        try:
+            storage.save_json(RUNNING_MARK, {"started_at": time.time(), "told_at": told_at})
+        except OSError as e:
+            logger.warning(f"Couldn't note that the assistant is running: {e}")
+
     def _shutdown(self, *args):
         """
         Called automatically when the program receives Ctrl+C or a termination request.
@@ -374,11 +437,18 @@ class SmartAssistant:
         kept waiting for the next reply.
         """
         self.clock.stop()
+        if self.ntfy:
+            self.ntfy.stop()
         if self.music_player:
             self.music_player.close()
         self.speaker.close()
         self.microphone.close()
         self.tts.close()
+        # Stopped properly, so the next start isn't taken for a restart after a problem.
+        try:
+            os.remove(RUNNING_MARK)
+        except OSError:
+            pass
         logger.info("Shut down cleanly")
 
     def run(self):
@@ -391,6 +461,10 @@ class SmartAssistant:
         print(f"\n{self.name} is ready. Say {self.wake_word} to activate.\n")
         # Tells systemd it has started, and from here on that it's still working.
         watchdog.start()
+        self._note_start()
+        # Alerts are only said from now on, once there's everything to say them with.
+        if self.ntfy:
+            self.ntfy.start()
 
         # However the loop ends - a stop signal (see _shutdown) or something
         # unexpected - everything is closed down here, once, on the main thread.

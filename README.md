@@ -17,6 +17,7 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
 - **Talking over it** - "Hey Nova" is heard over the music Nova plays and over its own replies, which stop the moment it's said. "Hey Nova, stop" stops whatever it's saying or playing.
 - **Remembering you** - mention something about yourself ("I've started a new job at Aldi", "my sister's called Amy") and Nova keeps it, says "I'll remember that", and uses it from then on. "What do you know about me?" reads it back; "forget that..." or "forget everything you know about me" takes it away. It's kept in `~/.local/share/nova/memory.json`, and goes to Claude with each request so it can use it.
+- **Notifications** - with your own [ntfy](https://ntfy.sh/) server, alerts posted to the topics you choose - your homelab's, say - are read out as they arrive, and "tell me more" reads all of one. At night only the most urgent are; "any notifications?" has the rest. "Send that to my phone" sends Nova's last answer there, as do a reminder nobody answered and Nova restarting after a problem.
 
 The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume, the time, the lights and Navidrome carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
 
@@ -120,6 +121,35 @@ Nova asks Home Assistant for things in plain words, through its own Assist, so i
 
 Then restart Nova. The log says `Home Assistant at ...` once it's on.
 
+### ntfy, for alerts and your phone
+
+1. On your ntfy server, make Nova a user with only the access it needs, and a token for it - here with a `homelab` topic for alerts, and `clipboard` and `reminders` for your phone:
+
+   ```bash
+   ntfy user add nova
+   ntfy access nova homelab rw
+   ntfy access nova clipboard wo
+   ntfy access nova reminders wo
+   ntfy token add nova
+   ```
+2. On the Pi, add the token to `~/.config/nova/.env` yourself:
+
+   ```
+   NTFY_TOKEN=the-token
+   ```
+3. Say which topic is which in `~/.config/nova/config.yaml`:
+
+   ```yaml
+   ntfy:
+     url: "https://ntfy.example.com"
+     alerts: ["homelab"]
+     phone: "clipboard"
+     reminders: "reminders"
+     restarts: "homelab"
+   ```
+
+Then restart Nova. What it sends is tagged `nova`, so it never reads its own messages back out.
+
 ### The wake word model
 
 "Hey Nova" is a custom [openWakeWord](https://github.com/dscripka/openWakeWord) model, `hey_nova.onnx`, and it isn't in this repository - keep a copy somewhere safe, and copy it onto the Pi before running `setup.sh`. Without it, Nova still starts, but listens for openWakeWord's stock "Hey Jarvis" until `models/hey_nova.onnx` is there.
@@ -158,6 +188,7 @@ The settings most likely to need changing:
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
+| `ntfy.quiet_from`, `ntfy.quiet_until` | The night, when only the most urgent alerts are read out. |
 
 ## Running it
 

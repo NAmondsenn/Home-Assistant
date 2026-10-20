@@ -110,13 +110,16 @@ def _ordinal(day: int) -> str:
 class LocalIntents:
     """Recognises the everyday commands handled without Claude."""
 
-    def __init__(self, clock=None):
+    def __init__(self, clock=None, ntfy=None):
         """
         Args:
             clock: The Clock, to check there's exactly one timer before cancelling
                 "the timer". Without it, that's left to Claude.
+            ntfy: The user's notifications - see ntfy.py. Without it, "any
+                notifications?" and the like are left to Claude.
         """
         self.clock = clock
+        self.ntfy = ntfy
         # Each pattern has to match the whole request, after politeness is taken off.
         self._rules = [
             # "Set of one minute timer" is how Moonshine heard "set a one minute timer"
@@ -164,6 +167,12 @@ class LocalIntents:
             (rf"when (?:do i|am i) next (?:have |at |in |got )?{ACTIVITY}", self._next_activity),
             (rf"(?:when|what)(?:'s| is) my next {ACTIVITY}", self._next_activity),
             (rf"(?:when|what)(?:'re| are) my next (?P<count>[a-z0-9]+) {ACTIVITY}", self._next_activity),
+            # Notifications - see ntfy.py.
+            (r"(?:are there |have i got |do i have )?any (?:new )?notifications|what(?:'s| are) my notifications"
+             r"|read (?:me )?my notifications", self._notifications),
+            (r"tell me more|what was that(?: about)?", self._tell_more),
+            (r"(?:send|text) (?:that|it|this) to (?:my phone|me)|text me (?:that|it)"
+             r"|(?:send|put) (?:that|it|this) on my phone", self._send_to_phone),
         ]
 
     def match(self, text: str) -> Optional[Dict]:
@@ -263,3 +272,16 @@ class LocalIntents:
         if not self.clock or self.clock.timer_count() != 1:
             return None
         return self._result("Okay.", [Action("cancel_timer")])
+
+    def _notifications(self, found) -> Optional[Dict]:
+        return self._result("Okay.", [Action("read_notifications")]) if self.ntfy else None
+
+    def _tell_more(self, found) -> Optional[Dict]:
+        # Only about an alert said a moment ago. Otherwise it's a follow-up to whatever
+        # was being talked about - "tell me more" about the weather - which is Claude's.
+        if not self.ntfy or not self.ntfy.just_said():
+            return None
+        return self._result("Okay.", [Action("tell_me_more")])
+
+    def _send_to_phone(self, found) -> Optional[Dict]:
+        return self._result("Okay.", [Action("send_to_phone")]) if self.ntfy else None

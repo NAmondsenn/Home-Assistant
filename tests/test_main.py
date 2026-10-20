@@ -31,7 +31,9 @@ class Recorder:
 
 
 @pytest.fixture
-def assistant():
+def assistant(tmp_path, monkeypatch):
+    # Never the real data folder: running the assistant leaves a mark there.
+    monkeypatch.setattr(main, "RUNNING_MARK", str(tmp_path / "running"))
     made = main.SmartAssistant.__new__(main.SmartAssistant)
     made.closed = []
     made.clock = Recorder("clock", made.closed)
@@ -39,6 +41,7 @@ def assistant():
     made.microphone = Recorder("microphone", made.closed)
     made.tts = Recorder("tts", made.closed)
     made.music_player = Recorder("music", made.closed)
+    made.ntfy = None
     made.name, made.wake_word = "Nova", "Hey Nova"
     made.running = False
     made._stopping = False
@@ -264,3 +267,64 @@ def test_talking_over_a_reply_starts_the_next_request_with_the_music_still_held(
     # The music stays paused between the two, rather than coming back for a moment.
     assert held == ["hold", "release"]
     assert assistant._idle.is_set()
+
+
+# Telling the user's phone
+
+class FakeNtfy:
+    """Stands in for ntfy, keeping what was sent."""
+
+    def __init__(self):
+        self.reminders, self.restarts = "reminders", "homelab"
+        self.sent = []
+
+    def send_soon(self, topic, message, title="", priority=0):
+        self.sent.append((topic, title, message))
+
+    def stop(self):
+        pass
+
+
+def test_a_start_after_a_run_which_didnt_stop_properly_is_told_to_the_phone(assistant):
+    assistant.ntfy = FakeNtfy()
+    # The first start has nothing to tell.
+    assistant._note_start()
+    assert assistant.ntfy.sent == []
+
+    # Started again without having stopped properly - a crash, or the watchdog.
+    assistant._note_start()
+    assert assistant.ntfy.sent == [("homelab", "Nova restarted", "Nova stopped unexpectedly, and has started again.")]
+
+    # And not again straight away, if it keeps happening.
+    assistant._note_start()
+    assert len(assistant.ntfy.sent) == 1
+
+
+def test_a_start_after_stopping_properly_isnt_told(assistant):
+    assistant.ntfy = FakeNtfy()
+    assistant._note_start()
+    assistant._clean_up()
+    assistant._note_start()
+    assert assistant.ntfy.sent == []
+
+
+def test_only_a_reminder_nobody_answered_goes_to_the_phone(assistant):
+    assistant.ntfy = FakeNtfy()
+    assistant._unanswered({"label": "take the bins out"}, "clock")
+    # A plain timer, and an alarm, have nothing more to say there.
+    assistant._unanswered({"label": None}, "clock")
+    assistant._unanswered({"label": "wake up"}, "alarm")
+    assert assistant.ntfy.sent == [("reminders", "Reminder nobody answered", "Take the bins out")]
+
+
+def test_an_alert_is_said_like_a_timer_and_can_then_be_sent_on(assistant):
+    from types import SimpleNamespace
+    from voice_assistant.ntfy import Alert
+
+    announced = []
+    assistant._announce = lambda message, **kwargs: announced.append(message)
+    assistant.actions = SimpleNamespace(last_answer=None)
+    assistant._alert(Alert("homelab", "Backup failed", "Error 5."))
+
+    assert announced == ["Homelab: Backup failed"]
+    assert assistant.actions.last_answer == ("Backup failed", "Backup failed. Error 5.")

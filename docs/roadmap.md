@@ -76,6 +76,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
   - [x] Stage 1's model chosen, 20 October: Nemotron - see [decisions/0004](decisions/0004-pve2-backend.md)
   - [x] Stage 1's backend: `backend.py`, running in its own container on PVE2 (`nova`, reached over the tailnet only). Measured from the Pi with the user's 38 recordings, before they were deleted: 0.33s to wait once the recording stopped, 0.53s at worst, with 5.1% of words wrong - and next to no work for the Pi
   - [ ] The Pi hearing through the backend, with Moonshine to fall back on - built on `phase-4`, to go in after the soak: `backend.address` set to `nova:10400`, and the password in the Pi's `~/.config/nova/.env`
+  - [ ] ntfy, both ways - built on `phase-4`, on the Pi itself: `homelab` alerts read out as they arrive (only priority 5 between 23:00 and 07:00, the rest for "any notifications?"), "tell me more", and "send that to my phone" to `clipboard`, a reminder nobody answered to `reminders`, and Nova restarting after a problem to `homelab`. To go in after the soak, once Nova has its own ntfy user and token
 - Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 

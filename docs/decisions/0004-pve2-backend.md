@@ -18,7 +18,7 @@ Home Assistant's way of doing this was considered first. Wyoming, and the ESPHom
 It's done in two stages:
 
 1. **Speech-to-text.** Only if PVE2 measurably beats the Pi on recordings of the user's own voice. The Pi sends the recording as it's made, as it already gives it to Moonshine, and gets the words back. Moonshine on the Pi leaves next to nothing to wait for once the user stops, so PVE2 has to win on getting the words right.
-2. **The conversation.** Only once something needs it in one place - a second Pi, a push-to-talk client, the settings page or ntfy. Anything that belongs to the Pi - a timer, the volume, the music, "stop" - comes back to the Pi to be done, so the clock never leaves it.
+2. **The conversation.** Only once something needs it in one place - a second Pi, a push-to-talk client, or the settings page. ntfy turned out not to: it runs on the Pi, so a Pi on its own has it too. Anything that belongs to the Pi - a timer, the volume, the music, "stop" - comes back to the Pi to be done, so the clock never leaves it.
 
 **Stage 1, as built**, uses NVIDIA's Nemotron Speech Streaming, in a container of its own on PVE2 called `nova` - see `backend.py` and `voice_assistant/nemotron.py`. It listens on its own machine only, and Tailscale passes the tailnet's connections on to it, so the user's voice is encrypted on its way there and only their own devices can reach it. Each Pi gives a password first as well. The messages are in `voice_assistant/protocol.py`. A Pi uses the backend once `backend.address` is set.
 

@@ -102,6 +102,23 @@ backend:
   port: 10400
   model: "models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
 
+ntfy:
+  # Your own ntfy server, e.g. "https://ntfy.example.com" - for alerts said out loud
+  # as they arrive, and things sent to your phone. See voice_assistant/ntfy.py. Its
+  # access token goes in ~/.config/nova/.env as NTFY_TOKEN. Left empty, it isn't used.
+  url: ""
+  # Topics whose messages are said out loud as they arrive, e.g. ["homelab"].
+  alerts: []
+  # Where "send that to my phone" goes, where a reminder nobody answered goes, and
+  # where Nova says it had to restart itself after a problem. Empty for none.
+  phone: ""
+  reminders: ""
+  restarts: ""
+  # Between these times only the most urgent alerts - ntfy's priority 5 - are said
+  # out loud. The rest wait for "any notifications?".
+  quiet_from: "23:00"
+  quiet_until: "07:00"
+
 conversation:
   history_length: 5
   # Seconds an exchange is remembered for, once a new conversation starts.

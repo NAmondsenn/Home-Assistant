@@ -216,6 +216,11 @@ class Conversation:
             logger.info(f"Action confirmed itself: {[r.say for r in action_results]}", extra=TRANSCRIPT)
             return Reply(sounds=sounds)
 
+        # Kept for "send that to my phone" - unless this was that, or the next one would
+        # send "Sent.".
+        if not any(action.tool == "send_to_phone" for action in actions):
+            self.actions.last_answer = (text, response_text)
+
         # The model's history only has its own text for this turn - usually "Okay." when
         # it called a tool - so it's told what's actually being said. Otherwise a
         # question an action asked ("Which one?") would be missing when the answer
