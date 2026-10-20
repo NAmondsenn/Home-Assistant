@@ -11,7 +11,7 @@ import pytest
 
 from voice_assistant import intents as intents_module
 from voice_assistant.actions import Action
-from voice_assistant.intents import LocalIntents
+from voice_assistant.intents import LocalIntents, calendar_days
 
 
 def _actions(text, clock=None):
@@ -100,3 +100,46 @@ def test_the_timer_is_only_cancelled_locally_when_theres_just_one(timers, handle
 ])
 def test_the_weather_is_asked_for_without_claude(text, day):
     assert _actions(text) == [Action("get_weather", {"day": day})]
+
+
+@pytest.mark.parametrize("text, command", [
+    ("Turn off the kitchen lights.", "turn off the kitchen lights"),
+    ("Living room lights on.", "living room lights on"),
+    ("Lights off, please.", "lights off"),
+    ("Set the bedroom lamp to 30 percent.", "set the bedroom lamp to 30 percent"),
+])
+def test_the_lights_go_straight_to_home_assistant(text, command):
+    assert _actions(text) == [Action("control_home", {"command": command})]
+
+
+def test_the_lights_with_something_else_are_left_to_claude():
+    # Sent whole, Home Assistant would take "the timer and the" for a light's name.
+    assert _actions("Turn off the timer and the lights.") is None
+
+
+@pytest.mark.parametrize("text", ["What have I got on Thursday?", "What's on my calendar for Thursday?",
+                                  "Am I busy on Thursday?", "What do I have planned for Thursday?",
+                                  "Do I have anything on Thursday?"])
+def test_the_calendar_is_read_without_claude(text, monkeypatch):
+    class Tuesday(intents_module.date):
+        @classmethod
+        def today(cls):
+            return intents_module.date(2026, 10, 20)
+
+    monkeypatch.setattr(intents_module, "date", Tuesday)
+    assert _actions(text) == [Action("get_calendar", {"start": "2026-10-22", "days": 1})]
+
+
+@pytest.mark.parametrize("day, today, expected", [
+    (None, "2026-10-20", ("2026-10-20", 1)),
+    ("tomorrow", "2026-10-20", ("2026-10-21", 1)),
+    ("tuesday", "2026-10-20", ("2026-10-20", 1)),
+    ("monday", "2026-10-20", ("2026-10-26", 1)),
+    ("this weekend", "2026-10-21", ("2026-10-24", 2)),
+    ("the weekend", "2026-10-24", ("2026-10-24", 2)),
+    ("this weekend", "2026-10-25", ("2026-10-25", 1)),
+])
+def test_a_named_day_is_the_next_one(day, today, expected):
+    from datetime import date
+    first, days = calendar_days(day, date.fromisoformat(today))
+    assert (first.isoformat(), days) == expected

@@ -14,8 +14,8 @@ ten minutes and play Drake", "pause it in a bit" - still goes to Claude as befor
 
 import logging
 import re
-from datetime import datetime
-from typing import Dict, List, Optional
+from datetime import date, datetime, timedelta
+from typing import Dict, List, Optional, Tuple
 
 from voice_assistant.actions import Action
 from voice_assistant.clock import spoken_clock_time
@@ -38,6 +38,16 @@ UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600}
 POLITE_START = r"^(?:please |can you |could you |would you |will you )+"
 POLITE_END = r"(?: please| thanks| thank you)+$"
 
+# A light's name - "kitchen", "living room" - of up to three words, none of them
+# "and", so "turn off the timer and the lights" is left to Claude rather than all
+# sent to Home Assistant as if it were one light.
+LIGHT = r"(?:all )?(?:the |my )?(?:(?!and\b)[a-z']+ ){0,3}(?:lights?|lamps?)"
+
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+# A day asked about by name - anything less plain, like "next Thursday" (this week's
+# or next week's?), is left to Claude.
+DAY = r"(?P<day>today|tonight|tomorrow|this weekend|the weekend|" + "|".join(WEEKDAYS) + ")"
+
 
 def _number(words: str) -> Optional[int]:
     """
@@ -56,6 +66,31 @@ def _number(words: str) -> Optional[int]:
             and NUMBER_WORDS.get(parts[1], 10) < 10:
         return NUMBER_WORDS[parts[0]] + NUMBER_WORDS[parts[1]]
     return None
+
+
+def calendar_days(day: Optional[str], today: date) -> Tuple[date, int]:
+    """
+    The days a plainly named day means.
+
+    Args:
+        day: e.g. "tomorrow", "thursday", "this weekend", or None for today.
+        today: Today's date.
+
+    Returns:
+        (first day, how many days) - a weekday is the next one, or today if it's
+        that day now, and the weekend is what's left of it.
+    """
+    if day in (None, "today", "tonight"):
+        return today, 1
+    if day == "tomorrow":
+        return today + timedelta(days=1), 1
+    if day in ("this weekend", "the weekend"):
+        if today.weekday() == 6:
+            return today, 1
+        if today.weekday() == 5:
+            return today, 2
+        return today + timedelta(days=5 - today.weekday()), 2
+    return today + timedelta(days=(WEEKDAYS.index(day) - today.weekday()) % 7), 1
 
 
 def _ordinal(day: int) -> str:
@@ -94,6 +129,19 @@ class LocalIntents:
             (r"(?:cancel|stop|delete) (?:the|my) timer", self._cancel_only_timer),
             (r"what(?:'s| is| will) the weather(?: (?:going to )?be)?(?: like)?(?: (?P<day>today|tomorrow))?"
              r"|what(?:'s| is) the forecast(?: for)?(?: (?P<day2>today|tomorrow))?", self._weather),
+            # The lights go straight to Home Assistant, which works out which ones
+            # from the words itself - and still works with the internet down.
+            (rf"(?:turn|switch) (?:on|off) {LIGHT}|(?:turn|switch) {LIGHT} (?:on|off)|{LIGHT} (?:on|off)"
+             rf"|(?:dim|brighten) {LIGHT}|set {LIGHT} to \d{{1,3}}(?: percent)?", self._lights),
+            # The calendar, for a day asked about by name. One rule each, since a
+            # pattern can only name the day once.
+            (rf"what(?:'s| is) (?:on )?(?:my )?(?:calendar|schedule|diary|agenda)(?:(?: (?:on|for))? {DAY})?",
+             self._calendar),
+            (rf"what(?:'s| is) (?:on|planned|happening)(?: (?:on|for))? {DAY}", self._calendar),
+            (rf"what (?:have i|do i have)(?: got)?(?: on| planned| going on| happening)?(?: (?:on|for))? {DAY}",
+             self._calendar),
+            (rf"(?:am i|are we) (?:busy|free)(?: (?:on|for))? {DAY}", self._calendar),
+            (rf"do i have anything(?: on| planned)?(?: (?:on|for))? {DAY}", self._calendar),
         ]
 
     def match(self, text: str) -> Optional[Dict]:
@@ -164,6 +212,13 @@ class LocalIntents:
     def _date(self, found) -> Dict:
         now = datetime.now()
         return self._result(f"It's {now.strftime('%A')} the {_ordinal(now.day)} of {now.strftime('%B')}.")
+
+    def _lights(self, found) -> Dict:
+        return self._result("Okay.", [Action("control_home", {"command": found.string})])
+
+    def _calendar(self, found) -> Dict:
+        first, days = calendar_days(found["day"], date.today())
+        return self._result("Okay.", [Action("get_calendar", {"start": first.isoformat(), "days": days})])
 
     def _weather(self, found) -> Dict:
         day = found["day"] or found["day2"] or "today"

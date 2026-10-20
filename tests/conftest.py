@@ -112,9 +112,25 @@ if _module_missing("sounddevice"):
     sys.modules["sounddevice"] = sounddevice
 
 
-# requests: only get(), which the weather tests replace with their own fake.
+# requests: get() and Session, which the tests replace with their own fakes, and the
+# errors the modules catch.
 if _module_missing("requests"):
     requests = types.ModuleType("requests")
+
+    class RequestException(Exception):
+        def __init__(self, *args, response=None):
+            super().__init__(*args)
+            self.response = response
+
+    class Session:
+        def __init__(self):
+            self.headers = {}
+
+    requests.RequestException = RequestException
+    requests.HTTPError = type("HTTPError", (RequestException,), {})
+    requests.ConnectionError = type("ConnectionError", (RequestException,), {})
+    requests.Timeout = type("Timeout", (RequestException,), {})
+    requests.Session = Session
     requests.get = None
     sys.modules["requests"] = requests
 

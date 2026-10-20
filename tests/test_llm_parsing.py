@@ -25,6 +25,8 @@ TEST_CASES = [
     ("previous song", Action("control_playback", {"action": "previous"})),
     ("What's playing right now?", Action("control_playback", {"action": "current"})),
     ("What song is this?", Action("control_playback", {"action": "current"})),
+    ("Turn on the lights", Action("control_home", {"command": "Turn on the lights"})),
+    ("Lamp off", Action("control_home", {"command": "Lamp off"})),
 ]
 
 

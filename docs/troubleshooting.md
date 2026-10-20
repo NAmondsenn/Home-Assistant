@@ -40,6 +40,13 @@ Whisper sometimes finds words in noise. The obvious ones ("Thank you.", "Thanks 
 - **"Spotify needs signing in again on the Pi"** - run the sign-in again: `venv/bin/python voice_assistant/spotify_controller.py`.
 - **"I can't find the ... speaker"** - raspotify isn't running, or its name doesn't match `spotify.device_name`. Check `systemctl status raspotify`. It's restarted every night anyway (`raspotify-restart.timer`), since its connection can drop silently.
 
+## The lights or the calendar don't work
+
+- **"Home Assistant isn't set up yet"** - `home_assistant.url` isn't set in `config.local.yaml`, or `HA_TOKEN` isn't in `.env`. The log says which at startup.
+- **"Home Assistant didn't accept my token"** - the token has been deleted or mistyped. Make a new one for Nova's Home Assistant user.
+- **"Sorry, I am not aware of any area called ..."** - that's Home Assistant's own answer. Check the light is exposed to Assist (Settings > Voice assistants > Expose), and what it and its area are called there.
+- **The calendar says nothing's on** - check the calendar shows events in Home Assistant itself, and, if `home_assistant.calendars` is set, that it's listed there.
+
 ## A timer or alarm didn't go off
 
 - Timers and alarms are in `data/timers.json` and `data/alarms.json`. Anything which came due while Nova was off is announced late, as "While I was off: ...".

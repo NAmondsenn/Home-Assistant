@@ -17,6 +17,7 @@ both a description and the code to run it.
 import inspect
 import logging
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from voice_assistant import network
@@ -33,7 +34,11 @@ UNAVAILABLE = {
     "clock": "Timers aren't available right now.",
     "volume": "Volume control isn't available right now.",
     "weather": "The weather isn't available right now.",
+    "home": "Home Assistant isn't set up yet.",
 }
+
+# The most days of calendar read at once - a fortnight is already a lot to listen to.
+MOST_CALENDAR_DAYS = 14
 
 
 @dataclass
@@ -165,18 +170,21 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
 class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
-    def __init__(self, music=None, clock=None, volume=None, weather=None):
+    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
             clock: Clock instance, for timers, reminders and alarms.
             volume: VolumeControl instance, for the assistant's own volumes.
             weather: Weather instance, for the forecast.
+            home: HomeAssistant instance, for the lights and the calendar, or None
+                if it isn't set up.
         """
         self.music = music
         self.clock = clock
         self.volume = volume
         self.weather = weather
+        self.home = home
 
     @classmethod
     def tools(cls) -> Dict[str, Callable]:
@@ -681,3 +689,39 @@ class ActionExecutor:
     )
     def get_weather(self, day: Optional[str] = None):
         return self.weather.forecast(day or "today")
+
+    # Home Assistant
+
+    @tool(
+        "Control the lights through Home Assistant - on, off, brighter, dimmer, a "
+        "percentage or a colour - or ask whether one is on. Pass the request on as a "
+        "short, clear command in plain English, naming the room or light the way the "
+        "user did, e.g. 'turn off the kitchen lights', 'set the living room lights to "
+        "30%', 'turn on the lights'. Home Assistant's own answer, or a chime, is what the "
+        "user hears, so just reply 'Okay.'",
+        needs="home",
+        required=["command"],
+        command={"type": "string", "description": "The request, in plain English."},
+    )
+    def control_home(self, command: Optional[str] = None):
+        if not command:
+            return {"success": False, "message": "I didn't catch what to do with the lights."}
+        return self.home.command(command)
+
+    @tool(
+        "Read the user's calendar for a day or a few days, for 'what have I got on "
+        "Thursday?', 'what's on tomorrow?', 'am I busy this weekend?' or 'what's planned "
+        "for next week?'. Give the first day, worked out from today's date, and how many "
+        "days to read - 1 for a single day, 2 for a weekend, 7 for a week. What's on is "
+        "read out to the user, so just reply 'Okay.'",
+        needs="home",
+        required=["start"],
+        start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
+        days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
+    )
+    def get_calendar(self, start: Optional[str] = None, days: Optional[int] = None):
+        try:
+            first = date.fromisoformat(start)
+        except (TypeError, ValueError):
+            return {"success": False, "message": "I didn't catch which day you meant."}
+        return self.home.agenda(first, max(1, min(int(days or 1), MOST_CALENDAR_DAYS)))

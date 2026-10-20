@@ -116,6 +116,16 @@ logging:
   # turn it off to keep conversations out of the logs altogether.
   log_transcripts: true
 
+home_assistant:
+  # Home Assistant's address, e.g. "http://homeassistant.local:8123" - set it in
+  # config.local.yaml. Nova signs in with a long-lived access token, as HA_TOKEN in
+  # .env, made by a Home Assistant user of its own rather than an administrator. It
+  # can only reach the devices exposed to Assist - see the README.
+  url: ""
+  # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
+  # Left empty, every calendar Home Assistant has is read.
+  calendars: []
+
 weather:
   # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
   # is free and needs no key. Until it's set, Nova says it doesn't know where you are.

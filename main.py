@@ -14,6 +14,7 @@ from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
 from voice_assistant.intents import LocalIntents
 from voice_assistant.weather import Weather
+from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.network import online
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
@@ -136,9 +137,11 @@ class SmartAssistant:
         # that itself, so a level the user chose by voice survives a restart.
         self.volume = VolumeControl(config=self.config)
 
-        # Everything the assistant can do for the user - see actions.py.
+        # Everything the assistant can do for the user - see actions.py. The lights and
+        # the calendar are only there once Home Assistant is set up.
         self.actions = ActionExecutor(music=self.spotify, clock=self.clock, volume=self.volume,
-                                      weather=Weather(config=self.config))
+                                      weather=Weather(config=self.config),
+                                      home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")))
 
         # Claude, offered whichever of those tools can actually work here.
         self.llm = LLMHandler(config=self.config, tools=self.actions.tool_schemas())

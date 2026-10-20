@@ -202,3 +202,22 @@ def test_offline_spotify_says_so_straight_away(make_executor, monkeypatch):
     assert executor.execute(Action("control_playback", {"action": "pause"})).say == offline
     assert executor.execute(Action("set_volume", {"category": "music", "direction": "down"})).say == offline
     assert spotify.calls == []
+
+
+def test_the_calendar_needs_a_day_it_can_read():
+    class FakeHome:
+        def agenda(self, first, days):
+            self.asked = (first.isoformat(), days)
+            return {"success": True, "message": "You've got nothing on."}
+
+    home = FakeHome()
+    executor = ActionExecutor(home=home)
+    assert executor.execute(Action("get_calendar", {"start": "Thursday"})).ok is False
+    executor.execute(Action("get_calendar", {"start": "2026-10-22", "days": 90}))
+    assert home.asked == ("2026-10-22", 14)
+
+
+def test_without_home_assistant_the_lights_say_so():
+    result = ActionExecutor().execute(Action("control_home", {"command": "lights on"}))
+    assert result.say == "Home Assistant isn't set up yet."
+    assert "control_home" in {schema["name"] for schema in ActionExecutor(home=object()).tool_schemas()}

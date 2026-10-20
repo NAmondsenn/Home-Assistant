@@ -458,6 +458,10 @@ class LLMHandler:
                     query = query or None
                 return Action("play_music", {"query": query})
 
+        # The lights are left to Home Assistant, which works out which from the words.
+        if words & {"light", "lights", "lamp", "lamps"} and words & {"on", "off"}:
+            return Action("control_home", {"command": user_text})
+
         # If no specific action is detected, return None
         return None
 
