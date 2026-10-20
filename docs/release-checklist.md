@@ -19,11 +19,16 @@ git fetch && git switch <branch> && bash update.sh
 5. Quietly, from across the room.
 6. With a fan, a tap or instrumental music on: it stops listening about a second after you finish.
 7. "Hey Nova", then say nothing. After a few seconds there's a falling blip, and it's done.
+7a. Ask something with a two-sentence answer ("how far away is the moon?"): it starts speaking noticeably sooner than it used to, and the second sentence follows without a gap.
+7b. The moment a reply finishes, "Hey Nova" again: it's heard first time.
 8. Talk normally nearby for a few minutes without saying "Hey Nova". Note any false wake-ups.
 
 ## Music
 
-9. Play Spotify, then "Hey Nova, pause the music" - chime, and it pauses.
+With Navidrome (`music.player: navidrome`), and again with Spotify if you still use it:
+
+8a. "Hey Nova, play Fleetwood Mac" - "Playing Fleetwood Mac" is said first, then the music starts. "Play the Rumours album", "play my liked songs", "play some jazz".
+9. "Hey Nova, pause the music" - chime, and it pauses.
 10. While it plays: "Hey Nova, skip this song".
 11. While it plays: "Hey Nova, what time is it?" - the music pauses, the answer, the music comes back.
 12. While it plays: "Hey Nova, turn it down" - the music, not Nova, gets quieter.
@@ -31,7 +36,7 @@ git fetch && git switch <branch> && bash update.sh
 
 ## Timers, reminders and alarms
 
-14. A one-minute timer; when it rings, "Hey Nova, stop". It stops straight away, not at the end of its sound.
+14. A one-minute timer; when it rings, "Hey Nova, stop". It stops straight away, not at the end of its sound - and the log says "Dismissed by voice without asking the model", even if Whisper heard something like "bus stop".
 15. "Hey Nova, remind me in two minutes to drink water" - later, "This is a reminder: drink water".
 16. "Hey Nova, remind me at" a time a few minutes ahead - it goes off at that minute.
 17. An alarm a couple of minutes ahead - it rings in bursts, getting louder. "Hey Nova, stop" in a gap stops it straight away.
@@ -40,8 +45,11 @@ git fetch && git switch <branch> && bash update.sh
 ## Everything else
 
 19. "Hey Nova, what's the weather?" (with `weather.location` set).
+19a. "Hey Nova, turn off the kitchen lights" (whatever yours are called in Home Assistant) - chime, and they go off. "Set the living room lights to 30 percent." "Unlock the front door" - it refuses.
+19b. "Hey Nova, what have I got on Thursday?" and "am I busy this weekend?" - read from your Google Calendar.
 20. Unplug the microphone for 5 seconds, plug it back in, wait 10, then "Hey Nova" - it works without a restart.
 21. Unplug the network cable, wait 10 seconds, then "Hey Nova", wait for the blip, "set a one minute timer" - it's set straight away. "Hey Nova, how far away is the moon?" - straight away, it says it can't reach the internet. Plug the cable back in.
+21a. With the network cable out: the lights, and Navidrome, still work.
 22. `systemctl --user restart voice-assistant` - it stops within a second or two, rather than hanging for 20.
 23. `kill -STOP $(systemctl --user show -p MainPID --value voice-assistant)` - within about a minute, systemd restarts it (`journalctl --user -u voice-assistant` says "Watchdog timeout").
 
