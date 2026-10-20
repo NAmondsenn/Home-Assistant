@@ -96,23 +96,92 @@ class FakeTimeline:
         self.notes = notes
 
 
-def test_giving_up_without_hearing_anything_is_audible(assistant):
-    # Giving up used to be silent, which was easy to take for the assistant still
-    # listening, or still thinking.
-    import numpy as np
+class FakeTranscription:
+    """Stands in for speech-to-text listening to one recording, noting what it was given."""
+
+    def __init__(self, text=""):
+        self.text = text
+        self.added = []
+        self.finished_with = None
+        self.cancelled = False
+
+    def add(self, audio):
+        self.added.append(audio)
+
+    def finish(self, audio):
+        self.finished_with = audio
+        return {"text": self.text}
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def _listening(assistant, record_until_silence, transcription):
+    """Sets the assistant up to record with record_until_silence, and hear it with transcription."""
     from pathlib import Path
     from types import SimpleNamespace
 
     assistant.speaker = FakeSpeaker()
-    assistant.microphone = SimpleNamespace(position=0, record_until_silence=lambda *a, **k: np.array([]))
+    assistant.microphone = SimpleNamespace(position=0, record_until_silence=record_until_silence)
+    assistant.stt = SimpleNamespace(listen=lambda: transcription)
     assistant.wake = SimpleNamespace(heard_at=0)
     assistant.thresholds, assistant.pre_roll, assistant.speech_detector = {}, 0.3, None
     assistant.listening_sound_enabled = True
     assistant.sounds_folder = Path("sounds")
     assistant.volume = SimpleNamespace(get=lambda category: 0.5)
 
+
+def test_giving_up_without_hearing_anything_is_audible(assistant):
+    # Giving up used to be silent, which was easy to take for the assistant still
+    # listening, or still thinking.
+    import numpy as np
+
+    transcription = FakeTranscription()
+    _listening(assistant, lambda *a, **k: np.array([]), transcription)
+
     assistant._handle_interaction(timeline=FakeTimeline())
     assert assistant.speaker.played == ["listening.wav", "not_heard.wav"]
+    # Speech-to-text, which was ready to listen, is told nothing's coming.
+    assert transcription.cancelled
+
+
+def test_speech_to_text_is_given_the_recording_as_its_made(assistant):
+    # It used to be given the whole recording once it was over, and on the Pi
+    # Moonshine then took 0.83s to work out the words.
+    import numpy as np
+    from types import SimpleNamespace
+    from voice_assistant.conversation import Reply
+
+    first, second = np.full(480, 0.1, np.float32), np.full(480, 0.2, np.float32)
+
+    def record_until_silence(detector, heard=None, **kwargs):
+        heard(first)
+        heard(second)
+        return np.concatenate([first, second])
+
+    transcription = FakeTranscription("What time is it?")
+    _listening(assistant, record_until_silence, transcription)
+    handled = []
+    assistant.conversation = SimpleNamespace(handle=lambda text, **kwargs: handled.append(text) or Reply())
+
+    assert assistant._handle_interaction(timeline=FakeTimeline()) is False
+    assert len(transcription.added) == 2
+    assert transcription.added[0] is first and transcription.added[1] is second
+    # The whole recording too, for it to fall back on.
+    assert np.array_equal(transcription.finished_with, np.concatenate([first, second]))
+    assert handled == ["What time is it?"]
+
+
+def test_speech_to_text_is_let_go_if_the_recording_fails(assistant):
+    def broken_microphone(*args, **kwargs):
+        raise RuntimeError("microphone gone")
+
+    transcription = FakeTranscription()
+    _listening(assistant, broken_microphone, transcription)
+
+    with pytest.raises(RuntimeError):
+        assistant._handle_interaction(timeline=FakeTimeline())
+    assert transcription.cancelled
 
 
 def test_saying_sorry_can_never_fail_in_turn(assistant):

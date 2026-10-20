@@ -1,9 +1,11 @@
 import logging
 import os
+import queue
 import re
+import threading
 import numpy as np
 from faster_whisper import WhisperModel
-from typing import Any, List, Optional, Dict, Union
+from typing import Any, Callable, List, Optional, Dict, Union
 import time
 from voice_assistant import paths
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -42,6 +44,40 @@ def looks_like_hallucination(text: str, segments) -> bool:
     return bool(segments) and all(segment.no_speech_prob > NO_SPEECH_PROBABILITY
                                   and segment.avg_logprob < LOW_AVERAGE_LOGPROB
                                   for segment in segments)
+
+
+class Transcription:
+    """
+    Speech-to-text for one recording, which can only start once the recording is
+    over - how Whisper works, and what Moonshine falls back on. See LiveTranscription
+    for the one which starts while the user is still talking.
+    """
+
+    def __init__(self, transcribe: Callable[[np.ndarray], Dict[str, Any]]):
+        """
+        Args:
+            transcribe: Transcribes a whole recording - the model's own transcribe().
+        """
+        self._transcribe = transcribe
+
+    def add(self, audio: np.ndarray):
+        """More of the recording, as it's made - which is no use until it's over."""
+
+    def finish(self, audio: np.ndarray) -> Dict[str, Any]:
+        """
+        Transcribes the recording, now it's over.
+
+        Args:
+            audio: The whole recording, as float32 samples at 16kHz.
+
+        Returns:
+            What the model's transcribe() returns.
+        """
+        return self._transcribe(audio)
+
+    def cancel(self):
+        """The recording came to nothing, so there's nothing to do."""
+
 
 class SpeechToText:
     def __init__(
@@ -89,7 +125,11 @@ class SpeechToText:
 
         # Runs a warm-up process to avoid latency on the first transcription query.
         self._warmup()
-        
+
+    def listen(self) -> Transcription:
+        """Speech-to-text for the next recording - which Whisper can only start once it's over."""
+        return Transcription(self.transcribe)
+
     def _warmup(self):
         """
         Warm up model to avoid first-query latency.
@@ -200,6 +240,10 @@ class MoonshineSpeechToText:
     of its time on a 30 second window however short the command; Moonshine works on
     just the audio there is. Its one slip worth knowing: a lone "stop" came back as
     "soap", or "so", which is allowed for - see Clock.STOP_WORDS and intents.py.
+
+    Those 0.83s were for a whole recording, once it was over. Nova now has Moonshine
+    work the words out while the user is still saying them instead - see
+    LiveTranscription.
     """
 
     def __init__(self, model: str = "small-streaming", download_root: Optional[str] = None,
@@ -222,7 +266,11 @@ class MoonshineSpeechToText:
         logger.info(f"Loading Moonshine model: {model}")
         model_path, architecture = moonshine_voice.get_model_for_language(
             "en", architecture, cache_root=download_root, on_progress=lambda fraction, name: None)
-        self.transcriber = moonshine_voice.Transcriber(model_path=model_path, model_arch=architecture)
+        # Without return_audio_data off, Moonshine hands back its own copy of what
+        # each line of speech sounded like - as a Python list of every sample, made
+        # afresh each time it looks at the recording again. Nova has no use for it.
+        self.transcriber = moonshine_voice.Transcriber(model_path=model_path, model_arch=architecture,
+                                                       options={"return_audio_data": "false"})
         if keyterms:
             self.transcriber.set_keyterms([term for term in keyterms if "," not in term])
         logger.info(f"Moonshine model loaded: {model}")
@@ -230,9 +278,13 @@ class MoonshineSpeechToText:
         # rather than on the user's first request.
         self.transcribe((np.random.default_rng(0).standard_normal(16000) * 0.01).astype(np.float32))
 
+    def listen(self) -> "LiveTranscription":
+        """Speech-to-text for the next recording, worked out as it's heard."""
+        return LiveTranscription(self)
+
     def transcribe(self, audio: np.ndarray) -> Dict[str, Any]:
         """
-        Transcribes a recording.
+        Transcribes a whole recording.
 
         Args:
             audio: float32 samples at 16kHz, from -1 to 1.
@@ -248,13 +300,126 @@ class MoonshineSpeechToText:
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             return {"text": "", "language": None, "language_probability": 0.0, "duration": 0.0, "error": str(e)}
+        return self._result(transcript, time.time() - started)
+
+    def _result(self, transcript, duration: float, after_recording: bool = False) -> Dict[str, Any]:
+        """
+        What transcribe() and LiveTranscription.finish() return, from what Moonshine heard.
+
+        Args:
+            transcript: Moonshine's transcript, a line for each stretch of speech.
+            duration: How long it took, in seconds.
+            after_recording: Whether that was only the time since the recording
+                stopped, the rest having been done while the user was talking.
+        """
         text = " ".join(line.text.strip() for line in transcript.lines).strip()
-        duration = time.time() - started
-        logger.info(f"Transcription complete ({duration:.2f}s): '{text}'", extra=TRANSCRIPT)
+        took = f"{duration:.2f}s after the recording stopped" if after_recording else f"{duration:.2f}s"
+        logger.info(f"Transcription complete ({took}): '{text}'", extra=TRANSCRIPT)
         if text and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS:
             logger.info(f"Ignoring '{text}' - most likely words imagined in noise", extra=TRANSCRIPT)
             text = ""
         return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration}
+
+
+class LiveTranscription:
+    """
+    Speech-to-text for one recording, worked out by Moonshine while the user is still
+    talking, so there's little left to do once they stop.
+
+    Transcribing a whole recording once it was over took 0.83s on the Pi. Moonshine's
+    streaming models keep what they've worked out as more audio arrives instead: each
+    look at the recording - every half a second of it - takes in only what's new, and
+    checks its last guess at the words rather than starting again. Its own speech
+    detection usually decides the user has finished a quarter of a second into their
+    pause, well inside the 0.6s Nova waits before it stops recording, so the words are
+    often ready by then.
+
+    Moonshine works on a thread of its own, as each look takes a moment, and the
+    recording mustn't wait for it - the recording is what notices the user has stopped.
+
+    Each recording is heard through a Moonshine stream of its own. Starting one again
+    doesn't clear what its speech detection last heard (Moonshine 0.1.5 resizes its
+    memory of it to the same size, which keeps what was there), so a recording which
+    ended mid-word left the next one starting with a made-up "Yeah." - "Yeah. Turn off
+    the kitchen lights", which then isn't an everyday command.
+    """
+
+    def __init__(self, moonshine: MoonshineSpeechToText):
+        """
+        Args:
+            moonshine: The model to listen with.
+        """
+        self.moonshine = moonshine
+        # The recording as it's made, and then None once it's over.
+        self._waiting: "queue.Queue[Optional[np.ndarray]]" = queue.Queue()
+        self._transcript = None
+        self._failed: Optional[Exception] = None
+        self._thread = threading.Thread(target=self._listen, name="moonshine", daemon=True)
+        self._thread.start()
+
+    def add(self, audio: np.ndarray):
+        """
+        More of the recording, as it's made. Returns straight away.
+
+        Args:
+            audio: float32 samples at 16kHz, carrying on from the last.
+        """
+        self._waiting.put(audio)
+
+    def finish(self, audio: np.ndarray) -> Dict[str, Any]:
+        """
+        The words, once Moonshine has caught up with the end of the recording.
+
+        Args:
+            audio: The whole recording, which is transcribed afresh if anything went
+                wrong while listening, so nothing said is lost.
+
+        Returns:
+            What MoonshineSpeechToText.transcribe() returns - its 'duration' only how
+            long was left to do once the recording stopped.
+        """
+        started = time.time()
+        self.cancel()
+        if self._failed is not None:
+            logger.warning(f"Couldn't transcribe the recording as it was made, so starting again "
+                           f"on the whole of it: {self._failed}")
+            return self.moonshine.transcribe(audio)
+        return self.moonshine._result(self._transcript, time.time() - started, after_recording=True)
+
+    def cancel(self):
+        """Stops listening, waiting for Moonshine to finish with what it's been given."""
+        self._waiting.put(None)
+        self._thread.join()
+
+    def _listen(self):
+        """Gives Moonshine the recording as it arrives, until it's over - on a thread of its own."""
+        stream = None
+        try:
+            stream = self.moonshine.transcriber.create_stream()
+            stream.start()
+            over = False
+            while not over:
+                pieces = [self._waiting.get()]
+                # Whatever else arrived while Moonshine was busy goes in with it, at once.
+                while True:
+                    try:
+                        pieces.append(self._waiting.get_nowait())
+                    except queue.Empty:
+                        break
+                over = any(piece is None for piece in pieces)
+                pieces = [piece for piece in pieces if piece is not None]
+                if pieces:
+                    stream.add_audio(np.concatenate(pieces).tolist(), 16000)
+            # Finishes off whatever's left since its last look. It gives back nothing,
+            # rather than raising, when that goes wrong.
+            self._transcript = stream.stop()
+            if self._transcript is None:
+                raise RuntimeError("Moonshine couldn't finish the transcription")
+        except Exception as e:
+            self._failed = e
+        finally:
+            if stream is not None:
+                stream.close()
 
 
 def make_speech_to_text(config):

@@ -67,7 +67,10 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 ## Phase 4 onwards
 
-- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Streaming the model's reply into speech, deferred from Phase 3, comes with any slower or local model. ntfy, both ways: homelab alerts announced on the speakers, with "tell me more" for the details (only urgent ones at night), and "send that to my phone" for an answer, a reminder nobody answered, or Nova having to restart itself. A settings page served by Nova - settings, keys (never shown back), Spotify sign-in, volumes, alarms, what it remembers, and how it's doing - its settings API in the backend, so standalone Pis have it too. Speech-to-text there could be Parakeet, if PVE2 has a GPU - measured against Moonshine first.
+- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Streaming the model's reply into speech, deferred from Phase 3, comes with any slower or local model. ntfy, both ways: homelab alerts announced on the speakers, with "tell me more" for the details (only urgent ones at night), and "send that to my phone" for an answer, a reminder nobody answered, or Nova having to restart itself. A settings page served by Nova - settings, keys (never shown back), Spotify sign-in, volumes, alarms, what it remembers, and how it's doing - its settings API in the backend, so standalone Pis have it too. Speech-to-text there could be Parakeet, on PVE2's processor since it has no graphics card - measured against Moonshine first.
+  - [x] The plan: what runs on PVE2, what stays on the Pi, and how standalone mode works - [decisions/0004](decisions/0004-pve2-backend.md)
+  - [ ] Moonshine working out the words while they're still being said - built on `phase-4`. On the Mac, with the real Moonshine, it heard the same words as before, with 0.002s left to wait once the recording stopped rather than 0.09s. To be measured on the Pi after the soak
+  - [ ] Recordings of the user's own voice, to compare Moonshine with Parakeet - after the soak
 - Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 

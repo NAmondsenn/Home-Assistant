@@ -512,25 +512,36 @@ class SmartAssistant:
         if self.listening_sound_enabled:
             self._play_sound("listening.wav")
 
+        # Speech-to-text is given the recording as it's made, so it can work out the
+        # words while the user is still saying them - see speech_to_text.py.
+        listening = self.stt.listen()
+
         # Records audio until silence / a timeout occurs. A fresh request also keeps a
         # moment from before the wake word was detected, since "Hey Nova what time is
         # it" said in one breath has often started on "what" by then.
-        audio_data = self.microphone.record_until_silence(
-            self.speech_detector, listen_from=listen_from,
-            keep_before=0.0 if follow_up else self.pre_roll,
-            silence_duration=self.thresholds.get("silence_duration", 0.6),
-            speech_timeout=speech_timeout,
-            timeout=self.thresholds.get("recording_timeout", 10.0),
-            timeline=timeline)
+        try:
+            audio_data = self.microphone.record_until_silence(
+                self.speech_detector, listen_from=listen_from,
+                keep_before=0.0 if follow_up else self.pre_roll,
+                silence_duration=self.thresholds.get("silence_duration", 0.6),
+                speech_timeout=speech_timeout,
+                timeout=self.thresholds.get("recording_timeout", 10.0),
+                timeline=timeline, heard=listening.add)
+        except BaseException:
+            # Otherwise it would wait on for the rest of a recording which isn't coming.
+            listening.cancel()
+            raise
 
         if audio_data is None or len(audio_data) == 0:
+            listening.cancel()
             timeline.note(outcome="no_speech")
             self._not_heard()
             return False
 
-        # Transcribes the recorded audio, carrying on listening if no text comes back.
-        # The audio is already at the 16kHz speech-to-text expects, since the microphone keeps it at that.
-        transcription = self.stt.transcribe(audio_data)
+        # The words, once speech-to-text has caught up with the end of the recording,
+        # carrying on listening if no text comes back. The audio is already at the
+        # 16kHz speech-to-text expects, since the microphone keeps it at that.
+        transcription = listening.finish(audio_data)
         timeline.mark("stt_done")
         timeline.note(audio_seconds=round(len(audio_data) / RATE, 2))
 
