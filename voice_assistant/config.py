@@ -91,7 +91,7 @@ def check(settings: Dict, defaults: Dict, path: str):
             default = known[name]
             if default is not None and value is not None and _kind(value) != _kind(default):
                 raise ConfigError(f"{path}: '{section}.{name}' should be {_kind(default)}, not {value!r}")
-            if (section, name) in BETWEEN_0_AND_1 and not 0 <= value <= 1:
+            if (section, name) in BETWEEN_0_AND_1 and value is not None and not 0 <= value <= 1:
                 raise ConfigError(f"{path}: '{section}.{name}' should be between 0 and 1, not {value}")
             choices = CHOICES.get((section, name))
             if choices and str(value).lower() not in choices:

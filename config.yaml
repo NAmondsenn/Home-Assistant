@@ -15,6 +15,8 @@ assistant:
 llm:
   model: "claude-haiku-4-5-20251001"
   max_tokens: 150
+  # null leaves it to the model - which Haiku 5.5 insists on, refusing any request
+  # which sets one.
   temperature: 0.7
   # Seconds to wait for a reply before giving up, and how many times to retry.
   # Searches do more work, so they get longer.

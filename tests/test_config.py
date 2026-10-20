@@ -68,6 +68,11 @@ def test_a_mistake_stops_it_starting_and_says_where(config_with, own, said):
     assert said in str(caught.value) and "config.yaml" in str(caught.value)
 
 
+def test_a_setting_can_be_left_to_the_model_with_null(config_with, tmp_path):
+    (tmp_path / "defaults.yaml").write_text(DEFAULTS + "llm:\n  temperature: 0.7\n")
+    assert config_with("llm:\n  temperature: null\n").section("llm")["temperature"] is None
+
+
 def test_a_whole_number_is_fine_for_a_setting_with_a_decimal_default(config_with):
     assert config_with("thresholds:\n  silence_duration: 1\n").section("thresholds")["silence_duration"] == 1
 

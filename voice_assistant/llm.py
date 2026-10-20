@@ -51,7 +51,8 @@ class LLMHandler:
 
         self.model_name = model or llm_config.get("model", "claude-haiku-4-5-20251001")
         self.max_tokens = max_tokens if max_tokens is not None else llm_config.get("max_tokens", 150)
-        self.temperature = temperature if temperature is not None else llm_config.get("temperature", 0.7)
+        # None leaves it to the model - Haiku 5.5 refuses any request which sets one.
+        self.temperature = temperature if temperature is not None else llm_config.get("temperature")
         self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
         self.history = []
         # Seconds after which an exchange is forgotten once a new conversation starts - see forget_stale_history.
@@ -275,7 +276,12 @@ class LLMHandler:
             # The tools are always offered, so the model decides what the user meant
             # rather than a keyword match guessing at it.
             # max_tokens is set to 300 to stop responses from reaching the limit and being cut off.
-            request_kwargs = {"max_tokens": max(self.max_tokens, 300), "tools": list(self.tools)}
+            # Thinking is switched off: Haiku 5.5 thinks first unless told not to, which
+            # added two or three seconds to a spoken answer, and - asked "what have I got
+            # on next Friday?" - sometimes spent all 300 tokens deciding which Friday,
+            # leaving nothing to say.
+            request_kwargs = {"max_tokens": max(self.max_tokens, 300), "tools": list(self.tools),
+                              "thinking": {"type": "disabled"}}
 
             # Only attaches the web search tool when the user explicitly asked to look something up.
             if use_web_search:
@@ -298,9 +304,10 @@ class LLMHandler:
             system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
 
             # Sends the system prompt, conversation history, current query and model settings to the LLM
+            if self.temperature is not None:
+                request_kwargs["temperature"] = self.temperature
             response = client.messages.create(
-                model=self.model_name, temperature=self.temperature,
-                system=system, messages=messages, **request_kwargs)
+                model=self.model_name, system=system, messages=messages, **request_kwargs)
 
             # A long-running search can come back as "pause_turn" rather than a finished
             # answer. The paused turn is sent back unchanged to let it continue, with a
@@ -311,8 +318,7 @@ class LLMHandler:
                 logger.info("Search paused by the API, continuing the turn...")
                 messages.append({"role": "assistant", "content": response.content})
                 response = client.messages.create(
-                    model=self.model_name, temperature=self.temperature,
-                    system=system, messages=messages, **request_kwargs)
+                    model=self.model_name, system=system, messages=messages, **request_kwargs)
 
             # Retrieves text blocks from the model's response, joins them and strips excess whitespace.
             # This is because responses come as several text blocks which need to be formatted.

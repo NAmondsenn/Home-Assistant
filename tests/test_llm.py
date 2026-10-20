@@ -215,3 +215,17 @@ def test_offline_claude_isnt_waited_on(llm, monkeypatch):
     assert llm.client.requests == []
     assert result["response"] == llm_module.OFFLINE_MESSAGE
     assert result["actions"] == [Action("control_playback", {"action": "pause"})]
+
+
+def test_thinking_is_off_and_temperature_only_sent_when_set(llm):
+    # Haiku 5.5 thinks first unless told not to - seconds, for a spoken answer - and
+    # refuses any request which sets a temperature.
+    llm.client = FakeClient(_reply("Paris."))
+    llm.temperature = None
+    llm.process_query("what's the capital of France")
+    request = llm.client.requests[-1]
+    assert request["thinking"] == {"type": "disabled"} and "temperature" not in request
+
+    llm.temperature = 0.7
+    llm.process_query("and Spain")
+    assert llm.client.requests[-1]["temperature"] == 0.7
