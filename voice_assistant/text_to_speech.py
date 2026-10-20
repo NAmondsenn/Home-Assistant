@@ -13,6 +13,7 @@ from memory.
 import json
 import logging
 import os
+import re
 import select
 import subprocess
 import threading
@@ -36,6 +37,24 @@ SENTENCE_TIMEOUT = 10.0
 # How many recent things said are kept, already synthesised. A timer says the same
 # "Your 10 minute timer is done" every round until it's dismissed.
 RECENT_PHRASES = 8
+
+
+def speakable(text: str) -> str:
+    """
+    Rewrites what Piper reads wrongly. Its text reader takes a time on the hour
+    digit by digit - "2:00 PM" came out as "two zero zero P M", "7:05" as "seven
+    zero five" - whether the time came from the clock or from Claude. "3:30 PM" it
+    reads properly, so that's left alone.
+
+    Args:
+        text: What's to be said.
+
+    Returns:
+        e.g. "from 2 PM until 10 PM", "7 oh 5 AM", "the 6 o'clock one".
+    """
+    text = re.sub(r"\b(\d{1,2}):00(?=\s*[AaPp]\.?\s?[Mm]\b)", r"\1", text)
+    text = re.sub(r"\b(\d{1,2}):00\b", r"\1 o'clock", text)
+    return re.sub(r"\b(\d{1,2}):0(\d)\b", r"\1 oh \2", text)
 
 
 class TextToSpeech:
@@ -164,7 +183,7 @@ class TextToSpeech:
         """
         # Quotation marks and new lines are taken out - a new line would be taken
         # as the start of something else to say.
-        text = text.replace('"', "'").replace("\n", " ").strip()
+        text = speakable(text.replace('"', "'").replace("\n", " ").strip())
         if not text:
             logger.warning("No text provided.")
             return

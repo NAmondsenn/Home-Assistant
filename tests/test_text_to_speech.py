@@ -115,3 +115,18 @@ def test_a_wav_can_still_be_written_for_trying_the_voice(tts, tmp_path):
     assert tts.synthesise("one two", path) == path
     with wave.open(path) as file:
         assert file.getframerate() == 16000 and file.getnframes() == 200
+
+
+@pytest.mark.parametrize("written, said", [
+    # Piper read these digit by digit: "two zero zero P M", "seven zero five".
+    ("from 2:00 PM until 10:00 PM", "from 2 PM until 10 PM"),
+    ("Your 7:00am alarm.", "Your 7am alarm."),
+    ("It's 7:05 AM.", "It's 7 oh 5 AM."),
+    ("the 6:00 one", "the 6 o'clock one"),
+    # Which it reads properly, so are left alone.
+    ("from 3:30 PM until 11:30 PM", "from 3:30 PM until 11:30 PM"),
+    ("It's 10:45 PM.", "It's 10:45 PM."),
+])
+def test_times_are_written_so_piper_reads_them_properly(written, said):
+    from voice_assistant.text_to_speech import speakable
+    assert speakable(written) == said
