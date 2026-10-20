@@ -610,6 +610,110 @@ class LLMHandler:
         return any(re.search(rf"\b{re.escape(trigger)}\b", lowered)
                    for trigger in self.WEB_SEARCH_TRIGGERS)
 
+    def _system_prompt(self, use_web_search: bool) -> str:
+        """
+        What the model is told about itself and how to answer. Nothing in it changes
+        from one request to the next - the time and what's on the clock come with the
+        user's message instead (see _situation) - so the API can cache it along with
+        the tools, which together are several thousand tokens.
+
+        Args:
+            use_web_search: Whether this request can search the web.
+
+        Returns:
+            The system prompt.
+        """
+        system_prompt = (
+            f"You are {self.assistant_name}, a voice assistant running locally with smart home and utility features. "
+            "You can control Spotify playback and (soon) the smart lights, so don't claim you're unable to play music. "
+            "IMPORTANT: music and light commands only actually happen if you call the matching tool. Saying "
+            "you have done something does not do it. So whenever the user asks for music or lights, call the "
+            "tool - including for shuffle, repeat, skipping, restarting a track, and pausing. Your own text "
+            "reply for those commands should just be a short acknowledgement like 'Okay.', since the tool's "
+            "result is what gets spoken to the user. "
+            "Act on what the user has just said, not on earlier turns: those requests have already been "
+            "carried out, so don't act on them again. That does not mean skipping a new request which "
+            "resembles an old one - if they ask to turn the volume up three times, turn it up three "
+            "times. Only when the latest message is unclear, or sounds like the user talking to "
+            "themselves rather than to you, ask what they meant instead of guessing at a tool. "
+            "What you receive is speech that has been transcribed, so it often contains mishearings. "
+            "When a word is clearly wrong but the intent is obvious, correct it silently and carry on - "
+            "'set a timer for 10 cents' means 10 seconds, 'play goobah by six nine' means Gooba by "
+            "6ix9ine. Only ask when you genuinely can't tell what was wanted, not when a word simply "
+            "came out wrong. "
+            "Your replies are converted to speech, so: "
+            "never use markdown, bullet points, emojis, or special formatting - plain spoken sentences only. "
+            "It is imperative you keep responses to 1-2 short sentences. Spoken answers are slow to listen to, "
+            "so say the useful part and stop. Only go longer if the user explicitly asks for detail. "
+            "Be direct and natural, like a helpful person talking, not a customer service bot. "
+            "If you don't know something, say so plainly rather than guessing. "
+            "Each message from the user starts with the date and time it was said, and the timers "
+            "and reminders running then, in square brackets. That's added automatically - the user "
+            "didn't say it, so never mention it unless asked. "
+            "Work out any times or dates the user asks about from that, and answer with only the "
+            "part they asked for - the time alone for 'what time is it', the date alone for 'what "
+            "day is it'. Say dates the way they're spoken, such as 'Tuesday the 4th of August 2026'. "
+            "Use UK units and conventions only: degrees Celsius for temperature, "
+            "miles for distance and road speeds, stones and pounds for body weight, kilograms and grams "
+            "for other weights, litres and pints, and pounds sterling for money. Give dates as day then "
+            "month, and use the 12-hour clock with AM / PM. Use British spelling. "
+        )
+
+        # The timers and reminders running are given with each message, so a mangled
+        # transcription of a custom label ("walk the frogs") can be matched against
+        # the real thing ("walk the dogs") instead of failing to find it.
+        system_prompt += (
+            "Speech-to-text often mangles custom words like the labels of the timers and "
+            "reminders running, so match what the user said against that list by meaning, not "
+            "exact wording. If one of these is obviously what was meant despite the mangled "
+            "transcription, treat it as that one: use its real label when calling a "
+            "tool and when confirming it out loud, not the mangled version the user "
+            "appeared to say. Only ask something like 'Are you trying to cancel your "
+            "walk the dogs reminder?' when it's a close enough call between two "
+            "plausible ones that guessing wrong is a real risk. "
+        )
+
+        # The same leniency applies everywhere, not just to timers: a mishearing you're
+        # genuinely confident about should be corrected and acted on, not questioned.
+        system_prompt += (
+            "This same judgement - correct a likely mishearing and act, only ask when "
+            "it's genuinely a close call - applies to everything you hear, not only "
+            "timers and reminders. "
+        )
+
+        # The cutoff wording depends on whether a live lookup is available for this
+        # query, so the model doesn't claim it can't check while holding search results.
+        if use_web_search:
+            system_prompt += (
+                "You can search the web for this query. Summarise what you find in one or two spoken "
+                "sentences and never read out URLs, since the user is listening rather than reading."
+            )
+        else:
+            system_prompt += (
+                "You have no internet access for this query and your training data has a cutoff, so you "
+                "cannot know about recent events, prices, or news. If the user mentions something you don't "
+                "recognise, say it's likely after your cutoff or that you can't check - don't insist it "
+                "didn't happen. The user can ask you to search or look something up if they need current info."
+            )
+        return system_prompt
+
+    @staticmethod
+    def _situation(now: datetime, context: Optional[str]) -> str:
+        """
+        The details which change from one request to the next, put in front of what
+        the user said - see _system_prompt.
+
+        Args:
+            now: The current local time.
+            context: The timers and reminders running, as words, or None.
+
+        Returns:
+            e.g. "[Monday 19 October 2026, 7:36 PM (BST). Timers and reminders running:
+            none.] "
+        """
+        return (f"[{now.strftime('%A %d %B %Y')}, {spoken_clock_time(now.hour, now.minute)} "
+                f"({now.strftime('%Z')}). Timers and reminders running: {context or 'none'}.] ")
+
     def process_query(self, text, context=None):
         """
         Processes a user query using the LLM. It maintains a conversation history and constructs an initial prompt to guide the model's behaviour.
@@ -629,81 +733,7 @@ class LLMHandler:
             # the model would sometimes say it straight back despite being asked not to,
             # and Piper reads that out as "nineteen thirty-six" - more like a year than a time.
             now = datetime.now().astimezone()
-
-            # System prompt explaining to the model how to behave, including instructions for formatting and response style.
-            system_prompt = (
-                f"You are {self.assistant_name}, a voice assistant running locally with smart home and utility features. "
-                "You can control Spotify playback and (soon) the smart lights, so don't claim you're unable to play music. "
-                "IMPORTANT: music and light commands only actually happen if you call the matching tool. Saying "
-                "you have done something does not do it. So whenever the user asks for music or lights, call the "
-                "tool - including for shuffle, repeat, skipping, restarting a track, and pausing. Your own text "
-                "reply for those commands should just be a short acknowledgement like 'Okay.', since the tool's "
-                "result is what gets spoken to the user. "
-                "Act on what the user has just said, not on earlier turns: those requests have already been "
-                "carried out, so don't act on them again. That does not mean skipping a new request which "
-                "resembles an old one - if they ask to turn the volume up three times, turn it up three "
-                "times. Only when the latest message is unclear, or sounds like the user talking to "
-                "themselves rather than to you, ask what they meant instead of guessing at a tool. "
-                "What you receive is speech that has been transcribed, so it often contains mishearings. "
-                "When a word is clearly wrong but the intent is obvious, correct it silently and carry on - "
-                "'set a timer for 10 cents' means 10 seconds, 'play goobah by six nine' means Gooba by "
-                "6ix9ine. Only ask when you genuinely can't tell what was wanted, not when a word simply "
-                "came out wrong. "
-                "Your replies are converted to speech, so: "
-                "never use markdown, bullet points, emojis, or special formatting - plain spoken sentences only. "
-                "It is imperative you keep responses to 1-2 short sentences. Spoken answers are slow to listen to, "
-                "so say the useful part and stop. Only go longer if the user explicitly asks for detail. "
-                "Be direct and natural, like a helpful person talking, not a customer service bot. "
-                "If you don't know something, say so plainly rather than guessing. "
-                f"The current date and time is {now.strftime('%A %d %B %Y')}, "
-                f"{spoken_clock_time(now.hour, now.minute)} ({now.strftime('%Z')}). "
-                "Work out any times or dates the user asks about from that, and answer with only the "
-                "part they asked for - the time alone for 'what time is it', the date alone for 'what "
-                "day is it'. Say dates the way they're spoken, such as 'Tuesday the 4th of August 2026'. "
-                "Use UK units and conventions only: degrees Celsius for temperature, "
-                "miles for distance and road speeds, stones and pounds for body weight, kilograms and grams "
-                "for other weights, litres and pints, and pounds sterling for money. Give dates as day then "
-                "month, and use the 12-hour clock with AM / PM. Use British spelling. "
-            )
-
-            # Gives the model visibility of what's actually running, so a mangled
-            # transcription of a custom label ("walk the frogs") can be matched
-            # against the real thing ("walk the dogs") instead of failing to find it.
-            if context:
-                system_prompt += (
-                    f"Timers and reminders currently running: {context} "
-                    "Speech-to-text often mangles custom words like these labels, so match "
-                    "what the user said against this list by meaning, not exact wording. If "
-                    "one of these is obviously what was meant despite the mangled "
-                    "transcription, treat it as that one: use its real label when calling a "
-                    "tool and when confirming it out loud, not the mangled version the user "
-                    "appeared to say. Only ask something like 'Are you trying to cancel your "
-                    "walk the dogs reminder?' when it's a close enough call between two "
-                    "plausible ones that guessing wrong is a real risk. "
-                )
-
-            # The same leniency applies everywhere, not just to timers: a mishearing you're
-            # genuinely confident about should be corrected and acted on, not questioned.
-            system_prompt += (
-                "This same judgement - correct a likely mishearing and act, only ask when "
-                "it's genuinely a close call - applies to everything you hear, not only "
-                "timers and reminders. "
-            )
-
-            # The cutoff wording depends on whether a live lookup is available for this
-            # query, so the model doesn't claim it can't check while holding search results.
-            if use_web_search:
-                system_prompt += (
-                    "You can search the web for this query. Summarise what you find in one or two spoken "
-                    "sentences and never read out URLs, since the user is listening rather than reading."
-                )
-            else:
-                system_prompt += (
-                    "You have no internet access for this query and your training data has a cutoff, so you "
-                    "cannot know about recent events, prices, or news. If the user mentions something you don't "
-                    "recognise, say it's likely after your cutoff or that you can't check - don't insist it "
-                    "didn't happen. The user can ask you to search or look something up if they need current info."
-                )
+            system_prompt = self._system_prompt(use_web_search)
 
             # Maintains a conversation history to provide context for the model's responses.
             messages = []
@@ -711,8 +741,9 @@ class LLMHandler:
             for turn in self.history:
                 messages.append({"role": "user", "content": turn["user"]})
                 messages.append({"role": "assistant", "content": turn["assistant"]})
-            # Adds the current user query to the messages list.
-            messages.append({"role": "user", "content": text})
+            # Adds the current user query to the messages list, after the details which
+            # change from one request to the next - see _system_prompt.
+            messages.append({"role": "user", "content": self._situation(now, context) + text})
 
             # The music and light tools are always offered, so the model decides what
             # the user meant rather than a keyword match guessing at it.
@@ -735,10 +766,15 @@ class LLMHandler:
             # A search is allowed longer than an ordinary reply - see search_timeout.
             client = self.client.with_options(timeout=self.search_timeout) if use_web_search else self.client
 
+            # The tools and instructions are the same every time, so they're cached by
+            # the API for five minutes after each request - a follow-up question, or the
+            # next request soon after, doesn't have them all read through again.
+            system = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+
             # Sends the system prompt, conversation history, current query and model settings to the LLM
             response = client.messages.create(
                 model=self.model_name, temperature=self.temperature,
-                system=system_prompt, messages=messages, **request_kwargs)
+                system=system, messages=messages, **request_kwargs)
 
             # A long-running search can come back as "pause_turn" rather than a finished
             # answer. The paused turn is sent back unchanged to let it continue, with a
@@ -750,7 +786,7 @@ class LLMHandler:
                 messages.append({"role": "assistant", "content": response.content})
                 response = client.messages.create(
                     model=self.model_name, temperature=self.temperature,
-                    system=system_prompt, messages=messages, **request_kwargs)
+                    system=system, messages=messages, **request_kwargs)
 
             # Retrieves text blocks from the model's response, joins them and strips excess whitespace.
             # This is because responses come as several text blocks which need to be formatted.
@@ -791,6 +827,10 @@ class LLMHandler:
 
             logger.info(f"LLM response: '{response_text}'" + (f" (actions: {actions})" if actions else ""),
                         extra=TRANSCRIPT)
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                logger.info(f"Claude read {usage.input_tokens} new input tokens, "
+                            f"{getattr(usage, 'cache_read_input_tokens', 0) or 0} from its cache")
 
             # Returns a dictionary containing the model's response, the actions it asked for, and whether the transaction was successful
             return {"response": response_text, "actions": actions, "success": True}

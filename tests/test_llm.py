@@ -105,9 +105,29 @@ def test_the_time_is_given_on_the_12_hour_clock(llm, monkeypatch):
     llm.client = FakeClient(_reply("It's 7:36 PM."))
     llm.process_query("what time is it")
 
-    system_prompt = llm.client.requests[0]["system"]
-    assert "7:36 PM" in system_prompt
-    assert "19:36" not in system_prompt
+    said = llm.client.requests[0]["messages"][-1]["content"]
+    assert "7:36 PM" in said and said.endswith("what time is it")
+    assert "19:36" not in said
+
+
+def test_the_instructions_are_the_same_every_time_so_they_can_be_cached(llm, monkeypatch):
+    # The time to the minute, and the timers running, used to be in the system
+    # prompt, so it changed every minute and could never be cached.
+    times = iter([datetime(2026, 10, 19, 19, 36), datetime(2026, 10, 19, 21, 5)])
+
+    class MovingDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(times)
+
+    monkeypatch.setattr(llm_module, "datetime", MovingDatetime)
+    llm.client = FakeClient(_reply("Okay."))
+    llm.process_query("what time is it")
+    llm.process_query("cancel the walk the frogs reminder", context="a walk the dogs reminder for 9:30 PM")
+
+    first, second = (request["system"] for request in llm.client.requests)
+    assert first == second and first[-1]["cache_control"] == {"type": "ephemeral"}
+    assert "walk the dogs reminder" in llm.client.requests[1]["messages"][-1]["content"]
 
 
 # Timeouts and failures
