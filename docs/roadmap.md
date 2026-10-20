@@ -37,7 +37,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] Live test on the Pi - [release-checklist.md](release-checklist.md)
 - [x] Set `weather.location`
 - [ ] 72-hour soak test, with `scripts/soak_monitor.py` running - started Tuesday 20 October at 17:09, with all of Phase 3 on the Pi, until Friday 23 October at 17:09
-- [ ] UX-04 physical stop button - needs a button and a GPIO pin
+- Deferred, agreed 20 October: UX-04 physical stop button - to be talked over with a remote with a microphone of its own, which could do the same and more
 - [ ] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means
 
 ## Phase 3: code quality, speed, and the home - built on `phase-3`, running on the Pi
