@@ -38,8 +38,8 @@ def config_with(tmp_path):
 
 
 def test_the_installs_settings_override_only_what_they_name(config_with):
-    config = config_with("weather:\n  location: Newcastle upon Tyne\n")
-    assert config.section("weather") == {"location": "Newcastle upon Tyne", "units": "metric"}
+    config = config_with("weather:\n  location: Bristol\n")
+    assert config.section("weather") == {"location": "Bristol", "units": "metric"}
     assert config.section("audio") == {"sample_rate": 48000}
 
 

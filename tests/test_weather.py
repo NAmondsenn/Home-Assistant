@@ -42,7 +42,7 @@ def requests_made(monkeypatch):
     return made
 
 
-def _weather(make_config, location="Newcastle"):
+def _weather(make_config, location="Bristol"):
     return Weather(config=make_config(weather={"location": location}))
 
 

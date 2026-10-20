@@ -129,8 +129,8 @@ def test_client_is_given_a_timeout_and_few_retries(monkeypatch, make_config):
 
 
 def test_web_searches_are_allowed_longer(llm):
-    llm.client = FakeClient(_reply("It's sunny in Newcastle."))
-    llm.process_query("search for the weather in Newcastle")
+    llm.client = FakeClient(_reply("It's sunny in Bristol."))
+    llm.process_query("search for the weather in Bristol")
     assert llm.client.options == [{"timeout": llm.search_timeout}]
 
 
@@ -223,7 +223,7 @@ def test_reply_lengths_are_the_ones_set(make_config):
     llm = LLMHandler(config=make_config(llm={"max_tokens": 200, "max_tokens_search": 500}), api_key=None)
     llm.client = FakeClient(_reply("Paris."))
     llm.process_query("what's the capital of France")
-    llm.process_query("search for the weather in Newcastle")
+    llm.process_query("search for the weather in Bristol")
     assert [request["max_tokens"] for request in llm.client.requests] == [200, 500]
 
 
