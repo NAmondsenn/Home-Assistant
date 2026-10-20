@@ -66,7 +66,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 ## Phase 4 onwards
 
-- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Streaming the model's reply into speech, deferred from Phase 3, comes with any slower or local model. Notifications through the user's own ntfy server - for a reminder or alarm nobody answered, or Nova having to restart itself. Speech-to-text there could be Parakeet, if PVE2 has a GPU - measured against Moonshine first.
+- Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Streaming the model's reply into speech, deferred from Phase 3, comes with any slower or local model. ntfy, both ways: homelab alerts announced on the speakers, with "tell me more" for the details (only urgent ones at night), and "send that to my phone" for an answer, a reminder nobody answered, or Nova having to restart itself. A settings page served by Nova - settings, keys (never shown back), Spotify sign-in, volumes, alarms, what it remembers, and how it's doing - its settings API in the backend, so standalone Pis have it too. Speech-to-text there could be Parakeet, if PVE2 has a GPU - measured against Moonshine first.
 - Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
