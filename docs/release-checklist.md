@@ -47,7 +47,8 @@ The log should end with `Nova ready!` and `Listening for 'Hey Nova'...`, with no
 
 19. "Hey Nova, what's the weather?" (with `weather.location` set).
 20. Unplug the microphone for 5 seconds, plug it back in, wait 10, then "Hey Nova" - it works without a restart.
-21. `systemctl --user restart voice-assistant` - it stops within a second or two, rather than hanging for 20.
+21. Unplug the network cable, wait 10 seconds, then "Hey Nova", wait for the blip, "set a one minute timer" - it's set straight away. "Hey Nova, how far away is the moon?" - straight away, it says it can't reach the internet. Plug the cable back in.
+22. `systemctl --user restart voice-assistant` - it stops within a second or two, rather than hanging for 20.
 
 ## Leaving it running
 

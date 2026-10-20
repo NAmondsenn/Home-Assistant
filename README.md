@@ -14,7 +14,7 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
 
-The everyday commands - timers, pause, skip, volume, the time and the weather - are recognised on the Pi itself, so they're quicker, and still work when the internet is down.
+The everyday commands - timers, pause, skip, volume, the time and the weather - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume and the time carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
 
 Lights and other devices aren't done yet; that comes with Home Assistant.
 

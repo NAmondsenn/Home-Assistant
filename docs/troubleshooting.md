@@ -47,7 +47,7 @@ Whisper sometimes finds words in noise. The obvious ones ("Thank you.", "Thanks 
 
 ## Claude's replies fail
 
-The failure is said out loud: "took too long" (a slow connection), "can't reach the internet", an API key problem (check `.env`), or "too many requests" (wait a minute). The everyday commands - timers, pause, skip, volume, the time - don't need Claude, so they carry on working.
+The failure is said out loud: "took too long" (a slow connection), "can't reach the internet", an API key problem (check `.env`), or "too many requests" (wait a minute). The everyday commands are handled without Claude, and timers, alarms, Nova's own volume and the time keep working offline. With no network at all - the cable out, or the Wi-Fi down - Nova knows straight away from the Pi's routing table, and says so rather than waiting out its timeouts.
 
 ## The weather doesn't work
 
