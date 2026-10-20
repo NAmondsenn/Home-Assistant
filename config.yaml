@@ -52,6 +52,20 @@ spotify:
   device_name: "Voice-Assistant"
   pause_while_speaking: true
 
+speech_to_text:
+  # Which model turns speech into text: "moonshine", or "whisper" (below). Measured on
+  # the Pi, Moonshine took 0.8s where Whisper took 2.2s, with fewer words wrong.
+  engine: "moonshine"
+
+moonshine:
+  # "small-streaming" suits the Pi. "tiny-streaming" is quicker, at 0.35s, but got
+  # twice as many words wrong as Whisper; "medium-streaming" was slower, not better.
+  model: "small-streaming"
+  # Where the model files are kept, inside the project. setup.sh downloads them here.
+  download_root: "models/moonshine"
+  # Words to listen out for - names it would otherwise mishear. No commas in them.
+  keyterms: ["Nova", "Hey Nova", "Spotify", "Navidrome", "uni"]
+
 whisper:
   model: "base.en"
   # Where the model files are kept, inside the project. setup.sh downloads them here,

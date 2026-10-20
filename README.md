@@ -22,8 +22,8 @@ The everyday commands - timers, pause, skip, volume, the time, the weather, the 
 ## How it works
 
 ```
-microphone ─► wake word ─► record until you stop talking ─► Whisper ─► local command, or Claude ─► action ─► Piper ─► speaker
-               (openWakeWord)   (Silero voice activity)       (faster-whisper)                    (timers, Spotify, ...)
+microphone ─► wake word ─► record until you stop talking ─► Moonshine ─► local command, or Claude ─► action ─► Piper ─► speaker
+               (openWakeWord)   (Silero voice activity)       (or Whisper)                         (timers, music, ...)
 ```
 
 - `main.py` runs the loop above, and decides how each request is answered and confirmed.
@@ -152,6 +152,7 @@ The settings most likely to need changing:
 | --- | --- |
 | `weather.location` | Your town or city. Empty until you set it. |
 | `music.player` | `navidrome` or `spotify`. |
+| `speech_to_text.engine` | `moonshine` (quicker) or `whisper`. |
 | `thresholds.vad_threshold` | How sure Nova must be that it's hearing speech. Raise it if noise keeps it listening; lower it if quiet speech is missed. |
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |

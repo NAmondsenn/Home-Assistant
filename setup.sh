@@ -234,7 +234,8 @@ from openwakeword.utils import download_models
 from voice_assistant import paths
 from voice_assistant.config import Config
 
-whisper = Config().section("whisper")
+config = Config()
+whisper = config.section("whisper")
 root = os.path.join(paths.PROJECT_DIRECTORY, whisper["download_root"])
 for name in filter(None, [whisper.get("model"), whisper.get("fallback_model")]):
     # Looked for locally first, so one already there isn't checked online every update.
@@ -243,9 +244,17 @@ for name in filter(None, [whisper.get("model"), whisper.get("fallback_model")]):
     except Exception:
         download_model(name, cache_dir=root)
 download_models()
+
+# Moonshine's model, if that's the speech-to-text in use. It keeps the files it has.
+if config.section("speech_to_text").get("engine") == "moonshine":
+    import moonshine_voice
+    moonshine = config.section("moonshine")
+    architecture = moonshine_voice.string_to_model_arch(moonshine["model"].strip().lower().replace("_", "-"))
+    moonshine_voice.get_model_for_language("en", architecture, on_progress=lambda fraction, name: None,
+                                           cache_root=os.path.join(paths.PROJECT_DIRECTORY, moonshine["download_root"]))
 EOF
     )
-    done_ "Whisper and openWakeWord models are in place"
+    done_ "Whisper, Moonshine and openWakeWord models are in place"
 }
 
 # Lets the assistant and Spotify share the speaker and microphone. Without it, whichever

@@ -41,6 +41,8 @@ def test_timers_are_set_without_claude(text, seconds):
     ("Pause.", "pause"), ("Pause the music.", "pause"), ("Stop the music.", "pause"), ("Stop.", "pause"),
     ("Skip.", "skip"), ("Next song.", "skip"), ("Skip this song.", "skip"),
     ("Previous song.", "previous"), ("Go back.", "previous"),
+    # How Moonshine heard "stop" and "skip" said on their own.
+    ("Soap.", "pause"), ("Scap.", "skip"),
 ])
 def test_playback_controls_are_handled_without_claude(text, command):
     assert _actions(text) == [Action("control_playback", {"action": command})]

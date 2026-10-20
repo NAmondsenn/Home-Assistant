@@ -1028,7 +1028,8 @@ class Clock:
     # Said last, these mean "stop" whatever Whisper heard before them. "Stop" alone,
     # over a timer, has come back as "It's a little bus stop" - which still went to
     # Claude, and only stopped the timer by the roundabout route of being talked over.
-    STOP_WORDS = {"stop", "enough", "cancel", "dismiss", "quiet", "shush", "silence", "mute"}
+    # Moonshine (see speech_to_text.py) hears a lone "stop" as "soap", or "sop".
+    STOP_WORDS = {"stop", "enough", "cancel", "dismiss", "quiet", "shush", "silence", "mute", "soap", "sop"}
 
     # Words which turn down an offer. "no" is a dismissal word too - said to a
     # ringing timer it means "make it stop" - so when the assistant has just asked

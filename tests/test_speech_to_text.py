@@ -98,3 +98,74 @@ def test_the_model_is_kept_where_config_says(monkeypatch):
     monkeypatch.setattr(speech_to_text, "WhisperModel", RememberingWhisper)
     speech_to_text.SpeechToText(model_size="base.en", download_root="/srv/nova/models/whisper")
     assert made["download_root"] == "/srv/nova/models/whisper"
+
+
+class FakeMoonshine:
+    """Stands in for the moonshine_voice package, giving back whatever text the test sets."""
+
+    heard = "Set a timer for ten minutes."
+
+    class ModelArch:
+        SMALL_STREAMING = "small"
+
+    @staticmethod
+    def string_to_model_arch(name):
+        return name
+
+    @staticmethod
+    def get_model_for_language(language, arch, cache_root=None, on_progress=None):
+        FakeMoonshine.asked = (language, arch, cache_root)
+        return "/models/small", arch
+
+    class Transcriber:
+        def __init__(self, model_path, model_arch):
+            self.keyterms = None
+            self.given = []
+
+        def set_keyterms(self, keyterms):
+            self.keyterms = keyterms
+
+        def transcribe_without_streaming(self, audio, sample_rate):
+            self.given.append((len(audio), sample_rate))
+            return SimpleNamespace(lines=[SimpleNamespace(text=FakeMoonshine.heard)])
+
+
+@pytest.fixture
+def moonshine(monkeypatch):
+    monkeypatch.setitem(__import__("sys").modules, "moonshine_voice", FakeMoonshine)
+    return FakeMoonshine
+
+
+def test_moonshine_is_used_when_chosen_and_hears_the_whole_recording(moonshine, make_config):
+    stt = speech_to_text.make_speech_to_text(make_config(
+        speech_to_text={"engine": "moonshine"},
+        moonshine={"model": "small_streaming", "download_root": "models/moonshine", "keyterms": ["Nova", "a,b"]}))
+    # Asked for by Moonshine's own, hyphenated name, however it's written in the settings.
+    assert moonshine.asked[1] == "small-streaming"
+    assert isinstance(stt, speech_to_text.MoonshineSpeechToText)
+    # Kept in the project's models folder, warmed up, and told what to listen out for.
+    assert moonshine.asked[2].endswith("models/moonshine")
+    assert stt.transcriber.given and stt.transcriber.keyterms == ["Nova"]
+    result = stt.transcribe(np.zeros(32000, dtype=np.float32))
+    assert result["text"] == "Set a timer for ten minutes." and stt.transcriber.given[-1] == (32000, 16000)
+
+
+def test_moonshine_imagining_thank_you_is_thrown_away(moonshine, make_config):
+    stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
+    moonshine.heard = "Thank you."
+    assert stt.transcribe(np.zeros(16000, dtype=np.float32))["text"] == ""
+    moonshine.heard = "Set a timer for ten minutes."
+
+
+def test_without_moonshine_whisper_is_used(monkeypatch, make_config):
+    def missing(name, *args, **kwargs):
+        if name == "moonshine_voice":
+            raise ImportError("No module named 'moonshine_voice'")
+        return original(name, *args, **kwargs)
+
+    import builtins
+    original = builtins.__import__
+    monkeypatch.setattr(builtins, "__import__", missing)
+    monkeypatch.setattr(speech_to_text, "WhisperModel", FakeWhisper)
+    stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
+    assert isinstance(stt, speech_to_text.SpeechToText)

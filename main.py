@@ -11,7 +11,7 @@ from voice_assistant.speaker import Speaker
 from voice_assistant.microphone import Microphone
 from voice_assistant.echo import make_echo_canceller
 from voice_assistant.vad import make_detector
-from voice_assistant.speech_to_text import SpeechToText
+from voice_assistant.speech_to_text import make_speech_to_text
 from voice_assistant.llm import LLMHandler
 from voice_assistant.intents import LocalIntents
 from voice_assistant.weather import Weather
@@ -96,15 +96,8 @@ class SmartAssistant:
         # Decides which parts of a recording are speech - see vad.py.
         self.speech_detector = make_detector(self.config)
 
-        # Sets up speech-to-text with Whisper settings from config.
-        whisper_config = self.config.section("whisper")
-        self.stt = SpeechToText(model_size=whisper_config.get("model", "base.en"), device=whisper_config.get("device", "cpu"), 
-                                compute_type=whisper_config.get("compute_type", "int8"),
-                                fallback_model=whisper_config.get("fallback_model", "tiny.en"),
-                                initial_prompt=whisper_config.get("initial_prompt"),
-                                beam_size=whisper_config.get("beam_size", 1),
-                                download_root=os.path.join(PROJECT_DIRECTORY,
-                                                           whisper_config.get("download_root", "models/whisper")))
+        # Speech-to-text - Moonshine or Whisper, whichever speech_to_text.engine says.
+        self.stt = make_speech_to_text(self.config)
         
         # Sets up text-to-speech with settings from config.
         self.tts = TextToSpeech(self.config)
