@@ -71,7 +71,8 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
   - [x] The plan: what runs on PVE2, what stays on the Pi, and how standalone mode works - [decisions/0004](decisions/0004-pve2-backend.md)
   - [ ] Moonshine working out the words while they're still being said - built on `phase-4`. Measured on the Pi with 38 recordings of the user's voice: the same words as before, and 0.24s to wait once the recording stopped rather than 0.74s (0.78s at worst rather than 2.27s), for 2.3 seconds of processing for each second of recording rather than 1.0 - with no microphone overflows while Nova ran alongside. To go into Nova after the soak
   - [x] Recordings of the user's own voice - 38, made with `scripts/record_samples.py` through Nova's own microphone, alongside the soak. Measured with `scripts/compare_speech_to_text.py`, Parakeet TDT 0.6B v2 got 6.8% of words wrong where Moonshine small got 14-16%; leaving out two recordings whose words weren't certain, 2.4% against 6.5%
-  - [ ] Parakeet's speed on PVE2's processor, which decides stage 1 of [decisions/0004](decisions/0004-pve2-backend.md)
+  - [x] Parakeet's speed on PVE2's processor: 0.58s typically once the recording stopped, 1.35s at worst, with 4.5% of words wrong - and a third of a millisecond to the Pi and back. More accurate than Moonshine, but slower than Moonshine working the words out as they're said
+  - [ ] Choose stage 1's model, in [decisions/0004](decisions/0004-pve2-backend.md)
 - Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
