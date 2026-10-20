@@ -143,3 +143,19 @@ def test_a_named_day_is_the_next_one(day, today, expected):
     from datetime import date
     first, days = calendar_days(day, date.fromisoformat(today))
     assert (first.isoformat(), days) == expected
+
+
+@pytest.mark.parametrize("text, start", [
+    ("What time do I have work tomorrow?", "2026-10-21"),
+    ("When do I finish work today?", "2026-10-20"),
+    ("Am I working on Saturday?", "2026-10-24"),
+    ("What time is work?", "2026-10-20"),
+])
+def test_work_is_read_from_the_calendar_without_claude(text, start, monkeypatch):
+    class Tuesday(intents_module.date):
+        @classmethod
+        def today(cls):
+            return intents_module.date(2026, 10, 20)
+
+    monkeypatch.setattr(intents_module, "date", Tuesday)
+    assert _actions(text) == [Action("get_work", {"start": start, "days": 1})]

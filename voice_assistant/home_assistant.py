@@ -49,7 +49,8 @@ MOST_EVENTS_SAID = 5
 class HomeAssistant:
     """One Home Assistant, reached over its REST API."""
 
-    def __init__(self, url: str, token: str, agent: str = DEFAULT_AGENT, calendars: Optional[List[str]] = None):
+    def __init__(self, url: str, token: str, agent: str = DEFAULT_AGENT, calendars: Optional[List[str]] = None,
+                 work_events: Optional[List[str]] = None):
         """
         Args:
             url: Its address, e.g. "http://homeassistant.local:8123".
@@ -57,10 +58,13 @@ class HomeAssistant:
             agent: The Assist agent requests go to.
             calendars: The calendars to read, e.g. ["calendar.personal"], or None
                 for all of them.
+            work_events: What the user's work is called on the calendar - an event
+                with any of these in its name is work. "work" if not given.
         """
         self.url = url.rstrip("/")
         self.agent = agent
         self.calendars = list(calendars or [])
+        self.work_events = [name.lower() for name in (work_events or ["work"])]
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -84,7 +88,7 @@ class HomeAssistant:
             logger.warning("home_assistant.url is set but HA_TOKEN isn't in .env, so Home Assistant is off")
             return None
         logger.info(f"Home Assistant at {url}")
-        return cls(url, token, calendars=settings.get("calendars"))
+        return cls(url, token, calendars=settings.get("calendars"), work_events=settings.get("work_events"))
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         response = self._session.request(method, self.url + path, timeout=REQUEST_TIMEOUT, **kwargs)
@@ -182,15 +186,78 @@ class HomeAssistant:
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": describe_agenda(events, first, days, today or date.today())}
 
+    def work(self, first: date, days: int = 1, today: Optional[date] = None) -> Dict:
+        """
+        When the user is working - the events on the calendar named as their work.
+
+        Args:
+            first: The first day asked about.
+            days: How many days.
+            today: Today's date - only given by the tests.
+
+        Returns:
+            Dict with 'success' and the times as the 'message'.
+        """
+        try:
+            events = self.events(first, days)
+        except (requests.RequestException, ValueError, KeyError) as e:
+            logger.error(f"Couldn't read the calendar: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        work = [event for event in events if any(name in event["summary"].lower() for name in self.work_events)]
+        return {"success": True, "message": describe_work(work, first, days, today or date.today())}
+
+
+def describe_work(events: List[Dict], first: date, days: int, today: date) -> str:
+    """
+    Says when the user is working, a day at a time.
+
+    Args:
+        events: Their work, from HomeAssistant.events, earliest first.
+        first: The first day asked about.
+        days: How many days.
+        today: Today's date.
+
+    Returns:
+        e.g. "Tomorrow, you've got work from 9:00 AM until 5:30 PM." or "You're not
+        working tomorrow."
+    """
+    by_day = {}
+    for event in events:
+        day = event["start"] if event["all_day"] else event["start"].date()
+        by_day.setdefault(max(day, first), []).append(event)
+
+    sentences = []
+    for day in sorted(by_day):
+        times = []
+        for event in by_day[day]:
+            if event["all_day"]:
+                times.append("all day")
+                continue
+            start = spoken_clock_time(event["start"].hour, event["start"].minute)
+            end = event.get("end")
+            times.append(f"from {start} until {spoken_clock_time(end.hour, end.minute)}" if end else f"at {start}")
+        listed = times[0] if len(times) == 1 else ", ".join(times[:-1]) + ", and " + times[-1]
+        on = _on(day, today)
+        sentences.append(f"{on[0].upper()}{on[1:]}, you've got work {listed}.")
+
+    if sentences:
+        return " ".join(sentences)
+    last = first + timedelta(days=days - 1)
+    if days == 1:
+        return f"You're not working {spoken_day(first, today)}."
+    return f"You're not working between {spoken_day(first, today)} and {spoken_day(last, today)}."
+
 
 def _read_event(event: Dict) -> Dict:
-    """One event from Home Assistant, with its start read into a date or local time."""
-    start = event.get("start") or {}
+    """One event from Home Assistant, with its start and end read into dates or local times."""
+    start, end = event.get("start") or {}, event.get("end") or {}
     if "dateTime" in start:
         when, all_day = datetime.fromisoformat(start["dateTime"]).astimezone(), False
+        until = datetime.fromisoformat(end["dateTime"]).astimezone() if "dateTime" in end else None
     else:
-        when, all_day = date.fromisoformat(start["date"]), True
-    return {"summary": (event.get("summary") or "something").strip(), "start": when, "all_day": all_day}
+        when, all_day, until = date.fromisoformat(start["date"]), True, None
+    return {"summary": (event.get("summary") or "something").strip(), "start": when, "end": until,
+            "all_day": all_day}
 
 
 def _sort_key(when) -> datetime:

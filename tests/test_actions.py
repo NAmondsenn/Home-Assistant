@@ -221,3 +221,14 @@ def test_without_home_assistant_the_lights_say_so():
     result = ActionExecutor().execute(Action("control_home", {"command": "lights on"}))
     assert result.say == "Home Assistant isn't set up yet."
     assert "control_home" in {schema["name"] for schema in ActionExecutor(home=object()).tool_schemas()}
+
+
+def test_work_is_asked_of_home_assistant_for_the_days_given():
+    class FakeHome:
+        def work(self, first, days):
+            self.asked = (first.isoformat(), days)
+            return {"success": True, "message": "You're not working tomorrow."}
+
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(Action("get_work", {"start": "2026-10-21"}))
+    assert home.asked == ("2026-10-21", 1) and result.say == "You're not working tomorrow."

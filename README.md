@@ -11,7 +11,7 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Music** - from your own [Navidrome](https://www.navidrome.org/) server, or from Spotify: play a song, artist, album, genre or playlist (or your liked songs), pause, skip, go back, shuffle, repeat, "what's this song?". The music pauses while Nova is talking, and comes back when it's done. Navidrome's plays through Nova itself, so it pauses instantly and keeps working with the internet down.
 - **Volume** - for Nova's voice, for timers and alarms, and for the music, each kept separately.
 - **The lights** - "turn off the kitchen lights", "set the living room lights to 30 percent", through Home Assistant.
-- **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar.
+- **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar. And "what time do I have work tomorrow?" - set what your work is called on the calendar in `home_assistant.work_events`.
 - **The weather** - now, today or tomorrow, from Open-Meteo.
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.

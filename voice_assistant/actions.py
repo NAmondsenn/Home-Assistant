@@ -720,8 +720,26 @@ class ActionExecutor:
         days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
     )
     def get_calendar(self, start: Optional[str] = None, days: Optional[int] = None):
+        return self._calendar_days(start, days, self.home.agenda)
+
+    @tool(
+        "When the user is working, from their calendar, for 'what time do I have work "
+        "tomorrow?', 'am I working on Saturday?', 'when do I finish work today?' or 'what "
+        "shifts have I got this week?'. Give the first day, worked out from today's date, "
+        "and how many days. The times are read out to the user, so just reply 'Okay.'",
+        needs="home",
+        required=["start"],
+        start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
+        days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
+    )
+    def get_work(self, start: Optional[str] = None, days: Optional[int] = None):
+        return self._calendar_days(start, days, self.home.work)
+
+    @staticmethod
+    def _calendar_days(start: Optional[str], days: Optional[int], read) -> Dict:
+        """Reads the calendar for the days the model gave, if it gave a day which can be read."""
         try:
             first = date.fromisoformat(start)
         except (TypeError, ValueError):
             return {"success": False, "message": "I didn't catch which day you meant."}
-        return self.home.agenda(first, max(1, min(int(days or 1), MOST_CALENDAR_DAYS)))
+        return read(first, max(1, min(int(days or 1), MOST_CALENDAR_DAYS)))

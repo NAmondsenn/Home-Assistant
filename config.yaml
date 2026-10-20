@@ -153,6 +153,9 @@ home_assistant:
   # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
   # Left empty, every calendar Home Assistant has is read.
   calendars: []
+  # What your work is called on the calendar, for "what time do I have work
+  # tomorrow?" - an event with any of these in its name is work, e.g. ["Shift", "Tesco"].
+  work_events: ["work"]
 
 weather:
   # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which

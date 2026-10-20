@@ -142,6 +142,11 @@ class LocalIntents:
              self._calendar),
             (rf"(?:am i|are we) (?:busy|free)(?: (?:on|for))? {DAY}", self._calendar),
             (rf"do i have anything(?: on| planned)?(?: (?:on|for))? {DAY}", self._calendar),
+            # Work, from the calendar - "what time do I have work tomorrow?". Without a
+            # day, it's today.
+            (rf"(?:what time|when) (?:do i|am i|is)(?: have| start| finish| have to be at)? (?:at )?(?:work|working)"
+             rf"(?:(?: on| for)? {DAY})?", self._work),
+            (rf"(?:am i|do i have|have i got) (?:working|work|at work)(?:(?: on| for)? {DAY})?", self._work),
         ]
 
     def match(self, text: str) -> Optional[Dict]:
@@ -219,6 +224,10 @@ class LocalIntents:
     def _calendar(self, found) -> Dict:
         first, days = calendar_days(found["day"], date.today())
         return self._result("Okay.", [Action("get_calendar", {"start": first.isoformat(), "days": days})])
+
+    def _work(self, found) -> Dict:
+        first, days = calendar_days(found["day"], date.today())
+        return self._result("Okay.", [Action("get_work", {"start": first.isoformat(), "days": days})])
 
     def _weather(self, found) -> Dict:
         day = found["day"] or found["day2"] or "today"
