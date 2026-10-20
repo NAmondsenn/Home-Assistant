@@ -23,7 +23,14 @@ done
 echo "Updating Nova in ${PROJECT_DIRECTORY}"
 step "Code"
 if [ "$PULL" = true ]; then
+    before=$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)
     git -C "$PROJECT_DIRECTORY" pull --ff-only
+    # This script and setup.sh's steps were read before the pull, so any new steps
+    # the update brings - a new model to fetch, say - would be missed. So once there's
+    # new code, it starts again on that.
+    if [ "$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" != "$before" ]; then
+        exec bash "${PROJECT_DIRECTORY}/update.sh" --no-pull
+    fi
 fi
 done_ "On $(git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(git -C "$PROJECT_DIRECTORY" log -1 --format='%h %s')"
 
