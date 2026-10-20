@@ -141,7 +141,7 @@ music:
   player: "navidrome"
 ```
 
-That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, or one of the wrong kind, stops it with a message naming it - `journalctl --user -u voice-assistant` shows it - rather than being quietly ignored.
+That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, or one of the wrong kind, stops it with a message naming it - `journalctl --user-unit voice-assistant` shows it - rather than being quietly ignored.
 
 Keys and passwords go in **`~/.config/nova/.env`**, readable only by you, never in a settings file. Everything Nova saves - timers, alarms, volume levels, the Spotify sign-in and its logs - is in **`~/.local/share/nova/`**. An install from before this layout has its files moved there the first time it starts.
 
@@ -164,7 +164,7 @@ As a service (the usual way, once `setup.sh` has installed it):
 systemctl --user restart voice-assistant
 ```
 ```bash
-journalctl --user -u voice-assistant -f
+journalctl --user-unit voice-assistant -f
 ```
 
 Or by hand, to watch what it's doing:

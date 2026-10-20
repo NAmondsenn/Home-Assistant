@@ -423,7 +423,7 @@ main() {
     echo ""
     echo "Done. Settings: ${SETTINGS_FILE} · keys: ${SECRETS_FILE}"
     echo "For Spotify, sign in once:  cd ${PROJECT_DIRECTORY} && venv/bin/python -m voice_assistant.spotify_controller"
-    echo "Watch it working:           journalctl --user -u ${SERVICE_NAME} -f"
+    echo "Watch it working:           journalctl --user-unit ${SERVICE_NAME} -f"
     echo "Later, to update:           bash ${PROJECT_DIRECTORY}/update.sh"
 }
 

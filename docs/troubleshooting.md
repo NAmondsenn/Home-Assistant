@@ -3,7 +3,7 @@
 By symptom. The two places to look first are the log, which says what Nova heard and decided at each step, and the sound cards the Pi can see.
 
 ```bash
-journalctl --user -u voice-assistant -n 100
+journalctl --user-unit voice-assistant -n 100
 ```
 ```bash
 aplay -l && arecord -l

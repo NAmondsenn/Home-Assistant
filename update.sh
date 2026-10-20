@@ -47,9 +47,9 @@ for _ in $(seq 1 90); do
 done
 if systemctl --user is-active -q "$SERVICE_NAME"; then
     done_ "Running"
-    journalctl --user -u "$SERVICE_NAME" -n 12 --no-pager -o cat
+    journalctl --user-unit "$SERVICE_NAME" -n 12 --no-pager -o cat
 else
     problem "It didn't start - here's why:"
-    journalctl --user -u "$SERVICE_NAME" -n 30 --no-pager -o cat
+    journalctl --user-unit "$SERVICE_NAME" -n 30 --no-pager -o cat
     exit 1
 fi

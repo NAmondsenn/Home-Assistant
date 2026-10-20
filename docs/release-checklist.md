@@ -51,7 +51,7 @@ With Navidrome (`music.player: navidrome`), and again with Spotify if you still 
 21. Unplug the network cable, wait 10 seconds, then "Hey Nova", wait for the blip, "set a one minute timer" - it's set straight away. "Hey Nova, how far away is the moon?" - straight away, it says it can't reach the internet. Plug the cable back in.
 21a. With the network cable out: the lights, and Navidrome, still work.
 22. `systemctl --user restart voice-assistant` - it stops within a second or two, rather than hanging for 20.
-23. `kill -STOP $(systemctl --user show -p MainPID --value voice-assistant)` - within about a minute, systemd restarts it (`journalctl --user -u voice-assistant` says "Watchdog timeout").
+23. `kill -STOP $(systemctl --user show -p MainPID --value voice-assistant)` - within about a minute, systemd restarts it (`journalctl --user-unit voice-assistant` says "Watchdog timeout").
 
 ## Leaving it running
 
