@@ -189,22 +189,6 @@ class SpeechToText:
                 'error': str(e)
             }
 
-    def transcribe_file(self, filepath: str, **kwargs) -> Dict[str, Any]:
-        """
-        Transcribe an audio file from disk.
-
-        Forwards the file path to transcribe().
-        Any extra arguments (e.g. beam_size, language) also get passed through.
-
-        Args:
-            filepath: Path to the audio file to transcribe.
-            **kwargs: Any other arguments accepted by transcribe() (e.g. beam_size, language, vad_filter).
-
-        Returns:
-            The same dictionary transcribe() does.
-        """
-        return self.transcribe(audio=filepath, **kwargs)
-
 
 class MoonshineSpeechToText:
     """

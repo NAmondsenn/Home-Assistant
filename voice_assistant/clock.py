@@ -729,7 +729,7 @@ class Clock:
         Rings the first round for something which has just come due - see
         _start_ringing.
         """
-        still_ringing = self._ring_once(entry, repeat=False)
+        still_ringing = self._ring_once(entry)
 
         # Timed from when it actually finished speaking, not from when it was
         # due. An announcement held back while the user was talking to the
@@ -764,7 +764,7 @@ class Clock:
         # what ends it instead.
         still_going = entry["left"] is None or entry["left"] > 0
 
-        still_ringing = self._ring_once(entry, repeat=True)
+        still_ringing = self._ring_once(entry)
 
         if still_going and still_ringing:
             # Timed from when it finished speaking, so a round delayed by a
@@ -822,14 +822,14 @@ class Clock:
             return None, self.reminder_round_gap, self.reminder_give_up_after
         return None, self.timer_repeat_gap, self.timer_give_up_after
 
-    def _ring_once(self, entry: Dict, repeat: bool) -> bool:
+    def _ring_once(self, entry: Dict) -> bool:
         """
         Plays one round for whatever's ringing - a timer/reminder announcement, or
-        one alarm cycle.
+        one alarm cycle. A later round is worded the same as the first: the user
+        hasn't heard it yet, or they'd have dismissed it.
 
         Args:
             entry: The ringing entry (see _start_ringing).
-            repeat: True if this is a later round.
 
         Returns:
             True if it's still ringing (not dismissed) by the end of the round.
@@ -851,12 +851,12 @@ class Clock:
             # sure it's actually being heard.
             boost = (not item["label"]
                     and time.time() - entry["first_rung_at"] >= self.timer_volume_boost_after)
-            self._sound_off(item, repeat=repeat, boost=boost)
+            self._sound_off(item, boost=boost)
             return self._is_ringing(item)
         finally:
             entry["sounding"] = False
 
-    def _sound_off(self, timer: Dict, repeat: bool = False, boost: bool = False):
+    def _sound_off(self, timer: Dict, boost: bool = False):
         """
         Announces a timer or reminder which has come due.
 
@@ -865,8 +865,6 @@ class Clock:
 
         Args:
             timer: The timer which finished.
-            repeat: True if this is a later round, which doesn't change the wording:
-                    the user hasn't heard it yet, or they'd have dismissed it.
             boost: True once a timer has been ringing unanswered long enough that
                    it should jump to full volume, regardless of the configured
                    alarm level. Never set for a reminder - see _repeat_settings.

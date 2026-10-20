@@ -36,6 +36,6 @@ def test_parse_action(query, expected):
     # LLMHandler initialises without an API key (it just logs a warning), and
     # _parse_action never calls the API, so this test runs fully offline.
     llm = LLMHandler(api_key=None)
-    actual = llm._parse_action(query, "")
+    actual = llm._parse_action(query)
 
     assert actual == expected

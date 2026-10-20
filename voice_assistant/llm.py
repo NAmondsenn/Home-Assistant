@@ -408,7 +408,7 @@ class LLMHandler:
         Returns:
             A list holding that one action, or an empty list.
         """
-        action = self._parse_action(text, "")
+        action = self._parse_action(text)
         return [action] if action else []
 
     @staticmethod
@@ -439,7 +439,7 @@ class LLMHandler:
             return "Sorry, Claude is having problems at the moment. Try again shortly."
         return "Sorry, I'm having trouble connecting right now."
 
-    def _parse_action(self, user_text: str, response: str) -> Optional[Action]:
+    def _parse_action(self, user_text: str) -> Optional[Action]:
         """
         Keyword-based action detection, used as a fallback when the model is
         unavailable (no API key, or the request failed). Normally the model picks
@@ -541,7 +541,3 @@ class LLMHandler:
         """
         if spoken and self.history and self.history[-1]["user"] == user_text:
             self.history[-1]["assistant"] = spoken
-
-    # Clears the conversation history, used to start a new session or reset context
-    def clear_history(self):
-        self.history = []
