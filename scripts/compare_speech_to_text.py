@@ -19,6 +19,14 @@ The models it can try, each followed by a colon and a model name if not the usua
     whisper[:base.en]                     faster-whisper on each whole recording.
     parakeet[:nemo-parakeet-tdt-0.6b-v2]  NVIDIA's Parakeet, through onnx-asr, which isn't one of
                                           Nova's own packages: pip install "onnx-asr[cpu,hub]"
+    nemotron[:<model folder>]             NVIDIA's streaming Nemotron Speech, Parakeet's sibling built
+                                          to work as it hears, through sherpa-onnx: pip install
+                                          sherpa-onnx. Like moonshine-live, it's fed at the
+                                          microphone's pace and timed from the end of each recording.
+                                          Its model isn't downloaded for you: unpack
+                                          sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2,
+                                          from the asr-models release of k2-fsa/sherpa-onnx on GitHub,
+                                          into the project's models folder.
 
 Moonshine and Whisper are set up from Nova's settings, keyterms and all - point
 NOVA_CONFIG at a copy of another machine's settings folder to use its. Each model is
@@ -55,6 +63,13 @@ RATE = 16000
 # How much of a recording the microphone hands over at a time - see
 # Microphone.record_until_silence.
 FRAME = 480
+
+# Seconds of silence a streaming model is given before each recording, and after it
+# once it's over. Measured with Nemotron on recordings of the user: without the half
+# second before, "Pause" came back as nothing at all, and it needed 1.2s after -
+# rather than the 0.66s sherpa-onnx's own examples give - to finish "what time is it".
+STREAM_LEAD_IN = 0.5
+STREAM_TAIL = 1.2
 
 NUMBERS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
            "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
@@ -215,6 +230,30 @@ def _live(stt, audio: np.ndarray) -> Tuple[str, float]:
     return text, time.monotonic() - stopped
 
 
+def _streamed(recognizer, audio: np.ndarray) -> Tuple[str, float]:
+    """
+    What a sherpa-onnx streaming model heard, working on the recording as the
+    microphone makes it, and how long it took once the recording was over.
+    """
+    stream = recognizer.create_stream()
+    stream.accept_waveform(RATE, np.zeros(int(STREAM_LEAD_IN * RATE), dtype=np.float32))
+    started = time.monotonic()
+    for start in range(0, len(audio), FRAME):
+        stream.accept_waveform(RATE, audio[start:start + FRAME])
+        while recognizer.is_ready(stream):
+            recognizer.decode_stream(stream)
+        time.sleep(max(0.0, started + (start + FRAME) / RATE - time.monotonic()))
+    stopped = time.monotonic()
+    # Silence after the end too, so the model has what it looks ahead to for the
+    # last words.
+    stream.accept_waveform(RATE, np.zeros(int(STREAM_TAIL * RATE), dtype=np.float32))
+    stream.input_finished()
+    while recognizer.is_ready(stream):
+        recognizer.decode_stream(stream)
+    text = recognizer.get_result(stream)
+    return text, time.monotonic() - stopped
+
+
 def _moonshine(model: str):
     """Nova's own Moonshine, set up from Nova's settings, and the model it's using."""
     from voice_assistant.speech_to_text import MoonshineSpeechToText
@@ -263,6 +302,20 @@ def make_model(choice: str) -> Tuple[str, Transcribe]:
         name = model or "nemo-parakeet-tdt-0.6b-v2"
         parakeet = onnx_asr.load_model(name, os.path.join(PROJECT_DIRECTORY, "models", name), quantization="int8")
         return f"Parakeet {name}", lambda audio: _timed(lambda: parakeet.recognize(audio, sample_rate=RATE))
+    if kind == "nemotron":
+        import sherpa_onnx
+
+        name = model or "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
+        folder = os.path.join(PROJECT_DIRECTORY, "models", name)
+        # It reads the rest of what it needs, like how many mel bands it hears in,
+        # from the model itself.
+        recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+            tokens=os.path.join(folder, "tokens.txt"), encoder=os.path.join(folder, "encoder.int8.onnx"),
+            decoder=os.path.join(folder, "decoder.int8.onnx"), joiner=os.path.join(folder, "joiner.int8.onnx"),
+            num_threads=4, decoding_method="greedy_search")
+        chunks = re.search(r"-(\d+ms)-", name)
+        label = f"Nemotron streaming, {chunks[1]} chunks" if chunks else f"Nemotron {name}"
+        return label, lambda audio: _streamed(recognizer, audio)
     raise ValueError(f"Not a model this can try: '{choice}' - see the top of {os.path.basename(__file__)}")
 
 
@@ -371,7 +424,8 @@ def main(argv: Optional[List[str]] = None):
     for choice in arguments.models:
         label, transcribe = make_model(choice)
         summary = summarise(measure(transcribe, samples))
-        print("\n".join(report(label, summary, len(samples), live=choice.startswith("moonshine-live"))) + "\n")
+        live = choice.startswith(("moonshine-live", "nemotron"))
+        print("\n".join(report(label, summary, len(samples), live=live)) + "\n")
 
 
 if __name__ == "__main__":

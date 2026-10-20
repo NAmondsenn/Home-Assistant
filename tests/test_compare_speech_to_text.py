@@ -192,6 +192,58 @@ def test_parakeet_is_loaded_quantised_into_the_models_folder(monkeypatch):
     assert text == "Set a timer for ten minutes." and waiting >= 0
 
 
+def test_nemotron_works_on_the_recording_as_its_made_and_is_timed_from_its_end(monkeypatch):
+    made, happened = {}, []
+
+    class Recognizer:
+        def __init__(self):
+            self.waiting = 0
+
+        def create_stream(self):
+            return Stream(self)
+
+        def is_ready(self, stream):
+            return self.waiting > 0
+
+        def decode_stream(self, stream):
+            self.waiting -= 1
+            happened.append("worked on")
+
+        def get_result(self, stream):
+            return "Pause."
+
+    class Stream:
+        def __init__(self, recognizer):
+            self.recognizer = recognizer
+
+        def accept_waveform(self, rate, samples):
+            happened.append((rate, len(samples)))
+            self.recognizer.waiting += 1
+
+        def input_finished(self):
+            happened.append("finished")
+
+    def from_transducer(**settings):
+        made.update(settings)
+        return Recognizer()
+
+    monkeypatch.setitem(sys.modules, "sherpa_onnx",
+                        SimpleNamespace(OnlineRecognizer=SimpleNamespace(from_transducer=from_transducer)))
+    label, transcribe = compare.make_model("nemotron")
+    text, waiting = transcribe(np.zeros(1200, dtype=np.float32))
+
+    folder = os.path.join(compare.PROJECT_DIRECTORY, "models",
+                          "sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25")
+    assert label == "Nemotron streaming, 560ms chunks"
+    assert (made["tokens"], made["encoder"]) == (os.path.join(folder, "tokens.txt"),
+                                                 os.path.join(folder, "encoder.int8.onnx"))
+    # Half a second of silence to start on, then a piece at a time as the microphone
+    # hands them over, then more silence to finish the last words on.
+    assert happened == [(16000, 8000), (16000, 480), "worked on", "worked on", (16000, 480), "worked on",
+                        (16000, 240), "worked on", (16000, 19200), "finished", "worked on"]
+    assert text == "Pause." and waiting < 0.05
+
+
 def test_moonshine_is_set_up_as_novas_settings_say(monkeypatch, make_config):
     made = {}
 
