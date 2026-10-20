@@ -88,6 +88,14 @@ class SmartAssistant:
         # otherwise talk over each other.
         self._announcing = threading.Lock()
 
+        # What the assistant is doing - "idle", "listening", "thinking" or "speaking" -
+        # for the settings page's star. Only ever read for show.
+        self.activity = "idle"
+        # The last volume beep the settings page played, stopped as the next starts,
+        # so dragging a slider doesn't pile them up - see _boop.
+        self._last_boop = None
+        self._boop_lock = threading.Lock()
+
         logger.info("Loading modules...")
         
         # Takes what the assistant plays back out of what the microphone hears, so it
@@ -146,7 +154,9 @@ class SmartAssistant:
         # The page for looking after Nova from a phone or a laptop, or None if it's
         # switched off - see settings_page.py.
         self.settings_page = SettingsPage.from_config(self.config, volume=self.volume, clock=self.clock,
-                                                      memory=self.memory, ntfy=self.ntfy, stt=self.stt)
+                                                      memory=self.memory, ntfy=self.ntfy, stt=self.stt,
+                                                      music=self.music_player, boop=self._boop,
+                                                      activity=lambda: self.activity)
 
         # Claude, offered whichever of those tools can actually work here, and told
         # what's known about the user.
@@ -232,6 +242,7 @@ class SmartAssistant:
             True if the wake word was heard over it, and it was stopped part way.
         """
         self._show(f"{self.name}: {message}")
+        self.activity = "speaking"
         started = None
         if timeline:
             def started():
@@ -364,9 +375,15 @@ class SmartAssistant:
             if not self._wait_for_turn(still_wanted):
                 return
 
+            # Shown as speaking only between conversations - in one, the conversation
+            # itself says what the assistant's doing.
+            if self._idle.is_set():
+                self.activity = "speaking"
             self._play_announcement(self.speaker.play_stream(
                 self.tts.stream(message), self.tts.sample_rate, volume=volume, kind="announcement"),
                 still_wanted)
+            if self._idle.is_set():
+                self.activity = "idle"
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
 
@@ -395,6 +412,19 @@ class SmartAssistant:
         if self.ntfy and self.ntfy.reminders and kind == "clock" and timer.get("label"):
             label = timer["label"]
             self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")
+
+    def _boop(self, level):
+        """
+        Plays the volume beep at a level, for the settings page's sliders - stopping
+        the last one if it's still going, so dragging a slider doesn't pile them up.
+
+        Args:
+            level: How loud, from 0 to 1.
+        """
+        with self._boop_lock:
+            if self._last_boop is not None:
+                self._last_boop.stop()
+            self._last_boop = self.speaker.play_file(str(self.sounds_folder / "volume_beep.wav"), volume=level)
 
     def _note_start(self):
         """
@@ -506,6 +536,7 @@ class SmartAssistant:
         """
         # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
         self._idle.clear()
+        self.activity = "listening"
         # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
         # The pause goes through Spotify's servers, so it runs alongside the
         # recording rather than holding it up - see MusicHold. Held across every
@@ -517,6 +548,7 @@ class SmartAssistant:
                 talked_over = self._answer(talked_over=True)
         finally:
             self.speaker.allow("announcement")
+            self.activity = "idle"
             self._idle.set()
             self.music.release()
 
@@ -590,6 +622,8 @@ class SmartAssistant:
         # while the sound plays goes missing either way.
         listen_from = self.microphone.position if follow_up else self.wake.heard_at
 
+        self.activity = "listening"
+
         # A short sound to say it's listening, since on a headless Pi there's otherwise no
         # way to tell the wake word was heard, or when to start talking. The microphone
         # hears it too, but it's far too short to count as the user starting to speak.
@@ -625,6 +659,7 @@ class SmartAssistant:
         # The words, once speech-to-text has caught up with the end of the recording,
         # carrying on listening if no text comes back. The audio is already at the
         # 16kHz speech-to-text expects, since the microphone keeps it at that.
+        self.activity = "thinking"
         transcription = listening.finish(audio_data)
         timeline.mark("stt_done")
         timeline.note(audio_seconds=round(len(audio_data) / RATE, 2))

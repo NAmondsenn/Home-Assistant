@@ -43,7 +43,10 @@ logger = logging.getLogger(__name__)
 WEB_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 FILES = {"/": ("settings.html", "text/html; charset=utf-8"),
          "/settings.js": ("settings.js", "text/javascript; charset=utf-8"),
-         "/settings.css": ("settings.css", "text/css; charset=utf-8")}
+         "/settings.css": ("settings.css", "text/css; charset=utf-8"),
+         # Outfit, by The Outfit Project Authors, under the SIL Open Font License -
+         # see web/Outfit-OFL.txt.
+         "/Outfit.woff2": ("Outfit.woff2", "font/woff2")}
 
 # Sent with every answer: nothing but the page's own files may run in it, no other
 # site may show it in a frame, and nothing is kept in a cache.
@@ -158,7 +161,9 @@ class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
     def __init__(self, allow: List[str], port: int = 8765, running=None, volume=None, clock=None, memory=None,
-                 ntfy=None, stt=None, restart: Callable[[], str] = restart_service, started: Optional[float] = None):
+                 ntfy=None, stt=None, music=None, boop: Optional[Callable[[float], None]] = None,
+                 activity: Optional[Callable[[], str]] = None, restart: Callable[[], str] = restart_service,
+                 started: Optional[float] = None):
         """
         Args:
             allow: The Tailscale logins let in.
@@ -169,6 +174,10 @@ class SettingsPage:
             memory: The Memory, for what Nova remembers.
             ntfy: The Ntfy, or None, for whether it's listening.
             stt: The speech-to-text, for whether the backend is answering.
+            music: The music player, or None - it keeps the music's volume itself.
+            boop: Plays the volume beep at a level from 0 to 1 on Nova's speaker, so a
+                change made on the page is heard at its new level.
+            activity: What Nova is doing - "idle", "listening", "thinking" or "speaking".
             restart: Restarts Nova, returning what to tell the user.
             started: When Nova started, in seconds.
         """
@@ -176,6 +185,9 @@ class SettingsPage:
         self.port = port
         self.running = running
         self.volume, self.clock, self.memory, self.ntfy, self.stt = volume, clock, memory, ntfy, stt
+        self.music = music
+        self._boop = boop
+        self._activity = activity
         self._restart = restart
         self.started = started or time.time()
         with open(paths.DEFAULTS_FILE) as file:
@@ -241,13 +253,27 @@ class SettingsPage:
                  "set": any(secrets.get(spelling) for spelling in [name] + OLDER_NAMES.get(name, []))}
                 for name, label in KEYS]
         return {"status": self._status(),
-                "volumes": {category: self.volume.percent(category) for category in self.volume.CATEGORIES},
+                "volumes": {category: self._music_level() if category == "music" else self.volume.percent(category)
+                            for category in self.volume.CATEGORIES},
                 "clock": self.clock.overview(),
                 "memories": self.memory.facts(),
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,
                 "restart_needed": changed or self._keys_changed}
+
+    def live(self) -> Dict:
+        """What Nova is doing right now - asked for every second or two while the page is open."""
+        return {"activity": self._activity() if self._activity else "idle"}
+
+    def _music_level(self) -> int:
+        """
+        The music's volume, which Navidrome keeps itself. Spotify's would mean asking
+        Spotify's servers every time the page looks, so Nova's own note of it is shown.
+        """
+        if self.music is not None and not getattr(self.music, "needs_internet", True):
+            return self.music.get_volume()
+        return self.volume.percent("music")
 
     def _saved(self):
         """The settings as saved now - which take effect at the next restart - and any problem reading them."""
@@ -291,7 +317,21 @@ class SettingsPage:
     # What it changes
 
     def set_volume(self, category: str, percent, who: str) -> Dict:
-        result = self.volume.set(category, int(percent))
+        """
+        Changes a volume, and plays the beep at its new level on Nova's speaker - as
+        the slider is dragged, so the user hears how loud it now is.
+        """
+        percent = int(percent)
+        # The music's volume belongs to the music player, which also changes the song
+        # playing - the same way asking Nova out loud does.
+        if category == "music" and self.music is not None:
+            result = self.music.set_volume(percent)
+            level = percent / 100
+        else:
+            result = self.volume.set(category, percent)
+            level = self.volume.get(category)
+        if result.get("success") and self._boop:
+            self._boop(level)
         logger.info(f"Settings page: {who} set the {category} volume to {percent}%")
         return result
 
@@ -419,6 +459,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, file.read(), content_type)
         elif path == "/api/state":
             self._send_json(page.state())
+        elif path == "/api/live":
+            self._send_json(page.live())
         else:
             self._send_json({"success": False, "message": "There's nothing here."}, 404)
 

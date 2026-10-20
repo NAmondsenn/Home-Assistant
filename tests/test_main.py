@@ -329,3 +329,52 @@ def test_an_alert_is_said_like_a_timer_and_can_then_be_sent_on(assistant):
 
     assert announced == ["Homelab: Backup failed"]
     assert assistant.actions.last_answer == ("Backup failed", "Backup failed. Error 5.")
+
+
+# For the settings page
+
+def test_a_volume_beep_from_the_settings_page_stops_the_last_one(assistant):
+    # Dragging a slider plays one at every step, which mustn't pile up.
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    class Beep:
+        def __init__(self, level):
+            self.level, self.stopped = level, False
+
+        def stop(self):
+            self.stopped = True
+
+    played = []
+    assistant.sounds_folder = Path("sounds")
+    assistant._last_boop, assistant._boop_lock = None, threading.Lock()
+    assistant.speaker = SimpleNamespace(play_file=lambda path, volume: played.append(Beep(volume)) or played[-1])
+
+    assistant._boop(0.3)
+    assistant._boop(0.6)
+
+    assert [beep.level for beep in played] == [0.3, 0.6]
+    assert played[0].stopped and not played[1].stopped
+
+
+def test_what_nova_is_doing_is_kept_for_the_settings_page(assistant):
+    import numpy as np
+    from types import SimpleNamespace
+    from voice_assistant.conversation import Reply
+
+    seen = {}
+
+    class Watching(FakeTranscription):
+        def finish(self, audio):
+            seen["working out the words"] = assistant.activity
+            return super().finish(audio)
+
+    def record_until_silence(detector, heard=None, **kwargs):
+        seen["recording"] = assistant.activity
+        return np.zeros(480, np.float32)
+
+    _listening(assistant, record_until_silence, Watching("What time is it?"))
+    assistant.conversation = SimpleNamespace(handle=lambda text, **kwargs: Reply())
+    assistant._handle_interaction(timeline=FakeTimeline())
+
+    assert seen == {"recording": "listening", "working out the words": "thinking"}

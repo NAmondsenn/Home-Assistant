@@ -32,6 +32,9 @@ class FakeVolume:
     def percent(self, category):
         return self.levels[category]
 
+    def get(self, category):
+        return self.levels[category] / 100
+
     def set(self, category, percent):
         self.levels[category] = percent
         return {"success": True, "message": f"Volume {percent}%."}
@@ -75,10 +78,28 @@ def files(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _page(running=None):
+class FakePlayer:
+    """Stands in for Navidrome, which keeps the music's volume itself."""
+
+    needs_internet = False
+
+    def __init__(self):
+        self.level = 40
+
+    def get_volume(self):
+        return self.level
+
+    def set_volume(self, percent):
+        self.level = int(percent)
+        return {"success": True, "message": f"Music volume {self.level} percent."}
+
+
+def _page(running=None, **parts):
     # The login as Tailscale might capitalise it, which mustn't matter.
-    return SettingsPage([LOGIN.upper()], port=0, running=running, volume=FakeVolume(), clock=FakeClock(),
-                        memory=FakeMemory(), restart=lambda: "Restarting.", started=1_800_000_000)
+    made = dict(running=running, volume=FakeVolume(), clock=FakeClock(), memory=FakeMemory(),
+                restart=lambda: "Restarting.", started=1_800_000_000)
+    made.update(parts)
+    return SettingsPage([LOGIN.upper()], port=0, **made)
 
 
 # What it shows
@@ -122,6 +143,27 @@ def test_a_restart_is_asked_for_once_whats_saved_differs_from_whats_running(file
 
 
 # What it changes
+
+def test_a_volume_change_is_heard_at_its_new_level(files):
+    # So the user hears how loud it now is, on Nova's own speaker, as they drag.
+    booped = []
+    page = _page(boop=booped.append)
+    page.set_volume("alarm", 30, LOGIN)
+    assert page.volume.levels["alarm"] == 30 and booped == [0.3]
+
+
+def test_the_music_volume_is_the_players_own_so_a_playing_song_changes_too(files):
+    player, booped = FakePlayer(), []
+    page = _page(music=player, boop=booped.append)
+    page.set_volume("music", 25, LOGIN)
+    assert player.level == 25 and booped == [0.25]
+    assert page.state()["volumes"]["music"] == 25
+
+
+def test_the_page_can_tell_what_nova_is_doing(files):
+    assert _page(activity=lambda: "listening").live() == {"activity": "listening"}
+    assert _page().live() == {"activity": "idle"}
+
 
 def test_a_key_replaces_the_old_one_and_stays_private(files, caplog):
     (files / ".env").write_text("HA_TOKEN=old-token\nNAVIDROME_PASSWORD=keep-me\n")
@@ -240,6 +282,12 @@ def test_each_change_reaches_the_right_part_of_nova(served):
     assert served.clock.alarms == [(7, 30, "weekdays")] and served.clock.removed == [("timer", 1)]
     assert served.memory.known == []
     assert change("/api/restart", {})["message"] == "Restarting."
+
+
+def test_its_typeface_and_what_nova_is_doing_are_served(served):
+    status, headers, body = _ask(served, "/Outfit.woff2")
+    assert status == 200 and headers["Content-Type"] == "font/woff2" and body[:4] == b"wOF2"
+    assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle"}
 
 
 def test_nonsense_is_answered_rather_than_crashing_on(served):
