@@ -217,6 +217,16 @@ def test_offline_claude_isnt_waited_on(llm, monkeypatch):
     assert result["actions"] == [Action("control_playback", {"action": "pause"})]
 
 
+def test_reply_lengths_are_the_ones_set(make_config):
+    # They were once quietly raised to at least 300, and 400 for a search, whatever
+    # config.yaml said - so changing the setting changed nothing.
+    llm = LLMHandler(config=make_config(llm={"max_tokens": 200, "max_tokens_search": 500}), api_key=None)
+    llm.client = FakeClient(_reply("Paris."))
+    llm.process_query("what's the capital of France")
+    llm.process_query("search for the weather in Newcastle")
+    assert [request["max_tokens"] for request in llm.client.requests] == [200, 500]
+
+
 def test_thinking_is_off_and_temperature_only_sent_when_set(llm):
     # Haiku 5.5 thinks first unless told not to - seconds, for a spoken answer - and
     # refuses any request which sets a temperature.

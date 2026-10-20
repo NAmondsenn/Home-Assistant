@@ -50,7 +50,9 @@ class LLMHandler:
             logger.warning("No API key found (ANTHROPIC_API_KEY), LLM queries will fail until one is set")
 
         self.model_name = model or llm_config.get("model", "claude-haiku-5-5")
-        self.max_tokens = max_tokens if max_tokens is not None else llm_config.get("max_tokens", 150)
+        self.max_tokens = int(max_tokens if max_tokens is not None else llm_config.get("max_tokens", 300))
+        # A search needs more room than an ordinary spoken reply, or its answer is cut off mid-sentence.
+        self.max_tokens_search = int(llm_config.get("max_tokens_search", 400))
         # None leaves it to the model - Haiku 5.5 refuses any request which sets one.
         self.temperature = temperature if temperature is not None else llm_config.get("temperature")
         self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
@@ -299,12 +301,11 @@ class LLMHandler:
 
             # The tools are always offered, so the model decides what the user meant
             # rather than a keyword match guessing at it.
-            # max_tokens is set to 300 to stop responses from reaching the limit and being cut off.
             # Thinking is switched off: Haiku 5.5 thinks first unless told not to, which
             # added two or three seconds to a spoken answer, and - asked "what have I got
             # on next Friday?" - sometimes spent all 300 tokens deciding which Friday,
             # leaving nothing to say.
-            request_kwargs = {"max_tokens": max(self.max_tokens, 300), "tools": list(self.tools),
+            request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.tools),
                               "thinking": {"type": "disabled"}}
 
             # Only attaches the web search tool when the user explicitly asked to look something up.
@@ -315,9 +316,7 @@ class LLMHandler:
                     "name": "web_search",
                     "max_uses": self.web_search_max_uses,
                 }]
-                # A search needs more room than a normal spoken reply, otherwise the
-                # answer gets truncated mid-sentence by max_tokens.
-                request_kwargs["max_tokens"] = max(self.max_tokens, 400)
+                request_kwargs["max_tokens"] = self.max_tokens_search
 
             # A search is allowed longer than an ordinary reply - see search_timeout.
             client = self.client.with_options(timeout=self.search_timeout) if use_web_search else self.client

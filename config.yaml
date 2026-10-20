@@ -16,7 +16,10 @@ llm:
   # Haiku 5.5 was as quick as 4.5 on Nova's own requests, and as accurate - see the
   # commit which switched to it.
   model: "claude-haiku-5-5"
-  max_tokens: 150
+  # The longest a reply may be, in tokens - about 0.75 of a word each. Below 300 an
+  # ordinary reply which also calls a tool can be cut off, and a search needs more.
+  max_tokens: 300
+  max_tokens_search: 400
   # null leaves it to the model - which Haiku 5.5 insists on, refusing any request
   # which sets one. Only for older models.
   temperature: null
