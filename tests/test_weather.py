@@ -77,3 +77,9 @@ def test_a_failed_request_says_so_rather_than_crashing(make_config, monkeypatch)
     monkeypatch.setattr(weather_module.requests, "get", offline)
     assert _weather(make_config).forecast() == {"success": False,
                                                 "message": "Sorry, I couldn't get the weather right now."}
+
+
+def test_offline_weather_says_so_straight_away(make_config, requests_made, monkeypatch):
+    monkeypatch.setattr(weather_module.network, "online", lambda: False)
+    assert _weather(make_config).forecast()["message"] == "I can't get the weather without the internet."
+    assert requests_made == []

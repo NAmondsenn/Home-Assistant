@@ -7,8 +7,14 @@ It then dispatches to the correct handler based on the action's type.
 import logging
 from typing import Optional, Dict, List, Tuple
 
+from voice_assistant import network
+
 # Logger setup
 logger = logging.getLogger(__name__)
+
+# Said straight away for anything Spotify, rather than after its timeouts, when
+# there's no network - see network.py.
+SPOTIFY_OFFLINE = "Spotify needs the internet, and I can't reach it right now."
 
 
 def confirm(results: List[Dict], chime_enabled: bool = True,
@@ -124,6 +130,8 @@ class ActionExecutor:
         """
         if not self.spotify:
             return {"success": False, "message": "Spotify is not available right now."}
+        if not network.online():
+            return {"success": False, "message": SPOTIFY_OFFLINE}
 
         command = action.get("command")
         if command == "play":
@@ -187,6 +195,8 @@ class ActionExecutor:
         """
         if not self.spotify:
             return {"success": False, "message": "Spotify isn't available right now."}
+        if not network.online():
+            return {"success": False, "message": SPOTIFY_OFFLINE}
 
         current = self.spotify.get_volume()
 

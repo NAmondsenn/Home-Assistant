@@ -1141,12 +1141,17 @@ class MusicHold:
     conversation to finish keeps the music paused through both.
     """
 
-    def __init__(self, spotify: Optional[SpotifyController]):
+    def __init__(self, spotify: Optional[SpotifyController], online=None):
         """
         Args:
             spotify: The SpotifyController, or None, when this does nothing.
+            online: Says whether the internet can be reached - network.online, passed
+                in rather than imported, so this file can still be run on its own to
+                sign in. With no network, the music is left alone rather than everything
+                waiting out a request which can't get through.
         """
         self.spotify = spotify
+        self._online = online or (lambda: True)
         self._holds = 0
         self._lock = threading.Lock()
         # The last pause or resume started. Each waits for the one before it, so a
@@ -1157,7 +1162,7 @@ class MusicHold:
         """Pauses the music, if this is the first hold. Doesn't wait for Spotify."""
         with self._lock:
             self._holds += 1
-            if self._holds == 1 and self.spotify:
+            if self._holds == 1 and self.spotify and self._online():
                 self._start_change(self.spotify.pause_for_speech)
 
     def release(self, after: float = 0.0):
@@ -1178,7 +1183,10 @@ class MusicHold:
         with self._lock:
             self._holds = max(0, self._holds - 1)
             if self._holds == 0 and self.spotify:
-                self._start_change(self.spotify.resume_after_speech)
+                if self._online():
+                    self._start_change(self.spotify.resume_after_speech)
+                else:
+                    self.spotify.cancel_resume()
 
     def wait(self):
         """

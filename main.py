@@ -14,6 +14,7 @@ from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
 from voice_assistant.intents import LocalIntents
 from voice_assistant.weather import Weather
+from voice_assistant.network import online
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.spotify_controller import MusicHold, SpotifyController
@@ -131,7 +132,7 @@ class SmartAssistant:
             self.spotify = None
 
         # Keeps the music paused while there's something to say - see MusicHold.
-        self.music = MusicHold(self.spotify)
+        self.music = MusicHold(self.spotify, online=online)
 
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
         self.clock = Clock(on_timer_finished=self._announce, config=self.config)

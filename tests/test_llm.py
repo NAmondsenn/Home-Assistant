@@ -197,3 +197,15 @@ def test_exchanges_remember_when_they_happened(llm):
     llm.client = FakeClient(_reply("It's 7:36 PM."))
     llm.process_query("what time is it")
     assert "at" in llm.history[-1]
+
+
+def test_offline_claude_isnt_waited_on(llm, monkeypatch):
+    # With the network cable out, a request used to wait out its timeout and retry -
+    # over half a minute - before saying anything.
+    monkeypatch.setattr(llm_module.network, "online", lambda: False)
+    llm.client = FakeClient(_reply("Okay."))
+    result = llm.process_query("pause the music")
+
+    assert llm.client.requests == []
+    assert result["response"] == llm_module.OFFLINE_MESSAGE
+    assert result["actions"] == [{"type": "spotify", "command": "pause"}]

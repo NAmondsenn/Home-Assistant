@@ -9,6 +9,11 @@ import anthropic
 from anthropic import Anthropic
 from voice_assistant.clock import spoken_clock_time
 from voice_assistant.logging_setup import TRANSCRIPT
+from voice_assistant import network
+
+# Said when there's no way onto the internet - straight away, rather than after
+# waiting out the timeouts (see network.py), and pointing at what still works.
+OFFLINE_MESSAGE = "Sorry, I can't reach the internet right now. Timers, alarms and the time still work."
 
 # loads environment variables from a .env file if present.
 load_dotenv()
@@ -616,6 +621,9 @@ class LLMHandler:
         if self.client is None:
             logger.error("Cannot process query: no API key configured")
             return {"response": "Sorry, I'm not connected to my language model right now.", "actions": self._fallback_actions(text), "success": False}
+        if not network.online():
+            logger.warning("No network connection, so Claude isn't asked")
+            return {"response": OFFLINE_MESSAGE, "actions": self._fallback_actions(text), "success": False}
         try:
             # The time is given already on the 12-hour clock ("7:36 PM"). Given "19:36",
             # the model would sometimes say it straight back despite being asked not to,
@@ -828,7 +836,7 @@ class LLMHandler:
         if isinstance(error, anthropic.APITimeoutError):
             return "Sorry, that took too long to answer. Try asking again in a moment."
         if isinstance(error, anthropic.APIConnectionError):
-            return "Sorry, I can't reach the internet right now."
+            return OFFLINE_MESSAGE
         if isinstance(error, anthropic.AuthenticationError):
             return "Sorry, my Claude API key isn't working. It needs checking in the .env file."
         if isinstance(error, anthropic.RateLimitError):

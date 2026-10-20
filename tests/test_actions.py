@@ -121,3 +121,12 @@ def test_weather_is_passed_to_the_forecast():
 
     executor = ActionExecutor(weather=FakeWeather())
     assert executor.execute({"type": "weather", "day": "tomorrow"})["message"] == "Forecast for tomorrow"
+
+
+def test_offline_spotify_says_so_straight_away(make_executor, monkeypatch):
+    from voice_assistant import actions as actions_module
+    monkeypatch.setattr(actions_module.network, "online", lambda: False)
+    executor = make_executor(spotify=FakeSpotify(playing=True))
+    assert executor.execute({"type": "spotify", "command": "pause"})["message"] == actions_module.SPOTIFY_OFFLINE
+    assert executor.execute({"type": "volume", "category": "music", "direction": "down"})["message"] == \
+        actions_module.SPOTIFY_OFFLINE

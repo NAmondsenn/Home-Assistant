@@ -242,3 +242,17 @@ def test_nothing_is_picked_when_the_query_was_misheard(make_controller):
 ])
 def test_liked_songs_are_recognised_even_when_misheard(name, liked):
     assert spotify_controller.SpotifyController._means_liked_songs(name) is liked
+
+
+def test_offline_the_music_is_left_alone():
+    # Pausing and resuming would only wait out timeouts, holding up a timer being set.
+    class FakeOfflineMusic(FakeMusic):
+        def cancel_resume(self):
+            self.calls.append("cancel resume")
+
+    music = FakeOfflineMusic()
+    hold = spotify_controller.MusicHold(music, online=lambda: False)
+    hold.hold()
+    hold.release()
+    hold.wait()
+    assert music.calls == ["cancel resume"]

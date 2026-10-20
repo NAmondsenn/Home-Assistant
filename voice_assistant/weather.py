@@ -14,6 +14,8 @@ from typing import Dict, Optional
 
 import requests
 
+from voice_assistant import network
+
 # Logger setup
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,8 @@ class Weather:
         if not self.location:
             return {"success": False,
                     "message": "I don't know where you are yet. Set weather location in config.yaml."}
+        if not network.online():
+            return {"success": False, "message": "I can't get the weather without the internet."}
 
         try:
             place = self._find_place()
