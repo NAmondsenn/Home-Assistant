@@ -9,6 +9,7 @@ from voice_assistant import paths
 from voice_assistant.config import Config
 from voice_assistant.speaker import Speaker
 from voice_assistant.microphone import Microphone
+from voice_assistant.echo import make_echo_canceller
 from voice_assistant.vad import make_detector
 from voice_assistant.speech_to_text import SpeechToText
 from voice_assistant.llm import LLMHandler
@@ -78,12 +79,16 @@ class SmartAssistant:
 
         logger.info("Loading modules...")
         
+        # Takes what the assistant plays back out of what the microphone hears, so it
+        # can be talked over - see echo.py. None if it's off, or can't be.
+        self.echo = make_echo_canceller(self.config, self.mic_rate)
+
         # The one owner of the speaker, which every sound goes through - see speaker.py.
-        self.speaker = Speaker(sample_rate=self.mic_rate)
+        self.speaker = Speaker(sample_rate=self.mic_rate, echo_reference=self.echo.played if self.echo else None)
 
         # One microphone stream for as long as the assistant runs, which the wake word
         # detector and the recorder share - see microphone.py.
-        self.microphone = Microphone(sample_rate=self.mic_rate)
+        self.microphone = Microphone(sample_rate=self.mic_rate, echo=self.echo)
         # Seconds of audio from just before the wake word was detected which are kept,
         # so a request said in the same breath as it isn't cut short.
         self.pre_roll = audio_config.get("pre_roll", 0.3)

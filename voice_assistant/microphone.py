@@ -72,7 +72,7 @@ class Microphone:
     """
 
     def __init__(self, sample_rate: int = 48000, device: Optional[str] = None,
-                 buffer_seconds: float = 10.0, stall_timeout: float = 2.0):
+                 buffer_seconds: float = 10.0, stall_timeout: float = 2.0, echo=None):
         """
         Opens the stream. A missing microphone isn't fatal here - opening it is
         retried whenever something is waiting for audio, so the assistant still
@@ -85,8 +85,11 @@ class Microphone:
             buffer_seconds: How much recent audio is kept.
             stall_timeout: Seconds without any audio before the stream is taken to
                 have died, and is reopened.
+            echo: The EchoCanceller, which takes what the assistant played back out
+                of what's heard, before anything listens to it - see echo.py.
         """
         self.capture_rate = sample_rate
+        self.echo = echo
         self.device = device
         self.stall_timeout = stall_timeout
         self.capacity = int(buffer_seconds * RATE)
@@ -135,7 +138,10 @@ class Microphone:
                 audio = indata[:, 0]
                 if resampler is not None:
                     audio = resampler.resample_chunk(audio)
-                self._append((np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16))
+                samples = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+                if self.echo is not None:
+                    samples = self.echo.process(samples, getattr(time_info, "inputBufferAdcTime", None))
+                self._append(samples)
             except Exception as e:
                 logger.error(f"Microphone audio dropped: {e}")
 

@@ -28,6 +28,11 @@ llm:
 
 audio:
   sample_rate: 48000
+  # Takes what Nova plays itself - music from Navidrome, its voice, timers - back out
+  # of what the microphone hears, so "Hey Nova" can be heard over the music. Uses the
+  # Pi's own speexdsp; without it, this does nothing. Spotify plays through another
+  # program, so isn't taken out.
+  echo_cancellation: true
   # Seconds of audio from just before the wake word was detected which are kept,
   # so "Hey Nova what time is it", said in one breath, isn't cut short.
   pre_roll: 0.3

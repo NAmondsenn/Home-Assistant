@@ -25,6 +25,12 @@ aplay -l && arecord -l
 - **Was the microphone unplugged?** Nova reopens it by itself - the log says `No audio from the microphone ... reopening it`, then `Microphone working again` - trying again every few seconds at first, then every 30. If it never comes back, check `arecord -l` and the capture card in `/etc/asound.conf`.
 - **Listening for "Hey Jarvis" instead?** Then `models/hey_nova.onnx` is missing - the log says so at startup.
 
+## Nova doesn't hear "Hey Nova" over music
+
+- **Is echo cancelling on?** The log says `Echo cancelling on` at startup, and, once music has played for 10 to 20 seconds, `Echo cancelling: what's played is heard ...ms later`. Until that second line, the music isn't being taken out yet. Without the first, speexdsp is missing (`apt install libspeexdsp1`) or `audio.echo_cancellation` is off.
+- **It only takes out what Nova plays itself** - Navidrome, its voice and timers. Spotify plays through raspotify, which Nova doesn't hear, so it can't be taken out.
+- **It takes the music down, not away** - about 5 to 14dB on the Pi, more the longer it plays. Loud music right next to the microphone can still drown you out; turning it down a little helps a lot.
+
 ## Nova cuts me off, or keeps listening
 
 - **Cut off mid-sentence** - raise `thresholds.silence_duration`, or lower `thresholds.vad_threshold`.

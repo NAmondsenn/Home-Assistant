@@ -173,7 +173,7 @@ class Playback:
 class Speaker:
     """The one always-open output stream, mixing whatever is playing."""
 
-    def __init__(self, sample_rate: int = 48000, device: Optional[str] = None):
+    def __init__(self, sample_rate: int = 48000, device: Optional[str] = None, echo_reference=None):
         """
         Opens the stream. A missing speaker isn't fatal - opening it is tried again
         the next time something is played.
@@ -182,9 +182,12 @@ class Speaker:
             sample_rate: Rate to play at. The Pi's shared output (see setup.sh)
                 runs at 48kHz; anything else is resampled to it.
             device: Output device name, or None for the system default.
+            echo_reference: Given a copy of everything played, and when, so the
+                microphone can take it back out of what it hears - see echo.py.
         """
         self.sample_rate = sample_rate
         self.device = device
+        self.echo_reference = echo_reference
 
         self._lock = threading.Lock()
         self._playing: List[Playback] = []
@@ -279,6 +282,8 @@ class Speaker:
 
             np.clip(mix, -1.0, 1.0, out=mix)
             outdata[:] = mix
+            if self.echo_reference is not None:
+                self.echo_reference.played(mix.mean(axis=1), getattr(time_info, "outputBufferDacTime", None))
 
             if finished:
                 heard_by = time.monotonic() + self._latency
