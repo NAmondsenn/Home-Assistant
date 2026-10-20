@@ -25,6 +25,8 @@ import sounddevice as sd
 import soundfile as sf
 import soxr
 
+from voice_assistant.dropouts import Dropouts
+
 # Logger setup
 logger = logging.getLogger(__name__)
 
@@ -200,6 +202,7 @@ class Speaker:
         self._stream = None
         self._latency = OUTPUT_LATENCY
         self._last_callback = time.monotonic()
+        self.ran_dry = Dropouts("The speaker ran dry, which crackles")
         self._open()
 
     def _open(self) -> bool:
@@ -257,8 +260,8 @@ class Speaker:
         """
         self._last_callback = time.monotonic()
         try:
-            if status:
-                logger.debug(f"Speaker: {status}")
+            if status and status.output_underflow:
+                self.ran_dry.note()
             with self._lock:
                 playing = list(self._playing)
 

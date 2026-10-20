@@ -8,6 +8,7 @@ numpy and soxr installed (as they are on the Pi), and is skipped anywhere they a
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -307,3 +308,12 @@ def test_a_pause_after_the_wake_word_drops_what_came_before_it(streams):
     lead_in = int(microphone_module.LEAD_IN_SECONDS * RATE)
     assert len(audio) == lead_in + (20 + 10) * FRAME
     assert np.all(np.abs(audio[:lead_in]) < 0.01)
+
+
+def test_the_times_it_overflowed_are_counted(streams):
+    microphone = Microphone(sample_rate=RATE)
+    block = np.zeros((480, 1), dtype=np.float32)
+    streams[0].callback(block, 480, None, SimpleNamespace(input_overflow=True))
+    streams[0].callback(block, 480, None, SimpleNamespace(input_overflow=False))
+    assert microphone.overflowed.total == 1
+    microphone.close()

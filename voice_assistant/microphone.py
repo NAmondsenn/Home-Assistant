@@ -24,6 +24,7 @@ import sounddevice as sd
 import soxr
 
 from voice_assistant import watchdog
+from voice_assistant.dropouts import Dropouts
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -106,6 +107,7 @@ class Microphone:
         self._recovering = False
 
         self._stream = None
+        self.overflowed = Dropouts("The microphone overflowed, so some of what was said was lost")
         # Bumped every time the stream is reopened, so a late block from a stream
         # which has since been replaced is thrown away rather than mixed in.
         self._generation = 0
@@ -133,8 +135,8 @@ class Microphone:
             try:
                 if generation != self._generation:
                     return
-                if status:
-                    logger.debug(f"Microphone: {status}")
+                if status and status.input_overflow:
+                    self.overflowed.note()
                 audio = indata[:, 0]
                 if resampler is not None:
                     audio = resampler.resample_chunk(audio)

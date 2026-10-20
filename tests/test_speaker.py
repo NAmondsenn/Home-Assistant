@@ -7,6 +7,7 @@ and soxr installed (as they are on the Pi), and is skipped anywhere they aren't.
 """
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -270,3 +271,12 @@ def test_a_long_stream_is_only_read_a_little_ahead(streams):
     time.sleep(0.2)
     assert 8 < len(read) <= 14
     playback.stop()
+
+
+def test_the_times_it_ran_dry_are_counted(streams):
+    # Running dry crackles, and is otherwise invisible - see dropouts.py.
+    speaker = Speaker(sample_rate=RATE)
+    out = np.zeros((480, 2), dtype=np.float32)
+    streams[0].callback(out, 480, None, SimpleNamespace(output_underflow=True))
+    streams[0].callback(out, 480, None, SimpleNamespace(output_underflow=False))
+    assert speaker.ran_dry.total == 1
