@@ -1746,6 +1746,46 @@ class Clock:
             return {"success": True, "message": f"One alarm: {described[0]}."}
         return {"success": True, "message": f"{len(described)} alarms: " + ", ".join(described) + "."}
 
+    def overview(self) -> Dict[str, List[Dict]]:
+        """
+        The timers, reminders and alarms set, for the settings page.
+
+        Returns:
+            Dict of "timers" and "alarms", each a list - soonest first - of their
+            "id", "name" as Nova says it, and when they're next "due_at".
+        """
+        with self._lock:
+            timers = sorted(self._timers.values(), key=lambda timer: timer["due_at"])
+            alarms = sorted(self._alarms.values(), key=lambda alarm: alarm["due_at"])
+            return {"timers": [{"id": t["id"], "name": self._describe(t), "due_at": t["due_at"]} for t in timers],
+                    "alarms": [{"id": a["id"], "name": self._describe_alarm(a), "due_at": a["due_at"]}
+                               for a in alarms]}
+
+    def remove(self, kind: str, item_id: int) -> Dict:
+        """
+        Removes one timer, reminder or alarm by its id - picked from a list on the
+        settings page, where there's no question which one was meant.
+
+        Args:
+            kind: "alarm", or "timer" for a timer or reminder.
+            item_id: Its id, from overview().
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        with self._lock:
+            store = self._alarms if kind == "alarm" else self._timers
+            item = store.pop(item_id, None)
+            if item is None:
+                return {"success": False, "message": "That's already gone."}
+            if kind == "alarm":
+                self._save_alarms()
+            else:
+                self._save()
+        name = self._describe_alarm(item) if kind == "alarm" else self._describe(item)
+        logger.info(f"Removed on the settings page: {name}")
+        return {"success": True, "message": f"Removed the {name}."}
+
     def next_alarm(self) -> Dict:
         """
         Report how long until the next alarm.

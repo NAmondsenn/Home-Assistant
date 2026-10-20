@@ -19,6 +19,7 @@ from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.memory import Memory
 from voice_assistant.network import online
 from voice_assistant.ntfy import Ntfy
+from voice_assistant.settings_page import SettingsPage
 from voice_assistant import storage
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
@@ -141,6 +142,11 @@ class SmartAssistant:
                                       weather=Weather(config=self.config),
                                       home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")),
                                       memory=self.memory, ntfy=self.ntfy)
+
+        # The page for looking after Nova from a phone or a laptop, or None if it's
+        # switched off - see settings_page.py.
+        self.settings_page = SettingsPage.from_config(self.config, volume=self.volume, clock=self.clock,
+                                                      memory=self.memory, ntfy=self.ntfy, stt=self.stt)
 
         # Claude, offered whichever of those tools can actually work here, and told
         # what's known about the user.
@@ -439,6 +445,8 @@ class SmartAssistant:
         self.clock.stop()
         if self.ntfy:
             self.ntfy.stop()
+        if self.settings_page:
+            self.settings_page.stop()
         if self.music_player:
             self.music_player.close()
         self.speaker.close()
@@ -465,6 +473,8 @@ class SmartAssistant:
         # Alerts are only said from now on, once there's everything to say them with.
         if self.ntfy:
             self.ntfy.start()
+        if self.settings_page:
+            self.settings_page.start()
 
         # However the loop ends - a stop signal (see _shutdown) or something
         # unexpected - everything is closed down here, once, on the main thread.

@@ -675,3 +675,29 @@ def test_a_dismissed_reminder_isnt_passed_on(make_clock):
     clock._tick(time.time() + 61)
     clock.dismiss()
     assert unanswered == []
+
+
+# The settings page
+
+def test_whats_set_is_listed_soonest_first_by_the_names_nova_uses(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="take the bins out")
+    clock.set_timer(60)
+    clock.set_alarm(7, 0, repeat="weekdays")
+    overview = clock.overview()
+
+    assert [timer["name"] for timer in overview["timers"]] == ["1 minute timer", "take the bins out reminder"]
+    assert overview["alarms"][0]["name"] == "7:00 AM alarm, every weekday"
+
+
+def test_one_can_be_removed_by_its_id(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="take the bins out")
+    clock.set_alarm(7, 0)
+    overview = clock.overview()
+
+    assert clock.remove("timer", overview["timers"][0]["id"])["message"] == "Removed the take the bins out reminder."
+    assert clock.remove("alarm", overview["alarms"][0]["id"])["success"]
+    assert clock.overview() == {"timers": [], "alarms": []}
+    # Twice is once too many.
+    assert clock.remove("alarm", overview["alarms"][0]["id"])["success"] is False

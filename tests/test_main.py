@@ -42,6 +42,7 @@ def assistant(tmp_path, monkeypatch):
     made.tts = Recorder("tts", made.closed)
     made.music_player = Recorder("music", made.closed)
     made.ntfy = None
+    made.settings_page = None
     made.name, made.wake_word = "Nova", "Hey Nova"
     made.running = False
     made._stopping = False

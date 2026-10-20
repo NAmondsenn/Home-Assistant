@@ -119,6 +119,16 @@ ntfy:
   quiet_from: "23:00"
   quiet_until: "07:00"
 
+settings_page:
+  # The page for looking after Nova from a phone or a laptop - see
+  # voice_assistant/settings_page.py. It listens on this machine alone, for Tailscale
+  # to pass the tailnet's requests on to it over HTTPS:
+  #   tailscale serve --bg --https=443 http://127.0.0.1:8765
+  # 0 switches it off.
+  port: 8765
+  # The Tailscale logins let in, e.g. ["you@example.com"]. Nobody is until it's set.
+  allow: []
+
 conversation:
   history_length: 5
   # Seconds an exchange is remembered for, once a new conversation starts.

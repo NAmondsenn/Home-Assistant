@@ -135,6 +135,8 @@ class Ntfy:
         self._stopping = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._response = None
+        # Whether it's connected and listening right now - for the settings page.
+        self.listening = False
 
     @classmethod
     def from_config(cls, config, token: Optional[str], on_alert: Optional[Callable[[Alert], None]] = None):
@@ -246,11 +248,15 @@ class Ntfy:
                                stream=True, timeout=(REQUEST_TIMEOUT, LISTEN_TIMEOUT)) as response:
             response.raise_for_status()
             self._response = response
-            for line in response.iter_lines():
-                if self._stopping.is_set():
-                    return
-                if line:
-                    self._received(json.loads(line))
+            self.listening = True
+            try:
+                for line in response.iter_lines():
+                    if self._stopping.is_set():
+                        return
+                    if line:
+                        self._received(json.loads(line))
+            finally:
+                self.listening = False
 
     def _received(self, event: Dict):
         """

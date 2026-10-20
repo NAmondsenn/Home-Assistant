@@ -1,0 +1,134 @@
+/* Nova's settings page - see voice_assistant/settings_page.py. */
+
+:root {
+  --background: #f6f5f2;
+  --card: #ffffff;
+  --text: #1d1d1f;
+  --quiet: #6e6e73;
+  --line: #e3e1dc;
+  --accent: #3b5bdb;
+  --good: #2b8a3e;
+  --bad: #c92a2a;
+  --warning: #b35c00;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #141416;
+    --card: #1e1e22;
+    --text: #f2f2f4;
+    --quiet: #9a9aa2;
+    --line: #2e2e34;
+    --accent: #8ea2ff;
+    --good: #69db7c;
+    --bad: #ff8787;
+    --warning: #ffb15c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header, main { max-width: 680px; margin: 0 auto; padding: 0 16px; }
+header { padding-top: 24px; }
+h1 { margin: 0; font-size: 1.8rem; }
+#summary { margin: 4px 0 16px; color: var(--quiet); }
+
+section, .banner {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+h2 { margin: 0 0 12px; font-size: 1.15rem; }
+h3 { margin: 16px 0 8px; font-size: 0.95rem; color: var(--quiet); font-weight: 600; }
+
+.banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-color: var(--accent); }
+.banner p { margin: 0; }
+
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+dt { color: var(--quiet); }
+dd { margin: 0; }
+
+ul { list-style: none; margin: 0; padding: 0; }
+.rows li, .plain li { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.rows li:first-child, .plain li:first-child { border-top: 0; }
+.rows li > span:first-child { flex: 1; }
+.plain li { align-items: baseline; font-size: 0.9rem; }
+.plain li.error, .plain li.critical { color: var(--bad); }
+.plain li.warning .when { color: var(--warning); }
+.when { color: var(--quiet); font-size: 0.85rem; white-space: nowrap; }
+.quiet { color: var(--quiet); }
+.good { color: var(--good); }
+.note { color: var(--quiet); font-size: 0.85rem; margin: 8px 0 0; }
+.problem { color: var(--bad); }
+
+button {
+  font: inherit;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 14px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+button.small { padding: 4px 10px; font-size: 0.85rem; background: transparent; color: var(--accent); border: 1px solid var(--line); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+input, select {
+  font: inherit;
+  color: inherit;
+  background: var(--background);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+
+.slider { display: grid; grid-template-columns: 9rem 1fr 3rem; align-items: center; gap: 12px; padding: 6px 0; }
+.slider input { width: 100%; accent-color: var(--accent); }
+.slider output { text-align: right; color: var(--quiet); }
+
+.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+
+.key { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.key:first-child { border-top: 0; }
+.key input { grid-column: 1; }
+.key button { grid-column: 2; }
+
+#settings label { display: grid; gap: 4px; margin-bottom: 12px; }
+#settings label span { color: var(--quiet); font-size: 0.9rem; }
+#settings label.check { grid-template-columns: 1fr auto; align-items: center; }
+
+/* Hidden, not just moved down, while there's nothing to say - empty, it was still
+   tall enough to peek up from the bottom of a phone's screen. */
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translate(-50%, 12px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  background: var(--text);
+  color: var(--background);
+  padding: 10px 16px;
+  border-radius: 10px;
+  max-width: calc(100% - 32px);
+  transition: transform 0.2s ease, opacity 0.2s ease, visibility 0.2s;
+}
+#toast.show { transform: translate(-50%, 0); opacity: 1; visibility: visible; }
+#toast.bad { background: var(--bad); color: #fff; }
+
+@media (max-width: 480px) {
+  .slider { grid-template-columns: 1fr 3rem; }
+  .slider span { grid-column: 1 / -1; }
+}

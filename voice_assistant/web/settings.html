@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nova</title>
+  <link rel="stylesheet" href="settings.css">
+  <script src="settings.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Nova</h1>
+    <p id="summary">Loading…</p>
+  </header>
+
+  <main>
+    <div id="restart" class="banner" hidden>
+      <p>Changes take effect once Nova restarts.</p>
+      <button type="button" id="restart-button">Restart Nova</button>
+    </div>
+
+    <section>
+      <h2>How it's doing</h2>
+      <dl id="status"></dl>
+      <h3>Recent problems</h3>
+      <ul id="problems" class="plain"></ul>
+    </section>
+
+    <section>
+      <h2>Volumes</h2>
+      <div id="volumes"></div>
+    </section>
+
+    <section>
+      <h2>Timers and alarms</h2>
+      <ul id="clock" class="rows"></ul>
+      <form id="add-alarm" class="inline">
+        <label>New alarm <input type="time" name="time" required></label>
+        <select name="repeat" aria-label="Repeats">
+          <option value="">Once</option>
+          <option value="daily">Every day</option>
+          <option value="weekdays">Weekdays</option>
+          <option value="weekends">Weekends</option>
+        </select>
+        <button type="submit">Add</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>What it remembers</h2>
+      <ul id="memories" class="rows"></ul>
+    </section>
+
+    <section>
+      <h2>Keys</h2>
+      <p class="note">Saved on Nova, never shown back.</p>
+      <div id="keys"></div>
+    </section>
+
+    <section>
+      <h2>Settings</h2>
+      <p id="settings-problem" class="problem" hidden></p>
+      <form id="settings"></form>
+      <p class="note">Saving rewrites ~/.config/nova/config.yaml, keeping the one before as config.yaml.bak.</p>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
