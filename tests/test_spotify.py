@@ -4,6 +4,8 @@ Tests how the controller signs in and keeps its token fresh, using fakes in plac
 of spotipy's client and OAuth classes so nothing goes to Spotify.
 """
 
+import time
+
 import pytest
 
 from voice_assistant import spotify_controller
@@ -174,3 +176,73 @@ def test_a_named_artist_has_to_be_credited_unless_nothing_else_will_do(make_cont
 def test_nothing_is_picked_when_the_query_was_misheard(make_controller):
     controller = make_controller(cached=SAVED)
     assert controller._pick_track([_track("Shape of You", "Ed Sheeran")], "bohemian rhapsody", None) is None
+
+
+class FakeSpotifyAPI:
+    """Stands in for the parts of the client a "play" uses, counting the round trips."""
+
+    def __init__(self, search_takes=0.0):
+        self.search_takes = search_takes
+        self.calls = []
+
+    def devices(self):
+        self.calls.append("devices")
+        return {"devices": [{"name": "Kitchen", "id": "kitchen-id"}]}
+
+    def current_playback(self):
+        self.calls.append("current_playback")
+        return {"device": {"id": "kitchen-id"}}
+
+    def search(self, q, limit, type):
+        self.calls.append(f"search {type}")
+        time.sleep(self.search_takes)
+        if type == "artist":
+            return {"artists": {"items": [{"name": "Someone Else", "uri": "artist"}]}}
+        return {"tracks": {"items": [{"name": "Halo", "uri": "track", "artists": [{"name": "Beyonce"}],
+                                      "album": {"uri": "album"}}]}}
+
+    def start_playback(self, **kwargs):
+        self.calls.append("start_playback")
+
+    def current_user_playlists(self, limit, offset):
+        self.calls.append("playlists")
+        return {"items": [{"name": "Workout", "uri": "playlist"}]}
+
+    def shuffle(self, state, device_id=None):
+        pass
+
+
+def test_playing_twice_doesnt_look_the_speaker_up_twice(make_controller):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeSpotifyAPI()
+    controller.play("Halo")
+    controller.sp.calls.clear()
+    controller.play("Halo")
+    assert "devices" not in controller.sp.calls and "current_playback" not in controller.sp.calls
+
+
+def test_a_failed_play_looks_the_speaker_up_again(make_controller):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeSpotifyAPI()
+    controller.play("Halo")
+    controller.sp.start_playback = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("Device not found"))
+    controller.play("Halo")
+    controller.sp = FakeSpotifyAPI()
+    controller.play("Halo")
+    assert controller.sp.calls[0] == "devices"
+
+
+def test_the_artist_and_song_searches_run_together(make_controller):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeSpotifyAPI(search_takes=0.3)
+    started = time.monotonic()
+    assert controller.play("Halo")["success"]
+    assert time.monotonic() - started < 0.55
+
+
+def test_the_playlists_are_read_once_for_a_few_minutes(make_controller):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeSpotifyAPI()
+    controller.play_playlist("workout")
+    controller.play_playlist("workout")
+    assert controller.sp.calls.count("playlists") == 1

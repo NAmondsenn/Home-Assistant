@@ -13,6 +13,7 @@ import time
 import random
 import difflib
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict
 from dotenv import load_dotenv
 import spotipy
@@ -32,6 +33,12 @@ PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # hold a command up for well over 15 seconds when the network was struggling.
 REQUEST_TIMEOUT = 4
 REQUEST_RETRIES = 1
+
+# How long this speaker's Connect device, the fact the music is already playing on
+# it, and the user's playlists are kept before being looked up again. Each look-up
+# was another round trip to Spotify on every "play", for things which hardly change
+# from one request to the next.
+CACHE_SECONDS = 600
 
 # Said when there's no Spotify login to use, rather than a bare "not authenticated" -
 # signing in again is done by hand, by running this module on the Pi (see the bottom).
@@ -110,6 +117,10 @@ class SpotifyController:
         # Tracks whether the assistant paused the music itself,
         # only resuming playback it actually interrupted.
         self._paused_for_speech = False
+        # (value, time.monotonic() when found) - see CACHE_SECONDS.
+        self._device = None
+        self._active_here = None
+        self._playlists = None
         self._authenticate()
 
         logger.info(f"Spotify controller initialised (target device: '{self.device_name}')")
@@ -167,19 +178,29 @@ class SpotifyController:
         self._authenticate()
         print("Authentication successful! The token is cached for future runs.")
 
+    @staticmethod
+    def _fresh(cached) -> bool:
+        """Whether something kept by the controller is still recent enough to trust."""
+        return cached is not None and time.monotonic() - cached[1] < CACHE_SECONDS
+
     def _find_device(self) -> Optional[str]:
         """
-        Looks for this machine's Spotify Connect device in the account's device list.
+        Looks for this machine's Spotify Connect device in the account's device list,
+        or remembers it from the last few minutes.
 
         Returns:
             The device's ID, or None if it isn't currently advertising itself
             (e.g. the raspotify service isn't running).
         """
+        if self._fresh(self._device):
+            return self._device[0]
+
         devices = self.sp.devices().get("devices", [])
 
         # Matched case-insensitively, since the name is typed into config.yaml by hand.
         for device in devices:
             if device["name"].lower() == self.device_name.lower():
+                self._device = (device["id"], time.monotonic())
                 return device["id"]
 
         # Logs what was actually available, which is the first thing worth knowing
@@ -200,6 +221,12 @@ class SpotifyController:
         if not device_id:
             return None
 
+        # Played here in the last few minutes, so there's no need to ask Spotify where
+        # the music is - and if it has moved since, playing to this device by its ID
+        # brings it back anyway.
+        if self._fresh(self._active_here):
+            return device_id
+
         try:
             # Transfer playback to the device, if it's not already on it.
             current = self.sp.current_playback()
@@ -211,6 +238,7 @@ class SpotifyController:
                 # Spotify needs a moment to act on the transfer before it will
                 # accept playback commands for the device.
                 time.sleep(0.5)
+            self._active_here = (True, time.monotonic())
         except Exception as e:
             # A failed transfer isn't fatal - playback can still be started
             # directly on the device below.
@@ -252,6 +280,8 @@ class SpotifyController:
 
         except Exception as e:
             logger.error(f"Play failed: {e}")
+            # In case the device remembered has gone - raspotify restarts every night.
+            self._device = self._active_here = None
             return {"success": False, "message": "Sorry, I couldn't start the music."}
 
     def _playback_started(self):
@@ -265,6 +295,7 @@ class SpotifyController:
         of the track which was just deliberately chosen.
         """
         self._paused_for_speech = False
+        self._active_here = (True, time.monotonic())
 
     def _set_shuffle_quietly(self, state: bool, device_id: str):
         """
@@ -709,14 +740,20 @@ class SpotifyController:
             track_part = query[:split_index].strip()
             artist_part = query[split_index + 4:].strip()
 
-        if not track_part:
-            artist = self._find_artist(query)
+        search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
+
+        if track_part:
+            items = self._search_items(search_query, 'track')
+        else:
+            # Whether it names an artist or a song isn't known until the artist search
+            # comes back, so the song search runs alongside it rather than after.
+            with ThreadPoolExecutor(max_workers=2) as searches:
+                finding_artist = searches.submit(self._find_artist, query)
+                finding_tracks = searches.submit(self._search_items, search_query, 'track')
+                artist, items = finding_artist.result(), finding_tracks.result()
             if artist and (search_type == "artist"
                            or self._normalise(artist['name']) == self._normalise(query)):
                 return self._play_artist(artist, device_id)
-
-        search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
-        items = self._search_items(search_query, 'track')
 
         # Falls back to a plain text search if the strict track / artist search
         # found nothing, e.g. for titles which contain "by" themselves.
@@ -930,16 +967,21 @@ class SpotifyController:
         Returns:
             The playlist dict, or None if nothing matched closely enough.
         """
-        # Pages through the user's playlists, since the API returns 50 at a time.
-        playlists = []
-        offset = 0
-        while True:
-            page = self.sp.current_user_playlists(limit=50, offset=offset)
-            items = [p for p in page.get("items", []) if p]
-            playlists.extend(items)
-            if len(items) < 50:
-                break
-            offset += 50
+        # Pages through the user's playlists, since the API returns 50 at a time -
+        # unless they were read in the last few minutes.
+        if self._fresh(self._playlists):
+            playlists = self._playlists[0]
+        else:
+            playlists = []
+            offset = 0
+            while True:
+                page = self.sp.current_user_playlists(limit=50, offset=offset)
+                items = [p for p in page.get("items", []) if p]
+                playlists.extend(items)
+                if len(items) < 50:
+                    break
+                offset += 50
+            self._playlists = (playlists, time.monotonic())
 
         wanted = name.strip().lower()
 
