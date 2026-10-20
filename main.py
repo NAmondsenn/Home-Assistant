@@ -21,10 +21,11 @@ from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.music import MusicHold, make_player
 from voice_assistant.clock import Clock
 from voice_assistant.volume import VolumeControl
-from voice_assistant.actions import ActionExecutor, confirm
+from voice_assistant.actions import ActionExecutor
+from voice_assistant.conversation import Conversation
 from voice_assistant.timeline import Timeline
 from voice_assistant import watchdog
-from voice_assistant.logging_setup import TRANSCRIPT, log_transcripts, setup_logging, transcripts_logged
+from voice_assistant.logging_setup import log_transcripts, setup_logging, transcripts_logged
 
 # Loads environment variables from .env
 load_dotenv()
@@ -66,11 +67,6 @@ class SmartAssistant:
         # Set once a stop signal has arrived - see _shutdown.
         self._stopping = False
 
-        # How many times in a row the assistant may ask a question and listen for the
-        # answer without the wake word, so it can't hold the microphone indefinitely.
-        self.max_follow_ups = self.config.section("thresholds").get("max_follow_ups", 3)
-        self._follow_ups = 0
-
         # Set while the assistant is idle, cleared while it's dealing with the user.
         # Timer announcements wait on this, so they don't talk over a conversation.
         self._idle = threading.Event()
@@ -79,15 +75,6 @@ class SmartAssistant:
         # each timer on a thread of its own, so two going off together would
         # otherwise talk over each other.
         self._announcing = threading.Lock()
-
-        # What was going off when the wake word last fired, and whether the user
-        # has already been asked about a reminder this conversation - see
-        # _handle_interaction.
-        self._ringing_at_wake = {"insistent": False, "insistent_entries": [], "reminder": None,
-                                 "reminder_sounding": False}
-        self._reminder_offered = False
-        # Set while waiting on the answer to "shall I turn that reminder off?".
-        self._reminder_answer_pending = False
 
         logger.info("Loading modules...")
         
@@ -141,9 +128,15 @@ class SmartAssistant:
 
         # Claude, offered whichever of those tools can actually work here.
         self.llm = LLMHandler(config=self.config, tools=self.actions.tool_schemas())
+
+        # How each thing the user says is answered - everything between hearing it and
+        # saying the reply. See conversation.py.
+        self.thresholds = self.config.section("thresholds")
+        self.conversation = Conversation(self.clock, self.intents, self.llm, self.actions, self.music,
+                                         chime_enabled=self.chime_enabled,
+                                         max_follow_ups=self.thresholds.get("max_follow_ups", 3))
         
         # Sets up the wake word detector with sensitivity settings from config.
-        self.thresholds = self.config.section("thresholds")
         self.wake = WakeWordDetector(config=self.config, microphone=self.microphone)
         # What's actually listened for, which is a stand-in until the configured wake
         # word's model is copied in - see WakeWordDetector.
@@ -396,7 +389,7 @@ class SmartAssistant:
                 # What was audibly going off at the moment the wake word fired,
                 # read before the interaction quietens anything, since what
                 # matters is what the user could hear when they started talking.
-                self._ringing_at_wake = self.clock.ringing_state()
+                ringing = self.clock.ringing_state()
 
                 # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
                 self._idle.clear()
@@ -409,18 +402,7 @@ class SmartAssistant:
                 # recording rather than holding it up - see MusicHold.
                 self.music.hold()
                 try:
-                    # Reset per conversation, not per question, so a long back and
-                    # forth still ends after the cap is reached.
-                    self._follow_ups = 0
-                    # Earlier conversations are only remembered for a few minutes, so this
-                    # morning's "play that one" doesn't colour tonight's "yes".
-                    self.llm.forget_stale_history()
-                    # A reminder is only offered up once per conversation, however
-                    # many follow-up questions it runs to. The answer to that offer
-                    # is only expected within the same conversation, so a question
-                    # left unanswered doesn't colour the next one.
-                    self._reminder_offered = False
-                    self._reminder_answer_pending = False
+                    self.conversation.start(ringing)
                     self._handle_interaction(timeline=timeline)
                 except Exception as e:
                     # Said out loud, rather than only logged, so it isn't taken for the
@@ -444,8 +426,8 @@ class SmartAssistant:
     def _handle_interaction(self, follow_up=False, timeline=None):
         """
         Handles one full interaction after the wake word: records the query,
-        transcribes it, processes it with the LLM, runs any detected action,
-        and speaks the response.
+        transcribes it, has the conversation work out the reply (see
+        conversation.py), and plays it.
 
         Args:
             follow_up: True when the assistant has just asked the user a question
@@ -507,138 +489,18 @@ class SmartAssistant:
         timeline.note(text_chars=len(text))
         self._show(f"You: {text}")
 
-        # Answering the assistant's own "shall I turn that reminder off?". Checked
-        # before anything else, since "no" here means leave it alone, while "no"
-        # said to something ringing means make it stop - opposite outcomes from
-        # the same word, told apart only by the question having just been asked.
-        if self._reminder_answer_pending:
-            self._reminder_answer_pending = False
-            timeline.note(outcome="reminder_answer")
-            if self.clock.looks_like_refusal(text):
-                logger.info("Reminder left running at the user's request")
-                self._say("Okay, I'll leave it.")
-                return
-            if self.clock.looks_like_agreement(text):
-                self.clock.dismiss()
-                logger.info("Reminder dismissed after being offered")
-                if self.chime_enabled:
-                    self._play_sound("success_chime.wav")
-                else:
-                    self._show(f"{self.name}: Okay.")
-                return
-            # Anything else is a fresh request, so it falls through and is handled
-            # normally - the reminder simply carries on.
+        # Everything between hearing the request and answering it - see conversation.py.
+        reply = self.conversation.handle(text, follow_up=follow_up, timeline=timeline)
 
-        # Anything short said while a timer is going off means "make it stop", so it's handled
-        # here rather than going to the model, making it quicker and easier to silence.
-        if self.clock.is_ringing() and self.clock.looks_like_dismissal(text):
-            result = self.clock.dismiss()
-            timeline.note(outcome="dismissed_locally")
-            logger.info("Dismissed by voice without asking the model")
-            if self.chime_enabled:
-                self._play_sound("success_chime.wav")
-            else:
-                self._show(f"{self.name}: {result['message']}")
-            return
-
-        # A timer or alarm going off is silenced by the user saying anything at all,
-        # since talking to the assistant means they've heard it. Read from the wake
-        # word rather than now, so one which came due mid-conversation - which the
-        # user hasn't heard, because announcements wait for the interaction to end -
-        # isn't silenced along with it.
-        heard_ringing = self._ringing_at_wake.get("insistent_entries", [])
-
-        # The everyday commands which don't need a language model - timers, pause, skip,
-        # volume, the time - are handled straight away without going to Claude, so they
-        # still work offline. Not the answer to a question the assistant asked, though,
-        # which needs the conversation so far to make sense of. See intents.py.
-        result = None if follow_up else self.intents.match(text)
-        if result:
-            timeline.note(local_intent=True)
-            self.llm.remember(text, result["response"])
-        else:
-            # Sends transcribed text to the LLM for processing, along with what's currently on the
-            # clock, so a mangled label like "walk the frogs" can still be matched to the real
-            # "walk the dogs" reminder. Returns a response and any detected actions.
-            clock_context = "; ".join(self.clock.describe_all()) or None
-            result = self.llm.process_query(text, context=clock_context)
-        timeline.mark("llm_done")
-        response_text = result["response"]
-        actions = result.get("actions", [])
-
-        # Every action the model asked for is run through the action executor, in
-        # order - "pause the music and set a ten minute timer" is two of them.
-        action_results = []
-        if actions:
-            # Music and volume actions talk to the music player too, so the pause has to have landed first.
-            self.music.wait()
-            for action in actions:
-                action_results.append(self.actions.execute(action))
-            timeline.mark("action_done")
-            timeline.note(actions=", ".join(action.tool for action in actions))
-
-        # Talking to the assistant at all means the user has heard the timer or
-        # alarm, so it stops rather than picking up again behind the reply. Done
-        # after the action has run, so a request which was itself about the timer
-        # ("cancel the timer") still finds it ringing and dismisses it, rather than
-        # finding it already silent and deleting a pending one instead.
-        if heard_ringing:
-            self.clock.silence_insistent(heard_ringing)
-
-        # An action either confirms itself - the music changing, or a sound - or has
-        # its message said in place of the model's own reply, which for a tool call is
-        # usually just "Okay.". See confirm().
-        sounds, messages = confirm(action_results, self.chime_enabled, fallback=response_text)
-        if action_results:
-            response_text = " ".join(messages)
-
-        # A reminder is left alone by all of that - it isn't insistent enough to
-        # count as heard just because the user happened to speak. One caught in the
-        # quiet gap between its rounds is easy to forget is even pending, so once
-        # the actual request is dealt with the user is asked about it. One that was
-        # mid-announcement isn't: it's loud and obvious, so it can be acknowledged
-        # outright rather than needing an offer.
-        reminder = self._ringing_at_wake.get("reminder")
-        reminder_offer = bool(reminder
-                              and not self._ringing_at_wake.get("reminder_sounding")
-                              and not self._reminder_offered
-                              and self.clock.is_ringing()
-                              # Not tacked onto a question the model is already
-                              # asking, which would leave two to answer at once.
-                              and not response_text.rstrip().endswith("?"))
-
-        for sound, category in sounds:
+        for sound, category in reply.sounds:
             self._play_sound(sound, volume=self.volume.get(category))
+        if reply.shown:
+            self._show(f"{self.name}: {reply.shown}")
+        if reply.say:
+            self._say(reply.say, timeline=timeline)
 
-        # The offer is added last, so it trails the answer to whatever was actually
-        # asked rather than interrupting it - or follows the confirmation sound on its
-        # own, when the action confirmed itself and there's nothing else to say.
-        if reminder_offer:
-            self._reminder_offered = True
-            self._reminder_answer_pending = True
-            response_text = (f"{response_text} Also, your {reminder} reminder is still "
-                             f"going. Shall I turn it off?").strip()
-
-        if not response_text:
-            logger.info(f"Action confirmed itself: {[result.say for result in action_results]}", extra=TRANSCRIPT)
-            return
-
-        # The model's history only has its own text for this turn - usually "Okay." when
-        # it called a tool - so it's told what's actually being said. Otherwise a question
-        # an action asked ("Which one?") would be missing when the answer comes back on
-        # the next turn. Only what's spoken is recorded: an action confirmed by a chime
-        # or by the music changing keeps the model's own "Okay.".
-        if result.get("success"):
-            self.llm.record_reply(text, response_text)
-
-        # Speaks the response. If synthesis fails, playback is skipped rather than
-        # replaying a stale file.
-        self._say(response_text, timeline=timeline)
-
-        # If the assistant asked something, it listens straight away for the answer.
-        # The count is capped so the model doesn't get stuck in an infinite loop.
-        if response_text.rstrip().endswith("?") and self._follow_ups < self.max_follow_ups:
-            self._follow_ups += 1
+        # The assistant asked something, so it listens straight away for the answer.
+        if reply.listen_again:
             logger.info("Question asked, listening for a reply")
             print("Listening...")
             # The answer is timed on its own, from when listening starts again.
