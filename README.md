@@ -15,6 +15,7 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **The weather** - now, today or tomorrow, from Open-Meteo.
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
+- **Remembering you** - mention something about yourself ("I've started a new job at Aldi", "my sister's called Amy") and Nova keeps it, says "I'll remember that", and uses it from then on. "What do you know about me?" reads it back; "forget that..." or "forget everything you know about me" takes it away. It's kept in `~/.local/share/nova/memory.json`, and goes to Claude with each request so it can use it.
 
 The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume, the time, the lights and Navidrome carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
 

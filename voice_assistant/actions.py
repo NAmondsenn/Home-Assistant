@@ -16,6 +16,7 @@ both a description and the code to run it.
 
 import inspect
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -35,6 +36,7 @@ UNAVAILABLE = {
     "volume": "Volume control isn't available right now.",
     "weather": "The weather isn't available right now.",
     "home": "Home Assistant isn't set up yet.",
+    "memory": "I can't remember things right now.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to.
@@ -65,7 +67,9 @@ class ActionResult:
             another way, when it's only logged.
         confirm: How a success is confirmed: "speak" says it; "chime" plays the
             success chime; "music" leaves it to the music changing, e.g. the next
-            song starting; "sound" plays its own sound.
+            song starting; "sound" plays its own sound; "note" says it after
+            whatever else is said, rather than instead of it - "I'll remember that",
+            after the answer to the question it came up in.
         sound: The sound, for "sound" - e.g. "volume_beep.wav".
         sound_category: Which volume the sound plays at.
     """
@@ -93,6 +97,8 @@ class ActionResult:
         say = reply.get("message") or ""
         if ok and reply.get("silent"):
             return cls(ok, say, confirm="music")
+        if ok and reply.get("note"):
+            return cls(ok, say, confirm="note")
         if ok and reply.get("sound"):
             return cls(ok, say, confirm="sound", sound=reply["sound"],
                        sound_category=reply.get("sound_category", "general"))
@@ -124,7 +130,13 @@ def confirm(results: List[ActionResult], chime_enabled: bool = True,
         empty when every action confirmed itself.
     """
     sounds, messages = [], []
-    for result in results:
+    notes = [result.say for result in results if result.ok and result.confirm == "note" and result.say]
+    others = [result for result in results if not (result.ok and result.confirm == "note")]
+    # Only notes - something remembered while answering a question - so the answer
+    # itself is said first, unless it's only the "Okay." which goes with a tool call.
+    if not others and fallback and _words(fallback) not in BARE_ACKNOWLEDGEMENTS:
+        messages.append(fallback)
+    for result in others:
         sound = None
         if result.ok and result.confirm == "music":
             continue
@@ -141,7 +153,18 @@ def confirm(results: List[ActionResult], chime_enabled: bool = True,
         message = result.say or fallback
         if message and message not in messages:
             messages.append(message)
-    return sounds, messages
+    # Not said twice when the model has already said it - "Congratulations on the new
+    # job! I'll remember that." was followed by another "I'll remember that."
+    said = " ".join(messages).lower()
+    return sounds, messages + [note for note in dict.fromkeys(notes) if note.lower() not in said]
+
+
+# What the model says alongside a tool call when it has nothing else to say.
+BARE_ACKNOWLEDGEMENTS = {"okay", "ok", "sure", "done", "got it", "will do", "noted", "alright", "all right"}
+
+
+def _words(text: str) -> str:
+    return re.sub(r"[^a-z ]", "", text.lower()).strip()
 
 
 def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (),
@@ -170,7 +193,7 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
 class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
-    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None):
+    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -179,12 +202,14 @@ class ActionExecutor:
             weather: Weather instance, for the forecast.
             home: HomeAssistant instance, for the lights and the calendar, or None
                 if it isn't set up.
+            memory: Memory instance, for what the assistant knows about the user.
         """
         self.music = music
         self.clock = clock
         self.volume = volume
         self.weather = weather
         self.home = home
+        self.memory = memory
 
     @classmethod
     def tools(cls) -> Dict[str, Callable]:
@@ -743,3 +768,52 @@ class ActionExecutor:
         except (TypeError, ValueError):
             return {"success": False, "message": "I didn't catch which day you meant."}
         return read(first, max(1, min(int(days or 1), MOST_CALENDAR_DAYS)))
+
+    # Memory
+
+    @tool(
+        "Remember something about the user for the future: the people in their life, "
+        "their work, home, routines, plans, likes and dislikes - anything a good personal "
+        "assistant would want to know later. Call it whenever they mention something like "
+        "that, even in passing and without being asked ('I've started a new job at Tesco', "
+        "'my sister's called Amy'), as well as when they say 'remember that...' - "
+        "alongside answering them, not instead. Not for what you already know, one-off "
+        "requests, or passwords, codes or bank details, ever. 'I'll remember that' is "
+        "said for you, after your reply.",
+        needs="memory",
+        required=["fact"],
+        fact={
+            "type": "string",
+            "description": "One short fact, said to the user, e.g. 'You work at Tesco.' or 'Your sister is called Amy.'",
+        },
+    )
+    def remember(self, fact: Optional[str] = None):
+        return self.memory.remember(fact)
+
+    @tool(
+        "Forget something remembered about the user, when they ask you to or say it's "
+        "wrong - 'forget that I work at Tesco', 'I don't live there any more'. Pass it "
+        "roughly as they said it. To correct something, forget the old fact and "
+        "remember the new one.",
+        needs="memory",
+        required=["fact"],
+        fact={"type": "string", "description": "What to forget, roughly as the user put it."},
+    )
+    def forget(self, fact: Optional[str] = None):
+        return self.memory.forget(fact)
+
+    @tool(
+        "Forget everything remembered about the user - only when they clearly ask for "
+        "that, e.g. 'forget everything you know about me'. Never for forgetting one thing.",
+        needs="memory",
+    )
+    def forget_everything(self):
+        return self.memory.forget_everything()
+
+    @tool(
+        "Say what you remember about the user, for 'what do you know about me?' or "
+        "'what have I told you?'. It's read out for you, so just reply 'Okay.'",
+        needs="memory",
+    )
+    def list_memories(self):
+        return self.memory.describe()

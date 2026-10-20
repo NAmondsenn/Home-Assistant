@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class LLMHandler:
     def __init__(self, config=None, api_key=None, model=None, max_tokens=None,
-                 temperature=None, history_length=None, assistant_name=None, tools=None):
+                 temperature=None, history_length=None, assistant_name=None, tools=None, memory=None):
 
         # Pulls llm, conversation, assistant and web_search sections from config.yaml
         llm_config = config.section("llm") if config else {}
@@ -60,6 +60,8 @@ class LLMHandler:
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
         # The tools the model is offered, in the API's format - see ActionExecutor.tool_schemas.
         self.tools = list(tools or [])
+        # What's known about the user, given to the model with every request - see memory.py.
+        self.memory = memory
 
         # Web search is opt-in per query rather than always on, so ordinary replies
         # aren't slowed down or billed by unnecessary searches.
@@ -213,6 +215,23 @@ class LLMHandler:
             "it's genuinely a close call - applies to everything you hear, not only "
             "timers and reminders. "
         )
+
+        # What's known about the user. It only changes when something new is learnt, so
+        # the instructions can still be cached from one request to the next.
+        if self.memory is not None:
+            facts = self.memory.facts()
+            system_prompt += (
+                "You're the user's personal assistant, and you remember things about them between "
+                "conversations. When they mention something worth knowing later - the people in their "
+                "life, their work, home, routines, plans, likes and dislikes - call remember with it, "
+                "even if they didn't ask you to, alongside answering them. If something you remember "
+                "turns out to be wrong or out of date, forget it and remember the new version. "
+            )
+            if facts:
+                system_prompt += (
+                    "What you remember about them, in your words to them: "
+                    + " ".join(facts) + " Use it naturally where it helps, without reciting it. "
+                )
 
         # The cutoff wording depends on whether a live lookup is available for this
         # query, so the model doesn't claim it can't check while holding search results.

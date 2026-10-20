@@ -16,6 +16,7 @@ from voice_assistant.llm import LLMHandler
 from voice_assistant.intents import LocalIntents
 from voice_assistant.weather import Weather
 from voice_assistant.home_assistant import HomeAssistant
+from voice_assistant.memory import Memory
 from voice_assistant.network import online
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
@@ -125,14 +126,19 @@ class SmartAssistant:
         # The everyday commands handled without Claude - see intents.py.
         self.intents = LocalIntents(clock=self.clock)
 
+        # What the assistant knows about the user, learnt as they talk - see memory.py.
+        self.memory = Memory()
+
         # Everything the assistant can do for the user - see actions.py. The lights and
         # the calendar are only there once Home Assistant is set up.
         self.actions = ActionExecutor(music=self.music_player, clock=self.clock, volume=self.volume,
                                       weather=Weather(config=self.config),
-                                      home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")))
+                                      home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")),
+                                      memory=self.memory)
 
-        # Claude, offered whichever of those tools can actually work here.
-        self.llm = LLMHandler(config=self.config, tools=self.actions.tool_schemas())
+        # Claude, offered whichever of those tools can actually work here, and told
+        # what's known about the user.
+        self.llm = LLMHandler(config=self.config, tools=self.actions.tool_schemas(), memory=self.memory)
 
         # How each thing the user says is answered - everything between hearing it and
         # saying the reply. See conversation.py.
