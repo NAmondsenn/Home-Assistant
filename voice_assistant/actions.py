@@ -739,14 +739,24 @@ class ActionExecutor:
         "Read the user's calendar for a day or a few days, for 'what have I got on "
         "Thursday?', 'what's on tomorrow?', 'am I busy this weekend?' or 'what's planned "
         "for next week?'. Give the first day, worked out from today's date, and how many "
-        "days to read - 1 for a single day, 2 for a weekend, 7 for a week. What's on is "
-        "read out to the user, so just reply 'Okay.'",
+        "days to read - 1 for a single day, 2 for a weekend, 7 for a week. Or look for one "
+        "thing on it, for 'when's my MOT?', 'when am I next seeing Sam?' or 'is the "
+        "dentist soon?' - give what to search for, and today as the first day, rather "
+        "than reading whole days. What's on is read out to the user, so just reply 'Okay.'",
         needs="home",
         required=["start"],
         start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
         days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
+        search={
+            "type": "string",
+            "description": ("Only when looking for one thing: a word from its name as it'd be written "
+                            "on the calendar, e.g. 'MOT', 'dentist' or 'Sam' - putting right anything "
+                            "clearly misheard. The next three months are looked through."),
+        },
     )
-    def get_calendar(self, start: Optional[str] = None, days: Optional[int] = None):
+    def get_calendar(self, start: Optional[str] = None, days: Optional[int] = None, search: Optional[str] = None):
+        if search and search.strip():
+            return self._calendar_days(start, None, lambda first, days: self.home.find(search, first))
         return self._calendar_days(start, days, self.home.agenda)
 
     @tool(

@@ -217,6 +217,18 @@ def test_the_calendar_needs_a_day_it_can_read():
     assert home.asked == ("2026-10-22", 14)
 
 
+def test_one_thing_is_looked_for_rather_than_reading_whole_days():
+    class FakeHome:
+        def find(self, wanted, first):
+            self.asked = (wanted, first.isoformat())
+            return {"success": True, "message": "You've got Car MOT on Monday."}
+
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(
+        Action("get_calendar", {"start": "2026-10-20", "days": 14, "search": "MOT"}))
+    assert home.asked == ("MOT", "2026-10-20") and result.say == "You've got Car MOT on Monday."
+
+
 def test_without_home_assistant_the_lights_say_so():
     result = ActionExecutor().execute(Action("control_home", {"command": "lights on"}))
     assert result.say == "Home Assistant isn't set up yet."

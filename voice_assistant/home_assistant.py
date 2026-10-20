@@ -45,6 +45,15 @@ SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\
 # Most events said for one day before the rest are only counted.
 MOST_EVENTS_SAID = 5
 
+# Most said in all, over however many days were asked about. A fortnight, read out
+# whole, once took three and a half minutes.
+MOST_EVENTS_SAID_IN_ALL = 10
+
+# How far ahead to look for one thing on the calendar - "when's my MOT?" - and the
+# most matches said.
+SEARCH_DAYS = 90
+MOST_FOUND = 3
+
 
 class HomeAssistant:
     """One Home Assistant, reached over its REST API."""
@@ -187,7 +196,33 @@ class HomeAssistant:
         except (requests.RequestException, ValueError, KeyError) as e:
             logger.error(f"Couldn't read the calendar: {e}")
             return {"success": False, "message": self._failure_message(e)}
+        events = _as_activities(events, {name: _called(words) for name, words in self.activities.items()}, first)
         return {"success": True, "message": describe_agenda(events, first, days, today or date.today())}
+
+    def find(self, wanted: str, first: date, today: Optional[date] = None) -> Dict:
+        """
+        When one thing is on the calendar, for "when's my MOT?". Reading out whole
+        days instead, Claude once read a fortnight of them looking for it.
+
+        Args:
+            wanted: A word or two from its name, e.g. "MOT".
+            first: The first day to look from.
+            today: Today's date - only given by the tests.
+
+        Returns:
+            Dict with 'success' and when it is as the 'message'.
+        """
+        words = [word.strip(".,!?'\"") for word in (wanted or "").split()]
+        patterns = [_called([word]) for word in words if word]
+        if not patterns:
+            return {"success": False, "message": "I didn't catch what to look for."}
+        try:
+            events = self.events(first, SEARCH_DAYS)
+        except (requests.RequestException, ValueError, KeyError) as e:
+            logger.error(f"Couldn't read the calendar: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        found = [event for event in events if all(pattern.search(event["summary"]) for pattern in patterns)]
+        return {"success": True, "message": describe_found(" ".join(words), found, today or date.today())}
 
     def activity(self, name: str, first: date, days: int = 1, today: Optional[date] = None,
                  count: Optional[int] = None, now: Optional[datetime] = None) -> Dict:
@@ -215,15 +250,53 @@ class HomeAssistant:
         except (requests.RequestException, ValueError, KeyError) as e:
             logger.error(f"Couldn't read the calendar: {e}")
             return {"success": False, "message": self._failure_message(e)}
-        # At the start of a word, so "CSC" finds "CSC203 Lecture" and "shift" finds
-        # "Night shift", but neither turns up inside some other word.
-        pattern = re.compile(r"\b(?:" + "|".join(re.escape(word) for word in called) + ")", re.IGNORECASE)
+        pattern = _called(called)
         found = [event for event in events if pattern.search(event["summary"])]
         name = name.strip().lower()
         if count:
             return {"success": True, "message": describe_next(name, found, count, first,
                                                               now or datetime.now().astimezone())}
         return {"success": True, "message": describe_activity(name, found, first, days, today or date.today())}
+
+
+def _called(words: List[str]) -> re.Pattern:
+    """
+    Finds an event's name with a word in it starting with one of these - so "CSC"
+    finds "CSC203 Lecture" and "shift" finds "Night shift", but neither turns up
+    inside some other word.
+    """
+    return re.compile(r"\b(?:" + "|".join(re.escape(word) for word in words) + ")", re.IGNORECASE)
+
+
+def _as_activities(events: List[Dict], activities: Dict[str, re.Pattern], first: date) -> List[Dict]:
+    """
+    The user's activities - work, uni - as one stretch of time each, named after the
+    activity. A day of uni was read out session by session, by each one's own name -
+    "CSC2035/P01/01 <04-08> at 11:30 AM" - which took 25 seconds and meant little.
+    Now it's "uni from 9 AM until 1 PM". Everything else is left as it is.
+
+    Args:
+        events: From HomeAssistant.events, earliest first.
+        activities: Each activity's name, and what finds its events - see _called.
+        first: The first day asked about.
+
+    Returns:
+        The events, earliest first, with each activity once a day. Its stretches of
+        time that day are in "spans", to be said with their ends as well as their
+        starts.
+    """
+    kept, theirs = [], {name: [] for name in activities}
+    for event in events:
+        name = next((name for name, called in activities.items() if called.search(event["summary"])), None)
+        (theirs[name] if name else kept).append(event)
+    for name, its_events in theirs.items():
+        for day, on_day in _by_day(its_events, first).items():
+            if any(event["all_day"] for event in on_day):
+                kept.append({"summary": name, "start": day, "end": None, "all_day": True})
+            spans = _stretches(on_day)
+            if spans:
+                kept.append({"summary": name, "start": spans[0][0], "end": None, "all_day": False, "spans": spans})
+    return sorted(kept, key=lambda event: _sort_key(event["start"]))
 
 
 def _by_day(events: List[Dict], first: date) -> Dict[date, List[Dict]]:
@@ -370,7 +443,8 @@ def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> 
     Says what's on, a day at a time.
 
     Args:
-        events: From HomeAssistant.events, earliest first.
+        events: From HomeAssistant.events, earliest first - with the activities
+            joined up, see _as_activities.
         first: The first day asked about.
         days: How many days.
         today: Today's date.
@@ -386,15 +460,19 @@ def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> 
         # An event which started before the days asked about, and runs into them.
         by_day.setdefault(max(day, first), []).append(event)
 
-    sentences = []
+    sentences, left = [], MOST_EVENTS_SAID_IN_ALL
     for day, on_day in by_day.items():
         if not on_day:
             continue
-        said = [event["summary"] + (", all day" if event["all_day"] else
-                                    f" at {spoken_clock_time(event['start'].hour, event['start'].minute)}")
-                for event in on_day[:MOST_EVENTS_SAID]]
-        if len(on_day) > MOST_EVENTS_SAID:
-            said.append(f"{len(on_day) - MOST_EVENTS_SAID} more")
+        if left <= 0:
+            unsaid = sum(len(later) for later_day, later in by_day.items() if later_day >= day)
+            sentences.append(f"And {unsaid} more after that.")
+            break
+        shown = on_day[:min(MOST_EVENTS_SAID, left)]
+        left -= len(shown)
+        said = [_event_said(event) for event in shown]
+        if len(on_day) > len(shown):
+            said.append(f"{len(on_day) - len(shown)} more")
         listed = said[0] if len(said) == 1 else ", ".join(said[:-1]) + ", and " + said[-1]
         on = _on(day, today)
         sentences.append(f"{on[0].upper()}{on[1:]}, you've got {listed}.")
@@ -407,3 +485,37 @@ def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> 
     if days == 2:
         return f"You've got nothing on {spoken_day(first, today)} or {spoken_day(last, today)}."
     return f"You've got nothing on from {spoken_day(first, today)} to {spoken_day(last, today)}."
+
+
+def _event_said(event: Dict) -> str:
+    """One event, as it's said: "the dentist at 9:30 AM", "uni from 9 AM until 1 PM", "Sam's birthday, all day"."""
+    if event["all_day"]:
+        return f"{event['summary']}, all day"
+    if event.get("spans"):
+        return f"{event['summary']} " + " and ".join(_span(start, end) for start, end in event["spans"])
+    return f"{event['summary']} at {spoken_clock_time(event['start'].hour, event['start'].minute)}"
+
+
+def describe_found(wanted: str, events: List[Dict], today: date) -> str:
+    """
+    Says when something looked for on the calendar is on.
+
+    Args:
+        wanted: What was looked for, e.g. "MOT".
+        events: The events found, earliest first.
+        today: Today's date.
+
+    Returns:
+        e.g. "You've got Car MOT on Thursday the 30th of October, at 9:30 AM." or
+        "I can't see MOT on your calendar in the next three months."
+    """
+    if not events:
+        return f"I can't see {wanted} on your calendar in the next three months."
+    said = []
+    for event in events[:MOST_FOUND]:
+        day = event["start"] if event["all_day"] else event["start"].date()
+        when = "all day" if event["all_day"] else f"at {spoken_clock_time(event['start'].hour, event['start'].minute)}"
+        said.append(f"{event['summary']} {_on(day, today)}, {when}")
+    listed = said[0] if len(said) == 1 else "; ".join(said[:-1]) + "; and " + said[-1]
+    more = f" And {len(events) - MOST_FOUND} more after that." if len(events) > MOST_FOUND else ""
+    return f"You've got {listed}.{more}"

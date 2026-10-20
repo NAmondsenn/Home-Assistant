@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 import pytest
 import requests
 
-from voice_assistant.home_assistant import HomeAssistant, describe_agenda
+from voice_assistant.home_assistant import HomeAssistant, describe_agenda, describe_found
 
 
 class FakeResponse:
@@ -165,6 +165,62 @@ def test_a_busy_day_is_cut_short():
 
 def test_a_day_further_off_is_said_in_full():
     assert describe_agenda([], date(2026, 10, 30), 1, TODAY) == "You've got nothing on Friday the 30th of October."
+
+
+def test_a_fortnight_is_cut_short():
+    # Read out whole, a fortnight once took three and a half minutes.
+    events = [_event(f"Meeting {n}", datetime(2026, 10, 20, 9 + n % 2) + timedelta(days=n // 2)) for n in range(28)]
+    said = describe_agenda(events, TODAY, 14, TODAY)
+    assert said.count("Meeting") == 10
+    assert said.endswith("On Saturday, you've got Meeting 8 at 9:00 AM, and Meeting 9 at 10:00 AM. "
+                         "And 18 more after that.")
+
+
+UNI_DAY = [
+    {"summary": "CSC2035/P01/01 <04-07>", "start": {"dateTime": "2026-10-20T11:30:00+01:00"},
+     "end": {"dateTime": "2026-10-20T12:30:00+01:00"}},
+    {"summary": "CSC2032/T01/01", "start": {"dateTime": "2026-10-20T14:30:00+01:00"},
+     "end": {"dateTime": "2026-10-20T15:30:00+01:00"}},
+    {"summary": "CSC2035/L01/01 <04-07>", "start": {"dateTime": "2026-10-20T15:30:00+01:00"},
+     "end": {"dateTime": "2026-10-20T17:30:00+01:00"}},
+    {"summary": "Discussion group", "start": {"dateTime": "2026-10-20T18:00:00+01:00"},
+     "end": {"dateTime": "2026-10-20T19:00:00+01:00"}},
+]
+
+
+def test_a_day_of_uni_is_said_as_uni_not_session_by_session(make_home):
+    # Each session was read out by its own name - "CSC2035/P01/01 <04-07> at 11:30
+    # AM" - which took 25 seconds for one day, and meant little.
+    home = make_home({"/api/calendars": [{"entity_id": "calendar.uni"}], "/api/calendars/calendar.uni": UNI_DAY})
+    home.activities = {"uni": ["csc"]}
+    assert home.agenda(TODAY, today=TODAY)["message"] == (
+        "Today, you've got uni from 11:30 AM until 12:30 PM and from 2:30 PM until 5:30 PM, "
+        "and Discussion group at 6:00 PM.")
+
+
+def test_one_thing_is_looked_for_months_ahead(make_home):
+    home = make_home({"/api/calendars": [{"entity_id": "calendar.personal"}],
+                      "/api/calendars/calendar.personal": UNI_DAY + [
+                          {"summary": "Car MOT", "start": {"dateTime": "2026-11-30T09:30:00+00:00"},
+                           "end": {"dateTime": "2026-11-30T10:30:00+00:00"}}]})
+    assert home.find("mot", TODAY, today=TODAY) == {
+        "success": True, "message": "You've got Car MOT on Monday the 30th of November, at 9:30 AM."}
+    method, path, sent = home._session.requests[1]
+    assert (datetime.fromisoformat(sent["params"]["end"]) - datetime.fromisoformat(sent["params"]["start"])).days == 90
+
+
+def test_looking_for_something_which_isnt_there_says_so(make_home):
+    home = make_home({"/api/calendars": [{"entity_id": "calendar.uni"}], "/api/calendars/calendar.uni": UNI_DAY})
+    assert home.find("MOT", TODAY, today=TODAY)["message"] == \
+        "I can't see MOT on your calendar in the next three months."
+
+
+def test_several_found_are_said_together_up_to_a_few():
+    events = [_event("Football", datetime(2026, 10, 21, 10, 0)), _event("Sam's birthday", date(2026, 10, 22), True)]
+    assert describe_found("football", events[:1] * 5, TODAY) == (
+        "You've got Football tomorrow, at 10:00 AM; Football tomorrow, at 10:00 AM; and Football tomorrow, "
+        "at 10:00 AM. And 2 more after that.")
+    assert describe_found("sam", events[1:], TODAY) == "You've got Sam's birthday on Thursday, all day."
 
 
 # Work, uni and the like
