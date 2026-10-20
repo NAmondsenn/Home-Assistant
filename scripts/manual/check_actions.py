@@ -4,8 +4,8 @@ Action Executor Test
 Tests the ActionExecutor in isolation (e.g. Spotify / Home Assistant commands).
 
 Unlike check_integration.py, this doesn't go through the LLM at all — it
-builds action dicts directly, in the same shape LLMHandler._parse_action
-produces, so it can check dispatch logic without needing an API call.
+builds Actions directly, just as a tool call from the model becomes one, so it
+can check dispatch logic without needing an API call.
 """
 
 import os
@@ -16,19 +16,18 @@ import logging
 # no matter where the scripts are run from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from voice_assistant.actions import ActionExecutor
+from voice_assistant.actions import Action, ActionExecutor, ActionResult
 from voice_assistant.spotify_controller import SpotifyController
 
-# Sample actions covering normal and exceptional cases for Spotify and Home Assistant commands.
+# Sample actions covering normal and exceptional cases.
 TEST_ACTIONS = [
-    {"type": "spotify", "command": "play", "query": "hip hop"},
-    {"type": "spotify", "command": "pause"},
-    {"type": "spotify", "command": "skip"},
-    {"type": "spotify", "command": "previous"},
-    {"type": "spotify", "command": "current"},
-    {"type": "spotify", "command": "connect"},  # Unknown Spotify command
-    {"type": "home_assistant", "entity": "light.strip", "command": "turn_on"},
-    {"type": "netflix", "command": "play"},  # Unknown action type
+    Action("play_music", {"query": "hip hop"}),
+    Action("control_playback", {"action": "pause"}),
+    Action("control_playback", {"action": "skip"}),
+    Action("control_playback", {"action": "previous"}),
+    Action("control_playback", {"action": "current"}),
+    Action("control_playback", {"action": "connect"}),  # Unknown playback action
+    Action("play_netflix"),  # Unknown tool
 ]
 
 def test_actions():
@@ -50,7 +49,7 @@ def test_actions():
         print(f"Spotify not available: {e}")
         spotify = None
 
-    actions = ActionExecutor(spotify=spotify)
+    actions = ActionExecutor(music=spotify)
 
     print("\nRunning test actions\n")
 
@@ -63,8 +62,8 @@ def test_actions():
         try:
             result = actions.execute(action)
 
-            # An action is considered handled if it returns a dict with a 'success' key.
-            handled = isinstance(result, dict) and "success" in result
+            # An action is considered handled if it comes back as an ActionResult.
+            handled = isinstance(result, ActionResult)
             print(f"Result: {result}")
             results.append({"action": action, "handled": handled})
         except Exception as e:
@@ -79,7 +78,7 @@ def test_actions():
     print("[extra] Action: None (no action detected)")
     try:
         result = actions.execute(None)
-        handled = isinstance(result, dict) and "success" in result
+        handled = isinstance(result, ActionResult)
         print(f"Result: {result}")
         results.append({"action": None, "handled": handled})
     except Exception as e:

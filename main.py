@@ -111,9 +111,6 @@ class SmartAssistant:
                                 download_root=os.path.join(PROJECT_DIRECTORY,
                                                            whisper_config.get("download_root", "models/whisper")))
         
-        # Retrieves LLM configuration from config.yaml and passes it to LLMHandler.
-        self.llm = LLMHandler(config=self.config, api_key=None)
-        
         # Sets up text-to-speech with settings from config.
         self.tts = TextToSpeech(self.config)
         
@@ -139,9 +136,12 @@ class SmartAssistant:
         # that itself, so a level the user chose by voice survives a restart.
         self.volume = VolumeControl(config=self.config)
 
-        # Sets up the action executor, which dispatches detected actions to the right controller.
-        self.actions = ActionExecutor(spotify=self.spotify, clock=self.clock, volume=self.volume,
+        # Everything the assistant can do for the user - see actions.py.
+        self.actions = ActionExecutor(music=self.spotify, clock=self.clock, volume=self.volume,
                                       weather=Weather(config=self.config))
+
+        # Claude, offered whichever of those tools can actually work here.
+        self.llm = LLMHandler(config=self.config, tools=self.actions.tool_schemas())
         
         # Sets up the wake word detector with sensitivity settings from config.
         self.thresholds = self.config.section("thresholds")
@@ -566,18 +566,12 @@ class SmartAssistant:
         # order - "pause the music and set a ten minute timer" is two of them.
         action_results = []
         if actions:
-            # Music and volume actions talk to Spotify too, so the pause has to have landed first.
+            # Music and volume actions talk to the music player too, so the pause has to have landed first.
             self.music.wait()
             for action in actions:
-                action_result = self.actions.execute(action)
-                action_results.append(action_result)
-
-                # Cancels auto resume if the user pauses Spotify.
-                if self.spotify and action.get("type") == "spotify" and action.get("command") == "pause" and action_result.get("success"):
-                    self.spotify.cancel_resume()
+                action_results.append(self.actions.execute(action))
             timeline.mark("action_done")
-            timeline.note(action=", ".join(str(a.get("type")) for a in actions),
-                          command=", ".join(str(a.get("command")) for a in actions))
+            timeline.note(actions=", ".join(action.tool for action in actions))
 
         # Talking to the assistant at all means the user has heard the timer or
         # alarm, so it stops rather than picking up again behind the reply. Done
@@ -622,7 +616,7 @@ class SmartAssistant:
                              f"going. Shall I turn it off?").strip()
 
         if not response_text:
-            logger.info(f"Action confirmed itself: {[r.get('message') for r in action_results]}", extra=TRANSCRIPT)
+            logger.info(f"Action confirmed itself: {[result.say for result in action_results]}", extra=TRANSCRIPT)
             return
 
         # The model's history only has its own text for this turn - usually "Okay." when

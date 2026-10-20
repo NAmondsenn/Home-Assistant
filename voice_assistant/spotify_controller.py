@@ -63,6 +63,11 @@ class _RefreshingAuth:
 class SpotifyController:
     """Controls Spotify playback, preferring this machine's own Connect device."""
 
+    # How it's named when something goes wrong, e.g. "Spotify needs the internet".
+    name = "Spotify"
+    # Every command goes through Spotify's servers - see ActionExecutor._music_offline.
+    needs_internet = True
+
     def __init__(self, config=None):
         """
         Args:

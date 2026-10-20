@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from voice_assistant import intents as intents_module
+from voice_assistant.actions import Action
 from voice_assistant.intents import LocalIntents
 
 
@@ -32,8 +33,7 @@ def _actions(text, clock=None):
 def test_timers_are_set_without_claude(text, seconds):
     # Every request used to go to Claude first, so a timer couldn't even be set
     # with the internet down.
-    assert _actions(text) == [{"type": "clock", "command": "set_timer", "duration_seconds": seconds,
-                               "at": None, "label": None, "is_reminder": False}]
+    assert _actions(text) == [Action("set_timer", {"duration_seconds": seconds})]
 
 
 @pytest.mark.parametrize("text, command", [
@@ -43,12 +43,12 @@ def test_timers_are_set_without_claude(text, seconds):
     ("Previous song.", "previous"), ("Go back.", "previous"),
 ])
 def test_playback_controls_are_handled_without_claude(text, command):
-    assert _actions(text) == [{"type": "spotify", "command": command}]
+    assert _actions(text) == [Action("control_playback", {"action": command})]
 
 
 @pytest.mark.parametrize("text", ["Resume.", "Play.", "Play the music.", "Unpause."])
 def test_resuming_plays_whatever_was_playing(text):
-    assert _actions(text) == [{"type": "spotify", "command": "play", "query": None, "search_type": None}]
+    assert _actions(text) == [Action("play_music")]
 
 
 @pytest.mark.parametrize("text, change", [
@@ -57,9 +57,7 @@ def test_resuming_plays_whatever_was_playing(text):
     ("Volume 40.", {"level": 40}), ("Set the volume to 70 percent.", {"level": 70}),
 ])
 def test_volume_is_changed_without_claude(text, change):
-    action = {"type": "volume", "category": None, "level": None, "direction": None, "amount": None}
-    action.update(change)
-    assert _actions(text) == [action]
+    assert _actions(text) == [Action("set_volume", change)]
 
 
 @pytest.mark.parametrize("text", [
@@ -101,4 +99,4 @@ def test_the_timer_is_only_cancelled_locally_when_theres_just_one(timers, handle
     ("What will the weather be like today?", "today"), ("What's the forecast for tomorrow?", "tomorrow"),
 ])
 def test_the_weather_is_asked_for_without_claude(text, day):
-    assert _actions(text) == [{"type": "weather", "day": day}]
+    assert _actions(text) == [Action("get_weather", {"day": day})]

@@ -3,10 +3,11 @@ import re
 import time
 import logging
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional
 from dotenv import load_dotenv
 import anthropic
 from anthropic import Anthropic
+from voice_assistant.actions import Action
 from voice_assistant.clock import spoken_clock_time
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant import network
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class LLMHandler:
     def __init__(self, config=None, api_key=None, model=None, max_tokens=None,
-                 temperature=None, history_length=None, assistant_name=None):
+                 temperature=None, history_length=None, assistant_name=None, tools=None):
 
         # Pulls llm, conversation, assistant and web_search sections from config.yaml
         llm_config = config.section("llm") if config else {}
@@ -58,6 +59,8 @@ class LLMHandler:
         # Seconds after which an exchange is forgotten once a new conversation starts - see forget_stale_history.
         self.history_max_age = conversation_config.get("history_max_age", 300)
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
+        # The tools the model is offered, in the API's format - see ActionExecutor.tool_schemas.
+        self.tools = list(tools or [])
 
         # Web search is opt-in per query rather than always on, so ordinary replies
         # aren't slowed down or billed by unnecessary searches.
@@ -67,401 +70,6 @@ class LLMHandler:
         logger.info(
             f"LLM initialised: {self.model_name} (max_tokens={self.max_tokens}, temperature={self.temperature}, "
             f"history_length={self.history_length}, web_search={self.web_search_enabled})")
-
-    # Tools the model can call to control music and lights.
-    # This selects actions more accurately than keyword matching and corrects mis-transcriptions.
-    ACTION_TOOLS = [
-        {
-            "name": "play_music",
-            "description": (
-                "Play music on Spotify. Correct any obvious mis-transcriptions of artist "
-                "or song names before calling, since the user's speech may have been "
-                "misheard. Use this for requests to play a song, artist, album or genre, "
-                "and to resume music that was paused."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "What to play, spelled correctly, e.g. 'Gooba by 6ix9ine' or 'Drake'. "
-                            "Always include the artist as 'title by artist' when you know it, for "
-                            "albums as well as songs, e.g. 'The Chronic by Dr. Dre' - the search "
-                            "is far more accurate with it, and a title alone often finds the "
-                            "wrong record. Leave this out entirely for a bare 'play', 'resume' or "
-                            "'unpause', which means carry on with whatever was playing - don't "
-                            "ask the user what they want in that case."
-                        ),
-                    },
-                    "search_type": {
-                        "type": "string",
-                        "enum": ["track", "artist", "album", "playlist"],
-                        "description": (
-                            "What the query names: a specific song, an artist, an album, or "
-                            "a genre or mood to find a playlist for. Only use 'album' if the "
-                            "user actually says the word album - otherwise a title is taken "
-                            "as a song, even when you know it's also an album."
-                        ),
-                    },
-                },
-            },
-        },
-        {
-            "name": "play_playlist",
-            "description": (
-                "Play one of the user's own saved Spotify playlists, for requests like "
-                "'play my workout playlist'. The name is matched loosely, so pass it "
-                "roughly as the user said it. Use play_music instead for songs, artists, "
-                "or general genres the user doesn't have a playlist for."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "The playlist name as the user said it."},
-                },
-                "required": ["name"],
-            },
-        },
-        {
-            "name": "control_playback",
-            "description": (
-                "Pause, skip, go back a track, start the current track again, or report "
-                "what is currently playing. This tool never starts music: a bare 'play', "
-                "'resume' or 'unpause' is play_music with no query."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["pause", "skip", "previous", "restart", "current"],
-                        "description": (
-                            "'current' only answers a question about what is playing, like "
-                            "'what's this song' or 'who sings this' - never use it for an "
-                            "instruction to play something. 'pause' is for 'pause', 'stop' "
-                            "or 'be quiet'. 'skip' moves on to the next song, for requests like 'skip', "
-                            "'skip song', 'skip this one', 'next' or 'next song' - always "
-                            "call this rather than replying, since the user is asking for "
-                            "something to happen, not for an answer. 'previous' goes back to "
-                            "the song before this one, for requests like 'go back', 'last "
-                            "song' or 'previous track'. 'restart' plays the current song "
-                            "again from the beginning, for requests like 'play that again', "
-                            "'start it over' or 'rewind'."
-                        ),
-                    },
-                },
-                "required": ["action"],
-            },
-        },
-        {
-            "name": "repeat",
-            "description": "Turn repeat off, repeat the current track, or repeat the whole playlist or album.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "mode": {"type": "string", "enum": ["off", "track", "all"]},
-                },
-                "required": ["mode"],
-            },
-        },
-        {
-            "name": "shuffle",
-            "description": "Turn shuffle on or off.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "enabled": {"type": "boolean", "description": "True to shuffle, False to play in order."},
-                },
-                "required": ["enabled"],
-            },
-        },
-        {
-            "name": "set_timer",
-            "description": (
-                "Set a countdown timer or reminder. For a length of time, give "
-                "duration_seconds ('ten minutes' is 600). For a clock time or date to count "
-                "down to, give 'at' instead and leave the arithmetic to the clock - 'remind "
-                "me at 4pm' is '16:00', 'set a reminder for the 4th at 9' is the date and "
-                "time, e.g. '2026-11-04 09:00'. Include a label only when the user says what it's "
-                "for - with a label it becomes a reminder and the label is spoken when it "
-                "goes off, so word it as the reminder itself, e.g. 'Take the pizza out'. "
-                "If the user explicitly said 'reminder' or 'remind me' but didn't say what "
-                "it's for, still call this with is_reminder true and no label - the user "
-                "will be asked to name it. When they answer, call name_reminder with that "
-                "name rather than calling this again, so the original time is kept exact."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "duration_seconds": {
-                        "type": "integer",
-                        "description": "How long the timer runs for, in seconds. Leave out when giving 'at'.",
-                    },
-                    "at": {
-                        "type": "string",
-                        "description": (
-                            "The local time to go off at, on the 24-hour clock: 'HH:MM' for "
-                            "the next time it's that time, or 'YYYY-MM-DD HH:MM' for a "
-                            "particular day. Leave out when giving duration_seconds."
-                        ),
-                    },
-                    "label": {
-                        "type": "string",
-                        "description": (
-                            "What to say when it goes off. Leave out entirely for a plain "
-                            "timer with no message."
-                        ),
-                    },
-                    "is_reminder": {
-                        "type": "boolean",
-                        "description": (
-                            "True if the user explicitly said 'reminder' or 'remind me', "
-                            "even if they gave no label. False for a plain 'timer'. This "
-                            "only matters when there's no label: an unlabelled reminder "
-                            "can't actually be created, so the user is asked to name it "
-                            "instead."
-                        ),
-                    },
-                },
-                "required": [],
-            },
-        },
-        {
-            "name": "name_reminder",
-            "description": (
-                "Give a name to the reminder which was just asked about, right after the "
-                "assistant said 'What would you like to name this reminder?'. Use this "
-                "instead of set_timer for that reply - it keeps the reminder's original "
-                "time exact rather than reworking it from how long ago it was asked."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "description": "What to say when the reminder goes off, worded as the reminder itself.",
-                    },
-                },
-                "required": ["label"],
-            },
-        },
-        {
-            "name": "list_timers",
-            "description": "Report which timers are running and how long is left on each.",
-            "input_schema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "dismiss_timer",
-            "description": (
-                "Acknowledge a timer or reminder which has just gone off, for 'okay', "
-                "'stop', 'got it', 'thanks' or similar right after one sounds. This stops "
-                "it announcing itself again. Not for cancelling a timer which hasn't gone "
-                "off yet - use cancel_timer for that."
-            ),
-            "input_schema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "check_missed",
-            "description": (
-                "Report timers and reminders which went off without being acknowledged, "
-                "for 'did I miss anything?' or 'what did I miss?'."
-            ),
-            "input_schema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "cancel_timer",
-            "description": (
-                "Cancel a running timer or reminder. Identify it by label, by its length for "
-                "timers set without one, or by the clock time it's due to go off ('the 5:40 "
-                "one', 'cancel the timer for 4pm'). Use cancel_all only when the user clearly "
-                "means every timer. If they just say 'cancel the timer' and it's ambiguous, "
-                "call this with neither argument - the user will be asked which one they "
-                "meant. If several timers match equally (e.g. two both set for 10 minutes), "
-                "the user is asked which one automatically - just pass through what they said."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "description": (
-                            "Which timer to cancel: its label, the length it was set for "
-                            "('10 minutes'), the clock time it's due ('5:40', '5:40 pm'), or "
-                            "how the user referred to it ('the next one', 'the upcoming "
-                            "reminder'). If a running reminder's real label is a close match "
-                            "for a mangled transcription ('walk the frogs' for a 'walk the "
-                            "dogs' reminder that's actually set), pass the real label, not the "
-                            "mangled one. Never invent a label from how long is left, and "
-                            "leave this out entirely when they just mean 'that one' or 'the "
-                            "timer'."
-                        ),
-                    },
-                    "cancel_all": {
-                        "type": "boolean",
-                        "description": "True only if the user asked to cancel every timer.",
-                    },
-                },
-            },
-        },
-        {
-            "name": "set_alarm",
-            "description": (
-                "Set an alarm for a time of day, e.g. 'set an alarm for 7am', 'wake me up at "
-                "quarter past six', 'set an alarm for weekdays at 6:30'. Never give this a "
-                "label - alarms don't take one, that's what a reminder is for. An alarm rings "
-                "insistently until dismissed, so only use this when the user actually means a "
-                "wake-up-style alarm, not a reminder or timer worded loosely as one."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "hour": {"type": "integer", "description": "0-23, 24-hour clock."},
-                    "minute": {"type": "integer", "description": "0-59."},
-                    "repeat": {
-                        "type": "string",
-                        "enum": ["daily", "weekdays", "weekends", "custom"],
-                        "description": (
-                            "Leave out entirely for a one-off alarm. Otherwise: 'daily' for "
-                            "every day, 'weekdays' for Monday-Friday, 'weekends' for Saturday "
-                            "and Sunday, or 'custom' for specific days, listed in days."
-                        ),
-                    },
-                    "days": {
-                        "type": "array",
-                        "items": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday",
-                                                             "friday", "saturday", "sunday"]},
-                        "description": "Only with repeat 'custom': the days it repeats on.",
-                    },
-                },
-                "required": ["hour", "minute"],
-            },
-        },
-        {
-            "name": "list_alarms",
-            "description": "Report which alarms are set, for 'what alarms do I have' or 'list my alarms'.",
-            "input_schema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "next_alarm",
-            "description": "Report how long until the next alarm, for 'how long until my alarm' or 'when's my next alarm'.",
-            "input_schema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "cancel_alarm",
-            "description": (
-                "Cancel an alarm, identified by its time of day ('cancel my 7am alarm'). If "
-                "the user says 'cancel it'/'turn off my alarm' with only one alarm set or it's "
-                "otherwise unambiguous, leave label out. If the matched alarm repeats and the "
-                "user didn't already say whether they mean just today or the whole schedule "
-                "('just for today', 'stop it repeating', 'cancel it completely'), leave scope "
-                "out too - the user gets asked which they meant rather than it being guessed."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "description": "The alarm's time of day ('7am', '6:30'), or left out when unambiguous.",
-                    },
-                    "cancel_all": {
-                        "type": "boolean",
-                        "description": "True only if the user asked to cancel every alarm.",
-                    },
-                    "scope": {
-                        "type": "string",
-                        "enum": ["today", "all"],
-                        "description": (
-                            "'today' if the user only wants to skip the next occurrence of a "
-                            "repeating alarm; 'all' if they want the whole repeat cancelled. "
-                            "Leave out if they didn't say - only set this from what the user "
-                            "explicitly said, never guessed."
-                        ),
-                    },
-                },
-            },
-        },
-        {
-            "name": "set_volume",
-            "description": (
-                "Change how loud something is. For a bare 'turn it up', 'volume up', 'too loud' "
-                "or 'set the volume to 40' that doesn't say what, leave category out - the "
-                "assistant works out from what's playing whether that means the music or its own "
-                "voice. Give either level (to set a specific value) or direction (to move it up "
-                "or down), not both."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "enum": ["general", "music", "alarm"],
-                        "description": (
-                            "Only when the user says which. 'general' for the assistant's own "
-                            "voice ('talk quieter', 'your voice is too loud'). 'music' when they "
-                            "mean what's playing ('turn the music down'). 'alarm' for anything "
-                            "which goes off by itself - timers, reminders and alarms all share "
-                            "this one, so 'turn the timer volume down' and 'reminders are too "
-                            "loud' are both 'alarm'. Each is separate, so changing one leaves "
-                            "the others alone."
-                        ),
-                    },
-                    "level": {
-                        "type": "integer",
-                        "description": (
-                            "Set the volume to this exact percentage, 0 to 100. Only for "
-                            "requests naming a number, like 'set the volume to 40'."
-                        ),
-                    },
-                    "direction": {
-                        "type": "string",
-                        "enum": ["up", "down"],
-                        "description": (
-                            "Use this for 'volume up', 'louder', 'turn it down' and so on. "
-                            "The assistant decides how much by, so don't give an amount "
-                            "unless the user asked for a specific one."
-                        ),
-                    },
-                    "amount": {
-                        "type": "integer",
-                        "description": (
-                            "Only when the user asks for a specific change, e.g. 'turn it "
-                            "down by 30'. Leave out otherwise so the standard step is used."
-                        ),
-                    },
-                },
-            },
-        },
-        {
-            "name": "get_weather",
-            "description": (
-                "Get the weather forecast for home - how it is now, and the rest of today, "
-                "or tomorrow. Use it for any question about the weather, including ones "
-                "like 'do I need a coat?' or 'will it rain later?'. The forecast it returns "
-                "is what gets spoken, so just reply 'Okay.'"
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "day": {
-                        "type": "string",
-                        "enum": ["today", "tomorrow"],
-                        "description": "Which day the user asked about. 'today' includes right now.",
-                    },
-                },
-                "required": [],
-            },
-        },
-        {
-            "name": "control_lights",
-            "description": "Turn the smart lights on or off.",
-            "input_schema": {
-                "type": "object",
-                "properties": {"state": {"type": "string", "enum": ["on", "off"]}},
-                "required": ["state"],
-            },
-        },
-    ]
 
     def _asked_for_album(self, text: str) -> bool:
         """
@@ -490,98 +98,19 @@ class LLMHandler:
         return ("album" in last.get("user", "").lower()
                 or "album" in last.get("assistant", "").lower())
 
-    def _action_from_tool_use(self, block) -> Optional[Dict]:
+    @staticmethod
+    def _action_from_tool_use(block) -> Action:
         """
-        Converts a tool call from the model into the action dict the ActionExecutor expects.
+        The Action for a tool call from the model - see actions.py, where each tool
+        is declared along with the code which carries it out.
 
         Args:
             block: A tool_use content block from the model's response.
 
         Returns:
-            An action dict, or None if the tool isn't recognised.
+            The Action.
         """
-        params = block.input or {}
-
-        if block.name == "play_music":
-            return {"type": "spotify", "command": "play",
-                    "query": params.get("query") or None,
-                    "search_type": params.get("search_type")}
-
-        if block.name == "play_playlist":
-            return {"type": "spotify", "command": "play_playlist", "name": params.get("name")}
-
-        if block.name == "control_playback":
-            return {"type": "spotify", "command": params.get("action")}
-
-        if block.name == "repeat":
-            return {"type": "spotify", "command": "repeat", "mode": params.get("mode", "off")}
-
-        if block.name == "shuffle":
-            return {"type": "spotify", "command": "shuffle", "enabled": bool(params.get("enabled", True))}
-
-        if block.name == "set_timer":
-            return {"type": "clock", "command": "set_timer",
-                    "duration_seconds": params.get("duration_seconds"),
-                    "at": params.get("at"),
-                    "label": params.get("label") or None,
-                    "is_reminder": bool(params.get("is_reminder", False))}
-
-        if block.name == "name_reminder":
-            return {"type": "clock", "command": "name_reminder", "label": params.get("label")}
-
-        if block.name == "list_timers":
-            return {"type": "clock", "command": "list_timers"}
-
-        if block.name == "dismiss_timer":
-            return {"type": "clock", "command": "dismiss"}
-
-        if block.name == "check_missed":
-            return {"type": "clock", "command": "missed"}
-
-        if block.name == "cancel_timer":
-            return {"type": "clock", "command": "cancel_timer",
-                    "label": params.get("label") or None,
-                    "cancel_all": bool(params.get("cancel_all", False))}
-
-        if block.name == "set_alarm":
-            repeat = params.get("repeat") or None
-            if repeat == "custom":
-                # The days themselves. Left as "custom" if none were given, which the
-                # clock can't read, so it asks which days rather than guessing.
-                repeat = params.get("days") or "custom"
-            return {"type": "clock", "command": "set_alarm",
-                    "hour": params.get("hour"), "minute": params.get("minute"), "repeat": repeat}
-
-        if block.name == "list_alarms":
-            return {"type": "clock", "command": "list_alarms"}
-
-        if block.name == "next_alarm":
-            return {"type": "clock", "command": "next_alarm"}
-
-        if block.name == "cancel_alarm":
-            return {"type": "clock", "command": "cancel_alarm",
-                    "label": params.get("label") or None,
-                    "cancel_all": bool(params.get("cancel_all", False)),
-                    "scope": params.get("scope") or None}
-
-        if block.name == "set_volume":
-            # Left as None when the user didn't say which - the executor works it out.
-            return {"type": "volume",
-                    "category": params.get("category") or None,
-                    "level": params.get("level"),
-                    "direction": params.get("direction"),
-                    "amount": params.get("amount")}
-
-        if block.name == "get_weather":
-            return {"type": "weather", "day": params.get("day") or "today"}
-
-        if block.name == "control_lights":
-            command = "turn_on" if params.get("state") == "on" else "turn_off"
-            return {"type": "home_assistant", "entity": "light.strip",
-                    "command": command, "confirmation": "chime"}
-
-        logger.warning(f"Model called an unknown tool: {block.name}")
-        return None
+        return Action(block.name, dict(block.input or {}))
 
     # Phrases which mean the user is explicitly asking for a web search.
     # Web search is only attached to the request when one of these appears.
@@ -625,10 +154,10 @@ class LLMHandler:
         """
         system_prompt = (
             f"You are {self.assistant_name}, a voice assistant running locally with smart home and utility features. "
-            "You can control Spotify playback and (soon) the smart lights, so don't claim you're unable to play music. "
-            "IMPORTANT: music and light commands only actually happen if you call the matching tool. Saying "
-            "you have done something does not do it. So whenever the user asks for music or lights, call the "
-            "tool - including for shuffle, repeat, skipping, restarting a track, and pausing. Your own text "
+            "You can play and control music, so don't claim you're unable to. "
+            "IMPORTANT: commands only actually happen if you call the matching tool. Saying "
+            "you have done something does not do it. So whenever the user asks for something your tools "
+            "do, call the tool - including for shuffle, repeat, skipping, restarting a track, and pausing. Your own text "
             "reply for those commands should just be a short acknowledgement like 'Okay.', since the tool's "
             "result is what gets spoken to the user. "
             "Act on what the user has just said, not on earlier turns: those requests have already been "
@@ -745,11 +274,10 @@ class LLMHandler:
             # change from one request to the next - see _system_prompt.
             messages.append({"role": "user", "content": self._situation(now, context) + text})
 
-            # The music and light tools are always offered, so the model decides what
-            # the user meant rather than a keyword match guessing at it.
+            # The tools are always offered, so the model decides what the user meant
+            # rather than a keyword match guessing at it.
             # max_tokens is set to 300 to stop responses from reaching the limit and being cut off.
-            request_kwargs = {"max_tokens": max(self.max_tokens, 300),
-                              "tools": list(self.ACTION_TOOLS)}
+            request_kwargs = {"max_tokens": max(self.max_tokens, 300), "tools": list(self.tools)}
 
             # Only attaches the web search tool when the user explicitly asked to look something up.
             if use_web_search:
@@ -802,17 +330,16 @@ class LLMHandler:
             # ten minute timer" comes back as two, and only running the first did half of
             # what was asked. If it didn't call one, there is no action. The model's
             # judgement is trusted rather than keyword guessing.
-            actions = [action for action in (self._action_from_tool_use(block) for block in response.content
-                                             if getattr(block, "type", None) == "tool_use")
-                       if action]
+            actions = [self._action_from_tool_use(block) for block in response.content
+                       if getattr(block, "type", None) == "tool_use"]
 
             # An album is only played whole when the user actually asked for one.
             # Titles are often both a song and an album, and the model tends to
             # assume the album, so the user's own words decide it.
             for action in actions:
-                if action.get("search_type") == "album" and not self._asked_for_album(text):
+                if action.params.get("search_type") == "album" and not self._asked_for_album(text):
                     logger.info("Album wasn't asked for by name, playing the track instead")
-                    action["search_type"] = "track"
+                    action.params["search_type"] = "track"
 
             # Fallback for when the action is called by the model, but no message is produced.
             if actions and not response_text:
@@ -885,27 +412,27 @@ class LLMHandler:
             return "Sorry, Claude is having problems at the moment. Try again shortly."
         return "Sorry, I'm having trouble connecting right now."
 
-    def _parse_action(self, user_text: str, response: str) -> Optional[Dict]:
+    def _parse_action(self, user_text: str, response: str) -> Optional[Action]:
         """
         Keyword-based action detection, used as a fallback when the model is
         unavailable (no API key, or the request failed). Normally the model picks
-        the action itself via ACTION_TOOLS, which handles phrasing and
-        mis-transcriptions far better than these keywords can.
+        the tool itself, which handles phrasing and mis-transcriptions far better
+        than these keywords can.
         """
         user_lower = user_text.lower()
         # Splits the query into whole words, so keywords only match complete words rather than substrings.
         words = set(re.findall(r"[a-z]+", user_lower))
 
-        # Spotify commands
+        # Music commands
         if words & {"play", "playing", "resume", "unpause", "music", "song", "songs", "track", "tracks", "spotify"}:
             if words & {"pause", "stop"}:
-                return {"type": "spotify", "command": "pause"}
+                return Action("control_playback", {"action": "pause"})
             elif words & {"skip", "next"}:
-                return {"type": "spotify", "command": "skip"}
+                return Action("control_playback", {"action": "skip"})
             elif words & {"previous", "back", "last"}:
-                return {"type": "spotify", "command": "previous"}
+                return Action("control_playback", {"action": "previous"})
             elif "what" in words and words & {"playing", "song", "track"}:
-                return {"type": "spotify", "command": "current"}
+                return Action("control_playback", {"action": "current"})
 
             # Checks if the user said "play" and extracts the song or artist name if present, whilst removing filler words.
             # If no specific query is found, it will play the default playlist or resume playback.
@@ -929,16 +456,7 @@ class LLMHandler:
                     if query.lower() == "spotify":
                         query = None
                     query = query or None
-                return {"type": "spotify", "command": "play", "query": query}
-
-        # Home Assistant commands
-        if words & {"light", "lights", "lamp", "lamps"}:
-            if "on" in words:
-                return {"type": "home_assistant", "entity": "light.strip", "command": "turn_on",
-                        "confirmation": "chime"}
-            elif "off" in words:
-                return {"type": "home_assistant", "entity": "light.strip", "command": "turn_off",
-                        "confirmation": "chime"}
+                return Action("play_music", {"query": query})
 
         # If no specific action is detected, return None
         return None

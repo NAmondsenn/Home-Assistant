@@ -11,6 +11,7 @@ import anthropic
 import pytest
 
 from voice_assistant import llm as llm_module
+from voice_assistant.actions import Action
 from voice_assistant.llm import LLMHandler
 
 
@@ -63,30 +64,16 @@ def llm():
     return LLMHandler(api_key=None)
 
 
-@pytest.mark.parametrize("params, repeat", [
-    ({"hour": 7, "minute": 0}, None),
-    ({"hour": 7, "minute": 0, "repeat": "weekdays"}, "weekdays"),
-    ({"hour": 7, "minute": 0, "repeat": "custom", "days": ["monday", "wednesday"]}, ["monday", "wednesday"]),
-    # "custom" with no days is passed through as-is, so the clock asks which days.
-    ({"hour": 7, "minute": 0, "repeat": "custom"}, "custom"),
-])
-def test_set_alarm_tool_becomes_a_clock_action(llm, params, repeat):
-    action = llm._action_from_tool_use(_tool("set_alarm", **params))
-    assert action == {"type": "clock", "command": "set_alarm", "hour": 7, "minute": 0, "repeat": repeat}
+def test_a_tool_call_becomes_an_action_naming_it(llm):
+    assert llm._action_from_tool_use(_tool("set_timer", at="16:00", label="Call mum")) == \
+        Action("set_timer", {"at": "16:00", "label": "Call mum"})
 
 
-def test_a_timer_for_a_clock_time_is_passed_on_for_the_clock_to_work_out(llm):
-    action = llm._action_from_tool_use(_tool("set_timer", at="16:00", label="Call mum"))
-    assert action["at"] == "16:00" and action["duration_seconds"] is None
-
-
-def test_weather_questions_become_a_weather_action(llm):
-    assert llm._action_from_tool_use(_tool("get_weather", day="tomorrow")) == {"type": "weather", "day": "tomorrow"}
-
-
-def test_volume_without_a_category_is_left_for_the_executor(llm):
-    action = llm._action_from_tool_use(_tool("set_volume", direction="up"))
-    assert action["type"] == "volume" and action["category"] is None
+def test_an_album_is_only_played_when_asked_for_by_name(llm):
+    # Titles are often both a song and an album, and the model tends to assume the album.
+    llm.client = FakeClient(_reply("Okay.", _tool("play_music", query="The Chronic by Dr. Dre", search_type="album")))
+    assert llm.process_query("play the chronic")["actions"][0].params["search_type"] == "track"
+    assert llm.process_query("play the chronic album")["actions"][0].params["search_type"] == "album"
 
 
 # What the model is told
@@ -164,7 +151,7 @@ def test_each_kind_of_failure_says_what_went_wrong(llm, error, spoken):
 def test_a_failed_request_still_handles_music_offline(llm):
     llm.client = FakeClient(_error(anthropic.APIConnectionError))
     result = llm.process_query("pause the music")
-    assert result["actions"] == [{"type": "spotify", "command": "pause"}]
+    assert result["actions"] == [Action("control_playback", {"action": "pause"})]
 
 
 # Actions
@@ -176,8 +163,7 @@ def test_every_tool_call_is_run_not_just_the_first(llm):
                                    _tool("set_timer", duration_seconds=600, is_reminder=False)))
     result = llm.process_query("pause the music and set a ten minute timer")
 
-    assert [(a["type"], a["command"]) for a in result["actions"]] == [("spotify", "pause"),
-                                                                       ("clock", "set_timer")]
+    assert [action.tool for action in result["actions"]] == ["control_playback", "set_timer"]
 
 
 # History
@@ -228,4 +214,4 @@ def test_offline_claude_isnt_waited_on(llm, monkeypatch):
 
     assert llm.client.requests == []
     assert result["response"] == llm_module.OFFLINE_MESSAGE
-    assert result["actions"] == [{"type": "spotify", "command": "pause"}]
+    assert result["actions"] == [Action("control_playback", {"action": "pause"})]

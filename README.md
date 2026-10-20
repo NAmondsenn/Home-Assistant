@@ -26,7 +26,7 @@ microphone ─► wake word ─► record until you stop talking ─► Whisper 
 ```
 
 - `main.py` runs the loop above, and decides how each request is answered and confirmed.
-- `voice_assistant/` holds everything else, one module per job: `microphone.py` and `speaker.py` own the audio devices, `wake_word.py`, `vad.py`, `speech_to_text.py` and `text_to_speech.py` handle speech, `intents.py` the commands handled locally, `llm.py` Claude, `actions.py` running what was asked for, and `clock.py`, `spotify_controller.py`, `volume.py` and `weather.py` the features themselves.
+- `voice_assistant/` holds everything else, one module per job: `microphone.py` and `speaker.py` own the audio devices, `wake_word.py`, `vad.py`, `speech_to_text.py` and `text_to_speech.py` handle speech, `intents.py` the commands handled locally, `llm.py` Claude, `actions.py` everything Nova can do - each tool Claude is offered, declared beside the code which carries it out - and `clock.py`, `spotify_controller.py`, `volume.py` and `weather.py` the features themselves.
 - The microphone is opened once and never closed, keeping the last few seconds of audio, so nothing said straight after "Hey Nova" is lost. The speaker is opened once too, and everything that plays goes through it, so a timer or alarm can be stopped the moment you speak.
 
 The reasons behind the bigger choices are in [docs/decisions/](docs/decisions/).

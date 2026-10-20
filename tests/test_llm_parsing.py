@@ -9,37 +9,31 @@ This is useful as the test can run without an API key or network connection.
 
 import pytest
 
+from voice_assistant.actions import Action
 from voice_assistant.llm import LLMHandler
 
-# Tests each case: (query, expected action dict, or None if no action should be detected).
+# Tests each case: (query, expected action, or None if no action should be detected).
 TEST_CASES = [
     ("Hello, how are you?", None),
     ("What's nine plus ten?", None),
-    ("Play some house music", {"type": "spotify", "command": "play", "query": "house music"}),
-    ("Play", {"type": "spotify", "command": "play"}),
-    ("Pause Spotify", {"type": "spotify", "command": "pause"}),
-    ("Stop the song", {"type": "spotify", "command": "pause"}),
-    ("Skip this song", {"type": "spotify", "command": "skip"}),
-    ("Next track", {"type": "spotify", "command": "skip"}),
-    ("previous song", {"type": "spotify", "command": "previous"}),
-    ("What's playing right now?", {"type": "spotify", "command": "current"}),
-    ("What song is this?", {"type": "spotify", "command": "current"}),
-    ("Turn on the lights", {"type": "home_assistant", "entity": "light.strip", "command": "turn_on"}),
-    ("Turn off the lamp", {"type": "home_assistant", "entity": "light.strip", "command": "turn_off"}),
-    ("Lights on", {"type": "home_assistant", "entity": "light.strip", "command": "turn_on"}),
+    ("Play some house music", Action("play_music", {"query": "house music"})),
+    ("Play", Action("play_music", {"query": None})),
+    ("Pause Spotify", Action("control_playback", {"action": "pause"})),
+    ("Stop the song", Action("control_playback", {"action": "pause"})),
+    ("Skip this song", Action("control_playback", {"action": "skip"})),
+    ("Next track", Action("control_playback", {"action": "skip"})),
+    ("previous song", Action("control_playback", {"action": "previous"})),
+    ("What's playing right now?", Action("control_playback", {"action": "current"})),
+    ("What song is this?", Action("control_playback", {"action": "current"})),
 ]
 
 
 @pytest.mark.parametrize("query, expected", TEST_CASES)
 def test_parse_action(query, expected):
-    """The keyword fallback finds the expected action, comparing only the keys that matter."""
+    """The keyword fallback finds the expected action."""
     # LLMHandler initialises without an API key (it just logs a warning), and
     # _parse_action never calls the API, so this test runs fully offline.
     llm = LLMHandler(api_key=None)
     actual = llm._parse_action(query, "")
 
-    if expected is None:
-        assert actual is None
-    else:
-        assert actual is not None
-        assert {key: actual.get(key) for key in expected} == expected
+    assert actual == expected

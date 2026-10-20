@@ -7,16 +7,27 @@ temporary folder) and a fake Spotify controller, so nothing plays or goes online
 import pytest
 
 from voice_assistant import volume as volume_module
-from voice_assistant.actions import ActionExecutor, confirm
+from voice_assistant.actions import Action, ActionExecutor, ActionResult, confirm
 from voice_assistant.volume import VolumeControl
 
 
 class FakeSpotify:
     """Stands in for SpotifyController, remembering the music volume it's given."""
 
+    name = "Spotify"
+
     def __init__(self, playing, level=50):
         self.playing = playing
         self.level = level
+        self.calls = []
+        self.resume_cancelled = False
+
+    def pause(self):
+        self.calls.append("pause")
+        return {"success": True, "message": "Paused", "chime": True}
+
+    def cancel_resume(self):
+        self.resume_cancelled = True
 
     def was_playing(self):
         return self.playing
@@ -33,8 +44,8 @@ class FakeSpotify:
 def make_executor(tmp_path, monkeypatch):
     monkeypatch.setattr(volume_module, "VOLUMES_FILE", str(tmp_path / "volumes.json"))
 
-    def factory(spotify=None):
-        return ActionExecutor(spotify=spotify, volume=VolumeControl())
+    def factory(spotify=None, **others):
+        return ActionExecutor(music=spotify, volume=VolumeControl(), **others)
 
     return factory
 
@@ -42,8 +53,8 @@ def make_executor(tmp_path, monkeypatch):
 def test_bare_volume_change_with_music_on_changes_the_music(make_executor):
     spotify = FakeSpotify(playing=True, level=50)
     executor = make_executor(spotify)
-    result = executor.execute({"type": "volume", "category": None, "direction": "down"})
-    assert result["success"] and spotify.level == 40
+    result = executor.execute(Action("set_volume", {"direction": "down"}))
+    assert result.ok and spotify.level == 40
     # The assistant's own voice is left where it was.
     assert executor.volume.percent("general") == 70
 
@@ -51,67 +62,126 @@ def test_bare_volume_change_with_music_on_changes_the_music(make_executor):
 def test_bare_volume_change_with_nothing_playing_changes_the_assistant(make_executor):
     spotify = FakeSpotify(playing=False, level=50)
     executor = make_executor(spotify)
-    executor.execute({"type": "volume", "category": None, "direction": "up"})
+    executor.execute(Action("set_volume", {"direction": "up"}))
     assert executor.volume.percent("general") == 80 and spotify.level == 50
 
 
 def test_saying_which_volume_still_wins(make_executor):
     spotify = FakeSpotify(playing=True, level=50)
     executor = make_executor(spotify)
-    executor.execute({"type": "volume", "category": "general", "level": 30})
+    executor.execute(Action("set_volume", {"category": "general", "level": 30}))
     assert executor.volume.percent("general") == 30 and spotify.level == 50
 
 
 def test_volume_without_spotify_falls_back_to_the_assistant(make_executor):
     executor = make_executor()
-    executor.execute({"type": "volume", "category": None, "level": 55})
+    executor.execute(Action("set_volume", {"level": 55}))
     assert executor.volume.percent("general") == 55
 
 
 def test_volume_changes_are_confirmed_with_a_beep(make_executor):
     executor = make_executor(FakeSpotify(playing=False))
-    result = executor.execute({"type": "volume", "category": "alarm", "direction": "down"})
-    assert result["sound"] == "volume_beep.wav" and result["sound_category"] == "alarm"
+    result = executor.execute(Action("set_volume", {"category": "alarm", "direction": "down"}))
+    assert (result.confirm, result.sound, result.sound_category) == ("sound", "volume_beep.wav", "alarm")
 
 
-def test_unknown_action_type_is_handled(make_executor):
-    result = make_executor().execute({"type": "netflix", "command": "play"})
-    assert result["success"] is False
+def test_unknown_tool_is_handled(make_executor):
+    assert make_executor().execute(Action("play_netflix")).ok is False
+
+
+def test_a_parameter_the_model_made_up_doesnt_stop_it_running(make_executor):
+    result = make_executor().execute(Action("set_volume", {"level": 30, "loudness": "very"}))
+    assert result.ok
+
+
+# Each tool declared once
+
+def test_every_tool_has_a_description_and_only_takes_what_it_declares():
+    # Adding a tool used to mean three edits in two files, which could drift apart.
+    import inspect
+    for name, method in ActionExecutor.tools().items():
+        declared = set(method.tool["parameters"])
+        taken = set(list(inspect.signature(method).parameters)[1:])
+        assert method.tool["description"], name
+        assert declared == taken, name
+        assert set(method.tool["required"]) <= declared, name
+
+
+def test_only_tools_which_can_work_are_offered(make_executor):
+    # The lights tool used to be offered while it could only fail.
+    offered = {schema["name"] for schema in ActionExecutor(clock=object()).tool_schemas()}
+    assert "set_timer" in offered and "play_music" not in offered and "get_weather" not in offered
+
+
+def test_a_tool_asked_for_without_what_it_needs_says_so(make_executor):
+    result = ActionExecutor().execute(Action("play_music", {"query": "Drake"}))
+    assert result.ok is False and result.say == "The music isn't available right now."
+
+
+def test_an_explicit_pause_keeps_the_music_paused_afterwards(make_executor):
+    spotify = FakeSpotify(playing=True)
+    result = make_executor(spotify).execute(Action("control_playback", {"action": "pause"}))
+    assert result.confirm == "chime" and spotify.resume_cancelled
+
+
+@pytest.mark.parametrize("params, repeat", [
+    ({"hour": 7, "minute": 0}, None),
+    ({"hour": 7, "minute": 0, "repeat": "weekdays"}, "weekdays"),
+    ({"hour": 7, "minute": 0, "repeat": "custom", "days": ["monday", "wednesday"]}, ["monday", "wednesday"]),
+    # "custom" with no days is passed through as-is, so the clock asks which days.
+    ({"hour": 7, "minute": 0, "repeat": "custom"}, "custom"),
+])
+def test_an_alarms_repeat_is_passed_to_the_clock(params, repeat):
+    class FakeClock:
+        def set_alarm(self, hour, minute, repeat):
+            self.set = (hour, minute, repeat)
+            return {"success": True, "message": "Alarm set."}
+
+    clock = FakeClock()
+    ActionExecutor(clock=clock).execute(Action("set_alarm", params))
+    assert clock.set == (7, 0, repeat)
 
 
 # Confirming what was done
 
+def test_a_controllers_flags_are_read_into_one_way_of_confirming():
+    assert ActionResult.from_reply({"success": True, "silent": True, "message": "Next"}).confirm == "music"
+    assert ActionResult.from_reply({"success": True, "chime": True, "message": "Paused"}).confirm == "chime"
+    assert ActionResult.from_reply({"success": True, "message": "Timer set."}).confirm == "speak"
+    # A failure is always said, whatever it was going to confirm with.
+    assert ActionResult.from_reply({"success": False, "chime": True, "message": "No"}).confirm == "speak"
+
+
 def test_an_action_which_confirms_itself_has_nothing_said_about_it():
     # Even when there's something else to say: a reminder offer after a skipped
     # song used to come out as "That song was shit anyway. Also, your reminder..."
-    skipped = {"success": True, "silent": True, "message": "That song was shit anyway"}
+    skipped = ActionResult(True, "That song was shit anyway", confirm="music")
     assert confirm([skipped], fallback="Okay.") == ([], [])
 
 
-@pytest.mark.parametrize("result, chime_enabled, sounds", [
-    ({"success": True, "sound": "volume_beep.wav", "sound_category": "alarm"}, True,
+@pytest.mark.parametrize("result, sounds", [
+    (ActionResult(True, confirm="sound", sound="volume_beep.wav", sound_category="alarm"),
      [("volume_beep.wav", "alarm")]),
-    ({"success": True, "chime": True, "message": "Paused"}, True, [("success_chime.wav", "general")]),
+    (ActionResult(True, "Paused", confirm="chime"), [("success_chime.wav", "general")]),
 ])
-def test_an_action_with_a_sound_is_confirmed_by_it(result, chime_enabled, sounds):
-    assert confirm([result], chime_enabled) == (sounds, [])
+def test_an_action_with_a_sound_is_confirmed_by_it(result, sounds):
+    assert confirm([result], chime_enabled=True) == (sounds, [])
 
 
 def test_a_chimed_action_is_said_out_loud_when_the_chime_is_off():
-    assert confirm([{"success": True, "chime": True, "message": "Paused"}], chime_enabled=False) == ([], ["Paused"])
+    assert confirm([ActionResult(True, "Paused", confirm="chime")], chime_enabled=False) == ([], ["Paused"])
 
 
 def test_a_failed_action_says_why_or_falls_back_to_the_models_reply():
-    assert confirm([{"success": False, "message": "Spotify is not available right now."}],
-                   fallback="Okay.") == ([], ["Spotify is not available right now."])
-    assert confirm([{"success": False, "message": None}], fallback="Okay.") == ([], ["Okay."])
+    assert confirm([ActionResult(False, "The music isn't available right now.")],
+                   fallback="Okay.") == ([], ["The music isn't available right now."])
+    assert confirm([ActionResult(False)], fallback="Okay.") == ([], ["Okay."])
 
 
 def test_several_actions_are_each_confirmed_their_own_way():
-    paused = {"success": True, "chime": True, "message": "Paused"}
-    timer = {"success": True, "message": "Timer set for 10 minutes."}
+    paused = ActionResult(True, "Paused", confirm="chime")
+    timer = ActionResult(True, "Timer set for 10 minutes.")
     assert confirm([paused, timer]) == ([("success_chime.wav", "general")], ["Timer set for 10 minutes."])
-
 
 
 def test_weather_is_passed_to_the_forecast():
@@ -120,13 +190,15 @@ def test_weather_is_passed_to_the_forecast():
             return {"success": True, "message": f"Forecast for {day}"}
 
     executor = ActionExecutor(weather=FakeWeather())
-    assert executor.execute({"type": "weather", "day": "tomorrow"})["message"] == "Forecast for tomorrow"
+    assert executor.execute(Action("get_weather", {"day": "tomorrow"})).say == "Forecast for tomorrow"
 
 
 def test_offline_spotify_says_so_straight_away(make_executor, monkeypatch):
     from voice_assistant import actions as actions_module
     monkeypatch.setattr(actions_module.network, "online", lambda: False)
-    executor = make_executor(spotify=FakeSpotify(playing=True))
-    assert executor.execute({"type": "spotify", "command": "pause"})["message"] == actions_module.SPOTIFY_OFFLINE
-    assert executor.execute({"type": "volume", "category": "music", "direction": "down"})["message"] == \
-        actions_module.SPOTIFY_OFFLINE
+    spotify = FakeSpotify(playing=True)
+    executor = make_executor(spotify=spotify)
+    offline = "Spotify needs the internet, and I can't reach it right now."
+    assert executor.execute(Action("control_playback", {"action": "pause"})).say == offline
+    assert executor.execute(Action("set_volume", {"category": "music", "direction": "down"})).say == offline
+    assert spotify.calls == []

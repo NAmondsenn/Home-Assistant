@@ -17,6 +17,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from voice_assistant.actions import Action
 from voice_assistant.clock import spoken_clock_time
 from voice_assistant.logging_setup import TRANSCRIPT
 
@@ -122,7 +123,7 @@ class LocalIntents:
         return None
 
     @staticmethod
-    def _result(response: str, actions: Optional[List[Dict]] = None) -> Dict:
+    def _result(response: str, actions: Optional[List[Action]] = None) -> Dict:
         return {"response": response, "actions": actions or [], "success": True}
 
     def _timer(self, found) -> Optional[Dict]:
@@ -135,22 +136,19 @@ class LocalIntents:
             if number is None:
                 return None
             seconds = number * UNIT_SECONDS[found["unit"]]
-        return self._result("Okay.", [{"type": "clock", "command": "set_timer", "duration_seconds": seconds,
-                                       "at": None, "label": None, "is_reminder": False}])
+        return self._result("Okay.", [Action("set_timer", {"duration_seconds": seconds})])
 
     def _playback(self, command: str):
-        return lambda found: self._result("Okay.", [{"type": "spotify", "command": command}])
+        return lambda found: self._result("Okay.", [Action("control_playback", {"action": command})])
 
     def _resume(self, found) -> Dict:
         # A play with nothing named carries on with whatever was playing.
-        return self._result("Okay.", [{"type": "spotify", "command": "play", "query": None, "search_type": None}])
+        return self._result("Okay.", [Action("play_music")])
 
     def _volume(self, change: Dict) -> Dict:
         # Which volume is left to the executor, which turns the music down if it's
         # playing and the assistant's voice down if not.
-        action = {"type": "volume", "category": None, "level": None, "direction": None, "amount": None}
-        action.update(change)
-        return self._result("Okay.", [action])
+        return self._result("Okay.", [Action("set_volume", change)])
 
     def _volume_step(self, found) -> Dict:
         return self._volume({"direction": found["direction"] or found["direction2"]})
@@ -169,11 +167,10 @@ class LocalIntents:
 
     def _weather(self, found) -> Dict:
         day = found["day"] or found["day2"] or "today"
-        return self._result("Okay.", [{"type": "weather", "day": day}])
+        return self._result("Okay.", [Action("get_weather", {"day": day})])
 
     def _cancel_only_timer(self, found) -> Optional[Dict]:
         # Only when there's exactly one, so there's no question which was meant.
         if not self.clock or self.clock.timer_count() != 1:
             return None
-        return self._result("Okay.", [{"type": "clock", "command": "cancel_timer", "label": None,
-                                       "cancel_all": False}])
+        return self._result("Okay.", [Action("cancel_timer")])
