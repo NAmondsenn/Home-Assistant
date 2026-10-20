@@ -13,15 +13,13 @@ and never written to the logs while logging.log_transcripts is off.
 """
 
 import difflib
-import json
 import logging
 import os
 import re
-import tempfile
 import threading
 from typing import Dict, List
 
-from voice_assistant import paths
+from voice_assistant import paths, storage
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -58,35 +56,18 @@ class Memory:
 
     def _load(self) -> List[str]:
         try:
-            with open(self.path) as file:
-                facts = json.load(file).get("facts", [])
+            facts = storage.load_json(self.path, default={}).get("facts", [])
             return [fact for fact in facts if isinstance(fact, str) and fact.strip()]
-        except FileNotFoundError:
-            return []
         except (OSError, ValueError, AttributeError) as e:
             logger.error(f"Couldn't read what I remember, so starting afresh: {e}")
             return []
 
     def _save(self, facts: List[str], path: str = None):
         """
-        Writes the facts to disk, readable by this user only. Written to a temporary
-        file and renamed, which is atomic on Linux, so an interrupted write can't
-        leave a corrupt file behind.
+        Writes the facts to disk, readable by this user only, and atomically (see
+        storage.py), so an interrupted write can't leave a corrupt file behind.
         """
-        path = path or self.path
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        handle, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".memory-", suffix=".tmp")
-        try:
-            with os.fdopen(handle, "w") as file:
-                json.dump({"facts": facts}, file, indent=1)
-                file.flush()
-                os.fsync(file.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, path)
-        except Exception:
-            if os.path.exists(temporary):
-                os.remove(temporary)
-            raise
+        storage.save_json(path or self.path, {"facts": facts}, indent=1)
 
     def facts(self) -> List[str]:
         """Everything remembered, oldest first."""

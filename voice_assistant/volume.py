@@ -17,12 +17,10 @@ effect after the first volume change would be misleading.
 """
 
 import os
-import json
 import logging
-import tempfile
 from typing import Dict, Optional
 
-from voice_assistant import paths
+from voice_assistant import paths, storage
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -78,12 +76,8 @@ class VolumeControl:
 
     def _load(self):
         """Restores levels saved by a previous run, ignoring a missing or broken file."""
-        if not os.path.exists(VOLUMES_FILE):
-            return
-
         try:
-            with open(VOLUMES_FILE) as f:
-                saved = json.load(f)
+            saved = storage.load_json(VOLUMES_FILE, default={})
         except Exception as e:
             logger.error(f"Could not read saved volumes, using defaults: {e}")
             return
@@ -94,26 +88,11 @@ class VolumeControl:
 
     def _save(self):
         """
-        Writes the levels to disk.
-
-        Written to a temporary file and renamed, which is atomic on Linux, so an
-        interrupted write can't leave a corrupt file behind.
+        Writes the levels to disk, atomically (see storage.py), so an interrupted
+        write can't leave a corrupt file behind.
         """
         try:
-            os.makedirs(os.path.dirname(VOLUMES_FILE), exist_ok=True)
-
-            handle, temp_path = tempfile.mkstemp(dir=os.path.dirname(VOLUMES_FILE),
-                                                 prefix=".volumes-", suffix=".tmp")
-            try:
-                with os.fdopen(handle, "w") as f:
-                    json.dump(self._levels, f)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_path, VOLUMES_FILE)
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
+            storage.save_json(VOLUMES_FILE, self._levels)
         except Exception as e:
             # Saving is best-effort - a failure here shouldn't stop the volume
             # working for the rest of this session.

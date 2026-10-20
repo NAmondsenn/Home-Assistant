@@ -13,15 +13,13 @@ _alarms) and rings to its own, more insistent pattern.
 
 import os
 import re
-import json
 import logging
-import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
-from voice_assistant import paths
+from voice_assistant import paths, storage
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -341,32 +339,15 @@ class Clock:
         Writes the pending timers to the disk, along with any going off right now -
         so a restart while one is ringing reports it as missed rather than losing it.
 
-        Written to a temporary file and then renamed, which is atomic on Linux, so
-        losing power mid-write leaves the previous file intact rather than a
-        half-written one. The caller is expected to already hold the lock.
+        Saved atomically (see storage.py), so losing power mid-write leaves the
+        previous file intact. The caller is expected to already hold the lock.
         """
         try:
-            os.makedirs(os.path.dirname(TIMERS_FILE), exist_ok=True)
-
-            # Written into the same directory as the target, since a rename is only atomic within one filesystem.
-            handle, temp_path = tempfile.mkstemp(dir=os.path.dirname(TIMERS_FILE),
-                                                 prefix=".timers-", suffix=".tmp")
-            try:
-                with os.fdopen(handle, "w") as f:
-                    json.dump({"next_id": self._next_id,
-                               "timers": list(self._timers.values()),
-                               "ringing": [entry["timer"] for entry in self._ringing
-                                           if entry["kind"] == "clock"]}, f)
-                    # Flushed to the disk itself, not just the OS cache, so a power
-                    # cut straight after saving can't lose the timer.
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_path, TIMERS_FILE)
-            except Exception:
-                # Never leaves the temporary file behind if the write failed.
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
+            storage.save_json(TIMERS_FILE, {
+                "next_id": self._next_id,
+                "timers": list(self._timers.values()),
+                "ringing": [entry["timer"] for entry in self._ringing if entry["kind"] == "clock"],
+            })
         except Exception as e:
             # Saving is best-effort: a failure here shouldn't stop a timer working
             # for the rest of this session.
@@ -379,15 +360,13 @@ class Clock:
         Timers which came due while the assistant was off are kept aside to be
         announced late, as long as they aren't older than the grace period.
         """
-        if not os.path.exists(TIMERS_FILE):
-            return
-
         try:
-            with open(TIMERS_FILE) as f:
-                data = json.load(f)
+            data = storage.load_json(TIMERS_FILE)
         except Exception as e:
             # A corrupt file shouldn't stop the assistant starting.
             logger.error(f"Could not read saved timers, ignoring them: {e}")
+            return
+        if data is None:
             return
 
         now = time.time()
@@ -439,20 +418,8 @@ class Clock:
         caller is expected to already hold the lock.
         """
         try:
-            os.makedirs(os.path.dirname(ALARMS_FILE), exist_ok=True)
-            handle, temp_path = tempfile.mkstemp(dir=os.path.dirname(ALARMS_FILE),
-                                                 prefix=".alarms-", suffix=".tmp")
-            try:
-                with os.fdopen(handle, "w") as f:
-                    json.dump({"next_id": self._next_alarm_id,
-                               "alarms": list(self._alarms.values())}, f)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_path, ALARMS_FILE)
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
+            storage.save_json(ALARMS_FILE, {"next_id": self._next_alarm_id,
+                                            "alarms": list(self._alarms.values())})
         except Exception as e:
             logger.error(f"Could not save alarms: {e}")
 
@@ -467,14 +434,12 @@ class Clock:
         one-off alarm is then done with, and a repeating one carries on from its
         next occurrence.
         """
-        if not os.path.exists(ALARMS_FILE):
-            return
-
         try:
-            with open(ALARMS_FILE) as f:
-                data = json.load(f)
+            data = storage.load_json(ALARMS_FILE)
         except Exception as e:
             logger.error(f"Could not read saved alarms, ignoring them: {e}")
+            return
+        if data is None:
             return
 
         now = time.time()
