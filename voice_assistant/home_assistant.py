@@ -10,6 +10,10 @@ the devices exposed to it (Settings > Voice assistants > Expose), so that list i
 what Nova can reach, enforced by Home Assistant rather than by anything Claude is
 told. Nothing which unlocks or opens anything is passed on at all - see SENSITIVE.
 
+The settings page names devices itself, as there's nothing to mishear: it lists the
+lights, to switch and dim, and the scripts and scenes, to run - but nothing else,
+and still no script or scene whose name says it locks or opens anything.
+
 The calendar is whichever calendars Home Assistant has, such as a Google Calendar
 added through its Google Calendar integration.
 """
@@ -42,6 +46,12 @@ DEFAULT_AGENT = "conversation.home_assistant"
 # light" is still fine; "open the front door" isn't.
 SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\b|\balarm system\b"
                        r"|\b(?:open|close|shut)\b.*\bdoors?\b")
+
+# What the settings page may switch, and run, by entity id. A light can't let anyone
+# in, whatever it's called; a script or scene could do anything, so its name is
+# checked against SENSITIVE as well.
+LIGHT = re.compile(r"light\.[a-z0-9_]+")
+RUNNABLE = re.compile(r"(script|scene)\.[a-z0-9_]+")
 
 # Most events said for one day before the rest are only counted.
 MOST_EVENTS_SAID = 5
@@ -163,6 +173,84 @@ class HomeAssistant:
             return {"success": True, "message": said}
         return {"success": False, "message": said or "Home Assistant didn't understand that."}
 
+    # For the settings page
+
+    def overview(self) -> Dict:
+        """
+        The lights, and the scripts and scenes, for the settings page - each by its
+        entity id and name, in name order.
+
+        Returns:
+            Dict with 'success', and 'lights' and 'routines', or a 'message'.
+        """
+        try:
+            states = self._request("GET", "/api/states").json()
+        except (requests.RequestException, ValueError) as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        lights, routines = [], []
+        for state in states:
+            entity = state.get("entity_id") or ""
+            name = (state.get("attributes") or {}).get("friendly_name") or entity
+            if LIGHT.fullmatch(entity):
+                lights.append(_light(state, name))
+            elif RUNNABLE.fullmatch(entity) and not _sensitive(entity, name):
+                routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
+        return {"success": True, "lights": sorted(lights, key=lambda light: light["name"].lower()),
+                "routines": sorted(routines, key=lambda routine: routine["name"].lower())}
+
+    def set_light(self, entity_id: str, on: Optional[bool] = None, brightness: Optional[int] = None) -> Dict:
+        """
+        Switches a light on or off, or sets how bright it is, from the settings page.
+
+        Args:
+            entity_id: The light, e.g. "light.kitchen".
+            on: Whether to switch it on or off, unless a brightness is given.
+            brightness: How bright, from 1 to 100 percent - which switches it on.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        if not LIGHT.fullmatch(entity_id or ""):
+            return {"success": False, "message": "That isn't a light."}
+        data = {"entity_id": entity_id}
+        if brightness is not None:
+            data["brightness_pct"] = max(1, min(100, int(brightness)))
+        service = "turn_on" if on or brightness is not None else "turn_off"
+        try:
+            self._request("POST", f"/api/services/light/{service}", json=data)
+        except requests.RequestException as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        return {"success": True, "message": "Done."}
+
+    def run(self, entity_id: str) -> Dict:
+        """
+        Runs a script, or sets a scene, from the settings page - never one whose name
+        says it locks or opens anything, which is looked up again first, in case it's
+        been renamed since the page was drawn.
+
+        Args:
+            entity_id: e.g. "script.movie_night" or "scene.relax".
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        found = RUNNABLE.fullmatch(entity_id or "")
+        if not found:
+            return {"success": False, "message": "That isn't a script or a scene."}
+        try:
+            state = self._request("GET", f"/api/states/{entity_id}").json()
+            name = (state.get("attributes") or {}).get("friendly_name") or entity_id
+            if _sensitive(entity_id, name):
+                logger.warning(f"Refused a sensitive Home Assistant {found[1]} from the settings page: '{name}'")
+                return {"success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."}
+            self._request("POST", f"/api/services/{found[1]}/turn_on", json={"entity_id": entity_id})
+        except (requests.RequestException, ValueError) as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        return {"success": True, "message": f"Started {name}." if found[1] == "script" else f"Set {name}."}
+
     def calendar_names(self) -> List[str]:
         """The calendars to read - those config.yaml names, or every one there is."""
         if self.calendars:
@@ -271,6 +359,21 @@ class HomeAssistant:
             return {"success": True, "message": describe_next(name, found, count, first,
                                                               now or datetime.now().astimezone())}
         return {"success": True, "message": describe_activity(name, found, first, days, today or date.today())}
+
+
+def _sensitive(entity_id: str, name: str) -> bool:
+    """Whether a script or scene's id or name says it locks or opens something, as SENSITIVE has it."""
+    return bool(SENSITIVE.search(name.lower()) or SENSITIVE.search(entity_id.replace("_", " ")))
+
+
+def _light(state: Dict, name: str) -> Dict:
+    """A light as the settings page shows it: whether it's on, and whether and how far it dims."""
+    attributes = state.get("attributes") or {}
+    brightness = attributes.get("brightness")
+    return {"id": state["entity_id"], "name": name, "on": state.get("state") == "on",
+            "reachable": state.get("state") not in ("unavailable", "unknown"),
+            "dimmable": any(mode != "onoff" for mode in attributes.get("supported_color_modes") or []),
+            "brightness": round(brightness / 255 * 100) if isinstance(brightness, (int, float)) else None}
 
 
 def _called(words: List[str]) -> re.Pattern:

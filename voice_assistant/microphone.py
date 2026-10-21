@@ -17,7 +17,7 @@ was detected.
 import logging
 import threading
 import time
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import sounddevice as sd
@@ -294,7 +294,8 @@ class Microphone:
     def record_until_silence(self, detector, listen_from: Optional[int] = None,
                              keep_before: float = 0.0, timeout: float = 10.0,
                              silence_duration: float = 0.6, speech_timeout: float = 3.0,
-                             min_speech: float = 0.12, timeline=None) -> np.ndarray:
+                             min_speech: float = 0.12, timeline=None,
+                             heard: Optional[Callable[[np.ndarray], None]] = None) -> np.ndarray:
         """
         Records until the user has spoken and then gone quiet, or a timeout is reached.
 
@@ -316,6 +317,12 @@ class Microphone:
                 the listening sound, which the microphone hears too - doesn't.
             timeline: Optional Timeline to mark when listening started, when speech
                 started and ended, and when the recording stopped.
+            heard: Given the recording as it's made, so speech-to-text can work out
+                the words while the user is still saying them: everything up to the
+                moment they're found to be talking, then each 30ms after it, as
+                float32 samples which add up to exactly what's returned. Nothing is
+                given until the user starts talking, so a false wake word costs
+                nothing.
 
         Returns:
             The recording as float32 samples at 16kHz, or an empty array if the user
@@ -344,15 +351,15 @@ class Microphone:
         # Where the user last made a sound - the moment they actually stopped talking,
         # as opposed to when the silence after it was long enough to stop recording.
         speech_ended_at = None
-        # Whether there was a pause before the user started talking, and where to keep
-        # the recording from if so - see below.
+        # Whether there was a pause before the user started talking - see below.
         quiet_frames = 0
         paused = False
-        keep_from = None
 
         for i in range(max_frames):
             frame = reader.read(FRAME)
             kept.append(frame)
+            if speech_started and heard:
+                heard(frame.astype(np.float32) / 32768.0)
             probability = detector.speech_probability(frame)
 
             if not speech_started:
@@ -373,9 +380,15 @@ class Microphone:
                     # after the wake word instead - for the listening sound, usually -
                     # it only holds the end of "Nova", which Whisper hears as "Turn
                     # over," or "Get over." and which then stops a plain "set a timer"
-                    # being recognised. So everything before the pause is dropped.
+                    # being recognised. So everything before the pause is dropped -
+                    # now, before any of it is handed over, since it can't be taken
+                    # back once speech-to-text has heard it.
                     if paused:
                         keep_from = reader.position - speech_frames * FRAME - int(LEAD_IN_SECONDS * RATE)
+                        so_far = np.concatenate(kept)
+                        kept = [so_far[max(0, keep_from - (reader.position - len(so_far))):]]
+                    if heard:
+                        heard(np.concatenate(kept).astype(np.float32) / 32768.0)
                     logger.info("Speech detected, listening for the end of the query...")
                     if timeline:
                         timeline.mark("speech_started",
@@ -395,8 +408,6 @@ class Microphone:
             timeline.mark("recording_stopped")
 
         audio = np.concatenate(kept).astype(np.float32) / 32768.0
-        if keep_from is not None:
-            audio = audio[max(0, keep_from - (reader.position - len(audio))):]
         logger.info(f"Recorded {len(audio)} samples")
         return audio
 

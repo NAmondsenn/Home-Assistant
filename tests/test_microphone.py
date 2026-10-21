@@ -310,6 +310,82 @@ def test_a_pause_after_the_wake_word_drops_what_came_before_it(streams):
     assert np.all(np.abs(audio[:lead_in]) < 0.01)
 
 
+# What's heard, handed over as the recording is made - so speech-to-text can be
+# working out the words while the user is still saying them.
+
+def record_hearing(microphone, **kwargs):
+    """Records, keeping each piece of audio handed over along the way."""
+    heard = []
+    audio = record(microphone, heard=heard.append, **kwargs)
+    return audio, heard
+
+
+def test_the_recording_is_handed_over_as_its_made_not_at_the_end(streams):
+    microphone = Microphone(sample_rate=RATE)
+    listen_from = microphone.position
+    feed_frames(streams[0], 5, QUIET)
+    feed_frames(streams[0], 20, SPEECH)
+    feed_frames(streams[0], 100, QUIET)
+
+    audio, heard = record_hearing(microphone, listen_from=listen_from)
+
+    # Everything up to the moment the user was found to be talking, then each frame
+    # as it comes - adding up to exactly the recording.
+    assert len(heard) == 1 + (20 - 4) + 10
+    assert np.array_equal(np.concatenate(heard), audio)
+
+
+def test_whats_handed_over_keeps_the_moment_before_listening_started(streams):
+    microphone = Microphone(sample_rate=RATE)
+    feed_frames(streams[0], 10, SPEECH)
+    listen_from = microphone.position
+    feed_frames(streams[0], 20, SPEECH)
+    feed_frames(streams[0], 100, QUIET)
+
+    audio, heard = record_hearing(microphone, listen_from=listen_from, keep_before=10 * FRAME / RATE)
+
+    assert len(audio) == (10 + 20 + 10) * FRAME
+    assert np.array_equal(np.concatenate(heard), audio)
+
+
+def test_the_end_of_the_wake_word_is_never_handed_over_after_a_pause(streams):
+    # It came out of speech-to-text as "Turn over," - and once handed over, it
+    # couldn't be taken back.
+    microphone = Microphone(sample_rate=RATE)
+    feed_frames(streams[0], 10, SPEECH)
+    listen_from = microphone.position
+    feed_frames(streams[0], 15, QUIET)
+    feed_frames(streams[0], 20, SPEECH)
+    feed_frames(streams[0], 100, QUIET)
+
+    audio, heard = record_hearing(microphone, listen_from=listen_from, keep_before=10 * FRAME / RATE)
+
+    lead_in = int(microphone_module.LEAD_IN_SECONDS * RATE)
+    assert len(audio) == lead_in + (20 + 10) * FRAME
+    assert np.array_equal(np.concatenate(heard), audio)
+
+
+def test_nothing_is_handed_over_when_the_user_never_starts_talking(streams):
+    # A false wake word costs speech-to-text nothing.
+    microphone = Microphone(sample_rate=RATE)
+    feed_frames(streams[0], 10, SPEECH)
+    listen_from = microphone.position
+    feed_frames(streams[0], 100, QUIET)
+
+    audio, heard = record_hearing(microphone, listen_from=listen_from, keep_before=10 * FRAME / RATE)
+    assert len(audio) == 0 and heard == []
+
+
+def test_everything_is_handed_over_when_the_user_talks_until_the_timeout(streams):
+    microphone = Microphone(sample_rate=RATE)
+    listen_from = microphone.position
+    feed_frames(streams[0], 120, SPEECH)
+
+    audio, heard = record_hearing(microphone, listen_from=listen_from, timeout=50 * FRAME / RATE)
+    assert len(audio) == 50 * FRAME
+    assert np.array_equal(np.concatenate(heard), audio)
+
+
 def test_the_times_it_overflowed_are_counted(streams):
     microphone = Microphone(sample_rate=RATE)
     block = np.zeros((480, 1), dtype=np.float32)

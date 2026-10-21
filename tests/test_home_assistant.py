@@ -134,6 +134,78 @@ def test_without_an_address_and_a_token_its_off(make_config):
     assert home.url == "http://ha:8123" and home._session.headers["Authorization"] == "Bearer token"
 
 
+# The settings page
+
+STATES = [
+    {"entity_id": "light.kitchen", "state": "on",
+     "attributes": {"friendly_name": "Kitchen", "brightness": 128, "supported_color_modes": ["color_temp"]}},
+    {"entity_id": "light.porch", "state": "off", "attributes": {"friendly_name": "Porch", "supported_color_modes": ["onoff"]}},
+    {"entity_id": "light.garage", "state": "unavailable", "attributes": {"friendly_name": "Garage light"}},
+    {"entity_id": "script.movie_night", "state": "off", "attributes": {"friendly_name": "Movie night"}},
+    {"entity_id": "scene.relax", "state": "2026-10-20T21:00:00", "attributes": {"friendly_name": "Relax"}},
+    {"entity_id": "script.open_garage", "state": "off", "attributes": {"friendly_name": "Garage"}},
+    {"entity_id": "script.leaving", "state": "off", "attributes": {"friendly_name": "Unlock the front door"}},
+    {"entity_id": "lock.front_door", "state": "locked", "attributes": {"friendly_name": "Front door"}},
+    {"entity_id": "switch.adguard_protection", "state": "on", "attributes": {"friendly_name": "AdGuard protection"}},
+]
+
+
+def _state(entity):
+    return next(state for state in STATES if state["entity_id"] == entity)
+
+
+def test_the_page_is_shown_the_lights_and_only_whats_safe_to_run(make_home):
+    overview = make_home({"/api/states": STATES}).overview()
+
+    assert [light["name"] for light in overview["lights"]] == ["Garage light", "Kitchen", "Porch"]
+    assert overview["lights"][1] == {"id": "light.kitchen", "name": "Kitchen", "on": True, "reachable": True,
+                                     "dimmable": True, "brightness": 50}
+    assert not overview["lights"][2]["dimmable"] and not overview["lights"][0]["reachable"]
+    # A light can't let anyone in, whatever it's called; a script or scene might, and
+    # nothing else is offered at all.
+    assert overview["routines"] == [{"id": "script.movie_night", "name": "Movie night", "kind": "script"},
+                                    {"id": "scene.relax", "name": "Relax", "kind": "scene"}]
+
+
+def test_the_page_is_told_when_home_assistant_cant_be_reached(make_home):
+    assert make_home({"/api/states": requests.ConnectionError("down")}).overview() == {
+        "success": False, "message": "I can't reach Home Assistant right now."}
+
+
+def test_a_light_is_switched_and_dimmed_by_its_own_id(make_home):
+    home = make_home({"/api/services/light/turn_on": [], "/api/services/light/turn_off": []})
+    assert home.set_light("light.kitchen", on=False)["success"]
+    assert home.set_light("light.kitchen", brightness=30)["success"]
+    assert [(path, sent["json"]) for _, path, sent in home._session.requests] == [
+        ("/api/services/light/turn_off", {"entity_id": "light.kitchen"}),
+        ("/api/services/light/turn_on", {"entity_id": "light.kitchen", "brightness_pct": 30})]
+
+
+@pytest.mark.parametrize("entity", ["lock.front_door", "switch.adguard_protection", "light.kitchen/../lock", ""])
+def test_only_a_light_is_switched(make_home, entity):
+    home = make_home({})
+    assert not home.set_light(entity, on=True)["success"]
+    assert home._session.requests == []
+
+
+def test_a_script_is_run_and_a_scene_set(make_home):
+    home = make_home({"/api/states/script.movie_night": _state("script.movie_night"), "/api/services/script/turn_on": [],
+                      "/api/states/scene.relax": _state("scene.relax"), "/api/services/scene/turn_on": []})
+    assert home.run("script.movie_night") == {"success": True, "message": "Started Movie night."}
+    assert home.run("scene.relax") == {"success": True, "message": "Set Relax."}
+    assert [(path, sent.get("json")) for _, path, sent in home._session.requests if "services" in path] == [
+        ("/api/services/script/turn_on", {"entity_id": "script.movie_night"}),
+        ("/api/services/scene/turn_on", {"entity_id": "scene.relax"})]
+
+
+@pytest.mark.parametrize("entity", ["script.open_garage", "script.leaving"])
+def test_a_script_which_could_let_anyone_in_isnt_run_from_the_page_either(make_home, entity):
+    # Looked up by name again first - one could have been renamed since the page was drawn.
+    home = make_home({f"/api/states/{entity}": _state(entity), "/api/services/script/turn_on": []})
+    assert not home.run(entity)["success"]
+    assert [path for _, path, _ in home._session.requests] == [f"/api/states/{entity}"]
+
+
 # The calendar
 
 def test_the_calendar_is_read_for_the_days_asked_about(make_home):

@@ -1,0 +1,38 @@
+[Unit]
+# systemd service for Nova's backend, in its own container on PVE2 - see backend.py
+# and docs/decisions/0004.
+#
+# This is a template. Installed as root, with the user it runs as and where the
+# project is filled in:
+#
+#   sed -e "s|__PROJECT_DIRECTORY__|/home/nova/Home-Assistant|g" -e "s|__USER__|nova|g" \
+#       nova-backend.service > /etc/systemd/system/nova-backend.service
+#   systemctl daemon-reload
+#   systemctl enable --now nova-backend
+Description=Nova's backend
+# Tailscale passes the tailnet's connections on to it.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__PROJECT_DIRECTORY__
+ExecStart=__PROJECT_DIRECTORY__/venv/bin/python __PROJECT_DIRECTORY__/backend.py
+
+# What it writes - its log - is readable by its own user only, and it can never gain
+# more privileges than it starts with. Everything but its own data folder is
+# read-only to it, since all it does is listen and hear.
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/__USER__/.local/share/nova
+
+# Loading Nemotron takes a few seconds; a crash is restarted after a short pause.
+TimeoutStartSec=120
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

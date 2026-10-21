@@ -180,3 +180,38 @@ def test_the_next_time_is_asked_for_without_claude(text, activity, count, monkey
 
     monkeypatch.setattr(intents_module, "date", Tuesday)
     assert _actions(text) == [Action("get_activity", {"activity": activity, "start": "2026-10-20", "count": count})]
+
+
+# Notifications
+
+class FakeNtfy:
+    """Stands in for ntfy, saying whether an alert was just said out loud."""
+
+    def __init__(self, just_said=False):
+        self.just = just_said
+
+    def just_said(self):
+        return self.just
+
+
+@pytest.mark.parametrize("said, tool", [
+    ("Any notifications?", "read_notifications"),
+    ("Have I got any new notifications?", "read_notifications"),
+    ("What are my notifications?", "read_notifications"),
+    ("Send that to my phone.", "send_to_phone"),
+    ("Can you send it to my phone please?", "send_to_phone"),
+    ("Text me that.", "send_to_phone"),
+])
+def test_notification_commands_are_handled_on_the_pi(said, tool):
+    assert [action.tool for action in LocalIntents(ntfy=FakeNtfy()).match(said)["actions"]] == [tool]
+
+
+def test_tell_me_more_is_only_about_an_alert_just_said():
+    assert LocalIntents(ntfy=FakeNtfy(just_said=True)).match("Tell me more.")["actions"][0].tool == "tell_me_more"
+    # Otherwise it's a follow-up to whatever was being talked about, which is Claude's.
+    assert LocalIntents(ntfy=FakeNtfy(just_said=False)).match("Tell me more.") is None
+
+
+def test_without_ntfy_notification_commands_go_to_claude():
+    for said in ("Any notifications?", "Send that to my phone.", "Tell me more."):
+        assert LocalIntents().match(said) is None

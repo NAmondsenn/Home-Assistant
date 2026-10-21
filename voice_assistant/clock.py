@@ -250,18 +250,25 @@ class Clock:
     """
 
     def __init__(self, on_timer_finished: Optional[Callable[..., None]] = None,
-                 check_interval: float = 0.5, config=None, start: bool = True):
+                 check_interval: float = 0.5, config=None, start: bool = True,
+                 on_unanswered: Optional[Callable[[Dict, str], None]] = None):
         """
         Args:
             on_timer_finished: Called with (message, sound, boost, still_wanted=...),
                                plus start, length and level for an alarm's bursts,
                                when a timer goes off. This is how the assistant speaks
                                it - the Clock itself has no audio.
+            on_unanswered: Called with a timer, reminder or alarm which stopped
+                           ringing without anyone answering it, and which it was -
+                           "clock" or "alarm" - so a reminder can be sent to the
+                           user's phone. Called on the clock's own thread, so it
+                           mustn't wait on anything.
             check_interval: How often the background thread checks for due timers.
             start: Whether to start the background thread. Only the tests turn
                    this off, so they can step the clock along with _tick() instead.
         """
         self.on_timer_finished = on_timer_finished
+        self.on_unanswered = on_unanswered
         self.check_interval = check_interval
 
         self._timers: Dict[int, Dict] = {}
@@ -800,6 +807,12 @@ class Clock:
             return
 
         self._record_unacknowledged(entry["timer"])
+        if self.on_unanswered:
+            try:
+                self.on_unanswered(entry["timer"], entry["kind"])
+            except Exception as e:
+                # Passing it on must never stop the clock's thread.
+                logger.error(f"Couldn't pass on an unanswered {entry['kind']}: {e}")
 
     def _repeat_settings(self, item: Dict, kind: str = "clock"):
         """
@@ -1732,6 +1745,46 @@ class Clock:
         if len(described) == 1:
             return {"success": True, "message": f"One alarm: {described[0]}."}
         return {"success": True, "message": f"{len(described)} alarms: " + ", ".join(described) + "."}
+
+    def overview(self) -> Dict[str, List[Dict]]:
+        """
+        The timers, reminders and alarms set, for the settings page.
+
+        Returns:
+            Dict of "timers" and "alarms", each a list - soonest first - of their
+            "id", "name" as Nova says it, and when they're next "due_at".
+        """
+        with self._lock:
+            timers = sorted(self._timers.values(), key=lambda timer: timer["due_at"])
+            alarms = sorted(self._alarms.values(), key=lambda alarm: alarm["due_at"])
+            return {"timers": [{"id": t["id"], "name": self._describe(t), "due_at": t["due_at"]} for t in timers],
+                    "alarms": [{"id": a["id"], "name": self._describe_alarm(a), "due_at": a["due_at"]}
+                               for a in alarms]}
+
+    def remove(self, kind: str, item_id: int) -> Dict:
+        """
+        Removes one timer, reminder or alarm by its id - picked from a list on the
+        settings page, where there's no question which one was meant.
+
+        Args:
+            kind: "alarm", or "timer" for a timer or reminder.
+            item_id: Its id, from overview().
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        with self._lock:
+            store = self._alarms if kind == "alarm" else self._timers
+            item = store.pop(item_id, None)
+            if item is None:
+                return {"success": False, "message": "That's already gone."}
+            if kind == "alarm":
+                self._save_alarms()
+            else:
+                self._save()
+        name = self._describe_alarm(item) if kind == "alarm" else self._describe(item)
+        logger.info(f"Removed on the settings page: {name}")
+        return {"success": True, "message": f"Removed the {name}."}
 
     def next_alarm(self) -> Dict:
         """

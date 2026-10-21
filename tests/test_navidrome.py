@@ -378,3 +378,56 @@ def test_sharing_only_songs_isnt_a_playlist_match(make_player):
                           "getSongsByGenre": {"songsByGenre": {"song": []}}})
     assert player.play("rainy day songs", search_type="playlist")["success"] is False
     assert player.play_playlist("car songs")["message"] == "Playing Car Songs"
+
+
+# For the settings page
+
+RECORD = [{"id": "1", "title": "Song 1", "artist": "Band", "album": "Record", "duration": 200, "coverArt": "al-1"},
+          {"id": "2", "title": "Song 2", "artist": "Band", "album": "Record", "duration": 180, "coverArt": "al-1"}]
+
+
+class FakeImage:
+    headers = {"Content-Type": "image/jpeg"}
+    content = b"a cover"
+
+    def raise_for_status(self):
+        pass
+
+
+def test_the_page_is_told_whats_playing_and_how_far_through(make_player):
+    player = make_player()
+    assert player.now_playing() is None
+    player._start(RECORD)
+    _playing(player).position = 48000 * 30
+    assert player.now_playing() == {"track": "Song 1", "artist": "Band", "album": "Record", "playing": True,
+                                    "position": 30.0, "duration": 200, "cover": "al-1"}
+
+    # Paused while the assistant talks, it's still playing, as it carries on after -
+    # but not once it's been asked to pause.
+    player.pause_for_speech()
+    assert player.now_playing()["playing"]
+    player.pause()
+    player.cancel_resume()
+    player.resume_after_speech()
+    assert not player.now_playing()["playing"]
+
+
+def test_a_cover_is_fetched_once_for_a_whole_album(make_player):
+    player = make_player()
+    player._start(RECORD)
+    _playing(player)
+    asked = []
+    player._session.get = lambda url, params=None, timeout=None: asked.append(params) or FakeImage()
+
+    assert player.cover() == (b"a cover", "image/jpeg")
+    player.skip()
+    assert player.cover() == (b"a cover", "image/jpeg")
+    assert len(asked) == 1 and asked[0]["id"] == "al-1" and "p" not in asked[0]
+
+
+def test_the_page_is_offered_the_playlists_by_name(make_player):
+    player = make_player({"getPlaylists": {"playlists": {"playlist": [{"id": "p2", "name": "workout"},
+                                                                      {"id": "p1", "name": "Chill"}]}}})
+    assert player.playlists() == ["Chill", "workout"]
+    player._session.answers["getPlaylists"] = requests.ConnectionError("down")
+    assert player.playlists() == []

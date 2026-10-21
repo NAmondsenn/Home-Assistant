@@ -29,7 +29,7 @@ def make_clock(tmp_path, monkeypatch, make_config):
     monkeypatch.setattr(clock_module, "TIMERS_FILE", str(tmp_path / "timers.json"))
     monkeypatch.setattr(clock_module, "ALARMS_FILE", str(tmp_path / "alarms.json"))
 
-    def factory(on_announce=None, **timers_config):
+    def factory(on_announce=None, on_unanswered=None, **timers_config):
         # One announcement per round and no pauses, so ringing never sleeps in a test.
         settings = {"announcements": 1, "repeat_gap": 0, **timers_config}
         announced = []
@@ -39,7 +39,8 @@ def make_clock(tmp_path, monkeypatch, make_config):
             if on_announce:
                 on_announce(made, announced[-1])
 
-        made = Clock(on_timer_finished=announce, config=make_config(timers=settings), start=False)
+        made = Clock(on_timer_finished=announce, config=make_config(timers=settings), start=False,
+                     on_unanswered=on_unanswered)
         made.announced = announced
         return made
 
@@ -648,3 +649,55 @@ def test_unanswered_alarm_shows_up_as_missed(make_clock):
     clock._tick(time.time())
     assert not clock.is_ringing()
     assert clock.missed()["message"].startswith("You missed 7:00 AM alarm, ")
+
+
+def test_a_reminder_nobody_answers_is_passed_on_once_it_stops_ringing(make_clock):
+    # So it can be sent to the user's phone - see main.py's _unanswered.
+    unanswered = []
+    clock = make_clock(on_unanswered=lambda timer, kind: unanswered.append((timer["label"], kind)))
+    clock.set_timer(60, label="take the bins out")
+    now = time.time()
+    clock._tick(now + 61)
+    assert clock.is_ringing() and unanswered == []
+
+    # As if it had rung for the five minutes a reminder's allowed.
+    clock._ringing[0]["give_up_at"] = 0
+    clock._tick(now + 1000)
+
+    assert not clock.is_ringing()
+    assert unanswered == [("take the bins out", "clock")]
+
+
+def test_a_dismissed_reminder_isnt_passed_on(make_clock):
+    unanswered = []
+    clock = make_clock(on_unanswered=lambda timer, kind: unanswered.append(timer))
+    clock.set_timer(60, label="take the bins out")
+    clock._tick(time.time() + 61)
+    clock.dismiss()
+    assert unanswered == []
+
+
+# The settings page
+
+def test_whats_set_is_listed_soonest_first_by_the_names_nova_uses(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="take the bins out")
+    clock.set_timer(60)
+    clock.set_alarm(7, 0, repeat="weekdays")
+    overview = clock.overview()
+
+    assert [timer["name"] for timer in overview["timers"]] == ["1 minute timer", "take the bins out reminder"]
+    assert overview["alarms"][0]["name"] == "7:00 AM alarm, every weekday"
+
+
+def test_one_can_be_removed_by_its_id(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="take the bins out")
+    clock.set_alarm(7, 0)
+    overview = clock.overview()
+
+    assert clock.remove("timer", overview["timers"][0]["id"])["message"] == "Removed the take the bins out reminder."
+    assert clock.remove("alarm", overview["alarms"][0]["id"])["success"]
+    assert clock.overview() == {"timers": [], "alarms": []}
+    # Twice is once too many.
+    assert clock.remove("alarm", overview["alarms"][0]["id"])["success"] is False

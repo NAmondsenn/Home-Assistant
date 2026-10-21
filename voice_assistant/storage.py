@@ -30,6 +30,21 @@ def save_json(path: str, data: Any, indent: int = None):
         OSError or TypeError if it couldn't be written - the previous file, if any,
         is left as it was.
     """
+    save_text(path, json.dumps(data, indent=indent))
+
+
+def save_text(path: str, text: str):
+    """
+    Writes text to a file atomically, readable by this user only - the settings
+    page's changes to the settings and keys files, as well as every save_json.
+
+    Args:
+        path: The file to write.
+        text: What goes in it.
+
+    Raises:
+        OSError if it couldn't be written - the previous file, if any, is left as it was.
+    """
     folder = os.path.dirname(path)
     os.makedirs(folder, mode=0o700, exist_ok=True)
     # In the same folder as the target, since a rename is only atomic within one
@@ -38,7 +53,7 @@ def save_json(path: str, data: Any, indent: int = None):
     handle, temporary = tempfile.mkstemp(dir=folder, prefix=f".{name}-", suffix=".tmp")
     try:
         with os.fdopen(handle, "w") as file:
-            json.dump(data, file, indent=indent)
+            file.write(text)
             # Flushed to the disk itself, not just the OS cache.
             file.flush()
             os.fsync(file.fileno())

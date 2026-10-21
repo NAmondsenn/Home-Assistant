@@ -240,3 +240,19 @@ def test_stop_said_after_the_reply_has_finished_is_still_a_command():
     actions = FakeActions()
     _conversation(intents=intents, actions=actions).handle("Stop.")
     assert actions.run == ["control_playback"]
+
+
+# Sending to the phone
+
+def test_whats_said_is_kept_for_sending_to_the_phone():
+    actions = FakeActions()
+    _conversation(llm=FakeLLM(_answer("Paris.")), actions=actions).handle("what's the capital of France")
+    assert actions.last_answer == ("what's the capital of France", "Paris.")
+
+
+def test_sending_it_doesnt_change_what_would_be_sent_next_time():
+    actions = FakeActions({"send_to_phone": ActionResult(True, "Sent.")})
+    actions.last_answer = ("what's the capital of France", "Paris.")
+    intents = FakeIntents({"send that to my phone": _answer("Okay.", Action("send_to_phone"))})
+    _conversation(intents=intents, actions=actions).handle("send that to my phone")
+    assert actions.last_answer == ("what's the capital of France", "Paris.")

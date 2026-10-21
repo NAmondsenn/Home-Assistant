@@ -14,7 +14,8 @@ import random
 import difflib
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
+import requests
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
@@ -38,6 +39,10 @@ CACHE_SECONDS = 600
 # Said when there's no Spotify login to use, rather than a bare "not authenticated" -
 # signing in again is done by hand, by running this module on the Pi (see the bottom).
 NOT_SIGNED_IN = "Spotify needs signing in again on the Pi."
+
+# About how big a cover the settings page is given, in pixels a side - Spotify has
+# each in a few sizes.
+COVER_SIZE = 300
 
 
 class _RefreshingAuth:
@@ -116,6 +121,10 @@ class SpotifyController:
         self._device = None
         self._active_here = None
         self._playlists = None
+        # The cover of what was playing when the settings page last looked, and the
+        # last one fetched with its address - see cover.
+        self._cover_url = None
+        self._cover: Optional[Tuple[str, Tuple[bytes, str]]] = None
         self._authenticate()
 
         logger.info(f"Spotify controller initialised (target device: '{self.device_name}')")
@@ -949,6 +958,25 @@ class SpotifyController:
             logger.error(f"Shuffle failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't change shuffle."}
 
+    def _all_playlists(self) -> List[Dict]:
+        """
+        The user's playlists - paged through, since the API returns 50 at a time -
+        unless they were read in the last few minutes.
+        """
+        if self._fresh(self._playlists):
+            return self._playlists[0]
+        playlists = []
+        offset = 0
+        while True:
+            page = self.sp.current_user_playlists(limit=50, offset=offset)
+            items = [p for p in page.get("items", []) if p]
+            playlists.extend(items)
+            if len(items) < 50:
+                break
+            offset += 50
+        self._playlists = (playlists, time.monotonic())
+        return playlists
+
     def _find_playlist(self, name: str) -> Optional[Dict]:
         """
         Finds one of the user's own playlists by name.
@@ -964,22 +992,7 @@ class SpotifyController:
         Returns:
             The playlist dict, or None if nothing matched closely enough.
         """
-        # Pages through the user's playlists, since the API returns 50 at a time -
-        # unless they were read in the last few minutes.
-        if self._fresh(self._playlists):
-            playlists = self._playlists[0]
-        else:
-            playlists = []
-            offset = 0
-            while True:
-                page = self.sp.current_user_playlists(limit=50, offset=offset)
-                items = [p for p in page.get("items", []) if p]
-                playlists.extend(items)
-                if len(items) < 50:
-                    break
-                offset += 50
-            self._playlists = (playlists, time.monotonic())
-
+        playlists = self._all_playlists()
         wanted = name.strip().lower()
 
         for playlist in playlists:
@@ -1094,6 +1107,73 @@ class SpotifyController:
         except Exception as e:
             logger.error(f"Current track failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't check what's playing."}
+
+    # For the settings page
+
+    def now_playing(self) -> Optional[Dict]:
+        """
+        What's playing, for the settings page - None with nothing loaded, without a
+        login, or if Spotify couldn't be asked.
+
+        Returns:
+            Dict of its "track", "artist" and "album"; whether it's "playing"; its
+            "position" and "duration" in seconds; and its "cover" id, if any.
+        """
+        if not self.sp:
+            return None
+        try:
+            current = self.sp.current_playback()
+        except Exception as e:
+            logger.error(f"Checking what's playing failed: {e}")
+            return None
+        item = (current or {}).get("item")
+        if not item:
+            return None
+        album = item.get("album") or {}
+        images = [image for image in album.get("images") or [] if str(image.get("url", "")).startswith("https://")]
+        closest = min(images, key=lambda image: abs((image.get("width") or 0) - COVER_SIZE), default=None)
+        self._cover_url = closest["url"] if closest else None
+        duration = item.get("duration_ms")
+        return {"track": item.get("name") or "Something",
+                "artist": ", ".join(artist["name"] for artist in item.get("artists") or [] if artist.get("name")),
+                "album": album.get("name") or "", "playing": bool(current.get("is_playing")),
+                "position": round((current.get("progress_ms") or 0) / 1000, 1),
+                "duration": round(duration / 1000) if duration else None,
+                "cover": self._cover_url.rsplit("/", 1)[-1] if self._cover_url else None}
+
+    def cover(self) -> Optional[Tuple[bytes, str]]:
+        """
+        The cover of what was playing when now_playing last looked, as an image and
+        its type - or None, without one, or if it couldn't be fetched. Only ever from
+        an address Spotify gave, never one the page did.
+        """
+        url = self._cover_url
+        if not url:
+            return None
+        if self._cover is not None and self._cover[0] == url:
+            return self._cover[1]
+        try:
+            response = requests.get(url, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            logger.error(f"Fetching a cover failed: {type(e).__name__}")
+            return None
+        kind = response.headers.get("Content-Type", "")
+        if not kind.startswith("image/"):
+            return None
+        self._cover = (url, (response.content, kind))
+        return self._cover[1]
+
+    def playlists(self) -> List[str]:
+        """The names of the user's playlists, for the settings page to offer - none without a login."""
+        if not self.sp:
+            return []
+        try:
+            return sorted({playlist["name"] for playlist in self._all_playlists() if playlist.get("name")},
+                          key=str.lower)
+        except Exception as e:
+            logger.error(f"Listing playlists failed: {e}")
+            return []
 
     def pause_for_speech(self):
         """

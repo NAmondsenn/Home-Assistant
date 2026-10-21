@@ -118,9 +118,14 @@ class FakeMoonshine:
         return "/models/small", arch
 
     class Transcriber:
-        def __init__(self, model_path, model_arch):
+        def __init__(self, model_path, model_arch, options=None):
             self.keyterms = None
             self.given = []
+            self.options = options
+            self.streams = []
+            # What the streams it makes do - a test can make them fail, or keep them busy.
+            self.fail = None
+            self.busy = None
 
         def set_keyterms(self, keyterms):
             self.keyterms = keyterms
@@ -128,6 +133,39 @@ class FakeMoonshine:
         def transcribe_without_streaming(self, audio, sample_rate):
             self.given.append((len(audio), sample_rate))
             return SimpleNamespace(lines=[SimpleNamespace(text=FakeMoonshine.heard)])
+
+        def create_stream(self, update_interval=None):
+            self.streams.append(FakeStream(fail=self.fail, busy=self.busy))
+            return self.streams[-1]
+
+
+class FakeStream:
+    """Stands in for one of Moonshine's streams, keeping the audio it's given and hearing FakeMoonshine.heard in it."""
+
+    def __init__(self, fail=None, busy=None):
+        self.audio = []
+        self.starts = 0
+        self.stops = 0
+        self.closed = False
+        self.fail = fail
+        self.busy = busy
+
+    def start(self):
+        self.starts += 1
+
+    def add_audio(self, audio, sample_rate):
+        if self.busy:
+            self.busy.wait(5)
+        if self.fail:
+            raise self.fail
+        self.audio.extend(audio)
+
+    def stop(self):
+        self.stops += 1
+        return SimpleNamespace(lines=[SimpleNamespace(text=FakeMoonshine.heard)] if self.audio else [])
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
@@ -155,6 +193,99 @@ def test_moonshine_imagining_thank_you_is_thrown_away(moonshine, make_config):
     moonshine.heard = "Thank you."
     assert stt.transcribe(np.zeros(16000, dtype=np.float32))["text"] == ""
     moonshine.heard = "Set a timer for ten minutes."
+
+
+# Listening as it's heard: Moonshine works out the words while the user is still
+# saying them, so there's little left to do once they stop. Transcribing the whole
+# recording only once it was over took 0.83s on the Pi.
+
+def _pieces(*values):
+    """Pieces of a recording, each 30ms long and all one value, as the microphone hands them over."""
+    return [np.full(480, value, dtype=np.float32) for value in values]
+
+
+def test_moonshine_hears_the_recording_as_its_made(moonshine, make_config):
+    stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
+    transcription = stt.listen()
+    pieces = _pieces(0.1, 0.2, 0.3)
+    for piece in pieces:
+        transcription.add(piece)
+    result = transcription.finish(np.concatenate(pieces))
+
+    assert result["text"] == "Set a timer for ten minutes."
+    stream = stt.transcriber.streams[0]
+    assert stream.audio == pytest.approx(np.concatenate(pieces).tolist())
+    # The whole recording isn't transcribed all over again - only the warm-up was.
+    assert len(stt.transcriber.given) == 1
+    # And Moonshine doesn't hand its copy of each piece's audio back every time it
+    # looks again, which Nova has no use for.
+    assert stt.transcriber.options == {"return_audio_data": "false"}
+
+
+def test_the_recording_never_waits_for_moonshine(moonshine, make_config):
+    import threading
+
+    stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
+    stt.transcriber.busy = threading.Event()
+    transcription = stt.listen()
+    transcription.add(_pieces(0.1)[0])
+
+    # Moonshine is still busy with it, and yet the recording has carried on.
+    assert all(stream.audio == [] for stream in stt.transcriber.streams)
+    stt.transcriber.busy.set()
+    assert transcription.finish(_pieces(0.1)[0])["text"] == "Set a timer for ten minutes."
+    assert stt.transcriber.streams[0].audio == pytest.approx([0.1] * 480)
+
+
+def test_if_moonshine_fails_while_listening_the_whole_recording_is_transcribed(moonshine, make_config):
+    stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
+    stt.transcriber.fail = RuntimeError("Failed to encode: 6")
+    transcription = stt.listen()
+    pieces = _pieces(0.1, 0.2)
+    for piece in pieces:
+        transcription.add(piece)
+
+    assert transcription.finish(np.concatenate(pieces))["text"] == "Set a timer for ten minutes."
+    assert stt.transcriber.given[-1] == (960, 16000)
+
+
+def test_each_recording_is_heard_through_a_stream_of_its_own(moonshine, make_config):
+    # Starting a Moonshine stream again doesn't clear what its speech detection last
+    # heard. With one stream for every recording, a recording which ended mid-word
+    # left the next one starting with a made-up "Yeah." - "Yeah. Turn off the
+    # kitchen lights" - measured on the Mac with the real Moonshine.
+    stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
+    stt.listen().cancel()
+    transcription = stt.listen()
+    transcription.add(_pieces(0.5)[0])
+    transcription.finish(_pieces(0.5)[0])
+
+    first, second = stt.transcriber.streams
+    assert first.audio == [] and second.audio == pytest.approx([0.5] * 480)
+    # Each started, finished with, and let go of.
+    assert all(stream.starts == stream.stops == 1 and stream.closed for stream in (first, second))
+
+
+def test_moonshine_imagining_thank_you_while_listening_is_thrown_away(moonshine, make_config):
+    stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
+    moonshine.heard = "Thank you."
+    transcription = stt.listen()
+    transcription.add(_pieces(0.1)[0])
+    try:
+        assert transcription.finish(_pieces(0.1)[0])["text"] == ""
+    finally:
+        moonshine.heard = "Set a timer for ten minutes."
+
+
+def test_whisper_hears_the_recording_once_its_over(monkeypatch):
+    # Whisper can only start on a recording once it's finished, so it's given the
+    # whole thing, as before.
+    monkeypatch.setattr(speech_to_text, "WhisperModel", ScriptedWhisper)
+    monkeypatch.setattr(ScriptedWhisper, "segments", [_segment(" Set a timer for ten minutes.")])
+    stt = speech_to_text.SpeechToText(model_size="base.en")
+    transcription = stt.listen()
+    transcription.add(_pieces(0.1)[0])
+    assert transcription.finish(_pieces(0.1)[0])["text"] == "Set a timer for ten minutes."
 
 
 def test_without_moonshine_whisper_is_used(monkeypatch, make_config):

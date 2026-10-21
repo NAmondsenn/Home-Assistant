@@ -18,6 +18,9 @@ from voice_assistant.weather import Weather
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.memory import Memory
 from voice_assistant.network import online
+from voice_assistant.ntfy import Ntfy
+from voice_assistant.settings_page import SettingsPage
+from voice_assistant import storage
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
 from voice_assistant.music import MusicHold, make_player
@@ -32,6 +35,15 @@ from voice_assistant.logging_setup import log_transcripts, setup_logging, transc
 # Logger for the SmartAssistant class. Where its lines go is set up when the
 # assistant is run (see the bottom of this file), not on import.
 logger = logging.getLogger(__name__)
+
+# Left while the assistant runs, and taken away when it stops properly - so finding
+# it when starting means the last run didn't: it crashed, the watchdog restarted it,
+# or the power went. See _note_start.
+RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
+
+# The least time between telling the user's phone the assistant had to restart, so a
+# crash which keeps happening doesn't flood it.
+RESTART_NOTICE_GAP = 3600
 
 class SmartAssistant:
     def __init__(self):
@@ -76,6 +88,14 @@ class SmartAssistant:
         # otherwise talk over each other.
         self._announcing = threading.Lock()
 
+        # What the assistant is doing - "idle", "listening", "thinking" or "speaking" -
+        # for the settings page's star. Only ever read for show.
+        self.activity = "idle"
+        # The last volume beep the settings page played, stopped as the next starts,
+        # so dragging a slider doesn't pile them up - see _boop.
+        self._last_boop = None
+        self._boop_lock = threading.Lock()
+
         logger.info("Loading modules...")
         
         # Takes what the assistant plays back out of what the microphone hears, so it
@@ -111,21 +131,36 @@ class SmartAssistant:
         # Keeps the music paused while there's something to say - see MusicHold.
         self.music = MusicHold(self.music_player, online=online)
 
+        # The user's own ntfy server, both ways: alerts said out loud as they arrive,
+        # and things sent to their phone. None if it isn't set up - see ntfy.py.
+        self.ntfy = Ntfy.from_config(self.config, os.getenv("NTFY_TOKEN"), on_alert=self._alert)
+
         # Sets up timers, which run on their own thread and call back here to speak when one goes off.
-        self.clock = Clock(on_timer_finished=self._announce, config=self.config)
+        self.clock = Clock(on_timer_finished=self._announce, on_unanswered=self._unanswered, config=self.config)
 
         # The everyday commands handled without Claude - see intents.py.
-        self.intents = LocalIntents(clock=self.clock)
+        self.intents = LocalIntents(clock=self.clock, ntfy=self.ntfy)
 
         # What the assistant knows about the user, learnt as they talk - see memory.py.
         self.memory = Memory()
 
+        # Home Assistant, for the lights and the calendar - None until it's set up.
+        self.home = HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN"))
+
         # Everything the assistant can do for the user - see actions.py. The lights and
         # the calendar are only there once Home Assistant is set up.
         self.actions = ActionExecutor(music=self.music_player, clock=self.clock, volume=self.volume,
-                                      weather=Weather(config=self.config),
-                                      home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")),
-                                      memory=self.memory)
+                                      weather=Weather(config=self.config), home=self.home,
+                                      memory=self.memory, ntfy=self.ntfy)
+
+        # The page for looking after Nova from a phone or a laptop, or None if it's
+        # switched off - see settings_page.py.
+        self.settings_page = SettingsPage.from_config(self.config, volume=self.volume, clock=self.clock,
+                                                      memory=self.memory, ntfy=self.ntfy, stt=self.stt,
+                                                      music=self.music_player, actions=self.actions,
+                                                      home=self.home, boop=self._boop,
+                                                      activity=lambda: self.activity,
+                                                      wake_word=lambda: self.wake_word)
 
         # Claude, offered whichever of those tools can actually work here, and told
         # what's known about the user.
@@ -211,6 +246,7 @@ class SmartAssistant:
             True if the wake word was heard over it, and it was stopped part way.
         """
         self._show(f"{self.name}: {message}")
+        self.activity = "speaking"
         started = None
         if timeline:
             def started():
@@ -343,11 +379,78 @@ class SmartAssistant:
             if not self._wait_for_turn(still_wanted):
                 return
 
+            # Shown as speaking only between conversations - in one, the conversation
+            # itself says what the assistant's doing.
+            if self._idle.is_set():
+                self.activity = "speaking"
             self._play_announcement(self.speaker.play_stream(
                 self.tts.stream(message), self.tts.sample_rate, volume=volume, kind="announcement"),
                 still_wanted)
+            if self._idle.is_set():
+                self.activity = "idle"
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
+
+    def _alert(self, alert):
+        """
+        Says an alert from ntfy out loud as it arrives - see ntfy.py. Like a timer, it
+        waits for any conversation to finish, and pauses the music.
+
+        Args:
+            alert: The ntfy Alert.
+        """
+        # "Send that to my phone" straight afterwards sends the whole of it.
+        self.actions.last_answer = (alert.title or f"From {alert.topic}", alert.details)
+        self._announce(f"{alert.topic.capitalize()}: {alert.headline}")
+
+    def _unanswered(self, timer, kind):
+        """
+        Sends a reminder nobody answered to the user's phone, once it's stopped ringing.
+        Only a reminder: a plain timer or an alarm going unanswered has nothing more
+        to say there.
+
+        Args:
+            timer: What stopped ringing.
+            kind: "clock" for a timer or reminder, "alarm" for an alarm.
+        """
+        if self.ntfy and self.ntfy.reminders and kind == "clock" and timer.get("label"):
+            label = timer["label"]
+            self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")
+
+    def _boop(self, level):
+        """
+        Plays the volume beep at a level, for the settings page's sliders - stopping
+        the last one if it's still going, so dragging a slider doesn't pile them up.
+
+        Args:
+            level: How loud, from 0 to 1.
+        """
+        with self._boop_lock:
+            if self._last_boop is not None:
+                self._last_boop.stop()
+            self._last_boop = self.speaker.play_file(str(self.sounds_folder / "volume_beep.wav"), volume=level)
+
+    def _note_start(self):
+        """
+        Leaves RUNNING_MARK, which _clean_up takes away - telling the user's phone if
+        the last run left one too, since then it never stopped properly.
+        """
+        try:
+            last = storage.load_json(RUNNING_MARK)
+        except (OSError, ValueError):
+            # Half written as the power went, most likely - which is a restart too.
+            last = {}
+        told_at = (last or {}).get("told_at", 0)
+        if (last is not None and self.ntfy and self.ntfy.restarts
+                and time.time() - told_at >= RESTART_NOTICE_GAP):
+            logger.warning("The last run didn't stop properly, so telling the user's phone")
+            self.ntfy.send_soon(self.ntfy.restarts, f"{self.name} stopped unexpectedly, and has started again.",
+                                title=f"{self.name} restarted")
+            told_at = time.time()
+        try:
+            storage.save_json(RUNNING_MARK, {"started_at": time.time(), "told_at": told_at})
+        except OSError as e:
+            logger.warning(f"Couldn't note that the assistant is running: {e}")
 
     def _shutdown(self, *args):
         """
@@ -374,11 +477,20 @@ class SmartAssistant:
         kept waiting for the next reply.
         """
         self.clock.stop()
+        if self.ntfy:
+            self.ntfy.stop()
+        if self.settings_page:
+            self.settings_page.stop()
         if self.music_player:
             self.music_player.close()
         self.speaker.close()
         self.microphone.close()
         self.tts.close()
+        # Stopped properly, so the next start isn't taken for a restart after a problem.
+        try:
+            os.remove(RUNNING_MARK)
+        except OSError:
+            pass
         logger.info("Shut down cleanly")
 
     def run(self):
@@ -391,6 +503,12 @@ class SmartAssistant:
         print(f"\n{self.name} is ready. Say {self.wake_word} to activate.\n")
         # Tells systemd it has started, and from here on that it's still working.
         watchdog.start()
+        self._note_start()
+        # Alerts are only said from now on, once there's everything to say them with.
+        if self.ntfy:
+            self.ntfy.start()
+        if self.settings_page:
+            self.settings_page.start()
 
         # However the loop ends - a stop signal (see _shutdown) or something
         # unexpected - everything is closed down here, once, on the main thread.
@@ -422,6 +540,7 @@ class SmartAssistant:
         """
         # Marks the assistant as busy, so a timer going off waits its turn rather than interrupting.
         self._idle.clear()
+        self.activity = "listening"
         # Pauses the music for the whole interaction (speaking and playback) to avoid audio conflicts.
         # The pause goes through Spotify's servers, so it runs alongside the
         # recording rather than holding it up - see MusicHold. Held across every
@@ -433,6 +552,7 @@ class SmartAssistant:
                 talked_over = self._answer(talked_over=True)
         finally:
             self.speaker.allow("announcement")
+            self.activity = "idle"
             self._idle.set()
             self.music.release()
 
@@ -506,31 +626,45 @@ class SmartAssistant:
         # while the sound plays goes missing either way.
         listen_from = self.microphone.position if follow_up else self.wake.heard_at
 
+        self.activity = "listening"
+
         # A short sound to say it's listening, since on a headless Pi there's otherwise no
         # way to tell the wake word was heard, or when to start talking. The microphone
         # hears it too, but it's far too short to count as the user starting to speak.
         if self.listening_sound_enabled:
             self._play_sound("listening.wav")
 
+        # Speech-to-text is given the recording as it's made, so it can work out the
+        # words while the user is still saying them - see speech_to_text.py.
+        listening = self.stt.listen()
+
         # Records audio until silence / a timeout occurs. A fresh request also keeps a
         # moment from before the wake word was detected, since "Hey Nova what time is
         # it" said in one breath has often started on "what" by then.
-        audio_data = self.microphone.record_until_silence(
-            self.speech_detector, listen_from=listen_from,
-            keep_before=0.0 if follow_up else self.pre_roll,
-            silence_duration=self.thresholds.get("silence_duration", 0.6),
-            speech_timeout=speech_timeout,
-            timeout=self.thresholds.get("recording_timeout", 10.0),
-            timeline=timeline)
+        try:
+            audio_data = self.microphone.record_until_silence(
+                self.speech_detector, listen_from=listen_from,
+                keep_before=0.0 if follow_up else self.pre_roll,
+                silence_duration=self.thresholds.get("silence_duration", 0.6),
+                speech_timeout=speech_timeout,
+                timeout=self.thresholds.get("recording_timeout", 10.0),
+                timeline=timeline, heard=listening.add)
+        except BaseException:
+            # Otherwise it would wait on for the rest of a recording which isn't coming.
+            listening.cancel()
+            raise
 
         if audio_data is None or len(audio_data) == 0:
+            listening.cancel()
             timeline.note(outcome="no_speech")
             self._not_heard()
             return False
 
-        # Transcribes the recorded audio, carrying on listening if no text comes back.
-        # The audio is already at the 16kHz speech-to-text expects, since the microphone keeps it at that.
-        transcription = self.stt.transcribe(audio_data)
+        # The words, once speech-to-text has caught up with the end of the recording,
+        # carrying on listening if no text comes back. The audio is already at the
+        # 16kHz speech-to-text expects, since the microphone keeps it at that.
+        self.activity = "thinking"
+        transcription = listening.finish(audio_data)
         timeline.mark("stt_done")
         timeline.note(audio_seconds=round(len(audio_data) / RATE, 2))
 

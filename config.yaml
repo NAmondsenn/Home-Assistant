@@ -90,6 +90,45 @@ whisper:
     Turn off the kitchen lights. What have I got on Thursday? What time is it?
     What's the weather?
 
+backend:
+  # Nova's backend on PVE2, which does the speech-to-text for this Pi - see
+  # docs/decisions/0004 - as "name:port" on the tailnet, e.g. "nova:10400". Left
+  # empty, this Pi does it all itself, as above. Both need the same password, as
+  # NOVA_BACKEND_TOKEN in ~/.config/nova/.env.
+  address: ""
+  # Only used on the backend itself: the port it listens on, on its own machine -
+  # Tailscale passes the tailnet's connections on to it - and the streaming model it
+  # hears with, inside the project.
+  port: 10400
+  model: "models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
+
+ntfy:
+  # Your own ntfy server, e.g. "https://ntfy.example.com" - for alerts said out loud
+  # as they arrive, and things sent to your phone. See voice_assistant/ntfy.py. Its
+  # access token goes in ~/.config/nova/.env as NTFY_TOKEN. Left empty, it isn't used.
+  url: ""
+  # Topics whose messages are said out loud as they arrive, e.g. ["homelab"].
+  alerts: []
+  # Where "send that to my phone" goes, where a reminder nobody answered goes, and
+  # where Nova says it had to restart itself after a problem. Empty for none.
+  phone: ""
+  reminders: ""
+  restarts: ""
+  # Between these times only the most urgent alerts - ntfy's priority 5 - are said
+  # out loud. The rest wait for "any notifications?".
+  quiet_from: "23:00"
+  quiet_until: "07:00"
+
+settings_page:
+  # The page for looking after Nova from a phone or a laptop - see
+  # voice_assistant/settings_page.py. It listens on this machine alone, for Tailscale
+  # to pass the tailnet's requests on to it over HTTPS:
+  #   tailscale serve --bg --https=443 http://127.0.0.1:8765
+  # 0 switches it off.
+  port: 8765
+  # The Tailscale logins let in, e.g. ["you@example.com"]. Nobody is until it's set.
+  allow: []
+
 conversation:
   history_length: 5
   # Seconds an exchange is remembered for, once a new conversation starts.

@@ -31,7 +31,9 @@ class Recorder:
 
 
 @pytest.fixture
-def assistant():
+def assistant(tmp_path, monkeypatch):
+    # Never the real data folder: running the assistant leaves a mark there.
+    monkeypatch.setattr(main, "RUNNING_MARK", str(tmp_path / "running"))
     made = main.SmartAssistant.__new__(main.SmartAssistant)
     made.closed = []
     made.clock = Recorder("clock", made.closed)
@@ -39,6 +41,8 @@ def assistant():
     made.microphone = Recorder("microphone", made.closed)
     made.tts = Recorder("tts", made.closed)
     made.music_player = Recorder("music", made.closed)
+    made.ntfy = None
+    made.settings_page = None
     made.name, made.wake_word = "Nova", "Hey Nova"
     made.running = False
     made._stopping = False
@@ -96,23 +100,92 @@ class FakeTimeline:
         self.notes = notes
 
 
-def test_giving_up_without_hearing_anything_is_audible(assistant):
-    # Giving up used to be silent, which was easy to take for the assistant still
-    # listening, or still thinking.
-    import numpy as np
+class FakeTranscription:
+    """Stands in for speech-to-text listening to one recording, noting what it was given."""
+
+    def __init__(self, text=""):
+        self.text = text
+        self.added = []
+        self.finished_with = None
+        self.cancelled = False
+
+    def add(self, audio):
+        self.added.append(audio)
+
+    def finish(self, audio):
+        self.finished_with = audio
+        return {"text": self.text}
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def _listening(assistant, record_until_silence, transcription):
+    """Sets the assistant up to record with record_until_silence, and hear it with transcription."""
     from pathlib import Path
     from types import SimpleNamespace
 
     assistant.speaker = FakeSpeaker()
-    assistant.microphone = SimpleNamespace(position=0, record_until_silence=lambda *a, **k: np.array([]))
+    assistant.microphone = SimpleNamespace(position=0, record_until_silence=record_until_silence)
+    assistant.stt = SimpleNamespace(listen=lambda: transcription)
     assistant.wake = SimpleNamespace(heard_at=0)
     assistant.thresholds, assistant.pre_roll, assistant.speech_detector = {}, 0.3, None
     assistant.listening_sound_enabled = True
     assistant.sounds_folder = Path("sounds")
     assistant.volume = SimpleNamespace(get=lambda category: 0.5)
 
+
+def test_giving_up_without_hearing_anything_is_audible(assistant):
+    # Giving up used to be silent, which was easy to take for the assistant still
+    # listening, or still thinking.
+    import numpy as np
+
+    transcription = FakeTranscription()
+    _listening(assistant, lambda *a, **k: np.array([]), transcription)
+
     assistant._handle_interaction(timeline=FakeTimeline())
     assert assistant.speaker.played == ["listening.wav", "not_heard.wav"]
+    # Speech-to-text, which was ready to listen, is told nothing's coming.
+    assert transcription.cancelled
+
+
+def test_speech_to_text_is_given_the_recording_as_its_made(assistant):
+    # It used to be given the whole recording once it was over, and on the Pi
+    # Moonshine then took 0.83s to work out the words.
+    import numpy as np
+    from types import SimpleNamespace
+    from voice_assistant.conversation import Reply
+
+    first, second = np.full(480, 0.1, np.float32), np.full(480, 0.2, np.float32)
+
+    def record_until_silence(detector, heard=None, **kwargs):
+        heard(first)
+        heard(second)
+        return np.concatenate([first, second])
+
+    transcription = FakeTranscription("What time is it?")
+    _listening(assistant, record_until_silence, transcription)
+    handled = []
+    assistant.conversation = SimpleNamespace(handle=lambda text, **kwargs: handled.append(text) or Reply())
+
+    assert assistant._handle_interaction(timeline=FakeTimeline()) is False
+    assert len(transcription.added) == 2
+    assert transcription.added[0] is first and transcription.added[1] is second
+    # The whole recording too, for it to fall back on.
+    assert np.array_equal(transcription.finished_with, np.concatenate([first, second]))
+    assert handled == ["What time is it?"]
+
+
+def test_speech_to_text_is_let_go_if_the_recording_fails(assistant):
+    def broken_microphone(*args, **kwargs):
+        raise RuntimeError("microphone gone")
+
+    transcription = FakeTranscription()
+    _listening(assistant, broken_microphone, transcription)
+
+    with pytest.raises(RuntimeError):
+        assistant._handle_interaction(timeline=FakeTimeline())
+    assert transcription.cancelled
 
 
 def test_saying_sorry_can_never_fail_in_turn(assistant):
@@ -195,3 +268,113 @@ def test_talking_over_a_reply_starts_the_next_request_with_the_music_still_held(
     # The music stays paused between the two, rather than coming back for a moment.
     assert held == ["hold", "release"]
     assert assistant._idle.is_set()
+
+
+# Telling the user's phone
+
+class FakeNtfy:
+    """Stands in for ntfy, keeping what was sent."""
+
+    def __init__(self):
+        self.reminders, self.restarts = "reminders", "homelab"
+        self.sent = []
+
+    def send_soon(self, topic, message, title="", priority=0):
+        self.sent.append((topic, title, message))
+
+    def stop(self):
+        pass
+
+
+def test_a_start_after_a_run_which_didnt_stop_properly_is_told_to_the_phone(assistant):
+    assistant.ntfy = FakeNtfy()
+    # The first start has nothing to tell.
+    assistant._note_start()
+    assert assistant.ntfy.sent == []
+
+    # Started again without having stopped properly - a crash, or the watchdog.
+    assistant._note_start()
+    assert assistant.ntfy.sent == [("homelab", "Nova restarted", "Nova stopped unexpectedly, and has started again.")]
+
+    # And not again straight away, if it keeps happening.
+    assistant._note_start()
+    assert len(assistant.ntfy.sent) == 1
+
+
+def test_a_start_after_stopping_properly_isnt_told(assistant):
+    assistant.ntfy = FakeNtfy()
+    assistant._note_start()
+    assistant._clean_up()
+    assistant._note_start()
+    assert assistant.ntfy.sent == []
+
+
+def test_only_a_reminder_nobody_answered_goes_to_the_phone(assistant):
+    assistant.ntfy = FakeNtfy()
+    assistant._unanswered({"label": "take the bins out"}, "clock")
+    # A plain timer, and an alarm, have nothing more to say there.
+    assistant._unanswered({"label": None}, "clock")
+    assistant._unanswered({"label": "wake up"}, "alarm")
+    assert assistant.ntfy.sent == [("reminders", "Reminder nobody answered", "Take the bins out")]
+
+
+def test_an_alert_is_said_like_a_timer_and_can_then_be_sent_on(assistant):
+    from types import SimpleNamespace
+    from voice_assistant.ntfy import Alert
+
+    announced = []
+    assistant._announce = lambda message, **kwargs: announced.append(message)
+    assistant.actions = SimpleNamespace(last_answer=None)
+    assistant._alert(Alert("homelab", "Backup failed", "Error 5."))
+
+    assert announced == ["Homelab: Backup failed"]
+    assert assistant.actions.last_answer == ("Backup failed", "Backup failed. Error 5.")
+
+
+# For the settings page
+
+def test_a_volume_beep_from_the_settings_page_stops_the_last_one(assistant):
+    # Dragging a slider plays one at every step, which mustn't pile up.
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    class Beep:
+        def __init__(self, level):
+            self.level, self.stopped = level, False
+
+        def stop(self):
+            self.stopped = True
+
+    played = []
+    assistant.sounds_folder = Path("sounds")
+    assistant._last_boop, assistant._boop_lock = None, threading.Lock()
+    assistant.speaker = SimpleNamespace(play_file=lambda path, volume: played.append(Beep(volume)) or played[-1])
+
+    assistant._boop(0.3)
+    assistant._boop(0.6)
+
+    assert [beep.level for beep in played] == [0.3, 0.6]
+    assert played[0].stopped and not played[1].stopped
+
+
+def test_what_nova_is_doing_is_kept_for_the_settings_page(assistant):
+    import numpy as np
+    from types import SimpleNamespace
+    from voice_assistant.conversation import Reply
+
+    seen = {}
+
+    class Watching(FakeTranscription):
+        def finish(self, audio):
+            seen["working out the words"] = assistant.activity
+            return super().finish(audio)
+
+    def record_until_silence(detector, heard=None, **kwargs):
+        seen["recording"] = assistant.activity
+        return np.zeros(480, np.float32)
+
+    _listening(assistant, record_until_silence, Watching("What time is it?"))
+    assistant.conversation = SimpleNamespace(handle=lambda text, **kwargs: Reply())
+    assistant._handle_interaction(timeline=FakeTimeline())
+
+    assert seen == {"recording": "listening", "working out the words": "thinking"}

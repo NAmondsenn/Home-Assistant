@@ -1,0 +1,53 @@
+# Things to say for scripts/record_samples.py. Copy this somewhere outside the project
+# and add your own - the songs, artists, playlists and lights you actually ask for -
+# so the comparison is made on what you'd really say. Say each one the way you
+# usually would, without "Hey Nova".
+#
+# A line in square brackets says how the ones after it are said. A "*" is one you
+# make up on the spot.
+
+[where you usually talk to Nova]
+Set a timer for ten minutes
+Set a one minute timer
+Cancel the timer
+What time is it
+What's the date today
+What's the weather like tomorrow
+Pause
+Skip this song
+Turn it up
+Set the volume to forty
+Turn off the bedroom light
+Turn the lamp on
+What have I got on tomorrow
+When's my next shift
+What time do I finish uni today
+Play my liked songs
+Play some Fleetwood Mac
+Remind me to take the bins out at seven
+Wake me up at half six on weekdays
+How long does it take to boil an egg
+What's twelve times fourteen
+Remember that my sister's birthday is on the third of May
+What do you know about me
+
+[from across the room]
+Set a timer for twenty five minutes
+Stop
+Turn off the lights
+What's the weather like today
+Skip
+
+[with the TV or radio on]
+What time is it
+Pause the music
+Set a timer for five minutes
+Turn the lamp off
+What have I got on Thursday
+
+[anything you'd ask Nova]
+*
+*
+*
+*
+*

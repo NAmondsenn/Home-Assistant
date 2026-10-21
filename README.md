@@ -17,6 +17,8 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
 - **Talking over it** - "Hey Nova" is heard over the music Nova plays and over its own replies, which stop the moment it's said. "Hey Nova, stop" stops whatever it's saying or playing.
 - **Remembering you** - mention something about yourself ("I've started a new job at Aldi", "my sister's called Amy") and Nova keeps it, says "I'll remember that", and uses it from then on. "What do you know about me?" reads it back; "forget that..." or "forget everything you know about me" takes it away. It's kept in `~/.local/share/nova/memory.json`, and goes to Claude with each request so it can use it.
+- **Notifications** - with your own [ntfy](https://ntfy.sh/) server, alerts posted to the topics you choose - your homelab's, say - are read out as they arrive, and "tell me more" reads all of one. At night only the most urgent are; "any notifications?" has the rest. "Send that to my phone" sends Nova's last answer there, as do a reminder nobody answered and Nova restarting after a problem.
+- **A settings page** - how Nova's doing, what's playing, your lights and Home Assistant's scripts and scenes, its volumes, timers and alarms, what it remembers, its keys and its main settings, from your phone or laptop - over your tailnet, and only for you.
 
 The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume, the time, the lights and Navidrome carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
 
@@ -29,7 +31,7 @@ microphone ─► wake word ─► record until you stop talking ─► Moonshin
 
 - `main.py` runs the loop above, and decides how each request is answered and confirmed.
 - `voice_assistant/` holds everything else, one module per job: `microphone.py` and `speaker.py` own the audio devices, `wake_word.py`, `vad.py`, `speech_to_text.py` and `text_to_speech.py` handle speech, `intents.py` the commands handled locally, `llm.py` Claude, `actions.py` everything Nova can do - each tool Claude is offered, declared beside the code which carries it out - and `clock.py`, `music.py` with `navidrome.py` and `spotify_controller.py`, `home_assistant.py`, `volume.py` and `weather.py` the features themselves.
-- The microphone is opened once and never closed, keeping the last few seconds of audio, so nothing said straight after "Hey Nova" is lost. The speaker is opened once too, and everything that plays goes through it, so a timer or alarm can be stopped the moment you speak.
+- The microphone is opened once and never closed, keeping the last few seconds of audio, so nothing said straight after "Hey Nova" is lost. Moonshine hears the recording as it's made, so it's mostly worked out the words by the time you stop talking. The speaker is opened once too, and everything that plays goes through it, so a timer or alarm can be stopped the moment you speak.
 
 The reasons behind the bigger choices are in [docs/decisions/](docs/decisions/).
 
@@ -120,6 +122,54 @@ Nova asks Home Assistant for things in plain words, through its own Assist, so i
 
 Then restart Nova. The log says `Home Assistant at ...` once it's on.
 
+### ntfy, for alerts and your phone
+
+1. On your ntfy server, make Nova a user with only the access it needs, and a token for it - here with a `homelab` topic for alerts, and `clipboard` and `reminders` for your phone:
+
+   ```bash
+   ntfy user add nova
+   ntfy access nova homelab rw
+   ntfy access nova clipboard wo
+   ntfy access nova reminders wo
+   ntfy token add nova
+   ```
+2. On the Pi, add the token to `~/.config/nova/.env` yourself:
+
+   ```
+   NTFY_TOKEN=the-token
+   ```
+3. Say which topic is which in `~/.config/nova/config.yaml`:
+
+   ```yaml
+   ntfy:
+     url: "https://ntfy.example.com"
+     alerts: ["homelab"]
+     phone: "clipboard"
+     reminders: "reminders"
+     restarts: "homelab"
+   ```
+
+Then restart Nova. What it sends is tagged `nova`, so it never reads its own messages back out.
+
+### The settings page
+
+Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. The star by Nova's name shows whether it's waiting, listening, thinking or speaking, and as a volume's dragged, Nova beeps on its speaker at each new level, so you can hear how loud it is. With music set up, it shows what's playing, and plays something else; with Home Assistant, it switches and dims your lights, and runs your scripts and scenes - never one whose name says it locks or opens anything. It listens on the Pi alone, and only your own Tailscale login gets in:
+
+1. In Tailscale's admin page, turn on HTTPS certificates - under DNS.
+2. On the Pi, have Tailscale pass the tailnet's requests on to the page, with a certificate for the Pi's name:
+
+   ```bash
+   sudo tailscale serve --bg --https=443 http://127.0.0.1:8765
+   ```
+3. Say who's let in, in `~/.config/nova/config.yaml`:
+
+   ```yaml
+   settings_page:
+     allow: ["you@example.com"]
+   ```
+
+Then restart Nova, and open `https://` and the Pi's name on your tailnet - `tailscale status` shows it - on any of your devices. A change has to come from the page itself, so another website can't make one in your name; settings are saved to `~/.config/nova/config.yaml`, the one before kept as `config.yaml.bak`.
+
 ### The wake word model
 
 "Hey Nova" is a custom [openWakeWord](https://github.com/dscripka/openWakeWord) model, `hey_nova.onnx`, and it isn't in this repository - keep a copy somewhere safe, and copy it onto the Pi before running `setup.sh`. Without it, Nova still starts, but listens for openWakeWord's stock "Hey Jarvis" until `models/hey_nova.onnx` is there.
@@ -158,6 +208,7 @@ The settings most likely to need changing:
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
+| `ntfy.quiet_from`, `ntfy.quiet_until` | The night, when only the most urgent alerts are read out. |
 
 ## Running it
 
@@ -198,6 +249,6 @@ python -m pytest
 ruff check .
 ```
 
-Both also run on GitHub for every push (`.github/workflows/checks.yml`), along with a weekly check of `requirements.lock` for packages with known security problems. The scripts in `scripts/manual/` need real hardware or accounts, so they're run by hand, and `scripts/soak_monitor.py` keeps an eye on a long-running assistant - see [docs/release-checklist.md](docs/release-checklist.md) for when to use them.
+Both also run on GitHub for every push (`.github/workflows/checks.yml`), along with a weekly check of `requirements.lock` for packages with known security problems. The scripts in `scripts/manual/` need real hardware or accounts, so they're run by hand, and `scripts/soak_monitor.py` keeps an eye on a long-running assistant - see [docs/release-checklist.md](docs/release-checklist.md) for when to use them. Before changing the speech-to-text model, record yourself with `scripts/record_samples.py`, and measure the models on those recordings with `scripts/compare_speech_to_text.py`.
 
 When picking work back up after a break, start with [docs/roadmap.md](docs/roadmap.md).
