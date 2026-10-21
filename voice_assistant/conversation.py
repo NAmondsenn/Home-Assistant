@@ -239,8 +239,9 @@ class Conversation:
         # question an action asked ("Which one?") would be missing when the answer
         # comes back on the next turn. Only what's spoken is recorded: an action
         # confirmed by a chime or by the music changing keeps the model's own "Okay.".
+        # What each action said goes with it, as the tools' own answers.
         if result.get("success"):
-            self.llm.record_reply(text, response_text)
+            self.llm.record_reply(text, response_text, [action_result.say for action_result in action_results])
 
         # If the assistant asked something, it listens straight away for the answer -
         # but only so many times in a row.
