@@ -264,6 +264,8 @@ body {
 
 .wide { grid-column: 1 / -1; }
 
+.double { grid-column: span 2; }
+
 .heading {
   display: flex;
   align-items: center;
@@ -809,6 +811,219 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   font-size: 14px;
 }
 
+.note {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--dusk);
+}
+
+/* What's playing */
+
+.player { padding: 16px; }
+
+.track {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* The cover, with a note of music in its place until there is one. */
+.cover {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: var(--dusk);
+}
+
+.cover .icon {
+  width: 26px;
+  height: 26px;
+}
+
+.cover img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.about { min-width: 0; }
+
+.about p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.about .title { font-size: 17px; }
+
+.about .artist {
+  color: var(--dusk);
+  font-size: 14px;
+}
+
+.about .album {
+  color: var(--dusk);
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.progress { margin-top: 16px; }
+
+.progress .bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.progress .bar span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--starlight);
+}
+
+.progress .times {
+  display: flex;
+  justify-content: space-between;
+  margin: 6px 0 0;
+  color: var(--dusk);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  margin-top: 12px;
+}
+
+.round {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--moon);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.round:hover { background: rgba(255, 255, 255, 0.08); }
+
+.round .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.round.main {
+  width: 54px;
+  height: 54px;
+  background: var(--starlight);
+  box-shadow: 0 0 24px rgba(243, 214, 160, 0.3);
+  color: #21180a;
+}
+
+.round.main:hover { background: #f7e1b9; }
+
+.round.main .icon {
+  width: 24px;
+  height: 24px;
+}
+
+.round:disabled {
+  background: transparent;
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ask {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chips .button {
+  padding: 7px 14px;
+  font-weight: 400;
+  font-size: 13px;
+}
+
+/* The lights, each lit with Nova's light while it's on */
+
+.lights li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 10px 14px 10px 16px;
+}
+
+.lights li.on > .icon {
+  color: var(--starlight);
+  filter: drop-shadow(0 0 6px rgba(243, 214, 160, 0.6));
+}
+
+.lights li.unreachable { opacity: 0.5; }
+
+.lights .state {
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.lights .level {
+  display: flex;
+  grid-column: 2 / -1;
+  align-items: center;
+  gap: 10px;
+}
+
+.lights .level input { flex: 1; }
+
+.lights .level output {
+  width: 3.2em;
+  color: var(--dusk);
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.routine .kind {
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.routine .button {
+  padding: 7px 16px;
+  font-size: 13px;
+}
+
+.subheading.first { margin-top: 0; }
+
 /* What happened to a change, for a few seconds at the bottom of the screen. Hidden,
    not just moved down, while there's nothing to say - empty, it was still tall enough
    to peek up from the bottom of a phone's screen. */
@@ -887,6 +1102,8 @@ input[type="range"]:focus-visible::-moz-range-thumb {
     grid-template-columns: minmax(0, 1fr);
     gap: 36px;
   }
+
+  .double { grid-column: auto; }
 
   .group {
     grid-template-columns: minmax(0, 1fr);

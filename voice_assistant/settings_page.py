@@ -1,9 +1,10 @@
 """
 Settings Page Module.
 
-A page for looking after Nova from a phone or a laptop: how it's doing, its volumes,
-its timers and alarms, what it remembers, its keys and its main settings. Nova serves
-it itself, so a Pi on its own has it too.
+A page for looking after Nova from a phone or a laptop: how it's doing, what's playing,
+the lights and Home Assistant's scripts and scenes, its volumes, its timers and alarms,
+what it remembers, its keys and its main settings. Nova serves it itself, so a Pi on
+its own has it too.
 
 Only the user gets in. It listens on this machine alone, and Tailscale passes the
 tailnet's requests on to it over HTTPS, with its own certificate -
@@ -29,7 +30,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -44,6 +45,7 @@ WEB_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 FILES = {"/": ("settings.html", "text/html; charset=utf-8"),
          "/settings.js": ("settings.js", "text/javascript; charset=utf-8"),
          "/settings.css": ("settings.css", "text/css; charset=utf-8"),
+         "/icon.svg": ("icon.svg", "image/svg+xml"),
          # Outfit, by The Outfit Project Authors, under the SIL Open Font License -
          # see web/Outfit-OFL.txt.
          "/Outfit.woff2": ("Outfit.woff2", "font/woff2")}
@@ -95,6 +97,13 @@ REPLIES_COUNTED = 200
 
 # How often the server checks whether it's been asked to stop, in seconds.
 STOP_CHECK = 0.5
+
+# How long the user's playlists are kept before being asked for again, in seconds -
+# they seldom change, and the page asks what's playing every few seconds.
+PLAYLISTS_KEPT = 300
+
+# What the page's music buttons do, as the actions asking out loud would.
+PLAYBACK = ("pause", "skip", "previous")
 
 
 def _kind(default: Any) -> str:
@@ -161,7 +170,8 @@ class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
     def __init__(self, allow: List[str], port: int = 8765, running=None, volume=None, clock=None, memory=None,
-                 ntfy=None, stt=None, music=None, boop: Optional[Callable[[float], None]] = None,
+                 ntfy=None, stt=None, music=None, actions=None, home=None,
+                 boop: Optional[Callable[[float], None]] = None,
                  activity: Optional[Callable[[], str]] = None, wake_word: Optional[Callable[[], str]] = None,
                  restart: Callable[[], str] = restart_service, started: Optional[float] = None):
         """
@@ -174,7 +184,11 @@ class SettingsPage:
             memory: The Memory, for what Nova remembers.
             ntfy: The Ntfy, or None, for whether it's listening.
             stt: The speech-to-text, for whether the backend is answering.
-            music: The music player, or None - it keeps the music's volume itself.
+            music: The music player, or None - it keeps the music's volume itself,
+                and says what's playing.
+            actions: The ActionExecutor, which the music buttons go through, as
+                asking out loud does.
+            home: The HomeAssistant, or None, for the lights and the scripts and scenes.
             boop: Plays the volume beep at a level from 0 to 1 on Nova's speaker, so a
                 change made on the page is heard at its new level.
             activity: What Nova is doing - "idle", "listening", "thinking" or "speaking".
@@ -187,7 +201,8 @@ class SettingsPage:
         self.port = port
         self.running = running
         self.volume, self.clock, self.memory, self.ntfy, self.stt = volume, clock, memory, ntfy, stt
-        self.music = music
+        self.music, self.actions, self.home = music, actions, home
+        self._playlists: Optional[Tuple[List[str], float]] = None
         self._boop = boop
         self._activity = activity
         self._listening_for = wake_word
@@ -277,6 +292,35 @@ class SettingsPage:
     def _wake_word(self) -> str:
         """What wakes Nova, for the page to say it's waiting for it."""
         return self._listening_for() if self._listening_for else self.defaults["assistant"]["wake_word"]
+
+    def music_state(self) -> Dict:
+        """
+        What's playing, and the playlists to pick from - asked for every few seconds
+        while the page is open, apart from everything else, so a slow music player
+        doesn't hold the rest up.
+        """
+        if self.music is None:
+            return {"available": False}
+        return {"available": True, "player": getattr(self.music, "name", "Music"), "now": self.music.now_playing(),
+                "playlists": self._user_playlists()}
+
+    def _user_playlists(self) -> List[str]:
+        if self._playlists is None or time.monotonic() - self._playlists[1] > PLAYLISTS_KEPT:
+            self._playlists = (self.music.playlists(), time.monotonic())
+        return self._playlists[0]
+
+    def cover(self) -> Optional[Tuple[bytes, str]]:
+        """The cover of what's playing, as an image and its type, or None."""
+        return self.music.cover() if self.music is not None else None
+
+    def home_state(self) -> Dict:
+        """
+        The lights, and the scripts and scenes, from Home Assistant - asked for apart
+        from everything else, like the music.
+        """
+        if self.home is None:
+            return {"available": False}
+        return {"available": True, **self.home.overview()}
 
     def _music_level(self) -> int:
         """
@@ -437,6 +481,49 @@ class SettingsPage:
         logger.info(f"Settings page: {who} restarted Nova")
         return {"success": True, "message": self._restart()}
 
+    def play(self, action: str, who: str, query: str = "", playlist: str = "") -> Dict:
+        """
+        Plays, pauses, skips or goes back, or plays something or a playlist - through
+        the same actions as asking out loud, so that a pause from the page isn't undone
+        once the assistant finishes talking. What's asked for isn't logged, as what's
+        said isn't unless the user wants it.
+
+        Args:
+            action: "play" - with a query, or none to carry on - "playlist", or one of
+                PLAYBACK.
+            who: Whose login asked.
+            query: What to play, as it would be said.
+            playlist: The playlist's name.
+        """
+        if self.music is None or self.actions is None:
+            return {"success": False, "message": "Nova has no music player set up."}
+        if action == "play":
+            result = self.actions.play_music(str(query).strip() or None)
+        elif action == "playlist":
+            result = self.actions.play_playlist(str(playlist))
+        elif action in PLAYBACK:
+            result = self.actions.control_playback(action)
+        else:
+            return {"success": False, "message": "That isn't something the music does."}
+        logger.info(f"Settings page: {who} asked the music to {action}")
+        return {"success": bool(result.get("success")), "message": result.get("message") or ""}
+
+    def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None) -> Dict:
+        """Switches or dims a light - see HomeAssistant.set_light."""
+        if self.home is None:
+            return {"success": False, "message": "Nova isn't connected to Home Assistant."}
+        if on is not None and not isinstance(on, bool):
+            return {"success": False, "message": "That didn't make sense."}
+        logger.info(f"Settings page: {who} changed {entity_id}")
+        return self.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness))
+
+    def run(self, entity_id: str, who: str) -> Dict:
+        """Runs a script or sets a scene - see HomeAssistant.run."""
+        if self.home is None:
+            return {"success": False, "message": "Nova isn't connected to Home Assistant."}
+        logger.info(f"Settings page: {who} ran {entity_id}")
+        return self.home.run(str(entity_id))
+
 
 # What each kind of change is sent to, and what it's given.
 ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
@@ -447,6 +534,9 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/keys": lambda page, body, who: page.set_key(body["name"], body["value"], who),
     "/api/settings": lambda page, body, who: page.save_settings(body["changes"], who),
     "/api/restart": lambda page, body, who: page.restart(who),
+    "/api/music": lambda page, body, who: page.play(body["action"], who, body.get("query", ""), body.get("playlist", "")),
+    "/api/light": lambda page, body, who: page.set_light(body["id"], who, body.get("on"), body.get("brightness")),
+    "/api/run": lambda page, body, who: page.run(body["id"], who),
 }
 
 
@@ -473,6 +563,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(page.state())
         elif path == "/api/live":
             self._send_json(page.live())
+        elif path == "/api/music":
+            self._send_json(page.music_state())
+        elif path == "/api/home":
+            self._send_json(page.home_state())
+        elif path == "/api/cover":
+            # Whatever's playing now - the page adds its id only so a new one is fetched.
+            cover = page.cover()
+            if cover is None:
+                self._send_json({"success": False, "message": "Nothing's playing with a cover."}, 404)
+            else:
+                self._send(200, *cover)
         else:
             self._send_json({"success": False, "message": "There's nothing here."}, 404)
 

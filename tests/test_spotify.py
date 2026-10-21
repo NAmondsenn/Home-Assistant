@@ -246,3 +246,61 @@ def test_the_playlists_are_read_once_for_a_few_minutes(make_controller):
     controller.play_playlist("workout")
     controller.play_playlist("workout")
     assert controller.sp.calls.count("playlists") == 1
+
+
+# For the settings page
+
+class FakeNowPlaying:
+    """Stands in for the parts of the client the settings page uses."""
+
+    def __init__(self, playback=None, playlists=()):
+        self.playback = playback
+        self.playlists = list(playlists)
+
+    def current_playback(self):
+        return self.playback
+
+    def current_user_playlists(self, limit=50, offset=0):
+        return {"items": self.playlists[offset:offset + limit]}
+
+
+PLAYBACK = {"is_playing": True, "progress_ms": 61500, "item": {
+    "name": "Gooba", "duration_ms": 125000, "artists": [{"name": "6ix9ine"}],
+    "album": {"name": "Gooba", "images": [{"url": "https://i.scdn.co/image/big", "width": 640},
+                                          {"url": "https://i.scdn.co/image/medium", "width": 300},
+                                          {"url": "https://i.scdn.co/image/small", "width": 64}]}}}
+
+
+class FakeImage:
+    headers = {"Content-Type": "image/jpeg"}
+    content = b"a cover"
+
+    def raise_for_status(self):
+        pass
+
+
+def test_the_page_is_told_whats_playing_on_spotify(make_controller):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeNowPlaying(PLAYBACK)
+    assert controller.now_playing() == {"track": "Gooba", "artist": "6ix9ine", "album": "Gooba", "playing": True,
+                                        "position": 61.5, "duration": 125, "cover": "medium"}
+    controller.sp = FakeNowPlaying(None)
+    assert controller.now_playing() is None
+
+
+def test_a_cover_only_ever_comes_from_where_spotify_said(make_controller, monkeypatch):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeNowPlaying(PLAYBACK)
+    fetched = []
+    monkeypatch.setattr(spotify_controller.requests, "get", lambda url, timeout=None: fetched.append(url) or FakeImage())
+
+    assert controller.cover() is None
+    controller.now_playing()
+    assert controller.cover() == (b"a cover", "image/jpeg") and controller.cover() == (b"a cover", "image/jpeg")
+    assert fetched == ["https://i.scdn.co/image/medium"]
+
+
+def test_the_page_is_offered_the_spotify_playlists_by_name(make_controller):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeNowPlaying(playlists=[{"name": "Workout"}, {"name": "chill"}, None])
+    assert controller.playlists() == ["chill", "Workout"]

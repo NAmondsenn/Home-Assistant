@@ -14,10 +14,20 @@
 const LIVE_EVERY = 1500;
 const STATE_EVERY = 20000;
 
+// What's playing, and Home Assistant's lights and scripts and scenes, are asked for
+// apart from the rest, as either can be slow - the music more often, as it changes
+// more, in milliseconds.
+const MUSIC_EVERY = 5000;
+const HOME_EVERY = 15000;
+
 // The least time between volume changes sent while a slider's dragged, in
 // milliseconds - often enough for the beep to keep up with the finger, without
-// asking for every step.
+// asking for every step - and between a light's, which take Home Assistant longer.
 const VOLUME_EVERY = 180;
+const LIGHT_EVERY = 250;
+
+// How many playlists are offered before the rest are tucked behind a button.
+const MOST_PLAYLISTS = 12;
 
 // What Nova's doing, in words. While it waits, it's waiting for its wake word, which
 // /api/state says.
@@ -53,9 +63,19 @@ let counting = [];
 // changes - rather than every time, sweeping away a button that's been tabbed to.
 const drawn = {};
 
-// Each volume's slider, kept rather than drawn again, so one being dragged isn't
-// replaced from under the finger.
+// Each volume's slider, and each light, kept rather than drawn again, so one being
+// dragged isn't replaced from under the finger.
 const sliders = {};
+const lights = {};
+
+// What /api/music last said, and when, for how far through the song is meanwhile -
+// and whether every playlist is shown.
+let music = null;
+let musicAt = 0;
+let allPlaylists = false;
+
+// What /api/home last said.
+let home = null;
 
 // Making things
 
@@ -172,6 +192,7 @@ function tick() {
   document.getElementById("date-short").textContent =
     now.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   for (const [shown, dueAt] of counting) shown.textContent = countdown(dueAt);
+  drawProgress();
   // One that's just gone off is asked about again, to show whether it's still ringing.
   if (counting.some(([, dueAt]) => dueAt * 1000 <= now)) {
     counting = counting.filter(([, dueAt]) => dueAt * 1000 > now);
@@ -245,7 +266,11 @@ async function live() {
     // Out of reach, then.
   }
   // Back after a restart, or being out of reach - so anything else may have changed too.
-  if (activity === "offline" && now !== "offline") load();
+  if (activity === "offline" && now !== "offline") {
+    load();
+    loadMusic();
+    loadHome();
+  }
   activity = now;
   showActivity();
 }
@@ -343,8 +368,61 @@ function showVolumes(volumes) {
   }
 }
 
-// A volume's slider. As it's dragged, its new level is sent - one change at a time, so
-// they reach Nova in order, each the latest when it's sent - and Nova beeps at it.
+// Sends a slider's newest value as it's dragged - one at a time, so they arrive in
+// order, each the latest when it's sent, and no closer together than spacing, in
+// milliseconds. deliver sends one, and mustn't fail.
+function steadily(spacing, deliver) {
+  let latest = null;
+  let sent = null;
+  let sentAt = 0;
+  let sending = false;
+  let waiting = null;
+
+  function push() {
+    if (sending || waiting) return;
+    const wait = sentAt + spacing - Date.now();
+    if (wait > 0) {
+      waiting = setTimeout(() => {
+        waiting = null;
+        push();
+      }, wait);
+      return;
+    }
+    if (latest === sent) return;
+    const value = latest;
+    sending = true;
+    sent = value;
+    sentAt = Date.now();
+    deliver(value).finally(() => {
+      sending = false;
+      push();
+    });
+  }
+
+  return {
+    send(value) {
+      latest = value;
+      push();
+    },
+    // Whether a value's on its way, or waiting to be.
+    get busy() {
+      return sending || waiting !== null;
+    },
+    // What the other end has now, which needn't be sent.
+    settled(value) {
+      latest = sent = value;
+    },
+  };
+}
+
+// Draws a slider at a level, with its fill and the number beside it.
+function drawLevel(slider, output, percent) {
+  slider.value = percent;
+  output.textContent = `${percent}%`;
+  slider.style.setProperty("--level", `${percent}%`);
+}
+
+// A volume's slider. As it's dragged, each new level is sent, and Nova beeps at it.
 function volumeSlider(category) {
   const about = VOLUMES[category] || { label: capitalised(category), icon: "i-sound" };
   const id = `volume-${category}`;
@@ -358,63 +436,263 @@ function volumeSlider(category) {
   made.append(icon(about.icon), label, output, slider);
   document.getElementById("volumes").append(made);
 
-  let sent = null;
-  let sentAt = 0;
-  let sending = false;
-  let waiting = null;
   let held = false;
-
-  function draw(percent) {
-    slider.value = percent;
-    output.textContent = `${percent}%`;
-    slider.style.setProperty("--level", `${percent}%`);
-  }
-
-  function push() {
-    if (sending || waiting) return;
-    const wait = sentAt + VOLUME_EVERY - Date.now();
-    if (wait > 0) {
-      waiting = setTimeout(() => {
-        waiting = null;
-        push();
-      }, wait);
-      return;
-    }
-    const percent = Number(slider.value);
-    if (percent === sent) return;
-    sending = true;
-    sent = percent;
-    sentAt = Date.now();
-    send("/api/volume", { category, percent })
-      .then((result) => {
-        if (!result.success) toast(result.message || "Couldn't change the volume.", false);
-      })
-      .catch(() => toast("Couldn't reach Nova.", false))
-      .finally(() => {
-        sending = false;
-        push();
-      });
-  }
-
+  const sender = steadily(VOLUME_EVERY, (percent) => send("/api/volume", { category, percent })
+    .then((result) => {
+      if (!result.success) toast(result.message || "Couldn't change the volume.", false);
+    })
+    .catch(() => toast("Couldn't reach Nova.", false)));
   slider.addEventListener("input", () => {
     held = true;
-    draw(Number(slider.value));
-    push();
+    drawLevel(slider, output, Number(slider.value));
+    sender.send(Number(slider.value));
   });
   slider.addEventListener("change", () => {
     held = false;
-    push();
+    sender.send(Number(slider.value));
   });
 
   return {
     // Shows the level Nova has - unless the slider's being moved, or a change to it
     // is on its way.
     show(percent) {
-      if (held || sending || waiting) return;
-      sent = percent;
-      draw(percent);
+      if (held || sender.busy) return;
+      sender.settled(percent);
+      drawLevel(slider, output, percent);
     },
   };
+}
+
+// What's playing
+
+async function loadMusic() {
+  try {
+    const response = await fetch("/api/music");
+    if (!response.ok) return;
+    music = await response.json();
+    musicAt = Date.now();
+  } catch (error) {
+    return;
+  }
+  showMusic();
+}
+
+function showMusic() {
+  document.getElementById("music").hidden = !music.available;
+  document.getElementById("music-missing").hidden = music.available;
+  if (!music.available) return;
+  const now = music.now;
+  document.getElementById("track").textContent = now ? now.track : "Nothing playing";
+  document.getElementById("artist").textContent = now ? now.artist : "Ask Nova, or pick something below.";
+  document.getElementById("album").textContent = now ? now.album : "";
+
+  // The cover's only fetched again once it's a different one.
+  const cover = document.getElementById("cover");
+  const wanted = now && now.cover ? `/api/cover?for=${encodeURIComponent(now.cover)}` : "";
+  if (cover.dataset.for !== wanted) {
+    cover.dataset.for = wanted;
+    cover.hidden = true;
+    if (wanted) cover.src = wanted;
+    else cover.removeAttribute("src");
+  }
+
+  const playing = Boolean(now && now.playing);
+  const button = document.getElementById("play-pause");
+  button.setAttribute("aria-label", playing ? "Pause" : "Play");
+  button.querySelector("use").setAttribute("href", playing ? "#i-pause" : "#i-play");
+  document.getElementById("previous").disabled = !now;
+  document.getElementById("next").disabled = !now;
+  drawProgress();
+  drawIfChanged("playlists", music.playlists, showPlaylists);
+}
+
+// How far through the song is - carried on from what Nova last said, while it plays.
+function drawProgress() {
+  const now = music && music.available && music.now;
+  const shown = document.getElementById("progress");
+  shown.hidden = !(now && now.duration);
+  if (shown.hidden) return;
+  const played = Math.min(now.duration, now.position + (now.playing ? (Date.now() - musicAt) / 1000 : 0));
+  document.getElementById("progress-fill").style.width = `${(played / now.duration) * 100}%`;
+  document.getElementById("elapsed").textContent = minutes(played);
+  document.getElementById("length").textContent = minutes(now.duration);
+}
+
+function minutes(seconds) {
+  const whole = Math.floor(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+// The liked songs first, as they're always there, then the playlists by name.
+function showPlaylists(playlists) {
+  const names = ["Liked songs", ...playlists.filter((name) => name.toLowerCase() !== "liked songs")];
+  const shown = allPlaylists ? names : names.slice(0, MOST_PLAYLISTS);
+  const chips = shown.map((name) => {
+    const chip = element("button", name, "button quiet");
+    chip.type = "button";
+    chip.addEventListener("click", () => playMusic({ action: "playlist", playlist: name }, true));
+    return chip;
+  });
+  if (shown.length < names.length) {
+    const more = element("button", `${names.length - shown.length} more`, "button quiet");
+    more.type = "button";
+    more.addEventListener("click", () => {
+      allPlaylists = true;
+      showPlaylists(playlists);
+    });
+    chips.push(more);
+  }
+  document.getElementById("playlists").replaceChildren(...chips);
+}
+
+// Asks the music to do something, then shows what it's doing now - saying how it went
+// only when the music itself doesn't, as it does for a pause or a skip.
+async function playMusic(body, say) {
+  let result;
+  try {
+    result = await send("/api/music", body);
+  } catch (error) {
+    result = { success: false, message: "Couldn't reach Nova." };
+  }
+  if (say || !result.success) toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
+  await loadMusic();
+  // Spotify takes a moment to catch up with itself.
+  setTimeout(loadMusic, 1200);
+  return result;
+}
+
+// Home Assistant
+
+async function loadHome() {
+  try {
+    const response = await fetch("/api/home");
+    if (!response.ok) return;
+    home = await response.json();
+  } catch (error) {
+    return;
+  }
+  showHome();
+}
+
+function showHome() {
+  const routines = document.getElementById("routines");
+  // Without Home Assistant, the lights say how to connect it, and there are no scripts or scenes.
+  if (!home.available || !home.success) {
+    const why = home.available ? home.message
+      : "Nova isn't connected to Home Assistant. Add its address in Settings, and its token in Keys.";
+    drawIfChanged("lights", why, () => {
+      for (const id of Object.keys(lights)) delete lights[id];
+      document.getElementById("lights").replaceChildren(emptyRow(why));
+    });
+    routines.hidden = true;
+    return;
+  }
+  drawIfChanged("lights", home.lights.map((light) => light.id), () => {
+    for (const id of Object.keys(lights)) delete lights[id];
+    const rows = home.lights.map((light) => (lights[light.id] = lightRow(light)).row);
+    document.getElementById("lights").replaceChildren(...(rows.length ? rows : [emptyRow("Home Assistant has no lights.")]));
+  });
+  for (const light of home.lights) lights[light.id].show(light);
+  routines.hidden = false;
+  drawIfChanged("routines", home.routines, showRoutines);
+}
+
+// A light: its switch, and while it's on, how bright it is - dragged as a volume is.
+function lightRow(light) {
+  const id = `light-${light.id}`;
+  const row = element("li");
+  const name = element("label", light.name, "what");
+  name.htmlFor = id;
+  const toggle = element("input");
+  Object.assign(toggle, { type: "checkbox", id });
+  toggle.setAttribute("role", "switch");
+  const unreachable = element("span", "Unavailable", "state");
+  const level = element("div", undefined, "level");
+  const slider = element("input");
+  Object.assign(slider, { type: "range", min: 1, max: 100, step: 1 });
+  slider.setAttribute("aria-label", `How bright ${light.name} is`);
+  const output = element("output");
+  level.append(slider, output);
+  row.append(icon("i-bulb"), name, toggle, unreachable, level);
+
+  let held = false;
+  let switching = false;
+  let current = light;
+  const sender = steadily(LIGHT_EVERY, (brightness) => send("/api/light", { id: light.id, brightness })
+    .then((result) => {
+      if (!result.success) toast(result.message || "Couldn't change the light.", false);
+    })
+    .catch(() => toast("Couldn't reach Nova.", false)));
+
+  toggle.addEventListener("change", async () => {
+    switching = true;
+    row.classList.toggle("on", toggle.checked);
+    let result;
+    try {
+      result = await send("/api/light", { id: light.id, on: toggle.checked });
+    } catch (error) {
+      result = { success: false, message: "Couldn't reach Nova." };
+    }
+    switching = false;
+    if (!result.success) {
+      toast(result.message || "Couldn't switch the light.", false);
+      toggle.checked = current.on;
+    }
+    // Home Assistant takes a moment to say it's changed.
+    setTimeout(loadHome, 700);
+  });
+  slider.addEventListener("input", () => {
+    held = true;
+    drawLevel(slider, output, Number(slider.value));
+    sender.send(Number(slider.value));
+  });
+  slider.addEventListener("change", () => {
+    held = false;
+    sender.send(Number(slider.value));
+    setTimeout(loadHome, 900);
+  });
+
+  return {
+    row,
+    // Shows the light as Home Assistant has it - leaving alone whatever's being changed.
+    show(now) {
+      current = now;
+      unreachable.hidden = now.reachable;
+      toggle.hidden = !now.reachable;
+      row.classList.toggle("unreachable", !now.reachable);
+      if (!switching) {
+        toggle.checked = now.on;
+        row.classList.toggle("on", now.on);
+      }
+      level.hidden = !(now.on && now.dimmable && now.reachable);
+      if (now.brightness !== null && !held && !sender.busy) {
+        sender.settled(now.brightness);
+        drawLevel(slider, output, now.brightness);
+      }
+    },
+  };
+}
+
+// Home Assistant's scripts, to start, and scenes, to set.
+function showRoutines(routines) {
+  const rows = routines.map((routine) => {
+    const scene = routine.kind === "scene";
+    const row = element("li", undefined, "routine");
+    const start = element("button", scene ? "Set" : "Start", "button quiet");
+    start.type = "button";
+    start.setAttribute("aria-label", `${scene ? "Set" : "Start"} ${routine.name}`);
+    start.addEventListener("click", async () => {
+      start.disabled = true;
+      await change("/api/run", { id: routine.id });
+      start.disabled = false;
+      // A scene changes the lights, and Home Assistant takes a moment to say so.
+      setTimeout(loadHome, 900);
+    });
+    row.append(icon(scene ? "i-scene" : "i-routine"), element("span", routine.name, "what"), start);
+    return row;
+  });
+  document.getElementById("ha-routines").replaceChildren(
+    ...(rows.length ? rows : [emptyRow("No scripts or scenes in Home Assistant yet.")]));
 }
 
 function showClock(clock) {
@@ -739,6 +1017,23 @@ document.addEventListener("DOMContentLoaded", () => {
     if (confirm("Restart Nova now? It takes about half a minute.")) change("/api/restart");
   });
 
+  const cover = document.getElementById("cover");
+  cover.addEventListener("load", () => (cover.hidden = false));
+  cover.addEventListener("error", () => (cover.hidden = true));
+  document.getElementById("play-pause").addEventListener("click", () =>
+    playMusic({ action: music && music.now && music.now.playing ? "pause" : "play" }));
+  document.getElementById("previous").addEventListener("click", () => playMusic({ action: "previous" }));
+  document.getElementById("next").addEventListener("click", () => playMusic({ action: "skip" }));
+  document.getElementById("play-something").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const query = event.target.query;
+    if (!query.value.trim()) return;
+    const result = await playMusic({ action: "play", query: query.value }, true);
+    if (result.success) query.value = "";
+  });
+
   every(STATE_EVERY, load);
   every(LIVE_EVERY, live);
+  every(MUSIC_EVERY, loadMusic);
+  every(HOME_EVERY, loadHome);
 });

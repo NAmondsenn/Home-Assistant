@@ -58,6 +58,9 @@ MOST_FAILURES = 3
 # Subsonic's error code for a wrong username or password.
 WRONG_LOGIN = 40
 
+# How big a cover is asked for, in pixels a side, for the settings page.
+COVER_SIZE = 300
+
 # Words too common in playlist names to tell one from another on their own. Asked
 # for "light songs" - Whisper's "liked songs" - "Car Songs" was played, on the
 # strength of "songs" alone.
@@ -172,6 +175,9 @@ class NavidromePlayer:
         self._interrupted = False
         self._repeat = "off"
         self._shuffle = False
+        # The last cover fetched, by its id, so the settings page only has it fetched
+        # once a song - see cover.
+        self._cover: Optional[Tuple[str, Tuple[bytes, str]]] = None
 
         threading.Thread(target=self._play_queue, daemon=True, name="navidrome").start()
 
@@ -445,6 +451,64 @@ class NavidromePlayer:
                 return {"success": False, "message": "Nothing playing"}
             song = self._queue[self._index]
         return {"success": True, "track": song.get("title", "something"), "artist": song.get("artist", "someone")}
+
+    # For the settings page
+
+    def now_playing(self) -> Optional[Dict]:
+        """
+        The song playing, for the settings page - None with nothing queued.
+
+        Returns:
+            Dict of its "track", "artist" and "album"; whether it's "playing" - which
+            it is while paused for the assistant to talk, as it carries on after;
+            its "position" and "duration" in seconds; and its "cover" id, if any.
+        """
+        with self._lock:
+            if self._index >= len(self._queue):
+                return None
+            song = self._queue[self._index]
+            playing = not self._paused or (self._talking and self._resume_after)
+            played = self._playback.position / self.speaker.sample_rate if self._playback is not None else 0.0
+        return {"track": song.get("title") or "Something", "artist": song.get("artist") or "",
+                "album": song.get("album") or "", "playing": playing, "position": round(played, 1),
+                "duration": song.get("duration"), "cover": song.get("coverArt")}
+
+    def cover(self) -> Optional[Tuple[bytes, str]]:
+        """
+        The cover of the song playing, as an image and its type - or None, without
+        one, or if Navidrome couldn't be asked.
+        """
+        with self._lock:
+            song = self._queue[self._index] if self._index < len(self._queue) else {}
+        art = song.get("coverArt")
+        if not art:
+            return None
+        if self._cover is not None and self._cover[0] == art:
+            return self._cover[1]
+        try:
+            if not network.online():
+                raise requests.ConnectionError("No network connection")
+            response = self._session.get(f"{self.url}/rest/getCoverArt",
+                                         params={**self._sign_in(), "id": art, "size": COVER_SIZE},
+                                         timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            self._failure_message(e)
+            return None
+        kind = response.headers.get("Content-Type", "")
+        if not kind.startswith("image/"):
+            return None
+        self._cover = (art, (response.content, kind))
+        return self._cover[1]
+
+    def playlists(self) -> List[str]:
+        """The names of the user's playlists, for the settings page to offer - none if Navidrome couldn't be asked."""
+        try:
+            found = self._call("getPlaylists").get("playlists", {}).get("playlist") or []
+        except (requests.RequestException, NavidromeError) as e:
+            self._failure_message(e)
+            return []
+        return sorted({playlist["name"] for playlist in found if playlist.get("name")}, key=str.lower)
 
     def get_volume(self) -> int:
         return self.volume.percent("music")

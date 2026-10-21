@@ -18,7 +18,7 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Talking over it** - "Hey Nova" is heard over the music Nova plays and over its own replies, which stop the moment it's said. "Hey Nova, stop" stops whatever it's saying or playing.
 - **Remembering you** - mention something about yourself ("I've started a new job at Aldi", "my sister's called Amy") and Nova keeps it, says "I'll remember that", and uses it from then on. "What do you know about me?" reads it back; "forget that..." or "forget everything you know about me" takes it away. It's kept in `~/.local/share/nova/memory.json`, and goes to Claude with each request so it can use it.
 - **Notifications** - with your own [ntfy](https://ntfy.sh/) server, alerts posted to the topics you choose - your homelab's, say - are read out as they arrive, and "tell me more" reads all of one. At night only the most urgent are; "any notifications?" has the rest. "Send that to my phone" sends Nova's last answer there, as do a reminder nobody answered and Nova restarting after a problem.
-- **A settings page** - how Nova's doing, its volumes, timers and alarms, what it remembers, its keys and its main settings, from your phone or laptop - over your tailnet, and only for you.
+- **A settings page** - how Nova's doing, what's playing, your lights and Home Assistant's scripts and scenes, its volumes, timers and alarms, what it remembers, its keys and its main settings, from your phone or laptop - over your tailnet, and only for you.
 
 The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the Pi itself, without asking Claude, so they're quicker. With the internet down, timers, alarms, Nova's own volume, the time, the lights and Navidrome carry on working; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet.
 
@@ -153,7 +153,7 @@ Then restart Nova. What it sends is tagged `nova`, so it never reads its own mes
 
 ### The settings page
 
-Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. The star by Nova's name shows whether it's waiting, listening, thinking or speaking, and as a volume's dragged, Nova beeps on its speaker at each new level, so you can hear how loud it is. It listens on the Pi alone, and only your own Tailscale login gets in:
+Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. The star by Nova's name shows whether it's waiting, listening, thinking or speaking, and as a volume's dragged, Nova beeps on its speaker at each new level, so you can hear how loud it is. With music set up, it shows what's playing, and plays something else; with Home Assistant, it switches and dims your lights, and runs your scripts and scenes - never one whose name says it locks or opens anything. It listens on the Pi alone, and only your own Tailscale login gets in:
 
 1. In Tailscale's admin page, turn on HTTPS certificates - under DNS.
 2. On the Pi, have Tailscale pass the tailnet's requests on to the page, with a certificate for the Pi's name:

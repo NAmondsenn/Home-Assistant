@@ -144,18 +144,21 @@ class SmartAssistant:
         # What the assistant knows about the user, learnt as they talk - see memory.py.
         self.memory = Memory()
 
+        # Home Assistant, for the lights and the calendar - None until it's set up.
+        self.home = HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN"))
+
         # Everything the assistant can do for the user - see actions.py. The lights and
         # the calendar are only there once Home Assistant is set up.
         self.actions = ActionExecutor(music=self.music_player, clock=self.clock, volume=self.volume,
-                                      weather=Weather(config=self.config),
-                                      home=HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN")),
+                                      weather=Weather(config=self.config), home=self.home,
                                       memory=self.memory, ntfy=self.ntfy)
 
         # The page for looking after Nova from a phone or a laptop, or None if it's
         # switched off - see settings_page.py.
         self.settings_page = SettingsPage.from_config(self.config, volume=self.volume, clock=self.clock,
                                                       memory=self.memory, ntfy=self.ntfy, stt=self.stt,
-                                                      music=self.music_player, boop=self._boop,
+                                                      music=self.music_player, actions=self.actions,
+                                                      home=self.home, boop=self._boop,
                                                       activity=lambda: self.activity,
                                                       wake_word=lambda: self.wake_word)
 

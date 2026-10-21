@@ -82,9 +82,11 @@ class FakePlayer:
     """Stands in for Navidrome, which keeps the music's volume itself."""
 
     needs_internet = False
+    name = "Navidrome"
 
     def __init__(self):
         self.level = 40
+        self.asked_for_playlists = 0
 
     def get_volume(self):
         return self.level
@@ -92,6 +94,55 @@ class FakePlayer:
     def set_volume(self, percent):
         self.level = int(percent)
         return {"success": True, "message": f"Music volume {self.level} percent."}
+
+    def now_playing(self):
+        return {"track": "Gooba", "artist": "6ix9ine", "album": "Gooba", "playing": True, "position": 12.0,
+                "duration": 125, "cover": "al-1"}
+
+    def playlists(self):
+        self.asked_for_playlists += 1
+        return ["Chill", "Workout"]
+
+    def cover(self):
+        return b"a cover", "image/jpeg"
+
+
+class FakeActions:
+    """Stands in for the actions asking out loud goes through, noting what was asked."""
+
+    def __init__(self):
+        self.asked = []
+
+    def play_music(self, query=None):
+        self.asked.append(("play", query))
+        return {"success": True, "message": f"Playing {query}" if query else "Resumed playback", "silent": True}
+
+    def play_playlist(self, name=""):
+        self.asked.append(("playlist", name))
+        return {"success": True, "message": f"Playing {name}"}
+
+    def control_playback(self, action=None):
+        self.asked.append((action, None))
+        return {"success": True, "message": "Done."}
+
+
+class FakeHome:
+    """Stands in for Home Assistant."""
+
+    def __init__(self):
+        self.changed = []
+
+    def overview(self):
+        return {"success": True, "lights": [{"id": "light.kitchen", "name": "Kitchen", "on": True}],
+                "routines": [{"id": "scene.relax", "name": "Relax", "kind": "scene"}]}
+
+    def set_light(self, entity_id, on=None, brightness=None):
+        self.changed.append((entity_id, on, brightness))
+        return {"success": True, "message": "Done."}
+
+    def run(self, entity_id):
+        self.changed.append((entity_id, "run", None))
+        return {"success": True, "message": "Set Relax."}
 
 
 def _page(running=None, **parts):
@@ -166,6 +217,42 @@ def test_the_music_volume_is_the_players_own_so_a_playing_song_changes_too(files
 def test_the_page_can_tell_what_nova_is_doing(files):
     assert _page(activity=lambda: "listening").live() == {"activity": "listening"}
     assert _page().live() == {"activity": "idle"}
+
+
+def test_the_page_is_told_whats_playing_and_the_playlists_are_kept_a_while(files):
+    player = FakePlayer()
+    page = _page(music=player)
+    state = page.music_state()
+    assert state["player"] == "Navidrome" and state["now"]["track"] == "Gooba" and state["playlists"] == ["Chill", "Workout"]
+    page.music_state()
+    assert player.asked_for_playlists == 1
+    assert _page().music_state() == {"available": False}
+
+
+def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files):
+    actions = FakeActions()
+    page = _page(music=FakePlayer(), actions=actions)
+    page.play("play", LOGIN, query=" Gooba by 6ix9ine ")
+    page.play("play", LOGIN)
+    page.play("playlist", LOGIN, playlist="Workout")
+    page.play("pause", LOGIN)
+    assert actions.asked == [("play", "Gooba by 6ix9ine"), ("play", None), ("playlist", "Workout"), ("pause", None)]
+    assert page.play("eject", LOGIN) == {"success": False, "message": "That isn't something the music does."}
+    assert not _page().play("pause", LOGIN)["success"]
+
+
+def test_the_lights_and_scenes_come_from_home_assistant_and_go_back_to_it(files):
+    home = FakeHome()
+    page = _page(home=home)
+    assert page.home_state()["lights"][0]["id"] == "light.kitchen"
+    page.set_light("light.kitchen", LOGIN, on=False)
+    page.set_light("light.kitchen", LOGIN, brightness="40")
+    page.run("scene.relax", LOGIN)
+    assert home.changed == [("light.kitchen", False, None), ("light.kitchen", None, 40), ("scene.relax", "run", None)]
+    # Only a yes or no switches a light.
+    assert not page.set_light("light.kitchen", LOGIN, on="off")["success"]
+    assert _page().home_state() == {"available": False}
+    assert not _page().run("scene.relax", LOGIN)["success"]
 
 
 def test_the_page_says_what_nova_is_waiting_to_hear(files):
@@ -293,10 +380,32 @@ def test_each_change_reaches_the_right_part_of_nova(served):
     assert change("/api/restart", {})["message"] == "Restarting."
 
 
-def test_its_typeface_and_what_nova_is_doing_are_served(served):
+def test_its_typeface_icon_and_what_nova_is_doing_are_served(served):
     status, headers, body = _ask(served, "/Outfit.woff2")
     assert status == 200 and headers["Content-Type"] == "font/woff2" and body[:4] == b"wOF2"
+    status, headers, body = _ask(served, "/icon.svg")
+    assert status == 200 and headers["Content-Type"] == "image/svg+xml" and body.startswith(b"<svg")
     assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle"}
+
+
+def test_the_cover_of_whats_playing_is_served(served):
+    # Nothing's playing without a music player.
+    assert _ask(served, "/api/cover")[0] == 404
+    served.music = FakePlayer()
+    status, headers, body = _ask(served, "/api/cover?for=al-1")
+    assert status == 200 and headers["Content-Type"] == "image/jpeg" and body == b"a cover"
+
+
+def test_music_and_home_assistant_changes_reach_them(served):
+    served.music, served.actions, served.home = FakePlayer(), FakeActions(), FakeHome()
+    assert json.loads(_ask(served, "/api/music")[2])["now"]["artist"] == "6ix9ine"
+    assert json.loads(_ask(served, "/api/home")[2])["routines"][0]["name"] == "Relax"
+
+    _ask(served, "/api/music", {"action": "skip"}, X_Nova="page")
+    _ask(served, "/api/light", {"id": "light.kitchen", "brightness": 70}, X_Nova="page")
+    _ask(served, "/api/run", {"id": "scene.relax"}, X_Nova="page")
+    assert served.actions.asked == [("skip", None)]
+    assert served.home.changed == [("light.kitchen", None, 70), ("scene.relax", "run", None)]
 
 
 def test_nonsense_is_answered_rather_than_crashing_on(served):
