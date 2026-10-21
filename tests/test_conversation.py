@@ -49,7 +49,7 @@ class FakeLLM:
 
     def __init__(self, *replies):
         self.replies = list(replies)
-        self.asked, self.remembered, self.recorded = [], [], []
+        self.asked, self.remembered, self.recorded, self.tool_answers = [], [], [], []
 
     def forget_stale_history(self):
         pass
@@ -61,8 +61,9 @@ class FakeLLM:
     def remember(self, text, reply):
         self.remembered.append((text, reply))
 
-    def record_reply(self, text, spoken):
+    def record_reply(self, text, spoken, tool_answers=()):
         self.recorded.append((text, spoken))
+        self.tool_answers.append(list(tool_answers))
 
 
 class FakeActions:
@@ -126,6 +127,14 @@ def test_actions_wait_for_the_music_to_have_paused_and_say_their_own_words():
     conversation = _conversation(llm=llm, actions=actions)
     reply = conversation.handle("set a ten minute timer")
     assert conversation.music.waited == 1 and reply.say == "Timer set for 10 minutes."
+
+
+def test_what_each_action_said_is_kept_for_the_model():
+    llm = FakeLLM(_answer("Okay.", Action("get_weather", {"day": "today"}), Action("set_timer", {"duration_seconds": 600})))
+    actions = FakeActions({"get_weather": ActionResult(True, "It's 10 degrees."),
+                           "set_timer": ActionResult(True, "Timer set for 10 minutes.")})
+    _conversation(llm=llm, actions=actions).handle("what's the weather, and set a ten minute timer")
+    assert llm.tool_answers == [["It's 10 degrees.", "Timer set for 10 minutes."]]
 
 
 def test_a_question_is_listened_for_but_only_so_many_times_in_a_row():

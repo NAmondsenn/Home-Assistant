@@ -185,6 +185,41 @@ def test_history_records_what_was_actually_said(llm):
     assert {"role": "assistant", "content": "What would you like to name this reminder?"} in sent
 
 
+def test_what_a_tool_said_is_shown_to_the_model_as_the_tools_own_answer(llm):
+    # Kept only as text, the weather a tool had fetched looked to the model like
+    # figures it had made up - asked next to "send the weather report to my phone",
+    # it said so, and fetched it all again.
+    llm.client = FakeClient(_reply("Okay.", _tool("get_weather", day="today")))
+    llm.process_query("what's the weather")
+    llm.record_reply("what's the weather", "It's 10 degrees and cloudy. Also, your timer's going.",
+                     ["It's 10 degrees and cloudy."])
+
+    llm.client = FakeClient(_reply("Okay.", _tool("get_weather", day="tomorrow")))
+    llm.process_query("and tomorrow?")
+    sent = llm.client.requests[0]["messages"]
+    assert sent[0] == {"role": "user", "content": "what's the weather"}
+    asked, answered = sent[1]["content"], sent[2]["content"]
+    assert asked[0] == {"type": "text", "text": "Okay."}
+    assert (asked[1]["type"], asked[1]["name"], asked[1]["input"]) == ("tool_use", "get_weather", {"day": "today"})
+    assert answered == [{"type": "tool_result", "tool_use_id": asked[1]["id"], "content": "It's 10 degrees and cloudy."}]
+    assert sent[3] == {"role": "assistant", "content": "It's 10 degrees and cloudy. Also, your timer's going."}
+
+
+def test_a_tool_which_said_nothing_still_answers_the_model(llm):
+    # Confirmed by a chime or the music changing, nothing's recorded - but the API
+    # refuses a tool call left without an answer.
+    llm.client = FakeClient(_reply("Okay.", _tool("control_playback", action="pause"),
+                                   _tool("set_timer", duration_seconds=600, is_reminder=False)))
+    llm.process_query("pause the music and set a ten minute timer")
+    llm.client = FakeClient(_reply("You're welcome."))
+    llm.process_query("thanks")
+    asked, answered = llm.client.requests[0]["messages"][1:3]
+    assert [result["content"] for result in answered["content"]] == ["Done.", "Done."]
+    assert [result["tool_use_id"] for result in answered["content"]] == \
+        [use["id"] for use in asked["content"] if use["type"] == "tool_use"]
+    assert len({result["tool_use_id"] for result in answered["content"]}) == 2
+
+
 def test_record_reply_only_changes_the_matching_exchange(llm):
     llm.history = [{"user": "turn it up", "assistant": "Okay."}]
     llm.record_reply("something else", "Volume 80 percent.")

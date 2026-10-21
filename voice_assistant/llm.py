@@ -3,7 +3,7 @@ import re
 import time
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Dict, List, Optional, Sequence
 import anthropic
 from anthropic import Anthropic
 from voice_assistant.actions import Action
@@ -114,6 +114,41 @@ class LLMHandler:
             The Action.
         """
         return Action(block.name, dict(block.input or {}))
+
+    @staticmethod
+    def _earlier_messages(number: int, turn: Dict) -> List[Dict]:
+        """
+        One earlier exchange, as it's sent along with the next request.
+
+        One with tool calls is laid out as the API itself has them: the model's own
+        "Okay." with the calls, each tool's answer, then what was actually said. Kept
+        as text alone, the weather a tool had fetched looked to the model like figures
+        it had made up - asked next to "send the weather report to my phone", it said
+        so out loud, and fetched it all again.
+
+        Args:
+            number: Which exchange it is, to keep the calls' ids apart.
+            turn: The exchange, from the history.
+
+        Returns:
+            The messages, in order.
+        """
+        messages = [{"role": "user", "content": turn["user"]}]
+        tools = turn.get("tools") or []
+        if tools:
+            uses = [{"type": "tool_use", "id": f"toolu_earlier_{number}_{index}", "name": name, "input": params}
+                    for index, (name, params) in enumerate(tools)]
+            own_text = [{"type": "text", "text": turn["model_text"]}] if turn.get("model_text") else []
+            messages.append({"role": "assistant", "content": own_text + uses})
+            # A tool confirmed by a chime, or the music changing, has nothing recorded -
+            # but the API refuses a call left without an answer.
+            answers = turn.get("tool_answers") or []
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": use["id"],
+                 "content": (answers[index] if index < len(answers) else "") or "Done."}
+                for index, use in enumerate(uses)]})
+        messages.append({"role": "assistant", "content": turn["assistant"]})
+        return messages
 
     # Phrases which mean the user is explicitly asking for a web search.
     # Web search is only attached to the request when one of these appears.
@@ -301,9 +336,8 @@ class LLMHandler:
             # Maintains a conversation history to provide context for the model's responses.
             messages = []
             # Loops through the conversation history and adds each user / assistant message to the messages list.
-            for turn in self.history:
-                messages.append({"role": "user", "content": turn["user"]})
-                messages.append({"role": "assistant", "content": turn["assistant"]})
+            for number, turn in enumerate(self.history):
+                messages.extend(self._earlier_messages(number, turn))
             # Adds the current user query to the messages list, after the details which
             # change from one request to the next - see _system_prompt.
             messages.append({"role": "user", "content": self._situation(now, context) + text})
@@ -381,7 +415,11 @@ class LLMHandler:
             if actions and not response_text:
                 response_text = "Okay."
 
-            self.history.append({"user": text, "assistant": response_text, "at": time.monotonic()})
+            # The tools it called, and its own text with them, are kept too, so the next
+            # request can show them as called - see _earlier_messages.
+            self.history.append({"user": text, "assistant": response_text, "at": time.monotonic(),
+                                 "tools": [(action.tool, dict(action.params)) for action in actions],
+                                 "model_text": response_text})
 
             # Stops the history from growing indefinitely by only keeping a specified number of exchanges,
             # this is defined by history_length.
@@ -533,7 +571,7 @@ class LLMHandler:
         if len(self.history) > self.history_length:
             self.history = self.history[-self.history_length:]
 
-    def record_reply(self, user_text: str, spoken: str):
+    def record_reply(self, user_text: str, spoken: str, tool_answers: Sequence[str] = ()):
         """
         Replaces the assistant's side of the latest exchange with what was actually
         said back to the user.
@@ -547,6 +585,9 @@ class LLMHandler:
         Args:
             user_text: What the user said in that exchange, so only the right one is changed.
             spoken: What the assistant actually said.
+            tool_answers: What each tool the model called said, in the order called -
+                shown to the model as the tools' own answers (see _earlier_messages).
         """
         if spoken and self.history and self.history[-1]["user"] == user_text:
             self.history[-1]["assistant"] = spoken
+            self.history[-1]["tool_answers"] = list(tool_answers)
