@@ -10,6 +10,10 @@ env/
 # .env
 .env
 
+# Where an install kept its own settings, keys, data and logs before they moved out
+# of the repository (see voice_assistant/paths.py) - still ignored, in case any are left.
+config.local.yaml
+
 # Logs and data
 logs/
 *.log
@@ -48,6 +52,8 @@ models/
 *.onnx
 *.bin
 piper/
+# A folder older versions of setup.sh made, holding a link to the Piper binary.
+bin/
 
 # Audio recordings
 *.flac
@@ -58,3 +64,6 @@ data/
 
 # Exception for UI sounds
 !sounds/*.wav
+
+# Test runner cache
+.pytest_cache/

@@ -13,21 +13,63 @@ import time
 import random
 import difflib
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict
-from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-load_dotenv()
+from voice_assistant import paths
+from voice_assistant.music import means_liked_songs
+
 logger = logging.getLogger(__name__)
 
-# Resolves paths relative to the project root (the parent of the voice_assistant
-# package), so the token cache lives inside the project rather than at ~.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# How long a single Spotify request may take, in seconds, and how many times it's
+# retried. spotipy's own defaults (5 seconds, retried 3 times with back-off) could
+# hold a command up for well over 15 seconds when the network was struggling.
+REQUEST_TIMEOUT = 4
+REQUEST_RETRIES = 1
+
+# How long this speaker's Connect device, the fact the music is already playing on
+# it, and the user's playlists are kept before being looked up again. Each look-up
+# was another round trip to Spotify on every "play", for things which hardly change
+# from one request to the next.
+CACHE_SECONDS = 600
+
+# Said when there's no Spotify login to use, rather than a bare "not authenticated" -
+# signing in again is done by hand, by running this module on the Pi (see the bottom).
+NOT_SIGNED_IN = "Spotify needs signing in again on the Pi."
+
+
+class _RefreshingAuth:
+    """
+    Hands the Spotify client a current access token on every request, refreshing
+    the cached one whenever it's expired.
+
+    spotipy's own SpotifyOAuth would do the refreshing too, but when the cached
+    login stops working altogether (revoked, or new scopes added) it falls back to
+    signing in from scratch - which with a 127.0.0.1 redirect means starting a web
+    server and waiting for a browser, hanging the assistant mid-command. This only
+    ever refreshes, and fails with a clear message instead.
+    """
+
+    def __init__(self, oauth: SpotifyOAuth):
+        self.oauth = oauth
+
+    def get_access_token(self, as_dict: bool = False):
+        # Reads the cache and refreshes the token if it's run out.
+        token_info = self.oauth.get_cached_token()
+        if not token_info:
+            raise RuntimeError("Spotify needs authorising again - run python -m voice_assistant.spotify_controller")
+        return token_info if as_dict else token_info["access_token"]
 
 
 class SpotifyController:
     """Controls Spotify playback, preferring this machine's own Connect device."""
+
+    # How it's named when something goes wrong, e.g. "Spotify needs the internet".
+    name = "Spotify"
+    # Every command goes through Spotify's servers - see ActionExecutor._music_offline.
+    needs_internet = True
 
     def __init__(self, config=None):
         """
@@ -57,37 +99,62 @@ class SpotifyController:
                  "playlist-read-collaborative,user-read-recently-played,"
                  "user-library-read")
 
+        self.cache_path = paths.SPOTIFY_TOKEN_FILE
         self.sp_oauth = SpotifyOAuth(
             client_id=self.client_id,
             client_secret=self.client_secret,
             redirect_uri=self.redirect_uri,
             scope=scope,
-            cache_path=os.path.join(PROJECT_DIRECTORY, ".spotify_cache")
+            cache_path=self.cache_path
         )
 
         self.sp = None
         # Tracks whether the assistant paused the music itself,
         # only resuming playback it actually interrupted.
         self._paused_for_speech = False
+        # (value, time.monotonic() when found) - see CACHE_SECONDS.
+        self._device = None
+        self._active_here = None
+        self._playlists = None
         self._authenticate()
 
         logger.info(f"Spotify controller initialised (target device: '{self.device_name}')")
 
     def _authenticate(self):
-        """Authenticate with Spotify (uses cached token if available)"""
-        token_info = self.sp_oauth.get_cached_token()
+        """
+        Authenticate with Spotify (uses cached token if available).
 
-        if not token_info:
+        Only checks the cached token is there - nothing goes over the network yet.
+        The token has always expired after a reboot (they last an hour), and
+        refreshing it here meant a Pi which started before its Wi-Fi was up lost
+        Spotify for the whole session. It's refreshed on the first command instead.
+        """
+        if not self.sp_oauth.cache_handler.get_cached_token():
             logger.warning("No cached token found. Run authenticate_first_time() to get one.")
             return
 
-        self.sp = spotipy.Spotify(auth=token_info['access_token'])
+        # The cache holds the refresh token - as good as a password to the Spotify
+        # account - but spotipy writes it with the default permissions, which let
+        # anyone on the machine read it. Kept to this user only, like .env (see setup.sh).
+        try:
+            os.chmod(self.cache_path, 0o600)
+        except OSError as e:
+            logger.warning(f"Could not make the Spotify token cache private: {e}")
+
+        # Given something which fetches a fresh token for every request, rather than
+        # the access token itself. A fixed token only lasts an hour, which is what made
+        # every Spotify command fail once the assistant had been running for a while.
+        self.sp = spotipy.Spotify(auth_manager=_RefreshingAuth(self.sp_oauth),
+                                  requests_timeout=REQUEST_TIMEOUT,
+                                  retries=REQUEST_RETRIES, status_retries=REQUEST_RETRIES)
         logger.info("Authenticated with Spotify using cached token")
 
     def authenticate_first_time(self):
         """
         First-time authentication - prints a URL for the user to visit.
-        Run this once to get the initial token, after which tokens auto-refresh.
+        Run this once to get the first token. After that the cached refresh token
+        keeps Nova signed in (see _RefreshingAuth), as long as the client is built
+        with auth_manager rather than a fixed access token.
 
         The redirect page is expected to fail to load; only the URL it redirects
         to matters, since that carries the authorisation code.
@@ -108,19 +175,29 @@ class SpotifyController:
         self._authenticate()
         print("Authentication successful! The token is cached for future runs.")
 
+    @staticmethod
+    def _fresh(cached) -> bool:
+        """Whether something kept by the controller is still recent enough to trust."""
+        return cached is not None and time.monotonic() - cached[1] < CACHE_SECONDS
+
     def _find_device(self) -> Optional[str]:
         """
-        Looks for this machine's Spotify Connect device in the account's device list.
+        Looks for this machine's Spotify Connect device in the account's device list,
+        or remembers it from the last few minutes.
 
         Returns:
             The device's ID, or None if it isn't currently advertising itself
             (e.g. the raspotify service isn't running).
         """
+        if self._fresh(self._device):
+            return self._device[0]
+
         devices = self.sp.devices().get("devices", [])
 
         # Matched case-insensitively, since the name is typed into config.yaml by hand.
         for device in devices:
             if device["name"].lower() == self.device_name.lower():
+                self._device = (device["id"], time.monotonic())
                 return device["id"]
 
         # Logs what was actually available, which is the first thing worth knowing
@@ -141,6 +218,12 @@ class SpotifyController:
         if not device_id:
             return None
 
+        # Played here in the last few minutes, so there's no need to ask Spotify where
+        # the music is - and if it has moved since, playing to this device by its ID
+        # brings it back anyway.
+        if self._fresh(self._active_here):
+            return device_id
+
         try:
             # Transfer playback to the device, if it's not already on it.
             current = self.sp.current_playback()
@@ -152,6 +235,7 @@ class SpotifyController:
                 # Spotify needs a moment to act on the transfer before it will
                 # accept playback commands for the device.
                 time.sleep(0.5)
+            self._active_here = (True, time.monotonic())
         except Exception as e:
             # A failed transfer isn't fatal - playback can still be started
             # directly on the device below.
@@ -172,7 +256,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             device_id = self._activate_device()
@@ -193,6 +277,8 @@ class SpotifyController:
 
         except Exception as e:
             logger.error(f"Play failed: {e}")
+            # In case the device remembered has gone - raspotify restarts every night.
+            self._device = self._active_here = None
             return {"success": False, "message": "Sorry, I couldn't start the music."}
 
     def _playback_started(self):
@@ -206,6 +292,7 @@ class SpotifyController:
         of the track which was just deliberately chosen.
         """
         self._paused_for_speech = False
+        self._active_here = (True, time.monotonic())
 
     def _set_shuffle_quietly(self, state: bool, device_id: str):
         """
@@ -352,7 +439,7 @@ class SpotifyController:
         """
         Loose check that a search result actually relates to what was asked for.
 
-        Whisper mishears song and artist names fairly often, and Spotify's search
+        Speech-to-text mishears song and artist names fairly often, and Spotify's search
         always returns *something*, so without this an unrecognised query quietly
         plays an unrelated track.
 
@@ -650,14 +737,20 @@ class SpotifyController:
             track_part = query[:split_index].strip()
             artist_part = query[split_index + 4:].strip()
 
-        if not track_part:
-            artist = self._find_artist(query)
+        search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
+
+        if track_part:
+            items = self._search_items(search_query, 'track')
+        else:
+            # Whether it names an artist or a song isn't known until the artist search
+            # comes back, so the song search runs alongside it rather than after.
+            with ThreadPoolExecutor(max_workers=2) as searches:
+                finding_artist = searches.submit(self._find_artist, query)
+                finding_tracks = searches.submit(self._search_items, search_query, 'track')
+                artist, items = finding_artist.result(), finding_tracks.result()
             if artist and (search_type == "artist"
                            or self._normalise(artist['name']) == self._normalise(query)):
                 return self._play_artist(artist, device_id)
-
-        search_query = f'track:"{track_part}" artist:"{artist_part}"' if track_part and artist_part else query
-        items = self._search_items(search_query, 'track')
 
         # Falls back to a plain text search if the strict track / artist search
         # found nothing, e.g. for titles which contain "by" themselves.
@@ -690,7 +783,7 @@ class SpotifyController:
     def pause(self) -> Dict:
         """Pause playback"""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.pause_playback()
@@ -706,13 +799,13 @@ class SpotifyController:
     def skip(self) -> Dict:
         """Skip to the next track"""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.next_track()
             logger.info("Skipped to next track")
             # Silent: the next song starting is the confirmation.
-            return {"success": True, "message": "That song was shit anyway", "silent": True}
+            return {"success": True, "message": "Skipped", "silent": True}
         except Exception as e:
             logger.error(f"Skip failed: {e}")
             return {"success": False, "message": "Sorry, I couldn't skip the track."}
@@ -720,7 +813,7 @@ class SpotifyController:
     def previous(self) -> Dict:
         """Go back to the previous track."""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             # With the player at position 0, "previous" steps back a track rather
@@ -764,8 +857,8 @@ class SpotifyController:
         """
         Set the volume of the Connect device.
 
-        Called when the assistant's general volume changes, so music and speech
-        stay in proportion rather than being adjusted separately.
+        This is the music's own volume, kept separate from the assistant's voice
+        and alarm levels - changing one never moves the others.
 
         Args:
             percent: Volume from 0 to 100.
@@ -774,7 +867,7 @@ class SpotifyController:
             Dict with 'success' and a 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         percent = max(0, min(100, int(percent)))
 
@@ -795,7 +888,7 @@ class SpotifyController:
     def restart(self) -> Dict:
         """Start the current track again from the beginning."""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.seek_track(0)
@@ -818,7 +911,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         # Spotify calls repeating the whole playlist / album "context".
         api_mode = "context" if mode in ("all", "context", "playlist", "album") else mode
@@ -846,7 +939,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             self.sp.shuffle(enabled)
@@ -871,16 +964,21 @@ class SpotifyController:
         Returns:
             The playlist dict, or None if nothing matched closely enough.
         """
-        # Pages through the user's playlists, since the API returns 50 at a time.
-        playlists = []
-        offset = 0
-        while True:
-            page = self.sp.current_user_playlists(limit=50, offset=offset)
-            items = [p for p in page.get("items", []) if p]
-            playlists.extend(items)
-            if len(items) < 50:
-                break
-            offset += 50
+        # Pages through the user's playlists, since the API returns 50 at a time -
+        # unless they were read in the last few minutes.
+        if self._fresh(self._playlists):
+            playlists = self._playlists[0]
+        else:
+            playlists = []
+            offset = 0
+            while True:
+                page = self.sp.current_user_playlists(limit=50, offset=offset)
+                items = [p for p in page.get("items", []) if p]
+                playlists.extend(items)
+                if len(items) < 50:
+                    break
+                offset += 50
+            self._playlists = (playlists, time.monotonic())
 
         wanted = name.strip().lower()
 
@@ -933,30 +1031,6 @@ class SpotifyController:
 
     # What the user might call their saved tracks. Spotify treats these as a
     # library rather than a playlist, so they never appear in the playlist list.
-    LIKED_SONGS_NAMES = ("liked songs", "liked music", "my likes", "likes",
-                         "saved songs", "saved tracks", "saved music",
-                         "favourites", "favorites", "favourite songs", "favorite songs")
-
-    @classmethod
-    def _means_liked_songs(cls, name: str) -> bool:
-        """
-        Whether a requested "playlist" is really the user's saved tracks.
-
-        Matched loosely, since this arrives from speech like anything else -
-        "liked songs" comes back as "leaked songs" often enough to be worth
-        allowing for.
-
-        Args:
-            name: The playlist name as the user said it.
-
-        Returns:
-            True if they meant their liked songs.
-        """
-        wanted = name.strip().lower()
-        return any(wanted == liked
-                   or difflib.SequenceMatcher(None, wanted, liked).ratio() >= 0.8
-                   for liked in cls.LIKED_SONGS_NAMES)
-
     def play_playlist(self, name: str) -> Dict:
         """
         Play one of the user's own playlists.
@@ -968,7 +1042,7 @@ class SpotifyController:
             Dict with 'success' and a spoken 'message'.
         """
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             device_id = self._activate_device()
@@ -983,7 +1057,7 @@ class SpotifyController:
             # Liked songs aren't a playlist, so they're never in the list searched
             # above - without this the request falls through to the closest name
             # instead, which is how "play Liked Songs" played "car songs".
-            if not playlist and self._means_liked_songs(name):
+            if not playlist and means_liked_songs(name):
                 logger.info(f"'{name}' means the liked songs library, not a playlist")
                 result = self._play_liked_songs(device_id)
                 if result.get("success"):
@@ -1005,7 +1079,7 @@ class SpotifyController:
     def current_track(self) -> Dict:
         """Retrieves current track information."""
         if not self.sp:
-            return {"success": False, "message": "Not authenticated"}
+            return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
             current = self.sp.current_playback()
@@ -1027,19 +1101,34 @@ class SpotifyController:
 
         Only pauses if something is actually playing and remembers that it did,
         so resume_after_speech() won't start music the user had already stopped.
+
+        Only music playing on this speaker counts. Spotify reports whichever device
+        is active on the account, so this used to pause music on a phone in
+        another room just because someone talked to the assistant in this one.
         """
         if not self.sp or not self.pause_while_speaking:
             return
 
         try:
             current = self.sp.current_playback()
-            if current and current.get("is_playing"):
+            playing_here = (current or {}).get("device", {}).get("name", "").lower() == self.device_name.lower()
+            if current and current.get("is_playing") and playing_here:
                 self.sp.pause_playback()
                 self._paused_for_speech = True
                 logger.info("Paused Spotify while speaking")
         except Exception as e:
             # Never let this stop the assistant from replying.
             logger.warning(f"Could not pause for speech: {e}")
+
+    def close(self):
+        """Nothing to stop: raspotify plays the music, and carries on by itself."""
+
+    def was_playing(self) -> bool:
+        """
+        Whether music was playing when the user started speaking - that is, whether
+        pause_for_speech() paused it. Read from memory, so it costs no request.
+        """
+        return self._paused_for_speech
 
     def cancel_resume(self):
         """
@@ -1064,16 +1153,18 @@ class SpotifyController:
             self._paused_for_speech = False
 
 
-# Runs a first-time authentication if this file is executed directly.
-# This is the one-off step needed before the assistant can control Spotify.
+# Runs a first-time authentication, as "python -m voice_assistant.spotify_controller"
+# from the project folder. This is the one-off step needed before the assistant can
+# control Spotify.
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # Allows this file to be run directly by putting the project
-    # root on the path before importing from the package.
-    import sys
-    sys.path.insert(0, PROJECT_DIRECTORY)
     from voice_assistant.config import Config
+
+    # An older install's sign-in is moved to where it now belongs first, rather
+    # than asking to sign in again.
+    paths.migrate()
+    paths.load_secrets()
 
     # Config is passed in for the device name.
     controller = SpotifyController(config=Config())

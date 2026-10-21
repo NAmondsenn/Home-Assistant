@@ -4,7 +4,7 @@ Integration Test
 Tests how the LLMHandler, ActionExecutor, and TextToSpeech work together
 using a fixed set of sample queries.
 
-Unlike test_pipeline.py, this doesn't use the microphone / wake word
+Unlike check_pipeline.py, this doesn't use the microphone / wake word
 detector. It feeds text straight in, allowing users to test the home assistant
 without a microphone connected.
 """
@@ -14,8 +14,8 @@ import sys
 import logging
 
 # Add the project root to the path so the voice_assistant package imports work
-# no matter where the tests are run from.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# no matter where the scripts are run from.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from voice_assistant.config import Config
 from voice_assistant.llm import LLMHandler

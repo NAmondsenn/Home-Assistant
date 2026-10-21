@@ -1,4 +1,8 @@
-*.sh text eol=lf
+# Every text file is kept with Unix line endings, whichever machine it was edited
+# on. Some files once went in from Windows with CRLF, so diffs between the Windows
+# PC and the Pi showed every line changed, and a .service or .yaml edited there
+# could reach the Pi with a carriage return on each line.
+* text=auto eol=lf
 
 # Audio and model files must never have their line endings converted, which
 # would corrupt them. Git usually detects this on its own, but not always, and

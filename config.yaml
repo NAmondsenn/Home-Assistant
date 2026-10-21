@@ -1,38 +1,99 @@
+# Every setting, with its default. Don't change them here: put just the ones you want
+# different in ~/.config/nova/config.yaml, in the same sections - e.g.
+#
+#   weather:
+#     location: "Leeds"
+#
+# That file is this install's own, outside the repository, so an update never touches
+# it. It's checked against this one as Nova starts, so a misspelt setting is caught.
+# Keys and passwords go in ~/.config/nova/.env. See voice_assistant/paths.py.
+
 assistant:
   name: "Nova"
   wake_word: "Hey Nova"
 
 llm:
-  provider: "claude"
-  model: "claude-haiku-4-5-20251001"
-  max_tokens: 150
-  temperature: 0.7
+  # Haiku 5.5 was as quick as 4.5 on Nova's own requests, and as accurate - see the
+  # commit which switched to it.
+  model: "claude-haiku-5-5"
+  # The longest a reply may be, in tokens - about 0.75 of a word each. Below 300 an
+  # ordinary reply which also calls a tool can be cut off, and a search needs more.
+  max_tokens: 300
+  max_tokens_search: 400
+  # null leaves it to the model - which Haiku 5.5 insists on, refusing any request
+  # which sets one. Only for older models.
+  temperature: null
+  # Seconds to wait for a reply before giving up, and how many times to retry.
+  # Searches do more work, so they get longer.
+  timeout: 15
+  search_timeout: 45
+  max_retries: 1
 
 audio:
   sample_rate: 48000
-  channels: 1
-  chunk_size: 2048
+  # Takes what Nova plays itself - music from Navidrome, its voice, timers - back out
+  # of what the microphone hears, so "Hey Nova" can be heard over the music. Uses the
+  # Pi's own speexdsp; without it, this does nothing. Spotify plays through another
+  # program, so isn't taken out.
+  echo_cancellation: true
+  # Seconds of audio from just before the wake word was detected which are kept,
+  # so "Hey Nova what time is it", said in one breath, isn't cut short.
+  pre_roll: 0.3
+
+music:
+  # What plays the music: "navidrome" - your own music server, set up below - or
+  # "spotify", which needs Spotify Premium.
+  player: "spotify"
+
+navidrome:
+  # Navidrome's address, e.g. "http://navidrome.local:4533", and the user Nova signs in
+  # as. The password goes in ~/.config/nova/.env as NAVIDROME_PASSWORD.
+  url: ""
+  username: ""
 
 spotify:
   device_name: "Voice-Assistant"
   pause_while_speaking: true
 
+speech_to_text:
+  # Which model turns speech into text: "moonshine", or "whisper" (below). Measured on
+  # the Pi, Moonshine took 0.8s where Whisper took 2.2s, with fewer words wrong.
+  engine: "moonshine"
+
+moonshine:
+  # "small-streaming" suits the Pi. "tiny-streaming" is quicker, at 0.35s, but got
+  # twice as many words wrong as Whisper; "medium-streaming" was slower, not better.
+  model: "small-streaming"
+  # Where the model files are kept, inside the project. setup.sh downloads them here.
+  download_root: "models/moonshine"
+  # Words to listen out for - names it would otherwise mishear. No commas in them.
+  keyterms: ["Nova", "Hey Nova", "Spotify", "Navidrome", "uni"]
+
 whisper:
   model: "base.en"
+  # Where the model files are kept, inside the project. setup.sh downloads them here,
+  # so the first start doesn't need the internet.
+  download_root: "models/whisper"
   device: "cpu"
   compute_type: "int8"
   fallback_model: "tiny.en"
-  # Higher is more accurate and slower.
-  beam_size: 5
+  # How many guesses at the words Whisper keeps open as it goes. Higher is meant to be
+  # more accurate, but on 20 spoken commands on the Pi, 1 heard them as well as 5 did
+  # and was 0.15s quicker - nearly all of Whisper's time goes on listening to the
+  # audio, not on choosing the words.
+  beam_size: 1
   # Words the model is told to expect, which biases it towards the names this
   # assistant actually hears rather than similar sounding ones.
   initial_prompt: >-
-    Hey Nova. Play Spotify. Pause the music, skip this track, shuffle,
+    Hey Nova. Play some music. Pause Spotify, skip this track, shuffle,
     repeat, play my playlist. Set a timer, set a reminder, cancel the timer.
-    Turn on the lights. What time is it? What's the weather?
+    Turn off the kitchen lights. What have I got on Thursday? What time is it?
+    What's the weather?
 
 conversation:
   history_length: 5
+  # Seconds an exchange is remembered for, once a new conversation starts.
+  history_max_age: 300
 
 # Web search is only used when the query explicitly asks for it
 # (e.g. "search for..."), so normal replies stay fast and free.
@@ -42,10 +103,15 @@ web_search:
   max_uses: 3
 
 thresholds:
-  # How long the user has to be quiet before the recording stops.
-  silence_duration: 0.8
-  # Volume below which audio counts as silence.
-  # Raise this if the assistant keeps listening for too long after you've stopped talking.
+  # How long the user has to be quiet before the recording stops. Every bit of this is
+  # waited out before Nova can answer, but too short and a pause mid-sentence ends it -
+  # raise it if Nova cuts you off.
+  silence_duration: 0.6
+  # How sure the voice activity model has to be that it's hearing speech, from 0 to 1.
+  # Raise it if background noise keeps recordings going; lower it if quiet speech is missed.
+  vad_threshold: 0.5
+  # Only used if the voice activity model can't be loaded: volume below which audio
+  # counts as silence.
   silence_threshold: 0.05
   # How long to wait for the user to start talking after the wake word before canceling.
   speech_timeout: 3.0
@@ -75,9 +141,43 @@ timers:
   alarm_ring_duration: 150
   alarm_gap_duration: 150
   alarm_max_cycles: 3
+  # Within each sound phase, the alarm plays in bursts with a short gap after each, so
+  # "Hey Nova, stop" can be heard over it, and builds up from quiet to full volume.
+  alarm_burst: 3
+  alarm_burst_gap: 1
+  alarm_ramp: 30
 
 sounds:
   chime_enabled: true
   reminder_enabled: true
+  # A short blip after the wake word (and before a follow-up answer) to say it's listening,
+  # and the same blip backwards when it gave up without hearing anything.
+  listening_enabled: true
   volume_step: 10
-  spotify_volume: 100
+
+logging:
+  # Whether what's said to the assistant, and its replies, are written to the logs
+  # (smart_assistant.log in ~/.local/share/nova/logs, and the system journal). Handy while setting things up;
+  # turn it off to keep conversations out of the logs altogether.
+  log_transcripts: true
+
+home_assistant:
+  # Home Assistant's address, e.g. "http://homeassistant.local:8123". Nova signs in
+  # with a long-lived access token, as HA_TOKEN in ~/.config/nova/.env, made by a Home
+  # Assistant user of its own rather than an administrator. It can only reach the
+  # devices exposed to Assist - see the README.
+  url: ""
+  # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
+  # Left empty, every calendar Home Assistant has is read.
+  calendars: []
+  # The regular things in your life, and what they're called on the calendar, for
+  # "what time do I have work tomorrow?" or "when do I finish uni today?". An event with
+  # a word in its name starting with one of them counts - e.g. work: ["Shift"], or
+  # uni: ["CSC"] for course codes like CSC203.
+  activities:
+    work: ["work"]
+
+weather:
+  # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
+  # is free and needs no key. Until it's set, Nova says it doesn't know where you are.
+  location: ""

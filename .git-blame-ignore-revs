@@ -1,0 +1,5 @@
+# Commits which only reformatted, skipped by "git blame" when this file is
+# named (git config blame.ignoreRevsFile .git-blame-ignore-revs), and by GitHub.
+
+# Line endings converted to LF (ARCH-08)
+c680bbcfd379eef44d23c02cadb9b83f4dd7e436

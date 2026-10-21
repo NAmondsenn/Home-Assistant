@@ -1,0 +1,25 @@
+# Project tooling settings. Dependencies are still installed from requirements.txt
+# by setup.sh - this file only configures the tools used during development.
+
+[tool.pytest.ini_options]
+# Only tests/ holds automated tests. The scripts in scripts/manual/ need a real
+# microphone, speaker, Spotify account or API key, so they're run by hand instead.
+testpaths = ["tests"]
+# Lets the tests import the voice_assistant package from the project root.
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+# Matches the Python on the Pi (Raspberry Pi OS Trixie), while still checking that
+# nothing newer than Bookworm's 3.11 creeps in.
+target-version = "py311"
+
+[tool.ruff.lint]
+# Only the checks which catch real mistakes - unused imports and variables, names
+# which don't exist, syntax and statement errors - rather than style. The code
+# isn't run through a formatter, so its existing layout is kept as it is.
+select = ["E4", "E7", "E9", "F"]
+# Several imports on one line is only a style choice, and imports which come after
+# some setup - finding the project folder, or skipping a test when numpy isn't
+# installed - are deliberate.
+ignore = ["E401", "E402"]

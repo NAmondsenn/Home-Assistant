@@ -1,126 +1,177 @@
-#!/usr/bin/env python3
 """
-Wake Word Detector Test
-Listens and counts the amount of wake word detections,
-until the user stops the test using Ctrl + C.
-
-Useful for tuning the sensitivity, too many missed activations would mean
-the sensitivity is too low, too many false positives means it's too high.
+Wake Word Test
+Checks the detector listens through the shared microphone stream, and that the wake
+word is taken off the front of what was transcribed, using fakes in place of the
+openWakeWord model and the input stream. Needs numpy and soxr installed (as they
+are on the Pi), and is skipped anywhere they aren't.
 """
 
-import argparse
-import os
-import sys
-import logging
-import time
+import threading
 
-# Add the project root to the path so the voice_assistant package imports work
-# no matter where the tests are run from.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pytest
 
-from voice_assistant.config import Config
-from voice_assistant.wake_word import WakeWordDetector
+np = pytest.importorskip("numpy")
+pytest.importorskip("soxr")
 
-logger = logging.getLogger(__name__)
-
-def parse_args():
-    """CLI args, allows sensitivity to be tuned without editing config.yaml each time."""
-    parser = argparse.ArgumentParser(description="Wake word detector test")
-    parser.add_argument(
-        '--sensitivity',
-        type=float,
-        default=None,
-        help="Override the wake_word_confidence value from config.yaml for this run"
-    )
-    return parser.parse_args()
+from voice_assistant import microphone as microphone_module
+from voice_assistant import wake_word as wake_word_module
+from voice_assistant.microphone import RATE, Microphone
+from voice_assistant.wake_word import CHUNK_SAMPLES, WakeWordDetector, strip_wake_word
 
 
-def test_wake_word():
-    """Runs WakeWordDetector in a loop, counting and timing detections until interrupted."""
+class FakeInputStream:
+    """Stands in for sounddevice.InputStream, delivering only what the test feeds it."""
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    def __init__(self, callback, **kwargs):
+        self.callback = callback
 
-    args = parse_args()
-
-    print("\n" + "=" * 60)
-    print("WAKE WORD DETECTOR TEST")
-    print("=" * 60 + "\n")
-
-    # Load config
-    print("Loading configuration...")
-    config = Config()
-
-    if args.sensitivity is not None:
-        print(f"Overriding config sensitivity with CLI value: {args.sensitivity}")
-
-    print("Initialising wake word detector...")
-    # WakeWordDetector pulls its wake word phrase / model and default sensitivity from config
-    detector = WakeWordDetector(config=config, sensitivity=args.sensitivity)
-    print(f"Wake word detector ready (sensitivity={detector.sensitivity})\n")
-
-    print(f"Say '{detector.wake_word_phrase}' as many times as you like.")
-    print("Press Ctrl + C to exit to summary.\n")
-
-    detection_times = []
-    confidences = []
-    consecutive_errors = 0
-    start_time = time.time()
-
-    try:
-        while True:
-            try:
-                result = detector.listen_once()
-                consecutive_errors = 0
-            except Exception:
-                # Don't let one bad frame kill the entire test, but give up after
-                # repeated failures in a row - that means there is no working
-                # microphone rather than a transient glitch.
-                consecutive_errors += 1
-                logger.exception("listen_once() raised an error, continuing test")
-                if consecutive_errors >= 3:
-                    print("\nlisten_once() failed 3 times in a row - is a microphone connected?")
-                    print("Aborting to summary.")
-                    break
-                continue
-
-            detection_times.append(time.time())
-            count = len(detection_times)
-            elapsed = detection_times[-1] - start_time
-
-            # listen_once() may return a confidence score, or nothing useful - handles both
-            confidence = result if isinstance(result, (int, float)) else None
-            if confidence is not None:
-                confidences.append(confidence)
-                print(f"Detected: ({count} total, at {elapsed:.1f}s, confidence={confidence:.2f})")
-            else:
-                print(f"Detected: ({count} total, at {elapsed:.1f}s)")
-    except KeyboardInterrupt:
+    def start(self):
         pass
 
-    # Summary
-    total_time = time.time() - start_time
-    count = len(detection_times)
+    def close(self, ignore_errors=False):
+        pass
 
-    print("\n" + "=" * 60)
-    print("WAKE WORD TEST SUMMARY")
-    print("=" * 60)
-    print(f"Total detections: {count}")
-    print(f"Total listening time: {total_time:.1f}s")
+    def feed(self, samples):
+        self.callback(np.zeros((samples, 1), dtype=np.float32), samples, None, None)
 
-    if count > 1:
-        # Finds the average time between detections if there is more than one.
-        # This could help identify unusually fast repeat triggers.
-        gaps = [detection_times[i] - detection_times[i - 1] for i in range(1, count)]
-        avg_gap = sum(gaps) / len(gaps)
-        print(f"Average time between detections: {avg_gap:.1f}s")
 
-    if confidences:
-        avg_confidence = sum(confidences) / len(confidences)
-        print(f"Average detection confidence: {avg_confidence:.2f}")
-        print(f"Lowest detection confidence: {min(confidences):.2f}")
+class FakeModel:
+    """Stands in for openWakeWord's Model, giving each chunk the next of a list of scores."""
 
-if __name__ == "__main__":
-    test_wake_word()
+    scores = []
+
+    def __init__(self, wakeword_models, inference_framework):
+        self.loaded = wakeword_models
+        self.chunks = []
+
+    def reset(self):
+        pass
+
+    def predict(self, chunk):
+        self.chunks.append(len(chunk))
+        return {"hey_nova": FakeModel.scores[len(self.chunks) - 1]}
+
+
+@pytest.fixture
+def models(tmp_path, monkeypatch):
+    """A project folder of its own, with a hey_nova.onnx model in it."""
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "hey_nova.onnx").write_bytes(b"")
+    monkeypatch.setattr(wake_word_module.paths, "MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(wake_word_module, "Model", FakeModel)
+    return tmp_path / "models"
+
+
+def test_the_wake_word_is_heard_through_the_shared_microphone(monkeypatch, make_config, models):
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    FakeModel.scores = [0.1, 0.2, 0.9]
+
+    microphone = Microphone(sample_rate=RATE)
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}),
+                                microphone=microphone)
+    started_at = microphone.position
+    threading.Timer(0.05, streams[0].feed, args=(3 * CHUNK_SAMPLES,)).start()
+
+    assert detector.listen_once() == 0.9
+    # Read straight off the stream in 80ms chunks, with no resampling of its own.
+    assert detector.model.chunks == [CHUNK_SAMPLES] * 3
+    assert detector.heard_at == started_at + 3 * CHUNK_SAMPLES
+    # The shared stream is used, rather than one of its own.
+    assert len(streams) == 1
+
+
+def test_the_last_couple_of_seconds_are_caught_up_on_but_cant_wake_it(monkeypatch, make_config, models):
+    # Started from nothing, the model couldn't hear "Hey Nova" for about a second
+    # after each reply.
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    streams[0].feed(5 * RATE)
+    caught_up = int(wake_word_module.CATCH_UP_SECONDS * RATE) // CHUNK_SAMPLES
+    # High scores while catching up are the past - Nova's own reply, say - and are ignored.
+    FakeModel.scores = [0.9] * caught_up + [0.1, 0.95]
+
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    threading.Timer(0.05, streams[0].feed, args=(3 * CHUNK_SAMPLES,)).start()
+    assert detector.listen_once() == 0.95
+    assert len(detector.model.chunks) == caught_up + 2
+
+
+def test_the_last_wake_word_is_never_heard_again(monkeypatch, make_config, models):
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    streams[0].feed(5 * RATE)
+    FakeModel.scores = [0.9, 0.95]
+
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    detector.heard_at = microphone.position - CHUNK_SAMPLES
+    threading.Timer(0.05, streams[0].feed, args=(CHUNK_SAMPLES,)).start()
+    # Only the one chunk since the last wake word is caught up on, then the new audio.
+    assert detector.listen_once() == 0.95
+    assert len(detector.model.chunks) == 2
+
+
+def test_listening_over_a_reply_stops_once_the_reply_has_finished(monkeypatch, make_config, models):
+    # Listened for over a reply, so it can be talked over - but only until it ends.
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    FakeModel.scores = [0.1, 0.2, 0.9]
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    detector.heard_at = microphone.position
+    streams[0].feed(2 * CHUNK_SAMPLES)
+
+    checks = []
+    assert detector.listen_once(until=lambda: checks.append(1) or len(checks) > 2) is None
+    assert len(detector.model.chunks) == 2
+    # Where the last wake word was heard is left alone, for the recording.
+    assert detector.heard_at == microphone.position - 2 * CHUNK_SAMPLES
+
+
+def test_the_wake_word_said_over_a_reply_is_heard(monkeypatch, make_config, models):
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    FakeModel.scores = [0.1, 0.9]
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    started_at = microphone.position
+    threading.Timer(0.05, streams[0].feed, args=(2 * CHUNK_SAMPLES,)).start()
+
+    assert detector.listen_once(until=lambda: False) == 0.9
+    assert detector.heard_at == started_at + 2 * CHUNK_SAMPLES
+
+
+def test_without_its_model_a_stock_wake_word_stands_in(make_config, models):
+    # A fresh install has no custom model yet, and used to fail to start at all.
+    (models / "hey_nova.onnx").unlink()
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}))
+    assert detector.wake_word_phrase == "Hey Jarvis"
+    assert detector.model.loaded == ["hey_jarvis"] and detector.wake_word_key == "hey_jarvis"
+
+
+@pytest.mark.parametrize("heard, meant", [
+    ("Hey Nova, what time is it?", "What time is it?"),
+    ("Nova. Stop.", "Stop."),
+    ("nova stop", "Stop"),
+    ("Hey, Nova.", ""),
+    ("What time is it?", "What time is it?"),
+    # Only taken off the front, and only as a whole word.
+    ("What's a nova?", "What's a nova?"),
+    ("Novak Djokovic's age", "Novak Djokovic's age"),
+    # The end of the wake word, misheard - all heard on the Pi.
+    ("In Nova, what's the weather?", "What's the weather?"),
+    ("Turn over, set a one minute timer.", "Set a one minute timer."),
+    ("Get over. Cancel that alarm I just set.", "Cancel that alarm I just set."),
+    # Only with punctuation straight after, so a real "over" is left alone.
+    ("Over the weekend, remind me to call mum.", "Over the weekend, remind me to call mum."),
+    ("I'm over it.", "I'm over it."),
+])
+def test_the_wake_word_is_taken_off_the_front_of_a_transcription(heard, meant):
+    assert strip_wake_word(heard, "Hey Nova") == meant

@@ -13,28 +13,42 @@ _alarms) and rings to its own, more insistent pattern.
 
 import os
 import re
-import json
 import logging
-import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
+from voice_assistant import paths, storage
+from voice_assistant.logging_setup import TRANSCRIPT
+
 # Logger setup
 logger = logging.getLogger(__name__)
 
 # Resolves paths relative to the project root, so saved timers live inside the project like everything else.
-PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TIMERS_FILE = os.path.join(PROJECT_DIRECTORY, "data", "timers.json")
-ALARMS_FILE = os.path.join(PROJECT_DIRECTORY, "data", "alarms.json")
+TIMERS_FILE = os.path.join(paths.DATA_DIR, "timers.json")
+ALARMS_FILE = os.path.join(paths.DATA_DIR, "alarms.json")
 
 # The days an alarm's repeat pattern can mean, as weekday() indices (0=Monday).
 WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
+# Every other way a repeat pattern's days might arrive, mapped to the days meant:
+# abbreviations ("mon", "thurs"), and the words for whole groups of days. "day" is
+# what's left of "every day" once the "every" has been taken off.
+REPEAT_WORDS = {name[:3]: (name,) for name in WEEKDAY_NAMES}
+REPEAT_WORDS.update({
+    "tues": ("tuesday",), "weds": ("wednesday",), "thur": ("thursday",), "thurs": ("thursday",),
+    "weekday": WEEKDAY_NAMES[:5], "weekdays": WEEKDAY_NAMES[:5],
+    "weekend": WEEKDAY_NAMES[5:], "weekends": WEEKDAY_NAMES[5:],
+    "daily": WEEKDAY_NAMES, "everyday": WEEKDAY_NAMES, "day": WEEKDAY_NAMES,
+})
+
 # A timer which came due while the assistant was off is still announced if it was
 # recent, anything older is ignored.
 MISSED_TIMER_GRACE_SECONDS = 3600
+
+# How loud an alarm's first burst plays, as a share of full volume - see _alarm_level.
+ALARM_START_LEVEL = 0.3
 # Waits until NTP corrects the time, so the clock is accurate on startup.
 PLAUSIBLE_TIME_AFTER = 1735689600
 
@@ -67,6 +81,112 @@ def format_duration(seconds: int) -> str:
     parts = parts[:2]
 
     return " and ".join(parts)
+
+
+def spoken_clock_time(hour: int, minute: int) -> str:
+    """
+    Formats a time of day for speech on the 12-hour clock, e.g. "7:05 AM", or
+    "midnight" and "noon" - "12 AM" is how a computer says midnight, not a person,
+    and which of "12 AM" and "12 PM" is which isn't something everyone knows.
+
+    Built by hand rather than with strftime's "%-I", which drops the leading zero
+    but only exists on Linux and macOS - Windows rejects it outright, which would
+    stop this module (and its tests) running anywhere but the Pi.
+    """
+    if minute == 0 and hour in (0, 12):
+        return "midnight" if hour == 0 else "noon"
+    return f"{hour % 12 or 12}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+
+
+def parse_repeat(repeat):
+    """
+    Turns an alarm's repeat pattern, however it was given, into the one form the
+    clock keeps: None for a one-off, "daily", "weekdays", "weekends", or a list of
+    weekday names in order (e.g. ["monday", "wednesday"]).
+
+    Anything it can't read raises ValueError rather than being dropped. Quietly
+    ignoring a day it didn't recognise ("mon", "mondays", "every day") used to leave
+    an alarm with no days at all, which then rang every day while being described
+    as a one-off.
+
+    Args:
+        repeat: None, a preset like "weekdays", a comma or "and" separated string
+                of days ("tuesdays and thursdays"), or a list of day names.
+
+    Returns:
+        The repeat pattern in its stored form.
+    """
+    if repeat is None or repeat == "":
+        return None
+
+    if isinstance(repeat, str):
+        words = re.split(r"[,/&]|\band\b", repeat.lower())
+    elif isinstance(repeat, (list, tuple)):
+        words = [str(word).lower() for word in repeat]
+    else:
+        raise ValueError(f"Unrecognised repeat pattern: {repeat!r}")
+
+    days = set()
+    for word in words:
+        word = word.strip()
+        if word.startswith("every "):
+            word = word[len("every "):].strip()
+        if not word:
+            continue
+        # A plural day ("mondays") means the same as the day itself.
+        if word.endswith("s") and word[:-1] in WEEKDAY_NAMES:
+            word = word[:-1]
+        if word in WEEKDAY_NAMES:
+            days.add(word)
+        elif word in REPEAT_WORDS:
+            days.update(REPEAT_WORDS[word])
+        else:
+            raise ValueError(f"Unrecognised day: {word!r}")
+
+    if not days:
+        raise ValueError(f"No days in repeat pattern: {repeat!r}")
+
+    # Stored in the shortest form that means the same thing, so it's described
+    # naturally ("every weekday" rather than listing Monday to Friday).
+    ordered = [day for day in WEEKDAY_NAMES if day in days]
+    if len(ordered) == 7:
+        return "daily"
+    if ordered == list(WEEKDAY_NAMES[:5]):
+        return "weekdays"
+    if ordered == list(WEEKDAY_NAMES[5:]):
+        return "weekends"
+    return ordered
+
+
+def seconds_until(at: str, now: Optional[datetime] = None) -> int:
+    """
+    How many seconds until a local clock time.
+
+    Worked out from the local time on that day, so the clocks going forward or back
+    in between is accounted for.
+
+    Args:
+        at: "HH:MM" for the next time it's that time - later today, or tomorrow if
+            it's already gone - or "YYYY-MM-DD HH:MM" for a particular day, which
+            can be in the past.
+        now: The current local time - only given by the tests.
+
+    Returns:
+        The seconds until then, rounded. Zero or less if a given day has passed.
+
+    Raises:
+        ValueError: If at can't be read.
+    """
+    now = now or datetime.now()
+    text = at.strip().replace("T", " ")
+    if " " in text:
+        target = datetime.fromisoformat(text)
+    else:
+        clock_time = datetime.strptime(text, "%H:%M").time()
+        target = datetime.combine(now.date(), clock_time)
+        if target <= now:
+            target += timedelta(days=1)
+    return round(target.timestamp() - now.timestamp())
 
 
 def _duration_units(text: str) -> set:
@@ -111,6 +231,12 @@ def _time_of_day_candidates(text: str) -> set:
         if 1 <= hour <= 12:
             candidates.add(((hour % 12) + (12 if meridiem == "pm" else 0), 0))
 
+    # As Nova says them itself - see spoken_clock_time.
+    if re.search(r"\bmidnight\b", text):
+        candidates.add((0, 0))
+    if re.search(r"\b(noon|midday)\b", text):
+        candidates.add((12, 0))
+
     return candidates
 
 
@@ -123,14 +249,17 @@ class Clock:
     pizza timer").
     """
 
-    def __init__(self, on_timer_finished: Optional[Callable[[str, str, bool], None]] = None,
-                 check_interval: float = 0.5, config=None):
+    def __init__(self, on_timer_finished: Optional[Callable[..., None]] = None,
+                 check_interval: float = 0.5, config=None, start: bool = True):
         """
         Args:
-            on_timer_finished: Called with (message, sound, boost) when a timer
-                               goes off. This is how the assistant speaks it - the
-                               Clock itself has no audio.
+            on_timer_finished: Called with (message, sound, boost, still_wanted=...),
+                               plus start, length and level for an alarm's bursts,
+                               when a timer goes off. This is how the assistant speaks
+                               it - the Clock itself has no audio.
             check_interval: How often the background thread checks for due timers.
+            start: Whether to start the background thread. Only the tests turn
+                   this off, so they can step the clock along with _tick() instead.
         """
         self.on_timer_finished = on_timer_finished
         self.check_interval = check_interval
@@ -182,6 +311,12 @@ class Clock:
         self.alarm_ring_duration = max(10.0, float(timers_config.get("alarm_ring_duration", 150)))
         self.alarm_gap_duration = max(10.0, float(timers_config.get("alarm_gap_duration", 150)))
         self.alarm_max_cycles = max(1, int(timers_config.get("alarm_max_cycles", 3)))
+        # Within a cycle, an alarm rings in short bursts with a gap after each, long
+        # enough to say "Hey Nova, stop" into, and builds up to full volume over
+        # alarm_ramp seconds - see _ring_alarm.
+        self.alarm_burst = max(0.5, float(timers_config.get("alarm_burst", 3)))
+        self.alarm_burst_gap = max(0.0, float(timers_config.get("alarm_burst_gap", 1)))
+        self.alarm_ramp = max(0.0, float(timers_config.get("alarm_ramp", 30)))
 
         self._alarms: Dict[int, Dict] = {}
         self._next_alarm_id = 1
@@ -198,39 +333,31 @@ class Clock:
 
         self._running = True
         # A daemon thread so it never keeps the assistant alive on shutdown.
-        self._thread = threading.Thread(target=self._run, daemon=True, name="clock")
-        self._thread.start()
+        # Each round of ringing runs on a thread of its own when the clock has its
+        # background thread - see _run_round. The tests step through without one,
+        # so there a round simply runs in whatever called it.
+        self._rounds_on_threads = start
+
+        if start:
+            self._thread = threading.Thread(target=self._run, daemon=True, name="clock")
+            self._thread.start()
 
         logger.info("Clock started")
 
     def _save(self):
         """
-        Writes the pending timers to the disk.
+        Writes the pending timers to the disk, along with any going off right now -
+        so a restart while one is ringing reports it as missed rather than losing it.
 
-        Written to a temporary file and then renamed, which is atomic on Linux, so
-        losing power mid-write leaves the previous file intact rather than a
-        half-written one. The caller is expected to already hold the lock.
+        Saved atomically (see storage.py), so losing power mid-write leaves the
+        previous file intact. The caller is expected to already hold the lock.
         """
         try:
-            os.makedirs(os.path.dirname(TIMERS_FILE), exist_ok=True)
-
-            # Written into the same directory as the target, since a rename is only atomic within one filesystem.
-            handle, temp_path = tempfile.mkstemp(dir=os.path.dirname(TIMERS_FILE),
-                                                 prefix=".timers-", suffix=".tmp")
-            try:
-                with os.fdopen(handle, "w") as f:
-                    json.dump({"next_id": self._next_id,
-                               "timers": list(self._timers.values())}, f)
-                    # Flushed to the disk itself, not just the OS cache, so a power
-                    # cut straight after saving can't lose the timer.
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_path, TIMERS_FILE)
-            except Exception:
-                # Never leaves the temporary file behind if the write failed.
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
+            storage.save_json(TIMERS_FILE, {
+                "next_id": self._next_id,
+                "timers": list(self._timers.values()),
+                "ringing": [entry["timer"] for entry in self._ringing if entry["kind"] == "clock"],
+            })
         except Exception as e:
             # Saving is best-effort: a failure here shouldn't stop a timer working
             # for the rest of this session.
@@ -243,21 +370,21 @@ class Clock:
         Timers which came due while the assistant was off are kept aside to be
         announced late, as long as they aren't older than the grace period.
         """
-        if not os.path.exists(TIMERS_FILE):
-            return
-
         try:
-            with open(TIMERS_FILE) as f:
-                data = json.load(f)
+            data = storage.load_json(TIMERS_FILE)
         except Exception as e:
             # A corrupt file shouldn't stop the assistant starting.
             logger.error(f"Could not read saved timers, ignoring them: {e}")
+            return
+        if data is None:
             return
 
         now = time.time()
         restored = missed = dropped = 0
 
-        for timer in data.get("timers", []):
+        # Anything which was going off when the assistant stopped is past its due
+        # time, so it's treated the same as one which came due while it was off.
+        for timer in data.get("timers", []) + data.get("ringing", []):
             # Skips anything malformed rather than trusting the file's contents.
             if not isinstance(timer, dict) or "due_at" not in timer:
                 continue
@@ -289,47 +416,44 @@ class Clock:
         if restored or missed or dropped:
             logger.info(f"Restored {restored} timer(s), {missed} missed, {dropped} too old")
 
+        # Saved straight away without the missed ones, which are now only in memory
+        # waiting to be announced. Otherwise a crash loop announced the same "while
+        # I was off" on every start, since the file still had them.
+        if missed or dropped:
+            self._save()
+
     def _save_alarms(self):
         """
         Writes the alarms to disk, the same atomic way _save writes timers. The
         caller is expected to already hold the lock.
         """
         try:
-            os.makedirs(os.path.dirname(ALARMS_FILE), exist_ok=True)
-            handle, temp_path = tempfile.mkstemp(dir=os.path.dirname(ALARMS_FILE),
-                                                 prefix=".alarms-", suffix=".tmp")
-            try:
-                with os.fdopen(handle, "w") as f:
-                    json.dump({"next_id": self._next_alarm_id,
-                               "alarms": list(self._alarms.values())}, f)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(temp_path, ALARMS_FILE)
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise
+            storage.save_json(ALARMS_FILE, {"next_id": self._next_alarm_id,
+                                            "alarms": list(self._alarms.values())})
         except Exception as e:
             logger.error(f"Could not save alarms: {e}")
 
     def _load_alarms(self):
         """
-        Restores alarms from disk. Unlike a timer's due_at, an alarm's due_at is
-        always recomputed from its hour/minute/repeat rather than trusted as-is,
-        since it may have been sitting unfired since before the assistant last
-        shut down.
-        """
-        if not os.path.exists(ALARMS_FILE):
-            return
+        Restores alarms from disk.
 
+        An alarm's saved due_at is trusted as-is, since a repeating one has it moved
+        on to the next occurrence the moment it goes off (see _tick). One which came
+        due while the assistant was off is mentioned once it's started, the same way
+        a missed timer is, rather than being quietly moved to the following day - a
+        one-off alarm is then done with, and a repeating one carries on from its
+        next occurrence.
+        """
         try:
-            with open(ALARMS_FILE) as f:
-                data = json.load(f)
+            data = storage.load_json(ALARMS_FILE)
         except Exception as e:
             logger.error(f"Could not read saved alarms, ignoring them: {e}")
             return
+        if data is None:
+            return
 
-        restored = 0
+        now = time.time()
+        restored = missed = 0
         for alarm in data.get("alarms", []):
             if not isinstance(alarm, dict):
                 continue
@@ -341,17 +465,45 @@ class Clock:
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 continue
 
-            repeat = alarm.get("repeat")
-            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat,
-                     "due_at": self._next_occurrence(hour, minute, repeat)}
+            # Normalised on the way in, so an alarm saved before repeat patterns were
+            # checked ("every day") still repeats the way it was meant to.
+            try:
+                repeat = parse_repeat(alarm.get("repeat"))
+            except ValueError:
+                logger.warning(f"Alarm {alarm_id} had an unreadable repeat pattern "
+                               f"{alarm.get('repeat')!r}, keeping it as a one-off")
+                repeat = None
+
+            try:
+                due_at = float(alarm["due_at"])
+            except (TypeError, ValueError, KeyError):
+                # Saved without a usable due time, so the next one is worked out afresh.
+                due_at = self._next_occurrence(hour, minute, repeat)
+
+            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at}
+
+            if due_at <= now:
+                # Recently missed, so it's still worth mentioning once started.
+                if now - due_at <= MISSED_TIMER_GRACE_SECONDS:
+                    self._missed.append({**alarm, "kind": "alarm"})
+                    missed += 1
+                if not repeat:
+                    continue
+                alarm["due_at"] = self._next_occurrence(hour, minute, repeat, after=max(due_at + 60, now))
+
             self._alarms[alarm_id] = alarm
             restored += 1
 
         self._next_alarm_id = max([int(data.get("next_id", 1))]
                                   + [a["id"] + 1 for a in self._alarms.values()] or [1])
 
-        if restored:
-            logger.info(f"Restored {restored} alarm(s)")
+        # Saved straight away if anything was missed, so a second restart soon after
+        # doesn't mention the same missed alarm all over again.
+        if missed:
+            self._save_alarms()
+
+        if restored or missed:
+            logger.info(f"Restored {restored} alarm(s), {missed} missed")
 
     def _next_occurrence(self, hour: int, minute: int, repeat, after: Optional[float] = None) -> float:
         """
@@ -384,6 +536,26 @@ class Clock:
                 candidate += timedelta(days=1)
 
         return candidate.timestamp()
+
+    def _alarm_days_overlap(self, repeat, due_at: float, existing: Dict) -> bool:
+        """
+        Whether a new alarm would ever ring on the same day as an existing one at the
+        same time of day.
+
+        Args:
+            repeat: The new alarm's repeat pattern, as from parse_repeat.
+            due_at: The new alarm's next occurrence.
+            existing: The alarm already set.
+        """
+        new_days = self._repeat_weekdays(repeat)
+        old_days = self._repeat_weekdays(existing["repeat"])
+        if new_days and old_days:
+            return bool(new_days & old_days)
+        if new_days:
+            return datetime.fromtimestamp(existing["due_at"]).weekday() in new_days
+        if old_days:
+            return datetime.fromtimestamp(due_at).weekday() in old_days
+        return datetime.fromtimestamp(due_at).date() == datetime.fromtimestamp(existing["due_at"]).date()
 
     @staticmethod
     def _repeat_weekdays(repeat) -> set:
@@ -426,69 +598,106 @@ class Clock:
         return ""
 
     def _run(self):
+        """Background loop which fires timers, reminders and alarms as they come due."""
+        while self._running:
+            self._tick(time.time())
+            time.sleep(self.check_interval)
+
+    def _tick(self, now: float):
         """
-        Background loop which fires timers, reminders and alarms as they come due.
+        One pass of the background loop: announces anything missed while the
+        assistant was off, fires whatever has come due, and repeats anything still
+        ringing. Kept separate from _run so the tests can step through it by hand.
 
         Callbacks are made outside the lock, so a slow announcement doesn't block
         the assistant from setting or cancelling other timers meanwhile.
+
+        Args:
+            now: The current time, as an epoch timestamp.
         """
-        while self._running:
-            now = time.time()
+        # Waits for the system clock to be believable before firing anything.
+        # Without this, a Pi which hasn't reached an NTP server yet would think
+        # every pending timer is overdue and announce them all at once.
+        if now < PLAUSIBLE_TIME_AFTER:
+            logger.warning("System clock not set yet, holding timers")
+            return
 
-            # Waits for the system clock to be believable before firing anything.
-            # Without this, a Pi which hasn't reached an NTP server yet would think
-            # every pending timer is overdue and announce them all at once.
-            if now < PLAUSIBLE_TIME_AFTER:
-                logger.warning("System clock not set yet, holding timers")
-                time.sleep(self.check_interval)
-                continue
-
-            # Timers which came due while the assistant was off are announced first,
-            # with a note that they're late so the user isn't misled. Alarms aren't
-            # caught up this way - by the time it's noticed, the moment's passed,
-            # and a repeating one will just fire again at its next occurrence.
-            if self._missed:
-                with self._lock:
-                    missed, self._missed = self._missed, []
-                for timer in missed:
-                    late = format_duration(now - timer["due_at"])
-                    base = timer["label"] or f"your {format_duration(timer['duration'])} timer"
-                    sound = "announcement_sound.wav" if timer["label"] else "timer_beep.wav"
-                    self._announce(f"While I was off: {base}. That was {late} ago.", sound)
-
-            due = []
+        # Anything which came due while the assistant was off is announced first,
+        # with a note that it's late so the user isn't misled. It's only mentioned,
+        # not rung - by the time it's noticed, the moment's passed.
+        if self._missed:
             with self._lock:
-                for timer_id, timer in list(self._timers.items()):
-                    if timer["due_at"] <= now:
-                        due.append(self._timers.pop(timer_id))
-                if due:
-                    self._save()
+                missed, self._missed = self._missed, []
+            for item in missed:
+                late = format_duration(now - item["due_at"])
+                if item.get("kind") == "alarm":
+                    base, sound = f"your {self._describe_alarm(item)}", "announcement_sound.wav"
+                else:
+                    base = item["label"] or f"your {format_duration(item['duration'])} timer"
+                    sound = "announcement_sound.wav" if item["label"] else "timer_beep.wav"
+                self._announce(f"While I was off: {base}. That was {late} ago.", sound)
 
-            due_alarms = []
-            with self._lock:
-                for alarm_id, alarm in list(self._alarms.items()):
-                    if alarm["due_at"] <= now:
-                        due_alarms.append(self._alarms.pop(alarm_id))
-                if due_alarms:
-                    self._save_alarms()
+        due = []
+        with self._lock:
+            for timer_id, timer in list(self._timers.items()):
+                if timer["due_at"] <= now:
+                    due.append(self._timers.pop(timer_id))
+            if due:
+                self._save()
 
-            for timer in due:
-                self._start_ringing(timer, "clock", now)
-            for alarm in due_alarms:
-                self._start_ringing(alarm, "alarm", now)
+        # What rings is a copy of the alarm as it was when it came due. A repeating
+        # alarm stays in the store and is moved on to its next occurrence straight
+        # away, rather than once it stops ringing - otherwise a restart while it was
+        # ringing (up to a quarter of an hour) would lose it from the file for good.
+        due_alarms = []
+        with self._lock:
+            for alarm_id, alarm in list(self._alarms.items()):
+                if alarm["due_at"] <= now:
+                    due_alarms.append({**alarm, "kind": "alarm"})
+                    if alarm.get("repeat"):
+                        alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"],
+                                                                alarm["repeat"], after=alarm["due_at"] + 60)
+                    else:
+                        del self._alarms[alarm_id]
+            if due_alarms:
+                self._save_alarms()
 
-            # Repeats anything which went off and hasn't been dismissed yet.
-            repeat_now = []
-            with self._lock:
-                for entry in list(self._ringing):
-                    if entry["next_at"] <= now:
-                        self._ringing.remove(entry)
-                        repeat_now.append(entry)
+        for timer in due:
+            self._start_ringing(timer, "clock", now)
+        for alarm in due_alarms:
+            self._start_ringing(alarm, "alarm", now)
 
-            for entry in repeat_now:
-                self._continue_ringing(entry)
+        # Repeats anything which went off and hasn't been dismissed yet - unless its
+        # last round is still going.
+        repeat_now = []
+        with self._lock:
+            for entry in self._ringing:
+                if not entry["busy"] and entry["next_at"] <= now:
+                    entry["busy"] = True
+                    repeat_now.append(entry)
 
-            time.sleep(self.check_interval)
+        for entry in repeat_now:
+            self._run_round(self._continue_ringing, entry)
+
+    def _run_round(self, round_function: Callable[[Dict], None], entry: Dict):
+        """
+        Runs one round of ringing, on a thread of its own so the clock carries on
+        checking everything else meanwhile.
+
+        A round can take minutes - an alarm cycle is two and a half minutes of
+        sound, and any round can wait up to a minute for a conversation to finish.
+        Run on the clock's own thread, that held up every other timer, so one which
+        came due during an alarm went off minutes late.
+
+        Args:
+            round_function: _first_round or _continue_ringing.
+            entry: The ringing entry, already marked busy.
+        """
+        if self._rounds_on_threads:
+            threading.Thread(target=round_function, args=(entry,), daemon=True,
+                             name=f"ringing-{entry['kind']}").start()
+        else:
+            round_function(entry)
 
     def _start_ringing(self, item: Dict, kind: str, now: float):
         """
@@ -514,40 +723,49 @@ class Clock:
                 # it has no separate deadline to watch.
                 "give_up_at": None if give_up_after is None else now + give_up_after,
                 # True only while it's actually making noise - see _ring_once.
-                "sounding": False}
+                "sounding": False,
+                # True while one of its rounds is playing, so _tick doesn't start
+                # another on top of it - see _run_round.
+                "busy": True}
         with self._lock:
             self._ringing.append(entry)
+            if kind == "clock":
+                self._save()
 
-        still_ringing = self._ring_once(entry, repeat=False)
+        self._run_round(self._first_round, entry)
+
+    def _first_round(self, entry: Dict):
+        """
+        Rings the first round for something which has just come due - see
+        _start_ringing.
+        """
+        still_ringing = self._ring_once(entry)
 
         # Timed from when it actually finished speaking, not from when it was
         # due. An announcement held back while the user was talking to the
         # assistant would otherwise be followed immediately by the next one,
         # bunching them together.
-        entry["next_at"] = time.time() + gap
+        entry["next_at"] = time.time() + entry["gap"]
 
-        # rounds is None for a timer or reminder, which are bounded by give_up_at
+        # left is None for a timer or reminder, which are bounded by give_up_at
         # instead - see _repeat_settings. An alarm can end on the very first round
-        # if rounds is 1, which the current default doesn't, but is possible.
-        if not still_ringing or (rounds is not None and rounds <= 1):
+        # if it only has one, which the current default doesn't, but is possible.
+        if not still_ringing or (entry["left"] is not None and entry["left"] <= 0):
             self._end_ringing(entry)
+        entry["busy"] = False
 
     def _continue_ringing(self, entry: Dict):
         """
-        Rings the next round for something already ringing, having been put back
-        in the queue for it (see _run). Ends it - dismissed or not - once its
-        rounds run out, or once it's been ringing longer than it's allowed to.
+        Rings the next round for something already ringing, once _tick finds it's
+        due again (see _run_round). Ends it - dismissed or not - once its rounds
+        run out, or once it's been ringing longer than it's allowed to.
         """
-        # Put back before anything else, so it can be dismissed mid-round and so
-        # _end_ringing below can find it to record it as missed.
-        with self._lock:
-            self._ringing.append(entry)
-
         # A timer or reminder is stopped by the clock rather than by a round count.
         # Checked before it speaks rather than after, so the last thing the user
         # hears is a full round and not one cut off part way through.
         if entry["give_up_at"] is not None and time.time() >= entry["give_up_at"]:
             self._end_ringing(entry)
+            entry["busy"] = False
             return
 
         if entry["left"] is not None:
@@ -556,7 +774,7 @@ class Clock:
         # what ends it instead.
         still_going = entry["left"] is None or entry["left"] > 0
 
-        still_ringing = self._ring_once(entry, repeat=True)
+        still_ringing = self._ring_once(entry)
 
         if still_going and still_ringing:
             # Timed from when it finished speaking, so a round delayed by a
@@ -564,37 +782,24 @@ class Clock:
             entry["next_at"] = time.time() + entry["gap"]
         else:
             self._end_ringing(entry)
+        entry["busy"] = False
 
     def _end_ringing(self, entry: Dict):
         """
-        Ends one ringing entry, however it got there - dismissed, or its rounds
-        ran out. A repeating alarm is rescheduled for its next occurrence here;
-        everything else was already removed from its store when it started
-        ringing, so there's nothing further to do for those.
+        Ends one ringing entry which ran out without being acknowledged, noting it
+        so the user can ask what they missed. Nothing needs rescheduling here -
+        everything was already dealt with in its store when it started ringing.
         """
         with self._lock:
             finished = entry in self._ringing
             if finished:
                 self._ringing.remove(entry)
+                self._save()
         if not finished:
             # Already removed - dismiss() got there first and handled this itself.
             return
 
         self._record_unacknowledged(entry["timer"])
-        self._finish_ringing(entry)
-
-    def _finish_ringing(self, entry: Dict):
-        """Reschedules a repeating alarm for its next occurrence. No-op for anything else."""
-        if entry["kind"] != "alarm":
-            return
-        alarm = entry["timer"]
-        if not alarm.get("repeat"):
-            return
-        with self._lock:
-            alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"],
-                                                     after=alarm["due_at"] + 60)
-            self._alarms[alarm["id"]] = alarm
-            self._save_alarms()
 
     def _repeat_settings(self, item: Dict, kind: str = "clock"):
         """
@@ -627,14 +832,14 @@ class Clock:
             return None, self.reminder_round_gap, self.reminder_give_up_after
         return None, self.timer_repeat_gap, self.timer_give_up_after
 
-    def _ring_once(self, entry: Dict, repeat: bool) -> bool:
+    def _ring_once(self, entry: Dict) -> bool:
         """
         Plays one round for whatever's ringing - a timer/reminder announcement, or
-        one alarm cycle.
+        one alarm cycle. A later round is worded the same as the first: the user
+        hasn't heard it yet, or they'd have dismissed it.
 
         Args:
             entry: The ringing entry (see _start_ringing).
-            repeat: True if this is a later round.
 
         Returns:
             True if it's still ringing (not dismissed) by the end of the round.
@@ -656,12 +861,12 @@ class Clock:
             # sure it's actually being heard.
             boost = (not item["label"]
                     and time.time() - entry["first_rung_at"] >= self.timer_volume_boost_after)
-            self._sound_off(item, repeat=repeat, boost=boost)
+            self._sound_off(item, boost=boost)
             return self._is_ringing(item)
         finally:
             entry["sounding"] = False
 
-    def _sound_off(self, timer: Dict, repeat: bool = False, boost: bool = False):
+    def _sound_off(self, timer: Dict, boost: bool = False):
         """
         Announces a timer or reminder which has come due.
 
@@ -670,8 +875,6 @@ class Clock:
 
         Args:
             timer: The timer which finished.
-            repeat: True if this is a later round, which doesn't change the wording:
-                    the user hasn't heard it yet, or they'd have dismissed it.
             boost: True once a timer has been ringing unanswered long enough that
                    it should jump to full volume, regardless of the configured
                    alarm level. Never set for a reminder - see _repeat_settings.
@@ -693,18 +896,22 @@ class Clock:
             # Stops mid-round if the user dismisses it, rather than talking over them.
             if announcement and not self._is_ringing(timer):
                 return
-            self._announce(message, sound, boost)
+            self._announce(message, sound, boost, still_wanted=lambda: self._is_ringing(timer))
             if announcement < self.announcements - 1:
                 time.sleep(self.repeat_gap)
 
     def _ring_alarm(self, alarm: Dict) -> bool:
         """
-        Rings an alarm for one cycle by looping alarm_sound.wav continuously for
-        alarm_ring_duration, stopping early if dismissed. Each cycle opens with a
-        spoken cut-in (so it's clear what's actually going off, and what time it
-        is, even for a later cycle) then falls back to the raw sound alone, so
-        nothing after that first loop is waiting on speech synthesis while it's
-        trying to be loud.
+        Rings an alarm for one cycle of alarm_ring_duration, stopping early if
+        dismissed. Each cycle opens with a spoken cut-in (so it's clear what's
+        actually going off, and what time it is, even for a later cycle), then
+        carries on through alarm_sound.wav in bursts, so nothing after the cut-in
+        is waiting on speech synthesis while it's trying to be loud.
+
+        It used to play the sound without a break, at full volume from the first
+        second - and right next to the microphone, that could drown out "Hey Nova,
+        stop" altogether. Now each burst is followed by a short gap to say it into,
+        and each cycle starts quieter and builds up to full volume.
 
         Args:
             alarm: The alarm which finished.
@@ -712,17 +919,55 @@ class Clock:
         Returns:
             True if it's still ringing (not dismissed) by the end of the cycle.
         """
-        cutin = f"It's {datetime.now().strftime('%-I:%M %p')}. Time to get up."
-        self._announce(cutin, "alarm_sound.wav", boost=True)
+        def still_wanted():
+            return self._is_ringing(alarm)
+
+        started = time.time()
+        now = datetime.now()
+        cutin = f"It's {spoken_clock_time(now.hour, now.minute)}. Time to get up."
+        self._announce(cutin, "alarm_sound.wav", boost=True, still_wanted=still_wanted,
+                       start=0.0, length=self.alarm_burst, level=self._alarm_level(0.0))
         if not self._is_ringing(alarm):
             return False
 
-        end_at = time.time() + self.alarm_ring_duration
+        # Where the next burst picks up in the sound, so the bursts carry on through
+        # it rather than repeating its first few seconds over and over.
+        position = self.alarm_burst
+        end_at = started + self.alarm_ring_duration
         while time.time() < end_at:
+            if not self._wait_while_ringing(alarm, self.alarm_burst_gap):
+                return False
+            self._announce(None, "alarm_sound.wav", boost=True, still_wanted=still_wanted,
+                           start=position, length=self.alarm_burst,
+                           level=self._alarm_level(time.time() - started))
+            position += self.alarm_burst
+
+        return self._is_ringing(alarm)
+
+    def _alarm_level(self, elapsed: float) -> float:
+        """
+        How loud an alarm burst plays, as a share of full volume: ALARM_START_LEVEL
+        at the start of a cycle, building up to full over alarm_ramp seconds.
+
+        Args:
+            elapsed: Seconds since the cycle started.
+        """
+        if self.alarm_ramp <= 0:
+            return 1.0
+        return min(1.0, ALARM_START_LEVEL + (1.0 - ALARM_START_LEVEL) * elapsed / self.alarm_ramp)
+
+    def _wait_while_ringing(self, alarm: Dict, seconds: float) -> bool:
+        """
+        Waits through the gap after an alarm burst, finishing early if it's dismissed.
+
+        Returns:
+            True if it's still ringing at the end of the gap.
+        """
+        end = time.time() + seconds
+        while time.time() < end:
             if not self._is_ringing(alarm):
                 return False
-            self._announce(None, "alarm_sound.wav", boost=True)
-
+            time.sleep(min(0.1, max(0.0, end - time.time())))
         return self._is_ringing(alarm)
 
     def _is_ringing(self, timer: Dict) -> bool:
@@ -753,20 +998,33 @@ class Clock:
         "understood", "silence", "mute", "no",
     }
 
-    # Words which carry no request of their own, so they don't stop something being
-    # a bare acknowledgement. Several of the dismissal words above are ordinary
-    # English ("off", "no", "right", "thanks"), so a phrase is only treated as a
-    # dismissal when everything in it is one of these two sets - otherwise "turn
-    # off the lights" would silence a timer and never reach the lights.
+    # Said last, these mean "stop" whatever was heard before them. "Stop" alone,
+    # over a timer, has come back as "It's a little bus stop" - which still went to
+    # Claude, and only stopped the timer by the roundabout route of being talked over.
+    # Moonshine (see speech_to_text.py) hears a lone "stop" as "soap", "sop", or
+    # just "so" - which, said over a timer, went to Claude, who replied "Your message
+    # just says 'So'" and asked what was wanted.
+    STOP_WORDS = {"stop", "enough", "cancel", "dismiss", "quiet", "shush", "silence", "mute", "soap", "sop", "so"}
+
+    # A plain answer to a yes/no question - see answer_to_offer. "Okay" and "right"
+    # aren't here, since "okay, leave it" turns an offer down.
+    YES_WORDS = {"yes", "yeah", "yep", "yup", "aye", "sure", "definitely"}
+    NO_WORDS = {"no", "nope", "nah"}
+
     # Words which turn down an offer. "no" is a dismissal word too - said to a
     # ringing timer it means "make it stop" - so when the assistant has just asked
-    # a yes/no question, this is checked first and wins, or answering "no" to
-    # "shall I turn that reminder off?" would turn it off.
+    # a yes/no question, refusals are weighed first, or answering "no" to "shall I
+    # turn that reminder off?" would turn it off.
     REFUSAL_WORDS = {
         "no", "nope", "nah", "not", "dont", "don't", "leave", "keep", "later",
         "ignore", "nevermind", "never",
     }
 
+    # Words which carry no request of their own, so they don't stop something being
+    # a bare acknowledgement. Several of the dismissal words above are ordinary
+    # English ("off", "no", "right", "thanks"), so a phrase is only treated as a
+    # dismissal when everything in it is one of these two sets - otherwise "turn
+    # off the lights" would silence a timer and never reach the lights.
     FILLER_WORDS = {
         "a", "all", "am", "an", "and", "are", "as", "at", "be", "been", "but",
         "can", "could", "did", "do", "for", "from", "have", "has", "had", "hey", "i",
@@ -799,6 +1057,9 @@ class Clock:
             Dict with:
               'insistent'        - a timer or alarm is going off. Talking to the
                                    assistant at all is enough to stop these.
+              'insistent_entries'- exactly which ones, for silence_insistent - so
+                                   one which only starts during the conversation
+                                   isn't silenced along with them.
               'reminder'         - the label of a reminder going off, or None. A
                                    reminder needs acknowledging in its own right.
               'reminder_sounding'- True if that reminder is mid-announcement rather
@@ -808,15 +1069,17 @@ class Clock:
             entries = list(self._ringing)
 
         reminders = [e for e in entries if not self._is_insistent(e)]
+        insistent = [e for e in entries if self._is_insistent(e)]
         return {
-            "insistent": any(self._is_insistent(e) for e in entries),
+            "insistent": bool(insistent),
+            "insistent_entries": insistent,
             "reminder": reminders[0]["timer"]["label"] if reminders else None,
             "reminder_sounding": any(e.get("sounding") for e in reminders),
         }
 
-    def silence_insistent(self) -> bool:
+    def silence_insistent(self, heard: Optional[List[Dict]] = None) -> bool:
         """
-        Silences any timer or alarm going off, leaving reminders alone.
+        Silences timers and alarms going off, leaving reminders alone.
 
         Used when the user has said something to the assistant while one is ringing:
         talking at all means they've heard it, whatever they actually asked for. A
@@ -824,18 +1087,24 @@ class Clock:
         right (see main.py) - and the missed list is left alone too, since this
         isn't the user saying they've caught up on what they missed.
 
+        Args:
+            heard: The ringing entries the user could hear when they started talking,
+                as from ringing_state()["insistent_entries"]. Only those are
+                silenced: a timer which came due while the assistant was replying
+                hasn't been announced yet - announcements wait for the conversation
+                to end - so it mustn't be silenced unheard. None silences all of them.
+
         Returns:
             True if anything was actually silenced.
         """
         with self._lock:
             keep, silenced = [], []
             for entry in self._ringing:
-                (silenced if self._is_insistent(entry) else keep).append(entry)
+                wanted = self._is_insistent(entry) and (heard is None or any(entry is h for h in heard))
+                (silenced if wanted else keep).append(entry)
             self._ringing = keep
-
-        # Outside the lock, since a repeating alarm reschedules itself here.
-        for entry in silenced:
-            self._finish_ringing(entry)
+            if silenced:
+                self._save()
 
         if silenced:
             logger.info(f"Silenced {len(silenced)} timer(s)/alarm(s) - the user was talking")
@@ -870,6 +1139,9 @@ class Clock:
         # mis-transcription which happens to be all common words from counting.
         if not words or len(words) > 6:
             return False
+        # Ending in "stop" or the like, it's taken as that - unless it's "don't stop".
+        if words[-1] in cls.STOP_WORDS and not set(words) & cls.REFUSAL_WORDS:
+            return True
         # Has to actually acknowledge something - filler alone isn't a dismissal.
         if not set(words) & cls.DISMISSAL_WORDS:
             return False
@@ -877,58 +1149,53 @@ class Clock:
                    for word in words)
 
     @classmethod
-    def looks_like_agreement(cls, text: str) -> bool:
+    def answer_to_offer(cls, text: str) -> Optional[bool]:
         """
-        Whether a short answer to a yes/no question the assistant just asked was a
-        yes.
+        Whether a short answer to a yes/no question the assistant just asked ("shall
+        I turn that reminder off?") was a yes, a no, or neither.
 
-        Deliberately looser than looks_like_dismissal. That one has to guard
-        against swallowing a real request, so it insists every word be an
-        acknowledgement or filler; here the assistant has just asked a question, so
-        a stray content word ("yeah go on", "yes turn it off") doesn't make it any
-        less of an answer. Refusals are checked first, since "no" is in both.
+        A plain "yes" or "no" decides it wherever it comes, so "yes, I don't need it
+        any more" is a yes despite the "don't", and "no, turn it off" a no despite
+        the "off". Saying both, as in "yeah, no", is taken as neither rather than
+        guessed at. Only without one are the softer words weighed: a refusal ("leave
+        it", "not now") first, since "okay, leave it" is turning the offer down, then
+        an acknowledgement ("turn it off", "okay"). Deliberately looser than
+        looks_like_dismissal - the assistant has just asked a question, so a stray
+        content word ("yeah go on") doesn't make it any less of an answer.
 
         Args:
             text: What the user said.
 
         Returns:
-            True if it should be read as "yes".
+            True for yes, False for no, or None when it isn't a clear answer - which
+            is then handled as a fresh request.
         """
         words = re.findall(r"[a-z']+", text.lower())
-        if not words or len(words) > 6:
+        if not words:
+            return None
+        said = set(words)
+        # "Why not?" means yes, though "not" on its own turns an offer down.
+        if " ".join(words) in ("why not", "go on then", "go on"):
+            return True
+        yes, no = bool(said & cls.YES_WORDS), bool(said & cls.NO_WORDS)
+        if yes != no and (len(words) <= 10 or words[0] in cls.YES_WORDS | cls.NO_WORDS):
+            return yes
+        if yes or len(words) > 6:
+            return None
+        if said & cls.REFUSAL_WORDS:
             return False
-        return bool(set(words) & cls.DISMISSAL_WORDS)
-
-    @classmethod
-    def looks_like_refusal(cls, text: str) -> bool:
-        """
-        Whether a short answer was turning down an offer the assistant just made,
-        e.g. "no", "leave it", "not now".
-
-        Only meaningful straight after the assistant has asked a yes/no question,
-        and checked before looks_like_dismissal in that case - the two overlap on
-        "no", which means opposite things depending on whether it's answering a
-        question or being said to something that's ringing.
-
-        Args:
-            text: What the user said.
-
-        Returns:
-            True if it should be read as "no".
-        """
-        words = re.findall(r"[a-z']+", text.lower())
-        if not words or len(words) > 6:
-            return False
-        return bool(set(words) & cls.REFUSAL_WORDS)
+        if said & cls.DISMISSAL_WORDS:
+            return True
+        return None
 
     def dismiss(self) -> Dict:
         """
         Acknowledges anything currently going off, stopping it repeating.
 
-        For a repeating alarm this only silences today's occurrence - it's
-        rescheduled for its next one, the same as if it had rung out its cycles
-        unanswered. Fully cancelling the repeat is a separate, explicit request
-        (see cancel_alarm), never implied by just dismissing it.
+        For a repeating alarm this only silences today's occurrence - its next
+        one was already scheduled when this one went off. Fully cancelling the
+        repeat is a separate, explicit request (see cancel_alarm), never implied
+        by just dismissing it.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
@@ -939,12 +1206,11 @@ class Clock:
             # Dismissing also clears what was missed, since the user has now heard it.
             missed = len(self._unacknowledged)
             self._unacknowledged = []
+            if ringing:
+                self._save()
 
         if not ringing and not missed:
             return {"success": False, "message": "Nothing's going off."}
-
-        for entry in ringing:
-            self._finish_ringing(entry)
 
         logger.info(f"Dismissed {len(ringing)} ringing timer(s)")
         return {"success": True, "message": "Okay.", "chime": True}
@@ -963,12 +1229,14 @@ class Clock:
         if not missed:
             return {"success": True, "message": "You haven't missed anything."}
 
+        # An alarm has no label or duration to name it by, so it's described by its time instead.
         now = time.time()
-        described = [f"{self._describe(t)}, {format_duration(now - t['missed_at'])} ago"
-                     for t in missed]
+        described = [f"{self._describe_alarm(t) if t.get('kind') == 'alarm' else self._describe(t)}, "
+                     f"{format_duration(now - t['missed_at'])} ago" for t in missed]
         return {"success": True, "message": "You missed " + "; ".join(described) + "."}
 
-    def _announce(self, message: str, sound: str = "announcement_sound.wav", boost: bool = False):
+    def _announce(self, message: str, sound: str = "announcement_sound.wav", boost: bool = False,
+                  still_wanted: Optional[Callable[[], bool]] = None, **playback):
         """
         Passes a message to the callback which speaks it.
 
@@ -977,23 +1245,33 @@ class Clock:
             sound: Which sound effect should introduce the message.
             boost: True if it should be spoken at full volume regardless of the
                    configured alarm level - see _sound_off.
+            still_wanted: Checked by the callback right before anything plays. An
+                          announcement can be held back while the user talks to the
+                          assistant, and they may dismiss it in that very conversation -
+                          without this it would still play once it was finally let through.
+            playback: Which part of the sound to play, and how loud - start and length
+                      in seconds, and level as a share of the volume. Only an alarm's
+                      bursts give these - see _ring_alarm.
         """
-        logger.info(f"Timer finished: {message}")
+        # An alarm's bursts have no message, and come every few seconds, so they
+        # aren't logged one by one.
+        if message:
+            logger.info(f"Timer finished: {message}", extra=TRANSCRIPT)
 
         if self.on_timer_finished:
             try:
-                self.on_timer_finished(message, sound, boost)
+                self.on_timer_finished(message, sound, boost, still_wanted=still_wanted, **playback)
             except Exception as e:
                 # A failed announcement must not kill the timer thread.
                 logger.error(f"Timer announcement failed: {e}")
 
-    def set_timer(self, duration_seconds: int, label: Optional[str] = None,
-                  is_reminder: bool = False) -> Dict:
+    def set_timer(self, duration_seconds: Optional[int] = None, label: Optional[str] = None,
+                  is_reminder: bool = False, at: Optional[str] = None) -> Dict:
         """
         Start a countdown timer, or a reminder if it carries a label.
 
         Args:
-            duration_seconds: How long to count down for.
+            duration_seconds: How long to count down for. Not needed when at is given.
             label: What to say when it goes off. Without one it's a plain timer,
                    with one it's a reminder.
             is_reminder: True when the user explicitly asked for a "reminder" (or
@@ -1002,10 +1280,22 @@ class Clock:
                          or announced, so one can't be created without one - if
                          this is True and no label was given, the user is asked
                          to name it instead of a nameless reminder being set.
+            at: A clock time to count down to instead - see seconds_until.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
+        # A clock time is turned into a duration here, rather than by the model. Left
+        # to the model, "remind me at 4pm" meant clock arithmetic in seconds from a
+        # time given only to the minute, and slips by a minute (or an hour) happened.
+        if at:
+            try:
+                duration_seconds = seconds_until(at)
+            except ValueError:
+                return {"success": False, "message": "Sorry, I didn't catch what time for."}
+            if duration_seconds <= 0:
+                return {"success": False, "message": "That time has already passed."}
+
         try:
             duration_seconds = int(duration_seconds)
         except (TypeError, ValueError):
@@ -1027,11 +1317,16 @@ class Clock:
             return {"success": False, "message": "What would you like to name this reminder?"}
 
         with self._lock:
-            # Two timers due in the same minute would be indistinguishable once
-            # they're both running, so this is caught up front rather than
-            # leaving the user with two timers they can't tell apart.
+            # Two plain timers due in the same minute would be indistinguishable
+            # once they're both running, so this is caught up front rather than
+            # leaving the user with two timers they can't tell apart. A reminder is
+            # told apart by its name instead, so it only clashes with another of
+            # the same name - "remind me to take the pizza out in 10 minutes" isn't
+            # refused just because a 10 minute timer was set a moment earlier.
             due_local = time.localtime(due_at)
             for existing in self._timers.values():
+                if (label or "").strip().lower() != (existing["label"] or "").strip().lower():
+                    continue
                 existing_local = time.localtime(existing["due_at"])
                 if (due_local.tm_year, due_local.tm_yday, due_local.tm_hour, due_local.tm_min) == \
                    (existing_local.tm_year, existing_local.tm_yday, existing_local.tm_hour, existing_local.tm_min):
@@ -1088,6 +1383,11 @@ class Clock:
 
         return self.set_timer(remaining, label, is_reminder=True)
 
+    def timer_count(self) -> int:
+        """How many timers and reminders are counting down."""
+        with self._lock:
+            return len(self._timers)
+
     def describe_all(self) -> List[str]:
         """
         Plain-text descriptions of every running timer, reminder and alarm - the
@@ -1127,10 +1427,19 @@ class Clock:
         """
         Formats an absolute due time for speech, e.g. "5:40 PM", or "5:40 PM on
         Tuesday" if it's due on a different day to today.
+
+        Midnight is named by the night it ends - "midnight tonight", "midnight on
+        Tuesday night" - since "midnight on Wednesday", for the moment Wednesday
+        begins, is just as often taken to mean the end of it.
         """
         due = time.localtime(due_at)
         now = time.localtime()
-        spoken = time.strftime("%-I:%M %p", due)
+        spoken = spoken_clock_time(due.tm_hour, due.tm_min)
+        if (due.tm_hour, due.tm_min) == (0, 0):
+            night = time.localtime(due_at - 12 * 3600)
+            if (night.tm_year, night.tm_yday) == (now.tm_year, now.tm_yday):
+                return "midnight tonight"
+            return time.strftime("midnight on %A night", night)
         if (due.tm_year, due.tm_yday) != (now.tm_year, now.tm_yday):
             spoken += time.strftime(" on %A", due)
         return spoken
@@ -1165,6 +1474,78 @@ class Clock:
             length = length.replace(unit, unit[:-1])
         return f"{length} timer"
 
+    @staticmethod
+    def _timer_matches(timer: Dict, wanted: str) -> bool:
+        """
+        Whether a timer or reminder is the one the user described.
+
+        Args:
+            timer: The timer to check.
+            wanted: What the user called it, lowercased - its label, its length, or
+                    the clock time it's due.
+
+        Returns:
+            True if it matches.
+        """
+        timer_label = (timer["label"] or "").lower()
+        wanted_units = _duration_units(wanted)
+        wanted_times = _time_of_day_candidates(wanted)
+        due_local = time.localtime(timer["due_at"])
+
+        matches_label = bool(timer_label) and (wanted in timer_label or timer_label in wanted)
+        # Unlabelled timers are matched on their length instead. Every number/unit pair
+        # the user said has to match the timer's actual duration exactly, so "the 30
+        # minute timer" can't also grab a 1 hour 30 minute timer just for sharing the
+        # digit "30" and the word "minute".
+        matches_duration = (not timer_label
+                            and bool(wanted_units)
+                            and wanted_units == _duration_units(format_duration(timer["duration"]).lower()))
+        # A timer or reminder can also be identified by the clock time it's
+        # due to go off, e.g. "cancel the 5:40 one".
+        matches_time = (bool(wanted_times)
+                        and (due_local.tm_hour, due_local.tm_min) in wanted_times)
+
+        return matches_label or matches_duration or matches_time
+
+    def _about_ringing(self, label: Optional[str], kind: str) -> bool:
+        """
+        Whether a cancel request is about something which is going off right now,
+        rather than one still waiting to go off.
+
+        Args:
+            label: What the user called it. None ("cancel it", "turn that off") means
+                   whatever of that kind is ringing.
+            kind: "clock" for timers / reminders, "alarm" for alarms.
+
+        Returns:
+            True if something of that kind is ringing and the request describes it.
+        """
+        with self._lock:
+            ringing = [entry["timer"] for entry in self._ringing if entry["kind"] == kind]
+        if not ringing:
+            return False
+        if not label:
+            return True
+
+        wanted = label.strip().lower()
+        if kind == "alarm":
+            wanted_times = _time_of_day_candidates(wanted)
+            return any((alarm["hour"], alarm["minute"]) in wanted_times for alarm in ringing)
+        return any(self._timer_matches(timer, wanted) for timer in ringing)
+
+    def _silence_kind(self, kind: str) -> int:
+        """
+        Stops everything of one kind which is going off, leaving the rest ringing.
+        Used when the user cancels every timer, or every alarm, while one is sounding.
+
+        Returns:
+            How many were silenced.
+        """
+        with self._lock:
+            silenced = [entry for entry in self._ringing if entry["kind"] == kind]
+            self._ringing = [entry for entry in self._ringing if entry["kind"] != kind]
+        return len(silenced)
+
     def cancel_timer(self, label: Optional[str] = None, cancel_all: bool = False) -> Dict:
         """
         Cancel a timer or reminder.
@@ -1183,14 +1564,18 @@ class Clock:
         """
         # Something going off right now is dismissed rather than cancelled, since
         # "cancel that" while a reminder is sounding means "stop it", and there's
-        # no pending timer left to cancel by then.
-        with self._lock:
-            ringing = bool(self._ringing)
-        if ringing:
+        # no pending timer left to cancel by then. Only when the request is actually
+        # about what's ringing, though - "cancel the pizza reminder" while some other
+        # timer is going off means the pizza reminder, and dismissing the other one
+        # instead would leave it set while the user thinks it's gone.
+        silenced = self._silence_kind("clock") if cancel_all else 0
+        if not cancel_all and self._about_ringing(label, "clock"):
             return self.dismiss()
 
         with self._lock:
             if not self._timers:
+                if silenced:
+                    return {"success": True, "message": "Okay.", "chime": True}
                 return {"success": False, "message": "There aren't any timers to cancel."}
 
             if cancel_all:
@@ -1232,33 +1617,10 @@ class Clock:
                     self._save()
                     return {"success": True, "message": self._deleted_message(timer)}
 
-            wanted_units = _duration_units(wanted)
-            wanted_times = _time_of_day_candidates(wanted)
-
             # Every timer matching what was said, rather than stopping at the first
             # one - two 10 minute timers both match "the 10 minute timer" equally,
             # so which one gets cancelled must be asked rather than guessed.
-            matches = []
-            for timer in self._timers.values():
-                timer_label = (timer["label"] or "").lower()
-                duration_text = format_duration(timer["duration"]).lower()
-                due_local = time.localtime(timer["due_at"])
-
-                matches_label = bool(timer_label) and (wanted in timer_label or timer_label in wanted)
-                # Unlabelled timers are matched on their length instead. Every number/unit pair
-                # the user said has to match the timer's actual duration exactly, so "the 30
-                # minute timer" can't also grab a 1 hour 30 minute timer just for sharing the
-                # digit "30" and the word "minute".
-                matches_duration = (not timer_label
-                                    and bool(wanted_units)
-                                    and wanted_units == _duration_units(duration_text))
-                # A timer or reminder can also be identified by the clock time it's
-                # due to go off, e.g. "cancel the 5:40 one".
-                matches_time = (bool(wanted_times)
-                                and (due_local.tm_hour, due_local.tm_min) in wanted_times)
-
-                if matches_label or matches_duration or matches_time:
-                    matches.append(timer)
+            matches = [timer for timer in self._timers.values() if self._timer_matches(timer, wanted)]
 
             if len(matches) == 1:
                 timer = matches[0]
@@ -1275,18 +1637,21 @@ class Clock:
                         "message": f"There are {len(matches)} {kind}s: {options}. "
                                    f"Which would you like to cancel?"}
 
-            # Nothing matched, but with a single timer running there's nothing else
-            # the user could have meant, so it deletes the timer.
+            # Nothing matched. With a single timer running it's probably what was
+            # meant, but deleting it unasked was too surprising - "cancel the pizza
+            # reminder" quietly deleted an unrelated 10 minute timer - so it asks.
+            # The answer comes back through the model, as "which one?" above does.
             if len(self._timers) == 1:
-                timer = self._timers.popitem()[1]
-                self._save()
-                return {"success": True, "message": self._deleted_message(timer)}
+                timer = next(iter(self._timers.values()))
+                return {"success": False,
+                        "message": f"You only have the {self._describe(timer)} for "
+                                   f"{self._spoken_due(timer['due_at'])}. Do you want me to cancel that?"}
 
             return {"success": False, "message": f"I couldn't find a timer for {label}."}
 
     def _spoken_time_of_day(self, hour: int, minute: int) -> str:
         """Formats an hour/minute as a spoken clock time, e.g. "7:00 AM"."""
-        return datetime.now().replace(hour=hour, minute=minute).strftime("%-I:%M %p")
+        return spoken_clock_time(hour, minute)
 
     def _describe_alarm(self, alarm: Dict) -> str:
         """Names an alarm for speech, e.g. "7:00 AM alarm, every weekday"."""
@@ -1304,8 +1669,9 @@ class Clock:
         Args:
             hour: 0-23.
             minute: 0-59.
-            repeat: None for a one-off alarm, or a repeat pattern - "daily",
-                    "weekdays", "weekends", or a list of weekday names.
+            repeat: None for a one-off alarm, or a repeat pattern in any form
+                    parse_repeat understands - "daily", "weekdays", "weekends",
+                    or the days themselves.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
@@ -1318,13 +1684,25 @@ class Clock:
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             return {"success": False, "message": "That's not a real time."}
 
+        # Asked about rather than guessed at, since a wrong guess means an alarm
+        # going off on days it shouldn't. Worded as a question so the answer is
+        # listened for straight away.
+        try:
+            repeat = parse_repeat(repeat)
+        except ValueError:
+            logger.info(f"Couldn't read the repeat pattern {repeat!r}, asking")
+            return {"success": False, "message": "Sorry, which days should that alarm repeat on?"}
+
         due_at = self._next_occurrence(hour, minute, repeat)
 
         with self._lock:
             # Same idea as a timer set for the same clock minute as another - two
             # alarms due at once would be indistinguishable once they're ringing.
+            # Only alarms which would actually ring on the same day clash, though:
+            # a one-off 7am on Saturday is fine alongside a weekday 7am.
             for existing in self._alarms.values():
-                if existing["hour"] == hour and existing["minute"] == minute:
+                if (existing["hour"] == hour and existing["minute"] == minute
+                        and self._alarm_days_overlap(repeat, due_at, existing)):
                     return {"success": False,
                             "message": f"You already have a {self._describe_alarm(existing)}."}
 
@@ -1398,15 +1776,31 @@ class Clock:
             Dict with 'success' and a spoken 'message'.
         """
         # An alarm currently ringing is dismissed rather than cancelled here -
-        # dismissing it already does the right thing (silences today, reschedules
-        # if it repeats), and there's no pending alarm left to cancel by then.
-        with self._lock:
-            ringing = bool(self._ringing)
-        if ringing:
-            return self.dismiss()
+        # dismissing it already does the right thing (silences today, and a
+        # repeating one's next occurrence was scheduled when this one went off).
+        # Only when the request is about the ringing alarm, though: with a timer
+        # going off, "cancel my 7am alarm" still means the 7am alarm.
+        silenced = self._silence_kind("alarm") if cancel_all else 0
+        if not cancel_all and self._about_ringing(label, "alarm"):
+            with self._lock:
+                ringing_ids = [entry["timer"]["id"] for entry in self._ringing if entry["kind"] == "alarm"]
+            result = self.dismiss()
+
+            # "Stop it repeating" said to a ringing alarm means the whole schedule,
+            # not just today's - which dismissing alone would leave in place.
+            if scope == "all":
+                with self._lock:
+                    removed = [self._alarms.pop(alarm_id) for alarm_id in ringing_ids if alarm_id in self._alarms]
+                    if removed:
+                        self._save_alarms()
+                if removed:
+                    return {"success": True, "message": f"{self._describe_alarm(removed[0])} cancelled."}
+            return result
 
         with self._lock:
             if not self._alarms:
+                if silenced:
+                    return {"success": True, "message": "Okay.", "chime": True}
                 return {"success": False, "message": "There aren't any alarms to cancel."}
 
             if cancel_all:
@@ -1428,10 +1822,13 @@ class Clock:
                 matches = [a for a in self._alarms.values()
                           if wanted_times and (a["hour"], a["minute"]) in wanted_times]
 
-                # Nothing matched, but with a single alarm set there's nothing
-                # else the user could have meant.
+                # Nothing matched. With a single alarm set it's probably what was
+                # meant, but cancelling it unasked is too surprising, so it asks.
                 if not matches and len(self._alarms) == 1:
-                    matches = list(self._alarms.values())
+                    only = next(iter(self._alarms.values()))
+                    return {"success": False,
+                            "message": f"You only have the {self._describe_alarm(only)}. "
+                                       f"Do you want me to cancel that?"}
 
                 if not matches:
                     return {"success": False, "message": f"I couldn't find an alarm for {label}."}

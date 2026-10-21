@@ -16,16 +16,34 @@
 # as they do when main.py is run by hand.
 Description=Voice Assistant
 
-# Waits for the network, since the assistant talks to the Claude and Spotify APIs.
-After=network-online.target
-Wants=network-online.target
+# There's no waiting for the network: a user service can't wait on the system's
+# network-online.target, and the assistant manages without the network anyway,
+# saying so when something needs it (see voice_assistant/network.py).
 
 [Service]
-Type=simple
+# The assistant tells systemd once it's loaded, and then every so often that it's
+# still working - only while its main loop keeps moving, so one which has hung is
+# restarted rather than left looking healthy (see voice_assistant/watchdog.py).
+# Loading the models takes a while on a cold boot, hence the long start allowance.
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
+TimeoutStartSec=180
 WorkingDirectory=__PROJECT_DIRECTORY__
 ExecStart=__PYTHON__ __PROJECT_DIRECTORY__/main.py
 
-# Restarts the assistant if it crashes, with a short pause to excessive crashing.
+# Anything the assistant writes - the Spotify token cache, saved timers, logs - is
+# readable by this user only, rather than by everyone on the machine.
+UMask=0077
+
+# A little defence in depth, for something which will one day control the house:
+# it can never gain more privileges than it starts with (no sudo, no setuid), and
+# its /tmp is its own.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# Restarts the assistant if it crashes or hangs, with a short pause to avoid
+# excessive crashing.
 Restart=on-failure
 RestartSec=10
 
