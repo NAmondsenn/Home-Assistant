@@ -37,7 +37,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] README and these docs
 - [x] Live test on the Pi - [release-checklist.md](release-checklist.md)
 - [x] Set `weather.location`
-- [ ] 72-hour soak test, with `scripts/soak_monitor.py` running - started Tuesday 20 October at 17:09, with all of Phase 3 on the Pi, until Friday 23 October at 17:09
+- [x] Soak test, with `scripts/soak_monitor.py` running and all of Phase 3 on the Pi - from Tuesday 20 October at 17:09, stopped after 16 hours as plenty: 23 conversations, memory from 627 MB to 677 MB in the first few hours and then flat, 28 threads throughout, no restarts, and nothing logged as a warning or an error
 - Deferred, agreed 20 October: UX-04 physical stop button - to be talked over with a remote with a microphone of its own, which could do the same and more
 - [ ] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means
 
@@ -78,7 +78,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
   - [ ] The Pi hearing through the backend, with Moonshine to fall back on - built on `phase-4`, to go in after the soak: `backend.address` set to `nova:10400`, and the password in the Pi's `~/.config/nova/.env`
   - [ ] ntfy, both ways - built on `phase-4`, on the Pi itself: `homelab` alerts read out as they arrive (only priority 5 between 23:00 and 07:00, the rest for "any notifications?"), "tell me more", and "send that to my phone" to `clipboard`, a reminder nobody answered to `reminders`, and Nova restarting after a problem to `homelab`. To go in after the soak, once Nova has its own ntfy user and token
   - [ ] The settings page - built on `phase-4`, served by Nova on the Pi, over the tailnet only and for the user's own Tailscale login: how it's doing, volumes, timers and alarms, what it remembers, keys (only ever saved, never shown back), the main settings, and a restart - laid out as a dashboard beside Home Assistant's and Homepage's, with what's playing, the lights to switch and dim, Home Assistant's scripts and scenes to run, a star showing what Nova's doing, and the volume beeping on Nova's speaker as it's dragged. Checked in Chrome at a laptop's, a tablet's and a phone's width. To go in after the soak; signing in to Spotify from it later
-- Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
+- Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV. Then a 72-hour soak test, of everything since Phase 3.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
 ## Outside the code
