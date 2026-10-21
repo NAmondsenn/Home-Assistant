@@ -216,6 +216,22 @@ home_assistant:
   activities:
     work: ["work"]
 
+mqtt:
+  # Home Assistant's MQTT broker - the Mosquitto add-on - through which Nova is a
+  # device of its own in Home Assistant, with its controls and its room there. See
+  # voice_assistant/ha_device.py. The host is Home Assistant's own address on the
+  # home network, e.g. "192.168.1.20", not its web address, which only passes on web
+  # requests. Left empty, Nova isn't in Home Assistant, and works as it does without.
+  host: ""
+  port: 1883
+  # A Home Assistant user of Nova's own, not an administrator. Its password goes in
+  # ~/.config/nova/.env as MQTT_PASSWORD.
+  username: ""
+  # What Nova's device is called in Home Assistant. Its ids there come from this and
+  # the machine's own name, so a second Nova is a second device. Changing it later
+  # makes a new device, leaving the old one to be deleted in Home Assistant.
+  name: "Nova"
+
 weather:
   # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
   # is free and needs no key. Until it's set, Nova says it doesn't know where you are.
