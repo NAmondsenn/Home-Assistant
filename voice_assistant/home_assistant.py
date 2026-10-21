@@ -181,14 +181,15 @@ class HomeAssistant:
         logger.info(f"Home Assistant at {url}")
         return cls(url, token, calendars=settings.get("calendars"), activities=settings.get("activities"))
 
-    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+    def _request(self, method: str, path: str, timeout: Optional[float] = None, **kwargs) -> requests.Response:
         # Home Assistant is on the local network, so it's still asked with only the
         # internet down - but with no network at all, there's no reaching it. Found
         # with the Pi's cable out: "turn on the lamp" waited 20 seconds for its name
         # to fail to be looked up before saying so.
         if not network.online():
             raise requests.ConnectionError("No network connection")
-        response = self._session.request(method, self.url + path, timeout=REQUEST_TIMEOUT, **kwargs)
+        timeout = REQUEST_TIMEOUT if timeout is None else timeout
+        response = self._session.request(method, self.url + path, timeout=timeout, **kwargs)
         response.raise_for_status()
         return response
 
@@ -303,9 +304,12 @@ class HomeAssistant:
                            for light in self._in_order(lights)],
                 "routines": sorted(routines, key=lambda routine: routine["name"].lower())}
 
-    def lights(self) -> List[Dict]:
+    def lights(self, timeout: Optional[float] = None) -> List[Dict]:
         """
         Every light there is, with the room it's in and how it's set.
+
+        Args:
+            timeout: Seconds to wait for Home Assistant, or None for REQUEST_TIMEOUT.
 
         Returns:
             One dict for each, with "id" (e.g. "light.lamp"), "name", "area" (its name,
@@ -320,7 +324,7 @@ class HomeAssistant:
             requests.RequestException: If Home Assistant couldn't be asked.
             ValueError: If it didn't answer with the lights.
         """
-        found = self._request("POST", "/api/template", json={"template": LIGHTS_TEMPLATE}).text
+        found = self._request("POST", "/api/template", timeout=timeout, json={"template": LIGHTS_TEMPLATE}).text
         return [_light(state) for state in json.loads(found)]
 
     def _in_order(self, lights: List[Dict]) -> List[Dict]:
@@ -335,10 +339,14 @@ class HomeAssistant:
 
         return sorted(lights, key=order)
 
-    def describe_lights(self) -> str:
+    def describe_lights(self, timeout: Optional[float] = None) -> str:
         """
         The lights, and the room Nova is in, as something for Claude to read, so that
         "the lights" can mean that room's and "is the lamp on?" can be answered.
+
+        Args:
+            timeout: Seconds to wait for Home Assistant, or None for REQUEST_TIMEOUT. A
+                reply which takes longer counts as the lights being unreadable.
 
         Returns:
             e.g. "Nova is in the Bedroom. Lights: Bedroom Light (light.bedroom_light,
@@ -347,7 +355,7 @@ class HomeAssistant:
             be read.
         """
         try:
-            lights = self._in_order(self.lights())
+            lights = self._in_order(self.lights(timeout=timeout))
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Couldn't read the lights: {e}")
             return ""

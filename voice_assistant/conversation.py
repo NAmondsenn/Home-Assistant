@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from voice_assistant.actions import confirm
+from voice_assistant.actions import Action, ActionResult, confirm
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.timeline import Timeline
 
@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 # What was going off at the moment the wake word fired, when nothing was.
 NOTHING_RINGING = {"insistent": False, "insistent_entries": [], "reminder": None, "reminder_sounding": False}
+
+# Seconds to wait for Home Assistant's lights before asking Claude without them. Every
+# request to Claude includes the lights, so a Home Assistant which is slow or down must
+# cost roughly this much at most, rather than the five seconds anything else waits -
+# "what's the weather" shouldn't take longer because the lights couldn't be read.
+LIGHTS_TIMEOUT = 1.5
 
 
 @dataclass
@@ -173,26 +179,37 @@ class Conversation:
         # a question the assistant asked, though, which needs the conversation so far
         # to make sense of. See intents.py.
         result = None if follow_up else self.intents.match(text)
-        if result:
+        local = result is not None
+        if local:
             timeline.note(local_intent=True)
-            self.llm.remember(text, result["response"])
         else:
-            # Sent along with what's currently on the clock, so a mangled label like
-            # "walk the frogs" can still be matched to the real "walk the dogs" reminder.
-            clock_context = "; ".join(self.clock.describe_all()) or None
-            result = self.llm.process_query(text, context=clock_context)
+            result = self._ask_claude(text)
         timeline.mark("llm_done")
-        response_text = result["response"]
         actions = result.get("actions", [])
 
         # Every action asked for is run, in order - "pause the music and set a ten
         # minute timer" is two of them.
-        action_results = []
+        action_results = self._run(actions)
+
+        # Home Assistant's Assist only knows so many sentences. "Dim the lights" isn't
+        # one of them, though Claude can set a brightness - so what Assist matched
+        # nothing in is asked of Claude, as if no local command had matched. Only
+        # remembered once that's known, or the request would be in the model's history
+        # twice: here, and again from its own answer.
+        if local and all(action_result.understood for action_result in action_results):
+            self.llm.remember(text, result["response"])
+        elif local:
+            logger.info("Home Assistant didn't understand that, so asking Claude")
+            timeline.note(local_intent=False)
+            result = self._ask_claude(text)
+            timeline.mark("llm_done")
+            actions = result.get("actions", [])
+            action_results = self._run(actions)
+        response_text = result["response"]
         if actions:
-            # Music and volume actions talk to the music player too, so the pause has
-            # to have landed first.
-            self.music.wait()
-            action_results = [self.actions.execute(action) for action in actions]
+            # Marked here rather than as each run finishes, so Assist's failed attempt
+            # can't leave a time from before Claude was asked if Claude's answer has no
+            # actions of its own.
             timeline.mark("action_done")
             timeline.note(actions=", ".join(action.tool for action in actions))
 
@@ -249,6 +266,44 @@ class Conversation:
         if listen_again:
             self.follow_ups += 1
         return Reply(say=response_text, sounds=sounds, listen_again=listen_again)
+
+    def _ask_claude(self, text: str) -> Dict:
+        """
+        Asks Claude to answer what the user said, along with what's going on around it.
+
+        Args:
+            text: What they said.
+
+        Returns:
+            What LLMHandler.process_query gives.
+        """
+        # Sent along with what's currently on the clock, so a mangled label like
+        # "walk the frogs" can still be matched to the real "walk the dogs" reminder.
+        told = list(self.clock.describe_all())
+        # And the lights, with the room Nova is in, so "dim the lights" means that
+        # room's. Left out if Home Assistant isn't there, or is too slow to wait for.
+        home = self.actions.home
+        lights = home.describe_lights(timeout=LIGHTS_TIMEOUT) if home else ""
+        if lights:
+            told.append(lights)
+        return self.llm.process_query(text, context="; ".join(told) or None)
+
+    def _run(self, actions: List[Action]) -> List[ActionResult]:
+        """
+        Runs the actions asked for, in order.
+
+        Args:
+            actions: The Actions, if any.
+
+        Returns:
+            The ActionResult of each.
+        """
+        if not actions:
+            return []
+        # Music and volume actions talk to the music player too, so the pause has
+        # to have landed first.
+        self.music.wait()
+        return [self.actions.execute(action) for action in actions]
 
     def run_routine(self, routine: Dict, timeline: Optional[Timeline] = None) -> Reply:
         """

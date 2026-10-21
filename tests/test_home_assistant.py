@@ -13,7 +13,7 @@ import pytest
 import requests
 
 from voice_assistant import network
-from voice_assistant.home_assistant import HomeAssistant, describe_agenda, describe_found
+from voice_assistant.home_assistant import REQUEST_TIMEOUT, HomeAssistant, describe_agenda, describe_found
 
 
 @pytest.fixture(autouse=True)
@@ -52,10 +52,12 @@ class FakeSession:
         self.answers = answers
         self.headers = {}
         self.requests = []
+        self.timeouts = []
 
     def request(self, method, url, timeout=None, **kwargs):
         path = url.split("8123", 1)[1]
         self.requests.append((method, path, kwargs))
+        self.timeouts.append(timeout)
         answer = self.answers[path]
         if isinstance(answer, Exception):
             raise answer
@@ -358,7 +360,8 @@ def test_a_light_in_no_room_or_out_of_reach_is_still_a_light(make_home):
     assert light["colour_modes"] == [] and (light["min_kelvin"], light["max_kelvin"]) == (None, None)
 
 
-@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("<html>not the lights</html>")])
+@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), requests.ReadTimeout("too slow"),
+                                    FakeResponse("<html>not the lights</html>")])
 def test_lights_which_cant_be_read_are_an_error_not_no_lights(make_home, answer):
     with pytest.raises((requests.RequestException, ValueError)):
         make_home({"/api/template": answer}).lights()
@@ -396,11 +399,28 @@ def test_claude_is_told_when_there_are_no_lights(make_home):
     assert home.describe_lights() == "Nova is in the Bedroom. There are no lights."
 
 
-@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("<html>not the lights</html>")])
+@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), requests.ReadTimeout("too slow"),
+                                    FakeResponse("<html>not the lights</html>")])
 def test_claude_is_told_nothing_when_the_lights_cant_be_read(make_home, answer):
     home = make_home({"/api/template": answer})
     home.area = "Bedroom"
     assert home.describe_lights() == ""
+
+
+def test_the_lights_can_be_asked_for_with_less_time_than_usual(make_home):
+    # Claude is told the lights with every request, so a slow Home Assistant mustn't
+    # hold each reply up for the usual five seconds.
+    home = make_home({"/api/template": _rendered(LAMP_OFF)})
+    home.lights(timeout=1.5)
+    home.describe_lights(timeout=1.5)
+    assert home._session.timeouts == [1.5, 1.5]
+
+
+def test_the_lights_are_otherwise_given_the_usual_time(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_OFF)})
+    home.lights()
+    home.describe_lights()
+    assert home._session.timeouts == [REQUEST_TIMEOUT, REQUEST_TIMEOUT]
 
 
 def test_set_lights_defaults_to_novas_own_room(make_home):
