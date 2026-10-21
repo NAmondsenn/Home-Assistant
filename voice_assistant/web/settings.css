@@ -94,8 +94,8 @@ body {
   min-width: 0;
 }
 
-.name,
-.time {
+.masthead .name,
+.masthead .time {
   margin: 0;
   font-weight: 200;
   font-size: 64px;
@@ -103,8 +103,8 @@ body {
   letter-spacing: -0.02em;
 }
 
-.doing,
-.date {
+.masthead .doing,
+.masthead .date {
   margin: 8px 0 0;
   color: var(--dusk);
   font-size: 16px;
@@ -115,7 +115,7 @@ body {
   text-align: right;
 }
 
-.time {
+.masthead .time {
   display: block;
   font-variant-numeric: tabular-nums;
 }
@@ -508,7 +508,7 @@ body {
   cursor: default;
 }
 
-.remove {
+.icon-button {
   display: grid;
   flex: none;
   place-items: center;
@@ -522,18 +522,25 @@ body {
   cursor: pointer;
 }
 
-.remove:hover {
+.icon-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--moon);
+}
+
+/* One which takes something away turns ember. */
+.icon-button.danger:hover {
   background: rgba(255, 144, 119, 0.12);
   color: var(--ember);
 }
 
-.remove .icon {
+.icon-button .icon {
   width: 16px;
   height: 16px;
 }
 
 input:not([type="range"]):not([type="checkbox"]),
-select {
+select,
+textarea {
   width: 100%;
   min-width: 0;
   padding: 9px 12px;
@@ -548,13 +555,21 @@ select {
 }
 
 input:not([type="range"]):not([type="checkbox"]):focus-visible,
-select:focus-visible {
+select:focus-visible,
+textarea:focus-visible {
   outline: none;
   border-color: rgba(243, 214, 160, 0.7);
   box-shadow: 0 0 0 3px rgba(243, 214, 160, 0.14);
 }
 
-input::placeholder { color: rgba(150, 161, 192, 0.65); }
+input::placeholder,
+textarea::placeholder { color: rgba(150, 161, 192, 0.65); }
+
+textarea {
+  min-height: 132px;
+  line-height: 1.5;
+  resize: vertical;
+}
 
 option { background: #10162e; }
 
@@ -1012,14 +1027,48 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   font-variant-numeric: tabular-nums;
 }
 
-.routine .kind {
+.routine .button {
+  padding: 7px 16px;
+  font-size: 13px;
+}
+
+.routine .routine-name { display: block; }
+
+/* How a routine starts, under its name. */
+.routine .detail {
+  display: block;
   color: var(--dusk);
   font-size: 13px;
 }
 
-.routine .button {
-  padding: 7px 16px;
-  font-size: 13px;
+.add-routine { margin-top: 10px; }
+
+.editor {
+  display: grid;
+  gap: 14px;
+  margin-top: 10px;
+  padding: 16px;
+}
+
+.editor .pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.editor-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Delete stands apart from the rest, on the far side. */
+.editor-buttons .danger { margin-right: auto; }
+
+.button.quiet.danger:hover {
+  box-shadow: inset 0 0 0 1px rgba(255, 144, 119, 0.5);
+  color: var(--ember);
 }
 
 .subheading.first { margin-top: 0; }
@@ -1081,11 +1130,11 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 
   .identity { gap: 12px; }
   .star { --size: 56px; }
-  .name { font-size: 44px; }
-  .time { font-size: 34px; }
+  .masthead .name { font-size: 44px; }
+  .masthead .time { font-size: 34px; }
 
-  .doing,
-  .date {
+  .masthead .doing,
+  .masthead .date {
     margin-top: 4px;
     font-size: 14px;
   }

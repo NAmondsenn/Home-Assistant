@@ -170,7 +170,8 @@ class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
     def __init__(self, allow: List[str], port: int = 8765, running=None, volume=None, clock=None, memory=None,
-                 ntfy=None, stt=None, music=None, actions=None, home=None,
+                 ntfy=None, stt=None, music=None, actions=None, home=None, routines=None,
+                 run_routine: Optional[Callable[[Dict], None]] = None,
                  boop: Optional[Callable[[float], None]] = None,
                  activity: Optional[Callable[[], str]] = None, wake_word: Optional[Callable[[], str]] = None,
                  restart: Callable[[], str] = restart_service, started: Optional[float] = None):
@@ -189,6 +190,8 @@ class SettingsPage:
             actions: The ActionExecutor, which the music buttons go through, as
                 asking out loud does.
             home: The HomeAssistant, or None, for the lights and the scripts and scenes.
+            routines: The user's Routines, or None.
+            run_routine: Runs a routine by itself, as at its time - SmartAssistant.run_routine.
             boop: Plays the volume beep at a level from 0 to 1 on Nova's speaker, so a
                 change made on the page is heard at its new level.
             activity: What Nova is doing - "idle", "listening", "thinking" or "speaking".
@@ -202,6 +205,7 @@ class SettingsPage:
         self.running = running
         self.volume, self.clock, self.memory, self.ntfy, self.stt = volume, clock, memory, ntfy, stt
         self.music, self.actions, self.home = music, actions, home
+        self.routines, self._run_routine = routines, run_routine
         self._playlists: Optional[Tuple[List[str], float]] = None
         self._boop = boop
         self._activity = activity
@@ -280,6 +284,7 @@ class SettingsPage:
                             for category in self.volume.CATEGORIES},
                 "clock": self.clock.overview(),
                 "memories": self.memory.facts(),
+                "routines": self.routines.all() if self.routines is not None else [],
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,
@@ -524,6 +529,33 @@ class SettingsPage:
         logger.info(f"Settings page: {who} ran {entity_id}")
         return self.home.run(str(entity_id))
 
+    def save_routine(self, routine: Dict, who: str) -> Dict:
+        """Adds or changes one of the user's routines - see Routines.save."""
+        if self.routines is None or not isinstance(routine, dict):
+            return {"success": False, "message": "That didn't make sense."}
+        result = self.routines.save(routine)
+        if result["success"]:
+            logger.info(f"Settings page: {who} saved a routine")
+        return {"success": result["success"], "message": result["message"]}
+
+    def remove_routine(self, routine_id: str, who: str) -> Dict:
+        if self.routines is None:
+            return {"success": False, "message": "That didn't make sense."}
+        logger.info(f"Settings page: {who} deleted a routine")
+        return self.routines.remove(str(routine_id))
+
+    def start_routine(self, routine_id: str, who: str) -> Dict:
+        """
+        Runs one of the user's routines now, on a thread of its own, as it waits for
+        any conversation to finish first - see SmartAssistant.run_routine.
+        """
+        routine = self.routines.get(str(routine_id)) if self.routines is not None else None
+        if routine is None or self._run_routine is None:
+            return {"success": False, "message": "That routine's gone."}
+        threading.Thread(target=self._run_routine, args=(routine,), daemon=True, name="routine").start()
+        logger.info(f"Settings page: {who} ran a routine")
+        return {"success": True, "message": f"Running {routine['name']}."}
+
 
 # What each kind of change is sent to, and what it's given.
 ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
@@ -537,6 +569,9 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/music": lambda page, body, who: page.play(body["action"], who, body.get("query", ""), body.get("playlist", "")),
     "/api/light": lambda page, body, who: page.set_light(body["id"], who, body.get("on"), body.get("brightness")),
     "/api/run": lambda page, body, who: page.run(body["id"], who),
+    "/api/routines": lambda page, body, who: page.save_routine(body["routine"], who),
+    "/api/routines/remove": lambda page, body, who: page.remove_routine(body["id"], who),
+    "/api/routines/run": lambda page, body, who: page.start_routine(body["id"], who),
 }
 
 

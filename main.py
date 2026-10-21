@@ -17,6 +17,7 @@ from voice_assistant.intents import LocalIntents
 from voice_assistant.weather import Weather
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.memory import Memory
+from voice_assistant.routines import Routines
 from voice_assistant.network import online
 from voice_assistant.ntfy import Ntfy
 from voice_assistant.settings_page import SettingsPage
@@ -44,6 +45,10 @@ RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
 # The least time between telling the user's phone the assistant had to restart, so a
 # crash which keeps happening doesn't flood it.
 RESTART_NOTICE_GAP = 3600
+
+# How often it's checked whether one of the user's routines is due, in seconds -
+# a few times within each minute.
+ROUTINE_CHECK = 20
 
 class SmartAssistant:
     def __init__(self):
@@ -87,6 +92,9 @@ class SmartAssistant:
         # each timer on a thread of its own, so two going off together would
         # otherwise talk over each other.
         self._announcing = threading.Lock()
+        # Held while the conversation works out a reply - to the user, or for a routine
+        # running by itself, which mustn't do so at the same time. See run_routine.
+        self._conversation_lock = threading.Lock()
 
         # What the assistant is doing - "idle", "listening", "thinking" or "speaking" -
         # for the settings page's star. Only ever read for show.
@@ -144,6 +152,10 @@ class SmartAssistant:
         # What the assistant knows about the user, learnt as they talk - see memory.py.
         self.memory = Memory()
 
+        # The user's own routines, started by their words, at their time, or from the
+        # settings page - see routines.py.
+        self.routines = Routines()
+
         # Home Assistant, for the lights and the calendar - None until it's set up.
         self.home = HomeAssistant.from_config(self.config, os.getenv("HA_TOKEN"))
 
@@ -159,6 +171,7 @@ class SmartAssistant:
                                                       memory=self.memory, ntfy=self.ntfy, stt=self.stt,
                                                       music=self.music_player, actions=self.actions,
                                                       home=self.home, boop=self._boop,
+                                                      routines=self.routines, run_routine=self.run_routine,
                                                       activity=lambda: self.activity,
                                                       wake_word=lambda: self.wake_word)
 
@@ -171,7 +184,8 @@ class SmartAssistant:
         self.thresholds = self.config.section("thresholds")
         self.conversation = Conversation(self.clock, self.intents, self.llm, self.actions, self.music,
                                          chime_enabled=self.chime_enabled,
-                                         max_follow_ups=self.thresholds.get("max_follow_ups", 3))
+                                         max_follow_ups=self.thresholds.get("max_follow_ups", 3),
+                                         routines=self.routines)
         
         # Sets up the wake word detector with sensitivity settings from config.
         self.wake = WakeWordDetector(config=self.config, microphone=self.microphone)
@@ -417,6 +431,55 @@ class SmartAssistant:
             label = timer["label"]
             self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")
 
+    def run_routine(self, routine):
+        """
+        Runs one of the user's routines by itself - at its time, or from the settings
+        page - once any conversation has finished, as an announcement waits. Its steps
+        go through the conversation as if the user had said them (see routines.py),
+        and what they say is said as an announcement is, so the wake word stops it.
+
+        Args:
+            routine: The routine, as Routines has it.
+        """
+        # The music is held from now, so a step which plays some starts it once
+        # everything's been said - as when the user asks for it.
+        self.music.hold()
+        try:
+            with self._announcing:
+                if not self._wait_for_turn():
+                    return
+                self.activity = "thinking"
+                with self._conversation_lock:
+                    self.conversation.start()
+                    reply = self.conversation.run_routine(routine)
+                for sound, category in reply.sounds:
+                    self._play_sound(sound, volume=self.volume.get(category))
+                if reply.shown:
+                    self._show(f"{self.name}: {reply.shown}")
+                if reply.say:
+                    self._show(f"{self.name}: {reply.say}")
+                    self.activity = "speaking"
+                    self._play_announcement(self.speaker.play_stream(
+                        self.tts.stream(reply.say), self.tts.sample_rate, volume=self.volume.get("general"),
+                        kind="announcement"))
+        except Exception as e:
+            logger.error(f"A routine failed: {e}", exc_info=True)
+        finally:
+            if self._idle.is_set():
+                self.activity = "idle"
+            self.music.release()
+
+    def _run_routines_when_due(self):
+        """Runs each routine at its time, for as long as the assistant runs - see Routines.due."""
+        while self.running:
+            # One check going wrong mustn't stop the rest for good.
+            try:
+                for routine in self.routines.due():
+                    threading.Thread(target=self.run_routine, args=(routine,), daemon=True, name="routine").start()
+            except Exception as e:
+                logger.error(f"Couldn't check the routines: {e}")
+            time.sleep(ROUTINE_CHECK)
+
     def _boop(self, level):
         """
         Plays the volume beep at a level, for the settings page's sliders - stopping
@@ -509,6 +572,7 @@ class SmartAssistant:
             self.ntfy.start()
         if self.settings_page:
             self.settings_page.start()
+        threading.Thread(target=self._run_routines_when_due, daemon=True, name="routines").start()
 
         # However the loop ends - a stop signal (see _shutdown) or something
         # unexpected - everything is closed down here, once, on the main thread.
@@ -583,7 +647,8 @@ class SmartAssistant:
         # ends. It carries on afterwards unless the conversation dealt with it.
         self.speaker.silence("announcement")
         try:
-            self.conversation.start(ringing, talked_over=talked_over)
+            with self._conversation_lock:
+                self.conversation.start(ringing, talked_over=talked_over)
             return self._handle_interaction(timeline=timeline)
         except Exception as e:
             # Said out loud, rather than only logged, so it isn't taken for the
@@ -680,7 +745,8 @@ class SmartAssistant:
         self._show(f"You: {text}")
 
         # Everything between hearing the request and answering it - see conversation.py.
-        reply = self.conversation.handle(text, follow_up=follow_up, timeline=timeline)
+        with self._conversation_lock:
+            reply = self.conversation.handle(text, follow_up=follow_up, timeline=timeline)
 
         for sound, category in reply.sounds:
             self._play_sound(sound, volume=self.volume.get(category))

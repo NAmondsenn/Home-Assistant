@@ -51,7 +51,8 @@ class Reply:
 class Conversation:
     """The rules for answering the user, from one wake word to the end of any follow-ups."""
 
-    def __init__(self, clock, intents, llm, actions, music, chime_enabled: bool = True, max_follow_ups: int = 3):
+    def __init__(self, clock, intents, llm, actions, music, chime_enabled: bool = True, max_follow_ups: int = 3,
+                 routines=None):
         """
         Args:
             clock: The Clock, for what's ringing and for dismissing it.
@@ -64,6 +65,7 @@ class Conversation:
             max_follow_ups: How many times in a row the assistant may ask a question
                 and listen for the answer without the wake word, so it can't hold
                 the microphone indefinitely.
+            routines: The user's Routines, or None, for the words which start one.
         """
         self.clock = clock
         self.intents = intents
@@ -72,6 +74,7 @@ class Conversation:
         self.music = music
         self.chime_enabled = chime_enabled
         self.max_follow_ups = max_follow_ups
+        self.routines = routines
         self.start()
 
     def start(self, ringing: Optional[Dict] = None, talked_over: bool = False):
@@ -100,7 +103,8 @@ class Conversation:
         # morning's "play that one" doesn't colour tonight's "yes".
         self.llm.forget_stale_history()
 
-    def handle(self, text: str, follow_up: bool = False, timeline: Optional[Timeline] = None) -> Reply:
+    def handle(self, text: str, follow_up: bool = False, timeline: Optional[Timeline] = None,
+               in_routine: bool = False) -> Reply:
         """
         Works out the answer to one thing the user said.
 
@@ -108,6 +112,7 @@ class Conversation:
             text: What they said, as transcribed, without the wake word.
             follow_up: True when it answers a question the assistant just asked.
             timeline: The Timeline to mark each stage on, if it's being timed.
+            in_routine: True for a step of a routine, said for the user - see run_routine.
 
         Returns:
             The Reply.
@@ -148,6 +153,13 @@ class Conversation:
             timeline.note(outcome="stopped_talking")
             logger.info("Told to stop talking, so said nothing more")
             return Reply()
+
+        # One of the user's routines, said by its own words or asked for by name - see
+        # routines.py. Not as one of a routine's own steps, which would start it again.
+        routine = None if follow_up or in_routine or self.routines is None else self.routines.called(text)
+        if routine:
+            timeline.note(outcome="routine")
+            return self.run_routine(routine, timeline=timeline)
 
         # A timer or alarm going off is silenced by the user saying anything at all,
         # since talking to the assistant means they've heard it. Read from the wake
@@ -205,8 +217,9 @@ class Conversation:
         # outright rather than needing an offer. Not tacked onto a question the model
         # is already asking, which would leave two to answer at once - and added last,
         # so it trails the answer rather than interrupting it.
+        # Nor in a routine, whose next step would be taken for the answer.
         reminder = self.ringing.get("reminder")
-        if (reminder and not self.ringing.get("reminder_sounding") and not self.reminder_offered
+        if (reminder and not in_routine and not self.ringing.get("reminder_sounding") and not self.reminder_offered
                 and self.clock.is_ringing() and not response_text.rstrip().endswith("?")):
             self.reminder_offered = True
             self.reminder_answer_pending = True
@@ -236,6 +249,29 @@ class Conversation:
         if listen_again:
             self.follow_ups += 1
         return Reply(say=response_text, sounds=sounds, listen_again=listen_again)
+
+    def run_routine(self, routine: Dict, timeline: Optional[Timeline] = None) -> Reply:
+        """
+        Runs a routine's steps in turn, each as if the user had said it, and says what
+        they say, together - after any sounds, each played once. A question a step
+        asks isn't listened for an answer to, as nobody asked it.
+
+        Args:
+            routine: The routine, as Routines has it.
+            timeline: The Timeline to mark each stage on, if it's being timed.
+
+        Returns:
+            The Reply.
+        """
+        logger.info(f"Running the {routine['name']} routine", extra=TRANSCRIPT)
+        said, shown, sounds = [], [], []
+        for step in routine["steps"]:
+            reply = self.handle(step, timeline=timeline, in_routine=True)
+            said.append(reply.say)
+            shown.append(reply.shown)
+            sounds.extend(sound for sound in reply.sounds if sound not in sounds)
+        return Reply(say=" ".join(part for part in said if part), sounds=sounds,
+                     shown=" ".join(part for part in shown if part))
 
     def _chime(self, message: str) -> Reply:
         """A success confirmed by the chime - or, with it switched off, only shown."""
