@@ -4,11 +4,12 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 ## Branches
 
-- `main` - the version from before the audit fixes.
+- `main` - everything up to and including Phase 4 and the routines, merged on 21 October, and running on the Pi. New work branches off it.
 - `phase-1` - Phase 1, tested on the Pi.
 - `phase-2` - Phase 2, built on `phase-1`, tested on the Pi.
-- `phase-3` - Phase 3, the Home Assistant and Navidrome work, and fixes from testing, built on `phase-2`, running on the Pi.
-- `phase-4` - Phase 4, built on `phase-3`. The plan so far is in [decisions/0004](decisions/0004-pve2-backend.md).
+- `phase-3` - Phase 3, the Home Assistant and Navidrome work, and fixes from testing, built on `phase-2`. Merged into `main`.
+- `phase-4` - Phase 4, built on `phase-3`. The plan is in [decisions/0004](decisions/0004-pve2-backend.md). Merged into `main`.
+- `routines` - the routines, built on `phase-4`. Merged into `main`.
 
 ## Phase 0: housekeeping - done
 
@@ -39,9 +40,9 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] Set `weather.location`
 - [x] Soak test, with `scripts/soak_monitor.py` running and all of Phase 3 on the Pi - from Tuesday 20 October at 17:09, stopped after 16 hours as plenty: 23 conversations, memory from 627 MB to 677 MB in the first few hours and then flat, 28 threads throughout, no restarts, and nothing logged as a warning or an error
 - Deferred, agreed 20 October: UX-04 physical stop button - to be talked over with a remote with a microphone of its own, which could do the same and more
-- [ ] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means
+- [x] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means. Merged on 21 October, along with Phase 4 and the routines
 
-## Phase 3: code quality, speed, and the home - built on `phase-3`, running on the Pi
+## Phase 3: code quality, speed, and the home - built on `phase-3`, merged into `main`
 
 - [x] PERF-03 one Whisper guess, measured · a 0.6s end-of-speech pause
 - [x] PERF-01 Piper kept loaded, speech played a sentence at a time from memory (PERF-06) · PERF-02 Claude's instructions cached
@@ -69,17 +70,22 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 - Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Streaming the model's reply into speech, deferred from Phase 3, comes with any slower or local model. ntfy, both ways: homelab alerts announced on the speakers, with "tell me more" for the details (only urgent ones at night), and "send that to my phone" for an answer, a reminder nobody answered, or Nova having to restart itself. A settings page served by Nova - settings, keys (never shown back), Spotify sign-in, volumes, alarms, what it remembers, and how it's doing - its settings API in the backend, so standalone Pis have it too. Speech-to-text there could be Parakeet, on PVE2's processor since it has no graphics card - measured against Moonshine first.
   - [x] The plan: what runs on PVE2, what stays on the Pi, and how standalone mode works - [decisions/0004](decisions/0004-pve2-backend.md)
-  - [ ] Moonshine working out the words while they're still being said - built on `phase-4`. Measured on the Pi with 38 recordings of the user's voice: the same words as before, and 0.24s to wait once the recording stopped rather than 0.74s (0.78s at worst rather than 2.27s), for 2.3 seconds of processing for each second of recording rather than 1.0 - with no microphone overflows while Nova ran alongside. To go into Nova after the soak
+  - [ ] Moonshine working out the words while they're still being said - built on `phase-4`. Measured on the Pi with 38 recordings of the user's voice: the same words as before, and 0.24s to wait once the recording stopped rather than 0.74s (0.78s at worst rather than 2.27s), for 2.3 seconds of processing for each second of recording rather than 1.0 - with no microphone overflows while Nova ran alongside. On the Pi since 21 October, for when the backend can't be reached
   - [x] Recordings of the user's own voice - 38, made with `scripts/record_samples.py` through Nova's own microphone, alongside the soak. Measured with `scripts/compare_speech_to_text.py`, Parakeet TDT 0.6B v2 got 6.8% of words wrong where Moonshine small got 14-16%; leaving out two recordings whose words weren't certain, 2.4% against 6.5%
   - [x] Parakeet's speed on PVE2's processor: 0.58s typically once the recording stopped, 1.35s at worst, with 4.5% of words wrong - and a third of a millisecond to the Pi and back. More accurate than Moonshine, but slower than Moonshine working the words out as they're said
   - [x] NVIDIA's streaming Nemotron Speech on PVE2, which works as it hears: 0.29s once the recording stopped, 0.75s at worst, with 5.1% of words wrong and 23 of 25 everyday commands still handled - nearly Parakeet's accuracy at nearly live Moonshine's speed. It needs half a second of silence before each recording and 1.2s after
   - [x] Stage 1's model chosen, 20 October: Nemotron - see [decisions/0004](decisions/0004-pve2-backend.md)
   - [x] Stage 1's backend: `backend.py`, running in its own container on PVE2 (`nova`, reached over the tailnet only). Measured from the Pi with the user's 38 recordings, before they were deleted: 0.33s to wait once the recording stopped, 0.53s at worst, with 5.1% of words wrong - and next to no work for the Pi
-  - [ ] The Pi hearing through the backend, with Moonshine to fall back on - built on `phase-4`, to go in after the soak: `backend.address` set to `nova:10400`, and the password in the Pi's `~/.config/nova/.env`
-  - [ ] ntfy, both ways - built on `phase-4`, on the Pi itself: `homelab` alerts read out as they arrive (only priority 5 between 23:00 and 07:00, the rest for "any notifications?"), "tell me more", and "send that to my phone" to `clipboard`, a reminder nobody answered to `reminders`, and Nova restarting after a problem to `homelab`. To go in after the soak, once Nova has its own ntfy user and token
-  - [ ] The settings page - built on `phase-4`, served by Nova on the Pi, over the tailnet only and for the user's own Tailscale login: how it's doing, volumes, timers and alarms, what it remembers, keys (only ever saved, never shown back), the main settings, and a restart - laid out as a dashboard beside Home Assistant's and Homepage's, with what's playing, the lights to switch and dim, Home Assistant's scripts and scenes to run, a star showing what Nova's doing, and the volume beeping on Nova's speaker as it's dragged. Checked in Chrome at a laptop's, a tablet's and a phone's width. To go in after the soak; signing in to Spotify from it later
-  - [ ] Routines - built on `routines`, after `phase-4`: a few words or a set time starting steps said as if by the user, so a routine can do anything Nova can; made, changed and run on the settings page, beside Home Assistant's scripts and scenes. Checked in Chrome at a laptop's and a phone's width
-- Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV. Then a 72-hour soak test, of everything since Phase 3.
+  - [x] The Pi hearing through the backend, with Moonshine to fall back on - on the Pi since 21 October: `backend.address` set to `nova:10400`, and the password in the Pi's `~/.config/nova/.env`
+  - [x] ntfy, both ways - on the Pi since 21 October: `homelab` alerts read out as they arrive (only priority 5 between 23:00 and 07:00, the rest for "any notifications?"), "tell me more", and "send that to my phone" to `clipboard`, a reminder nobody answered to `reminders`, and Nova restarting after a problem to `homelab`
+  - [x] The settings page - on the Pi since 21 October, served by Nova, over the tailnet only and for the user's own Tailscale login: how it's doing, volumes, timers and alarms, what it remembers, keys (only ever saved, never shown back), the main settings, and a restart - laid out as a dashboard beside Home Assistant's and Homepage's, with what's playing, the lights to switch and dim, Home Assistant's scripts and scenes to run, a star showing what Nova's doing, and the volume beeping on Nova's speaker as it's dragged. Checked in Chrome at a laptop's, a tablet's and a phone's width. Signing in to Spotify from it later
+  - [x] Routines - on the Pi since 21 October: a few words or a set time starting steps said as if by the user, so a routine can do anything Nova can; made, changed and run on the settings page, beside Home Assistant's scripts and scenes. Checked in Chrome at a laptop's and a phone's width
+- Phase 5 - what the user asked for on 21 October, then a 72-hour soak test of everything since Phase 3:
+  - [ ] The lights first - including short commands like "lights on", which Home Assistant doesn't understand by itself
+  - [ ] The PC on and off by voice - on through Wake-on-LAN, off through something on the PC itself
+  - [ ] The battery left on the phone, the Mac and the tablet
+  - [ ] Fewer false wakes - about one an hour from the TV, some sent on as if the user had said them - with a check that it's the user's own voice saying "Hey Nova". The wake word's confidence alone can't tell them apart: the TV's run from 0.53 to 0.96, the user's from 0.52 to 0.99
+  - Later, if wanted: Jellyfin through Home Assistant's media players, for the TV, and confirmations for anything security-sensitive
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
 ## Outside the code
