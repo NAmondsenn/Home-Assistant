@@ -1,7 +1,7 @@
 """
 Home Assistant Module.
 
-Turns the lights on and off, and reads the calendar, through Home Assistant.
+Works the lights, and reads the calendar, through Home Assistant.
 
 Nova signs in as a Home Assistant user of its own, with a long-lived access token,
 and asks for things in plain words through Home Assistant's own Assist - "turn off
@@ -9,6 +9,11 @@ the kitchen lights" - rather than naming devices itself. Assist only knows about
 the devices exposed to it (Settings > Voice assistants > Expose), so that list is
 what Nova can reach, enforced by Home Assistant rather than by anything Claude is
 told. Nothing which unlocks or opens anything is passed on at all - see SENSITIVE.
+
+What Assist doesn't understand - "dim the lights" - goes to Claude, which works the
+lights through Home Assistant's own services instead, by light or by room, with a
+brightness, colour or warmth. Those services are only ever given lights, by entity
+id or by area.
 
 The settings page names devices itself, as there's nothing to mishear: it lists the
 lights, to switch and dim, and the scripts and scenes, to run - but nothing else,
@@ -18,6 +23,7 @@ The calendar is whichever calendars Home Assistant has, such as a Google Calenda
 added through its Google Calendar integration.
 """
 
+import json
 import logging
 import re
 from datetime import date, datetime, time as day_time, timedelta
@@ -67,6 +73,35 @@ FIND_DEVICE_TEMPLATE = """
   {%- endif -%}
 {%- endfor -%}
 {{ found.device }}|{{ found.area }}
+"""
+
+# Renders every light as JSON in the shape of /api/states, plus the name of its area,
+# which that doesn't have - e.g. [{"entity_id": "light.lamp", "area": "Bedroom", "state":
+# "on", "attributes": {"brightness": 102, ...}}]. All the lights at once, as asking for
+# each one's area would be a request each. Attributes a light hasn't got, such as the
+# brightness of one that's off, come out as null. A light with no area of its own is in
+# its device's, which area_name works out.
+LIGHTS_TEMPLATE = """
+{%- set found = namespace(lights=[]) -%}
+{%- for light in states.light -%}
+  {%- set attributes = light.attributes -%}
+  {%- set found.lights = found.lights + [{
+    'entity_id': light.entity_id,
+    'area': area_name(light.entity_id),
+    'state': light.state,
+    'attributes': {
+      'friendly_name': attributes.get('friendly_name'),
+      'brightness': attributes.get('brightness'),
+      'supported_color_modes': (attributes.get('supported_color_modes') or []) | sort,
+      'color_mode': attributes.get('color_mode'),
+      'hs_color': attributes.get('hs_color'),
+      'color_temp_kelvin': attributes.get('color_temp_kelvin'),
+      'min_color_temp_kelvin': attributes.get('min_color_temp_kelvin'),
+      'max_color_temp_kelvin': attributes.get('max_color_temp_kelvin')
+    }
+  }] -%}
+{%- endfor -%}
+{{ found.lights | tojson }}
 """
 
 # What the settings page may switch, and run, by entity id. A light can't let anyone
@@ -243,26 +278,83 @@ class HomeAssistant:
     def overview(self) -> Dict:
         """
         The lights, and the scripts and scenes, for the settings page - each by its
-        entity id and name, in name order.
+        entity id and name. The lights are in the order of _in_order, with Nova's own
+        room first; the scripts and scenes are in name order.
 
         Returns:
-            Dict with 'success', and 'lights' and 'routines', or a 'message'.
+            Dict with 'success', and 'lights' and 'routines', or a 'message'. Each light
+            is as lights() has it, and 'dimmable' as well: whether it does more than
+            switch on and off.
         """
         try:
             states = self._request("GET", "/api/states").json()
+            lights = self.lights()
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
-        lights, routines = [], []
+        routines = []
         for state in states:
             entity = state.get("entity_id") or ""
             name = (state.get("attributes") or {}).get("friendly_name") or entity
-            if LIGHT.fullmatch(entity):
-                lights.append(_light(state, name))
-            elif RUNNABLE.fullmatch(entity) and not _sensitive(entity, name):
+            if RUNNABLE.fullmatch(entity) and not _sensitive(entity, name):
                 routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
-        return {"success": True, "lights": sorted(lights, key=lambda light: light["name"].lower()),
+        return {"success": True,
+                "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
+                           for light in self._in_order(lights)],
                 "routines": sorted(routines, key=lambda routine: routine["name"].lower())}
+
+    def lights(self) -> List[Dict]:
+        """
+        Every light there is, with the room it's in and how it's set.
+
+        Returns:
+            One dict for each, with "id" (e.g. "light.lamp"), "name", "area" (its name,
+            e.g. "Bedroom", or None), "on", "reachable", "brightness" (percent, or None
+            if it's off or can't dim), "colour_modes" (what it can do, e.g.
+            ["color_temp", "hs"]), "min_kelvin" and "max_kelvin" (the warmest and
+            coolest white it makes, or None) and how it's set now: "hue" (0 to 360)
+            and "saturation" (percent) if it's set to a colour, or "kelvin" if it's set
+            to a white. Whichever it isn't set to is None.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If it didn't answer with the lights.
+        """
+        found = self._request("POST", "/api/template", json={"template": LIGHTS_TEMPLATE}).text
+        return [_light(state) for state in json.loads(found)]
+
+    def _in_order(self, lights: List[Dict]) -> List[Dict]:
+        """
+        The lights with Nova's own room's first, then the other rooms' by name, and last
+        any in no room - each room's by name. Where Nova is matters most, and the order
+        is the same every time, rather than whichever Home Assistant happens to list first.
+        """
+        def order(light: Dict):
+            area = light["area"]
+            return area is None or area != self.area, area is None, (area or "").lower(), light["name"].lower()
+
+        return sorted(lights, key=order)
+
+    def describe_lights(self) -> str:
+        """
+        The lights, and the room Nova is in, as something for Claude to read, so that
+        "the lights" can mean that room's and "is the lamp on?" can be answered.
+
+        Returns:
+            e.g. "Nova is in the Bedroom. Lights: Bedroom Light (light.bedroom_light,
+            Bedroom) on at 40%, 2700K; Lamp (light.lamp, Bedroom) off" - or "Nova's
+            room isn't known." to begin with, when it isn't. "" if the lights couldn't
+            be read.
+        """
+        try:
+            lights = self._in_order(self.lights())
+        except (requests.RequestException, ValueError) as e:
+            logger.error(f"Couldn't read the lights: {e}")
+            return ""
+        room = f"Nova is in the {self.area}." if self.area else "Nova's room isn't known."
+        if not lights:
+            return f"{room} There are no lights."
+        return f"{room} Lights: " + "; ".join(_light_said(light) for light in lights)
 
     def set_light(self, entity_id: str, on: Optional[bool] = None, brightness: Optional[int] = None) -> Dict:
         """
@@ -288,6 +380,79 @@ class HomeAssistant:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": "Done."}
+
+    def set_lights(self, on: bool, light: Optional[str] = None, area: Optional[str] = None,
+                   brightness: Optional[int] = None, colour: Optional[str] = None,
+                   warmth: Optional[int] = None) -> Dict:
+        """
+        Works the lights through Home Assistant's own services, for what Claude was asked.
+        Only ever lights: a light is checked to be one, and an area is only passed to
+        light.turn_on and light.turn_off, which do nothing to a lock in it.
+
+        Args:
+            on: Whether to switch them on, or off. Off ignores everything else.
+            light: One light's entity id, e.g. "light.lamp".
+            area: A room's name, e.g. "Bedroom", for all the lights in it. Ignored if
+                a light is given. If neither is, it's the room Nova is in.
+            brightness: How bright, from 1 to 100 percent.
+            colour: A colour by name, e.g. "blue".
+            warmth: A white's colour temperature in kelvin, e.g. 2700 for a warm one.
+
+        Returns:
+            Dict with 'success' and a 'message', and a 'chime' for success, since the
+            lights changing speaks for itself.
+        """
+        try:
+            if light:
+                if not LIGHT.fullmatch(light):
+                    return {"success": False, "message": "That isn't a light."}
+                data = {"entity_id": light}
+            else:
+                area = area or self.area
+                if not area:
+                    return {"success": False, "message": "Which room?"}
+                area_id = self._area_id(area)
+                if area_id is None:
+                    return {"success": False, "message": f"I don't know a room called {area}."}
+                data = {"area_id": area_id}
+
+            if on:
+                if brightness is not None:
+                    data["brightness_pct"] = max(1, min(100, int(brightness)))
+                # Home Assistant only knows the CSS colours, which are one word in lower
+                # case - "lightblue", where Claude may well say "Light Blue".
+                named = (colour or "").strip().lower().replace(" ", "")
+                if named:
+                    data["color_name"] = named
+                if warmth is not None:
+                    data["color_temp_kelvin"] = int(warmth)
+            service = "turn_on" if on else "turn_off"
+            logger.info(f"Lights {service}: {data}")
+            self._request("POST", f"/api/services/light/{service}", json=data)
+        except requests.RequestException as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        return {"success": True, "message": "Done.", "chime": True}
+
+    def _area_id(self, name: str) -> Optional[str]:
+        """
+        The id Home Assistant gives an area, e.g. "living_room" for "Living room", which
+        its services want rather than the name.
+
+        Args:
+            name: The area's name, in any case.
+
+        Returns:
+            Its id, or None if there's no such area.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
+        # The name is put into the template as a quoted string, so that however it was
+        # made up it can't be taken for more of the template.
+        template = "{{ area_id(" + json.dumps(name) + ") }}"
+        found = self._request("POST", "/api/template", json={"template": template}).text.strip()
+        return None if found in ("", "None") else found
 
     def run(self, entity_id: str) -> Dict:
         """
@@ -431,14 +596,45 @@ def _sensitive(entity_id: str, name: str) -> bool:
     return bool(SENSITIVE.search(name.lower()) or SENSITIVE.search(entity_id.replace("_", " ")))
 
 
-def _light(state: Dict, name: str) -> Dict:
-    """A light as the settings page shows it: whether it's on, and whether and how far it dims."""
+def _light(state: Dict) -> Dict:
+    """
+    A light as lights() has it, from its state as LIGHTS_TEMPLATE renders it.
+
+    Its colour is only what it's set to now - the hue and saturation in colour mode,
+    the kelvin in colour temperature mode. For a light which can do both, Home
+    Assistant works out the other from it, so a warm white would otherwise be read as
+    "hue 30", and a blue as "6500K".
+    """
     attributes = state.get("attributes") or {}
+    mode = attributes.get("color_mode")
     brightness = attributes.get("brightness")
-    return {"id": state["entity_id"], "name": name, "on": state.get("state") == "on",
+    colour = attributes.get("hs_color") if mode == "hs" else None
+    hue, saturation = [round(part) for part in colour] if colour else (None, None)
+    return {"id": state["entity_id"], "name": attributes.get("friendly_name") or state["entity_id"],
+            "area": state.get("area") or None, "on": state.get("state") == "on",
             "reachable": state.get("state") not in ("unavailable", "unknown"),
-            "dimmable": any(mode != "onoff" for mode in attributes.get("supported_color_modes") or []),
-            "brightness": round(brightness / 255 * 100) if isinstance(brightness, (int, float)) else None}
+            "brightness": round(brightness / 255 * 100) if isinstance(brightness, (int, float)) else None,
+            "colour_modes": list(attributes.get("supported_color_modes") or []),
+            "hue": hue, "saturation": saturation,
+            "kelvin": attributes.get("color_temp_kelvin") if mode == "color_temp" else None,
+            "min_kelvin": attributes.get("min_color_temp_kelvin"),
+            "max_kelvin": attributes.get("max_color_temp_kelvin")}
+
+
+def _light_said(light: Dict) -> str:
+    """One light as Claude is told of it: "Lamp (light.lamp, Bedroom) on at 40%, 2700K"."""
+    where = f"{light['id']}, {light['area']}" if light["area"] else light["id"]
+    if not light["reachable"]:
+        how = "unavailable"
+    elif not light["on"]:
+        how = "off"
+    else:
+        how = "on" if light["brightness"] is None else f"on at {light['brightness']}%"
+        if light["kelvin"] is not None:
+            how += f", {light['kelvin']}K"
+        elif light["hue"] is not None:
+            how += f", hue {light['hue']} saturation {light['saturation']}%"
+    return f"{light['name']} ({where}) {how}"
 
 
 def _called(words: List[str]) -> re.Pattern:
