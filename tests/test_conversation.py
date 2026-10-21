@@ -51,14 +51,15 @@ class FakeLLM:
     def __init__(self, *replies):
         self.replies = list(replies)
         self.asked, self.remembered, self.recorded, self.tool_answers = [], [], [], []
-        self.contexts = []
+        self.contexts, self.lights = [], []
 
     def forget_stale_history(self):
         pass
 
-    def process_query(self, text, context=None):
+    def process_query(self, text, context=None, lights=None):
         self.asked.append(text)
         self.contexts.append(context)
+        self.lights.append(lights)
         return self.replies.pop(0)
 
     def remember(self, text, reply):
@@ -217,24 +218,25 @@ LAMP_OFF = "Nova is in the Bedroom. Lights: Bedroom Light (light.bedroom_light, 
 
 
 def test_claude_is_told_about_the_lights_beside_the_timers():
+    # Separately: the lights aren't a timer, so they aren't put in the list of timers.
     home = FakeHome(LAMP_OFF)
     llm = FakeLLM(_answer("It's sunny."))
     _conversation(clock=FakeClock(timers=["timer 1: 5 minutes"]), llm=llm, actions=FakeActions(home=home)).handle("is it sunny")
-    assert llm.contexts == [f"timer 1: 5 minutes; {LAMP_OFF}"]
-    assert "Nova is in the Bedroom" in llm.contexts[0]
+    assert llm.contexts == ["timer 1: 5 minutes"] and llm.lights == [LAMP_OFF]
+    assert "Nova is in the Bedroom" in llm.lights[0]
 
 
 def test_claude_is_told_about_the_lights_with_no_timers_running():
     llm = FakeLLM(_answer("It's sunny."))
     _conversation(llm=llm, actions=FakeActions(home=FakeHome(LAMP_OFF))).handle("is it sunny")
-    assert llm.contexts == [LAMP_OFF]
+    assert llm.contexts == [None] and llm.lights == [LAMP_OFF]
 
 
 def test_claude_is_told_when_novas_room_isnt_known():
     told = "Nova's room isn't known. Lights: Lamp (light.lamp, Bedroom) off"
     llm = FakeLLM(_answer("Which room?"))
     _conversation(llm=llm, actions=FakeActions(home=FakeHome(told))).handle("dim the lights")
-    assert llm.contexts == [told]
+    assert llm.lights == [told]
 
 
 def test_claude_goes_without_the_lights_when_they_cant_be_read():
@@ -243,13 +245,13 @@ def test_claude_goes_without_the_lights_when_they_cant_be_read():
     home = FakeHome("")
     _conversation(clock=FakeClock(timers=["timer 1: 5 minutes"]), llm=llm, actions=FakeActions(home=home)).handle("is it sunny")
     _conversation(llm=llm, actions=FakeActions(home=home)).handle("is it sunny")
-    assert llm.contexts == ["timer 1: 5 minutes", None]
+    assert llm.contexts == ["timer 1: 5 minutes", None] and llm.lights == [None, None]
 
 
 def test_without_home_assistant_claude_is_only_told_about_the_timers():
     llm = FakeLLM(_answer("It's sunny."))
     _conversation(clock=FakeClock(timers=["timer 1: 5 minutes"]), llm=llm).handle("is it sunny")
-    assert llm.contexts == ["timer 1: 5 minutes"]
+    assert llm.contexts == ["timer 1: 5 minutes"] and llm.lights == [None]
 
 
 def test_a_slow_home_assistant_is_only_waited_for_a_moment_to_read_the_lights():
@@ -271,7 +273,7 @@ def test_a_fall_through_tells_claude_about_the_lights_too():
     home = FakeHome(LAMP_OFF)
     conversation, llm, _ = _lights_assist_didnt_understand(home=home)
     conversation.handle("dim the lights")
-    assert llm.contexts == [LAMP_OFF]
+    assert llm.lights == [LAMP_OFF]
 
 
 # Something ringing

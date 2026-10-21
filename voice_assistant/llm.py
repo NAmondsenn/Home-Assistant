@@ -180,9 +180,9 @@ class LLMHandler:
     def _system_prompt(self, use_web_search: bool) -> str:
         """
         What the model is told about itself and how to answer. Nothing in it changes
-        from one request to the next - the time and what's on the clock come with the
-        user's message instead (see _situation) - so the API can cache it along with
-        the tools, which together are several thousand tokens.
+        from one request to the next - the time, what's on the clock and the lights come
+        with the user's message instead (see _situation) - so the API can cache it along
+        with the tools, which together are several thousand tokens.
 
         Args:
             use_web_search: Whether this request can search the web.
@@ -219,8 +219,9 @@ class LLMHandler:
             "listen for their answer. Ask only the question: 'The music or the timer?', never "
             "'\"Turn it off\" is ambiguous here. I'll ask which one.' first. "
             "If you don't know something, say so plainly rather than guessing. "
-            "Each message from the user starts with the date and time it was said, and the timers "
-            "and reminders running then, in square brackets. That's added automatically - the user "
+            "Each message from the user starts with the date and time it was said, the timers "
+            "and reminders running then and, if Home Assistant is set up, the lights and the room "
+            "Nova is in, in square brackets. That's added automatically - the user "
             "didn't say it, so never mention it unless asked. "
             "Work out any times or dates the user asks about from that, and answer with only the "
             "part they asked for - the time alone for 'what time is it', the date alone for 'what "
@@ -287,7 +288,7 @@ class LLMHandler:
         return system_prompt
 
     @staticmethod
-    def _situation(now: datetime, context: Optional[str]) -> str:
+    def _situation(now: datetime, context: Optional[str], lights: Optional[str] = None) -> str:
         """
         The details which change from one request to the next, put in front of what
         the user said - see _system_prompt.
@@ -295,15 +296,22 @@ class LLMHandler:
         Args:
             now: The current local time.
             context: The timers and reminders running, as words, or None.
+            lights: The lights and the room Nova is in, as words - see
+                HomeAssistant.describe_lights - or None.
 
         Returns:
             e.g. "[Monday 19 October 2026, 7:36 PM (BST). Timers and reminders running:
-            none.] "
+            none. Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off.] "
         """
-        return (f"[{now.strftime('%A %d %B %Y')}, {spoken_clock_time(now.hour, now.minute)} "
-                f"({now.strftime('%Z')}). Timers and reminders running: {context or 'none'}.] ")
+        situation = (f"[{now.strftime('%A %d %B %Y')}, {spoken_clock_time(now.hour, now.minute)} "
+                     f"({now.strftime('%Z')}). Timers and reminders running: {context or 'none'}.")
+        # Sentences of their own, not put in the list of timers, where Claude would take
+        # them for one. "There are no lights." already ends in the full stop.
+        if lights:
+            situation += f" {lights.rstrip('.')}."
+        return situation + "] "
 
-    def process_query(self, text, context=None):
+    def process_query(self, text, context=None, lights=None):
         """
         Asks Claude to answer what the user said, with the recent conversation and
         the tools it may call. The keyword parser (_parse_action) is only used when
@@ -313,6 +321,7 @@ class LLMHandler:
         Args:
             text: What the user said.
             context: The timers and reminders running, as said to Claude.
+            lights: The lights and the room Nova is in, as said to Claude, or None.
 
         Returns:
             Dict with 'response' (what to say), 'actions' (the Actions asked for)
@@ -340,7 +349,7 @@ class LLMHandler:
                 messages.extend(self._earlier_messages(number, turn))
             # Adds the current user query to the messages list, after the details which
             # change from one request to the next - see _system_prompt.
-            messages.append({"role": "user", "content": self._situation(now, context) + text})
+            messages.append({"role": "user", "content": self._situation(now, context, lights) + text})
 
             # The tools are always offered, so the model decides what the user meant
             # rather than a keyword match guessing at it.

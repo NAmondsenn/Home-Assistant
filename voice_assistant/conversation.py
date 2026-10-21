@@ -279,14 +279,12 @@ class Conversation:
         """
         # Sent along with what's currently on the clock, so a mangled label like
         # "walk the frogs" can still be matched to the real "walk the dogs" reminder.
-        told = list(self.clock.describe_all())
+        timers = "; ".join(self.clock.describe_all()) or None
         # And the lights, with the room Nova is in, so "dim the lights" means that
         # room's. Left out if Home Assistant isn't there, or is too slow to wait for.
         home = self.actions.home
-        lights = home.describe_lights(timeout=LIGHTS_TIMEOUT) if home else ""
-        if lights:
-            told.append(lights)
-        return self.llm.process_query(text, context="; ".join(told) or None)
+        lights = (home.describe_lights(timeout=LIGHTS_TIMEOUT) if home else "") or None
+        return self.llm.process_query(text, context=timers, lights=lights)
 
     def _run(self, actions: List[Action]) -> List[ActionResult]:
         """
