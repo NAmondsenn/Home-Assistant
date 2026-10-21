@@ -6,7 +6,10 @@ the time of day.
 """
 
 import json
+import threading
+import time
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 import requests
@@ -186,6 +189,50 @@ def test_listening_stops_when_asked():
     ntfy, _ = _ntfy(session=FakeSession(streams=[]))
     ntfy.stop()
     ntfy._listen()
+
+
+class QuietServer(BaseHTTPRequestHandler):
+    """Like ntfy between keepalives: says it's open, then nothing for a long while."""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        line = b'{"event": "open"}\n'
+        self.wfile.write(b"%x\r\n%s\r\n" % (len(line), line))
+        self.wfile.flush()
+        time.sleep(10)
+
+
+@pytest.mark.skipif(requests.get is None, reason="needs requests, as on the Pi")
+def test_stopping_doesnt_wait_for_the_servers_next_keepalive():
+    # Closing the connection waited for the listening thread's read to finish - up to
+    # 45 seconds, until ntfy's next keepalive - so Nova took so long to stop that
+    # systemd killed it, and its next start was taken for one after a problem.
+    server = ThreadingHTTPServer(("127.0.0.1", 0), QuietServer)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        ntfy = Ntfy(f"http://127.0.0.1:{server.server_address[1]}", alerts=["homelab"])
+        ntfy.start()
+        deadline = time.monotonic() + 5
+        while not ntfy.listening and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ntfy.listening
+
+        stopped = threading.Thread(target=ntfy.stop, daemon=True)
+        stopped.start()
+        stopped.join(2)
+        assert not stopped.is_alive()
+        ntfy._thread.join(2)
+        assert not ntfy._thread.is_alive()
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 # Sending

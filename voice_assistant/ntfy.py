@@ -21,6 +21,7 @@ NTFY_TOKEN in ~/.config/nova/.env.
 import json
 import logging
 import re
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -208,8 +209,21 @@ class Ntfy:
         """Stops listening."""
         self._stopping.set()
         response = self._response
-        if response is not None:
+        if response is None:
+            return
+        # Closing the response itself would wait for the listening thread's read to
+        # finish - up to 45 seconds, until the server's next keepalive - which kept
+        # Nova from stopping in time. Shutting the connection underneath instead ends
+        # that read at once.
+        connection = getattr(getattr(response, "raw", None), "connection", None)
+        sock = getattr(connection, "sock", None)
+        if sock is None:
             response.close()
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def quiet(self) -> bool:
         """Whether it's night, when only the most urgent alerts are said out loud."""
