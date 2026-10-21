@@ -62,6 +62,21 @@ def test_a_routine_is_found_from_what_was_said(routines, said, found):
     assert (routines.called(said) is not None) is found
 
 
+# Speech-to-text writes "goodnight" as "Good night" one time and "Goodnight" the
+# next, so a routine saved one way has to start when it's heard the other.
+@pytest.mark.parametrize("saved, said", [("goodnight", "Good night."), ("good night", "Goodnight"),
+                                         ("goodnight", "Run my good night routine")])
+def test_a_routine_is_found_however_its_words_are_split(routines, saved, said):
+    routines.save({"name": saved.capitalize(), "phrases": saved, "steps": "turn off all my lights"})
+    assert routines.called(said) is not None
+
+
+def test_two_routines_cant_share_words_split_differently(routines):
+    routines.save({"name": "Goodnight", "phrases": "goodnight", "steps": "turn off all my lights"})
+    assert not routines.save({"name": "Bedtime", "phrases": "good night", "steps": "pause the music"})["success"]
+    assert not routines.save({"name": "Good night", "phrases": "sleep", "steps": "pause the music"})["success"]
+
+
 def test_a_routine_runs_by_itself_once_on_its_days(routines):
     routines.save(MORNING)
     tuesday = datetime(2026, 10, 20, 7, 0, 10)

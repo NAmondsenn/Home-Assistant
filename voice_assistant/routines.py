@@ -47,6 +47,14 @@ def words(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]", " ", (text or "").lower())).strip()
 
 
+def _same(one: str, other: str) -> bool:
+    """
+    Whether two of those are the same words, however they're split - speech-to-text
+    hears "goodnight" as "Good night" one time and "Goodnight" the next.
+    """
+    return one.replace(" ", "") == other.replace(" ", "")
+
+
 def _checked(given: Dict) -> Dict:
     """
     A routine as it's kept, from what the settings page sent.
@@ -140,7 +148,8 @@ class Routines:
         named = BY_NAME.fullmatch(said)
         with self._lock:
             for routine in self._routines:
-                if said in routine["phrases"] or (named and named[1] == words(routine["name"])):
+                if (any(_same(said, phrase) for phrase in routine["phrases"])
+                        or (named and _same(named[1], words(routine["name"])))):
                     return dict(routine)
         return None
 
@@ -174,9 +183,10 @@ class Routines:
             if len(others) >= MOST_ROUTINES:
                 return {"success": False, "message": f"Nova keeps {MOST_ROUTINES} routines at most."}
             for other in others:
-                if words(other["name"]) == words(routine["name"]):
+                if _same(words(other["name"]), words(routine["name"])):
                     return {"success": False, "message": f"There's already a routine called {other['name']}."}
-                shared = next((phrase for phrase in routine["phrases"] if phrase in other["phrases"]), None)
+                shared = next((phrase for phrase in routine["phrases"]
+                               if any(_same(phrase, theirs) for theirs in other["phrases"])), None)
                 if shared:
                     return {"success": False, "message": f"“{shared}” already starts {other['name']}."}
             routines = sorted(others + [routine], key=lambda kept: kept["name"].lower())
