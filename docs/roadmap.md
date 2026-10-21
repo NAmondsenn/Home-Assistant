@@ -36,7 +36,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] README and these docs
 - [x] Live test on the Pi - [release-checklist.md](release-checklist.md)
 - [x] Set `weather.location`
-- [ ] 72-hour soak test, with `scripts/soak_monitor.py` running - started Tuesday 20 October at 17:09, with all of Phase 3 on the Pi, until Friday 23 October at 17:09
+- [x] Soak test, with `scripts/soak_monitor.py` running and all of Phase 3 on the Pi - from Tuesday 20 October at 17:09, stopped after 16 hours as plenty: 23 conversations, memory from 627 MB to 677 MB in the first few hours and then flat, 28 threads throughout, no restarts, and nothing logged as a warning or an error
 - Deferred, agreed 20 October: UX-04 physical stop button - to be talked over with a remote with a microphone of its own, which could do the same and more
 - [ ] Merge into `main`, and declare the Pi version complete - the audit's section 15 lists what that means
 
@@ -67,7 +67,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 ## Phase 4 onwards
 
 - Phase 4 - a backend on PVE2, and the Pi as a satellite, with standalone mode kept as a fallback. Streaming the model's reply into speech, deferred from Phase 3, comes with any slower or local model. ntfy, both ways: homelab alerts announced on the speakers, with "tell me more" for the details (only urgent ones at night), and "send that to my phone" for an answer, a reminder nobody answered, or Nova having to restart itself. A settings page served by Nova - settings, keys (never shown back), Spotify sign-in, volumes, alarms, what it remembers, and how it's doing - its settings API in the backend, so standalone Pis have it too. Speech-to-text there could be Parakeet, if PVE2 has a GPU - measured against Moonshine first.
-- Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV.
+- Phase 5 - more of Home Assistant than the lights and calendar, with confirmations for anything security-sensitive. Jellyfin through Home Assistant's media players, for the TV. Then a 72-hour soak test, of everything since Phase 3.
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
 ## Outside the code
