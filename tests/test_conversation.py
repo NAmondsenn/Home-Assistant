@@ -247,3 +247,49 @@ def test_sending_it_doesnt_change_what_would_be_sent_next_time():
     intents = FakeIntents({"send that to my phone": _answer("Okay.", Action("send_to_phone"))})
     _conversation(intents=intents, actions=actions).handle("send that to my phone")
     assert actions.last_answer == ("what's the capital of France", "Paris.")
+
+
+# Routines
+
+class FakeRoutines:
+    def __init__(self, *routines):
+        self.routines = routines
+
+    def called(self, text):
+        return next((routine for routine in self.routines if text in routine["phrases"]), None)
+
+
+MORNING = {"name": "Good morning", "phrases": ["good morning"],
+           "steps": ["what's the weather", "pause", "turn on the lights"]}
+
+
+def test_a_routines_steps_are_each_done_as_if_said_and_their_answers_said_together():
+    llm = FakeLLM(_answer("It's sunny."), _answer("Okay.", Action("home_command", {"request": "turn on the lights"})))
+    intents = FakeIntents({"pause": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    actions = FakeActions({"control_playback": ActionResult(True, "Paused", confirm="chime"),
+                           "home_command": ActionResult(True, "Turned on the lights", confirm="chime")})
+    reply = _conversation(intents=intents, llm=llm, actions=actions, routines=FakeRoutines(MORNING)).handle("good morning")
+
+    assert llm.asked == ["what's the weather", "turn on the lights"]
+    assert actions.run == ["control_playback", "home_command"]
+    # Two chimes would only be one sound twice.
+    assert reply.say == "It's sunny." and reply.sounds == [("success_chime.wav", "general")]
+
+
+def test_a_step_which_is_a_routines_own_words_doesnt_start_it_again():
+    llm = FakeLLM(_answer("Going."))
+    reply = _conversation(llm=llm, routines=FakeRoutines({"name": "Loop", "phrases": ["go"], "steps": ["go"]})).handle("go")
+    assert llm.asked == ["go"] and reply.say == "Going."
+
+
+def test_the_answer_to_a_question_isnt_taken_for_a_routine():
+    llm = FakeLLM(_answer("Okay."))
+    _conversation(llm=llm, routines=FakeRoutines(MORNING)).handle("good morning", follow_up=True)
+    assert llm.asked == ["good morning"]
+
+
+def test_a_question_a_step_asks_isnt_listened_for():
+    llm = FakeLLM(_answer("Which one?"))
+    routine = {"name": "Lights", "phrases": ["lights"], "steps": ["turn on a light"]}
+    reply = _conversation(llm=llm, routines=FakeRoutines(routine)).handle("lights")
+    assert reply.say == "Which one?" and not reply.listen_again

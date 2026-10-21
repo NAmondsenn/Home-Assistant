@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import stat
+import time
 import urllib.error
 import urllib.request
 
@@ -19,6 +20,7 @@ import yaml
 from voice_assistant import paths
 from voice_assistant import settings_page as page_module
 from voice_assistant.config import Config
+from voice_assistant.routines import Routines
 from voice_assistant.settings_page import SettingsPage, restart_service
 
 LOGIN = "you@example.com"
@@ -265,6 +267,24 @@ def test_the_lights_and_scenes_come_from_home_assistant_and_go_back_to_it(files)
     assert not page.set_light("light.kitchen", LOGIN, on="off")["success"]
     assert _page().home_state() == {"available": False}
     assert not _page().run("scene.relax", LOGIN)["success"]
+
+
+def test_a_routine_is_made_run_and_deleted_from_the_page(files):
+    ran = []
+    page = _page(routines=Routines(path=str(files / "routines.json")), run_routine=ran.append)
+    made = page.save_routine({"name": "Good morning", "phrases": "good morning", "steps": "what's the weather"}, LOGIN)
+    assert made == {"success": True, "message": "Saved Good morning."}
+    routine = page.state()["routines"][0]
+
+    assert page.start_routine(routine["id"], LOGIN) == {"success": True, "message": "Running Good morning."}
+    deadline = time.monotonic() + 2
+    while not ran and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [running["name"] for running in ran] == ["Good morning"]
+
+    assert page.remove_routine(routine["id"], LOGIN)["success"] and page.state()["routines"] == []
+    assert not page.start_routine(routine["id"], LOGIN)["success"]
+    assert not page.save_routine("Good morning", LOGIN)["success"]
 
 
 def test_the_page_says_what_nova_is_waiting_to_hear(files):

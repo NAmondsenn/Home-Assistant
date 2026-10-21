@@ -14,6 +14,7 @@ pytest.importorskip("numpy")
 pytest.importorskip("soxr")
 
 import main
+from voice_assistant.routines import Routines
 
 
 class Recorder:
@@ -46,6 +47,8 @@ def assistant(tmp_path, monkeypatch):
     made.name, made.wake_word = "Nova", "Hey Nova"
     made.running = False
     made._stopping = False
+    made._conversation_lock = threading.Lock()
+    made.routines = Routines(path=str(tmp_path / "routines.json"))
     return made
 
 
@@ -378,3 +381,54 @@ def test_what_nova_is_doing_is_kept_for_the_settings_page(assistant):
     assistant._handle_interaction(timeline=FakeTimeline())
 
     assert seen == {"recording": "listening", "working out the words": "thinking"}
+
+
+# Routines
+
+def test_a_routine_run_by_itself_waits_its_turn_and_is_said_as_an_announcement(assistant):
+    # So the wake word stops it, as it does a timer's.
+    from types import SimpleNamespace
+    from voice_assistant.conversation import Reply
+
+    played, sounds, happened = [], [], []
+    assistant._announcing, assistant._idle = threading.Lock(), threading.Event()
+    assistant._idle.set()
+    assistant.activity = "idle"
+    assistant.music = SimpleNamespace(hold=lambda: happened.append("held"),
+                                      release=lambda after=0: happened.append("let go"))
+    assistant.conversation = SimpleNamespace(
+        start=lambda: happened.append("started"),
+        run_routine=lambda routine: Reply(say="It's sunny.", sounds=[("success_chime.wav", "general")]))
+    assistant._play_sound = lambda sound, volume=None: sounds.append(sound)
+    assistant._play_announcement = lambda playback, still_wanted=None: None
+    assistant.speaker = SimpleNamespace(play_stream=lambda stream, rate, volume, kind: played.append(kind))
+    assistant.tts = SimpleNamespace(stream=lambda message: played.append(message), sample_rate=22050)
+    assistant.volume = SimpleNamespace(get=lambda category: 0.5)
+
+    assistant.run_routine({"name": "Good morning", "steps": ["what's the weather"]})
+
+    assert sounds == ["success_chime.wav"] and played == ["It's sunny.", "announcement"]
+    assert happened == ["held", "started", "let go"] and assistant.activity == "idle"
+
+
+def test_a_routine_runs_by_itself_when_its_due(assistant, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(main, "ROUTINE_CHECK", 0.01)
+    due, ran = [[{"name": "Good morning"}]], []
+
+    def next_due():
+        if not due:
+            assistant.running = False
+            return []
+        return due.pop(0)
+
+    assistant.running = True
+    assistant.routines = SimpleNamespace(due=next_due)
+    assistant.run_routine = lambda routine: ran.append(routine["name"])
+    assistant._run_routines_when_due()
+
+    deadline = time.monotonic() + 2
+    while not ran and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ran == ["Good morning"]

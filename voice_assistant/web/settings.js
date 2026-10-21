@@ -113,7 +113,7 @@ function emptyRow(text, mood) {
 }
 
 function removeButton(label, onClick) {
-  const button = element("button", undefined, "remove");
+  const button = element("button", undefined, "icon-button danger");
   button.type = "button";
   button.title = label;
   button.setAttribute("aria-label", label);
@@ -251,6 +251,7 @@ async function load() {
   showVolumes(state.volumes);
   drawIfChanged("clock", state.clock, showClock);
   drawIfChanged("memories", state.memories, showMemories);
+  drawIfChanged("own-routines", state.routines, showOwnRoutines);
   drawIfChanged("keys", state.keys, showKeys);
   drawIfChanged("settings", state.settings, showSettings);
   showSettingsProblem(state.settings_problem);
@@ -575,7 +576,7 @@ async function loadHome() {
 }
 
 function showHome() {
-  const routines = document.getElementById("routines");
+  const routines = document.getElementById("home-routines");
   // Without Home Assistant, the lights say how to connect it, and there are no scripts or scenes.
   if (!home.available || !home.success) {
     const why = home.available ? home.message
@@ -671,6 +672,68 @@ function lightRow(light) {
       }
     },
   };
+}
+
+// The user's own routines
+
+const REPEATS = { daily: "Every day", weekdays: "Weekdays", weekends: "Weekends" };
+
+// The routine being changed in the editor, or null for a new one.
+let editing = null;
+
+function showOwnRoutines(routines) {
+  const rows = routines.map((routine) => {
+    const row = element("li", undefined, "routine");
+    const what = element("span", undefined, "what");
+    what.append(element("span", routine.name, "routine-name"), element("span", startsWhen(routine), "detail"));
+    const run = element("button", "Run", "button quiet");
+    run.type = "button";
+    run.setAttribute("aria-label", `Run ${routine.name}`);
+    run.addEventListener("click", async () => {
+      run.disabled = true;
+      await change("/api/routines/run", { id: routine.id });
+      run.disabled = false;
+    });
+    const edit = element("button", undefined, "icon-button");
+    edit.type = "button";
+    edit.title = `Change ${routine.name}`;
+    edit.setAttribute("aria-label", edit.title);
+    edit.append(icon("i-edit"));
+    edit.addEventListener("click", () => openEditor(routine));
+    row.append(icon("i-routine"), what, run, edit);
+    return row;
+  });
+  document.getElementById("own-routines").replaceChildren(...(rows.length ? rows : [
+    emptyRow("No routines yet. One does a few things at once - when you say its words, or at a time you choose.")]));
+}
+
+// How a routine starts, in words: "Say “good morning”, or weekdays at 07:00".
+function startsWhen(routine) {
+  const said = routine.phrases.map((phrase) => `“${phrase}”`).join(" or ");
+  const timed = routine.at ? `${REPEATS[routine.repeat]} at ${routine.at}` : "";
+  if (said && timed) return `Say ${said}, or ${timed.charAt(0).toLowerCase()}${timed.slice(1)}`;
+  if (said) return `Say ${said}`;
+  return timed || "Run from here";
+}
+
+function openEditor(routine) {
+  editing = routine || null;
+  document.getElementById("editor-title").textContent = routine ? `Change ${routine.name}` : "New routine";
+  document.getElementById("routine-name").value = routine ? routine.name : "";
+  document.getElementById("routine-phrases").value = routine ? routine.phrases.join(", ") : "";
+  document.getElementById("routine-at").value = routine ? routine.at : "";
+  document.getElementById("routine-repeat").value = routine ? routine.repeat : "daily";
+  document.getElementById("routine-steps").value = routine ? routine.steps.join("\n") : "";
+  document.getElementById("delete-routine").hidden = !routine;
+  document.getElementById("new-routine").hidden = true;
+  document.getElementById("routine-editor").hidden = false;
+  document.getElementById("routine-name").focus();
+}
+
+function closeEditor() {
+  editing = null;
+  document.getElementById("routine-editor").hidden = true;
+  document.getElementById("new-routine").hidden = false;
 }
 
 // Home Assistant's scripts, to start, and scenes, to set.
@@ -1030,6 +1093,22 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!query.value.trim()) return;
     const result = await playMusic({ action: "play", query: query.value }, true);
     if (result.success) query.value = "";
+  });
+
+  document.getElementById("new-routine").addEventListener("click", () => openEditor(null));
+  document.getElementById("cancel-routine").addEventListener("click", closeEditor);
+  document.getElementById("routine-editor").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const field = (id) => document.getElementById(id).value;
+    const routine = { id: editing ? editing.id : undefined, name: field("routine-name"), phrases: field("routine-phrases"),
+                      at: field("routine-at"), repeat: field("routine-repeat"), steps: field("routine-steps") };
+    const result = await change("/api/routines", { routine });
+    if (result.success) closeEditor();
+  });
+  document.getElementById("delete-routine").addEventListener("click", async () => {
+    if (!editing || !confirm(`Delete ${editing.name}?`)) return;
+    const result = await change("/api/routines/remove", { id: editing.id });
+    if (result.success) closeEditor();
   });
 
   every(STATE_EVERY, load);
