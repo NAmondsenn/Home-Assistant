@@ -152,6 +152,12 @@ def test_a_controllers_flags_are_read_into_one_way_of_confirming():
     assert ActionResult.from_reply({"success": False, "chime": True, "message": "No"}).confirm == "speak"
 
 
+def test_a_request_assist_didnt_understand_is_told_apart_from_one_which_failed():
+    assert ActionResult.from_reply({"success": False, "message": "x", "not_understood": True}).understood is False
+    assert ActionResult.from_reply({"success": False, "message": "x"}).understood is True
+    assert ActionResult.from_reply({"success": True}).understood is True
+
+
 def test_an_action_which_confirms_itself_has_nothing_said_about_it():
     # Even when there's something else to say: a reminder offer after a skipped
     # song used to have the skip's own message read out in front of it.

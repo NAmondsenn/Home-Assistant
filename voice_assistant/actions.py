@@ -75,12 +75,16 @@ class ActionResult:
             after the answer to the question it came up in.
         sound: The sound, for "sound" - e.g. "volume_beep.wav".
         sound_category: Which volume the sound plays at.
+        understood: False when Home Assistant's Assist matched nothing in what was
+            said - which the model may be able to do something with - rather than
+            understanding it and failing.
     """
     ok: bool
     say: str = ""
     confirm: str = "speak"
     sound: Optional[str] = None
     sound_category: str = "general"
+    understood: bool = True
 
     @classmethod
     def from_reply(cls, reply: Dict) -> "ActionResult":
@@ -107,7 +111,8 @@ class ActionResult:
                        sound_category=reply.get("sound_category", "general"))
         if ok and reply.get("chime"):
             return cls(ok, say, confirm="chime")
-        return cls(ok, say)
+        # Only a failure can be not understood, and a failure always gets this far.
+        return cls(ok, say, understood=not reply.get("not_understood"))
 
 
 def confirm(results: List[ActionResult], chime_enabled: bool = True,

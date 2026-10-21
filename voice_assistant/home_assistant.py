@@ -47,6 +47,28 @@ DEFAULT_AGENT = "conversation.home_assistant"
 SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\b|\balarm system\b"
                        r"|\b(?:open|close|shut)\b.*\bdoors?\b")
 
+# The error codes Assist gives when it matched nothing at all - no sentence it knows,
+# or none of the devices exposed to it - as opposed to understanding and failing, which
+# is "failed_to_handle". Only the first kind is worth trying Claude on: "dim the
+# lights" has no sentence of Assist's own, but Claude can set a brightness.
+NOT_UNDERSTOOD = ("no_intent_match", "no_valid_targets")
+
+# Finds Nova's device by the identifier it registered with over MQTT, and renders its
+# id and its area's name, e.g. "da94...|Bedroom" - or just "|" if there's no such device.
+# A device has no entity id of its own, so this walks the devices of every entity there
+# is. Asked for by the identifier, never by an entity name, since the user can rename
+# entities, or move the device to another area, in Home Assistant whenever they like.
+FIND_DEVICE_TEMPLATE = """
+{%- set found = namespace(device='', area='') -%}
+{%- for device in states | map(attribute='entity_id') | map('device_id') | select('string') | unique -%}
+  {%- if ('mqtt', 'IDENTIFIER') in (device_attr(device, 'identifiers') or []) -%}
+    {%- set found.device = device -%}
+    {%- set found.area = area_name(device) or '' -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ found.device }}|{{ found.area }}
+"""
+
 # What the settings page may switch, and run, by entity id. A light can't let anyone
 # in, whatever it's called; a script or scene could do anything, so its name is
 # checked against SENSITIVE as well.
@@ -95,6 +117,10 @@ class HomeAssistant:
         self.calendars = list(calendars or [])
         self.activities = {name.lower(): [called.lower() for called in calls]
                            for name, calls in (activities or {"work": ["work"]}).items()}
+        # Which device in Home Assistant Nova is, and the name of the area it's in, e.g.
+        # "Bedroom" - found by find_device, and None until then, or if it isn't there.
+        self.device_id: Optional[str] = None
+        self.area: Optional[str] = None
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -150,15 +176,22 @@ class HomeAssistant:
 
         Returns:
             Dict with 'success' and 'message' - Assist's own reply - and 'chime' for
-            something done, since the lights changing speaks for itself.
+            something done, since the lights changing speaks for itself. 'not_understood'
+            is set too when Assist matched nothing, as opposed to failing at something
+            it did understand.
         """
         if SENSITIVE.search(request.lower()):
             logger.warning(f"Refused a sensitive Home Assistant request: '{request}'")
             return {"success": False, "message": "I don't lock, unlock or open anything by voice."}
 
+        asked = {"text": request, "language": "en", "agent_id": self.agent}
+        if self.device_id:
+            # Assist works out "the lights" from the area the device it's talking to is
+            # in, so Nova's room is what's switched when no room is named.
+            asked["device_id"] = self.device_id
+
         try:
-            reply = self._request("POST", "/api/conversation/process",
-                                  json={"text": request, "language": "en", "agent_id": self.agent}).json()
+            reply = self._request("POST", "/api/conversation/process", json=asked).json()
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
@@ -171,7 +204,39 @@ class HomeAssistant:
             return {"success": True, "message": said or "Done.", "chime": True}
         if kind == "query_answer":
             return {"success": True, "message": said}
-        return {"success": False, "message": said or "Home Assistant didn't understand that."}
+        failed = {"success": False, "message": said or "Home Assistant didn't understand that."}
+        if kind == "error" and (response.get("data") or {}).get("code") in NOT_UNDERSTOOD:
+            failed["not_understood"] = True
+        return failed
+
+    def find_device(self, identifier: str) -> bool:
+        """
+        Looks up which device in Home Assistant is Nova, and which area it's in, which
+        Home Assistant decides - the user can move it between rooms there at any time.
+
+        Args:
+            identifier: What Nova registered itself under over MQTT, e.g.
+                "nova_home_assistant".
+
+        Returns:
+            Whether the device was found. If Home Assistant couldn't be asked, what was
+            known before is kept.
+        """
+        template = FIND_DEVICE_TEMPLATE.replace("IDENTIFIER", identifier)
+        try:
+            text = self._request("POST", "/api/template", json={"template": template}).text
+        except requests.RequestException as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return False
+
+        # Home Assistant answers with plain text, not JSON.
+        device_id, _, area = text.strip().partition("|")
+        self.device_id = device_id or None
+        if (area or None) != self.area:
+            logger.info(f"Nova is in the {area}, as Home Assistant has it" if area
+                        else "Nova isn't in a room, as Home Assistant has it")
+        self.area = area or None
+        return self.device_id is not None
 
     # For the settings page
 

@@ -33,6 +33,8 @@ class FakeResponse:
     def __init__(self, body, status=200):
         self.body = body
         self.status_code = status
+        # The template endpoint answers in plain text, not JSON.
+        self.text = body if isinstance(body, str) else ""
 
     def json(self):
         return self.body
@@ -93,6 +95,77 @@ def test_something_assist_couldnt_do_says_why(make_home):
     home = make_home({"/api/conversation/process": _assist("error", "Sorry, I am not aware of any area called attic")})
     assert home.command("turn on the attic lights") == {
         "success": False, "message": "Sorry, I am not aware of any area called attic"}
+
+
+def test_assist_is_told_which_device_is_speaking(make_home):
+    home = make_home({"/api/conversation/process": _assist("action_done", "Turned on the lights")})
+    home.device_id = "da94"
+    home.command("lights on")
+    assert home._session.requests[0][2]["json"]["device_id"] == "da94"
+
+
+def test_without_a_device_assist_is_asked_as_before(make_home):
+    home = make_home({"/api/conversation/process": _assist("action_done", "Done")})
+    home.command("lights on")
+    assert "device_id" not in home._session.requests[0][2]["json"]
+
+
+@pytest.mark.parametrize("code", ["no_intent_match", "no_valid_targets"])
+def test_assist_not_understanding_is_told_apart(make_home, code):
+    reply = _assist("error", "Sorry, I couldn't understand that")
+    reply["response"]["data"] = {"code": code}
+    result = make_home({"/api/conversation/process": reply}).command("dim the lights")
+    assert result == {"success": False, "message": "Sorry, I couldn't understand that", "not_understood": True}
+
+
+def test_an_error_which_isnt_not_understanding_is_not_told_apart(make_home):
+    # A request Assist understood but couldn't carry out has its answer already, so
+    # Claude shouldn't be asked to have another go at it.
+    reply = _assist("error", "Sorry, something went wrong")
+    reply["response"]["data"] = {"code": "failed_to_handle"}
+    result = make_home({"/api/conversation/process": reply}).command("turn on the lights")
+    assert result == {"success": False, "message": "Sorry, something went wrong"}
+
+
+def test_the_device_is_found_by_its_identifier_not_an_entity_name(make_home):
+    home = make_home({"/api/template": FakeResponse("da94|Bedroom")})
+    assert home.find_device("nova_home_assistant") is True
+    assert (home.device_id, home.area) == ("da94", "Bedroom")
+    assert "nova_home_assistant" in home._session.requests[0][2]["json"]["template"]
+
+    home._session.answers["/api/template"] = FakeResponse("|")
+    assert home.find_device("nova_home_assistant") is False
+    assert (home.device_id, home.area) == (None, None)
+
+
+def test_a_device_not_yet_placed_in_an_area_is_still_found(make_home):
+    home = make_home({"/api/template": FakeResponse("da94|")})
+    assert home.find_device("nova_home_assistant") is True
+    assert (home.device_id, home.area) == ("da94", None)
+
+
+def test_when_home_assistant_cant_be_asked_the_device_is_remembered(make_home):
+    home = make_home({"/api/template": FakeResponse("da94|Bedroom")})
+    home.find_device("nova_home_assistant")
+    home._session.answers["/api/template"] = requests.ConnectionError("down")
+    assert home.find_device("nova_home_assistant") is False
+    assert (home.device_id, home.area) == ("da94", "Bedroom")
+
+
+def test_the_room_is_only_logged_when_it_changes(make_home, caplog):
+    home = make_home({"/api/template": FakeResponse("da94|Bedroom")})
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        home.find_device("nova_home_assistant")
+        home.find_device("nova_home_assistant")
+        assert caplog.messages.count("Nova is in the Bedroom, as Home Assistant has it") == 1
+
+        home._session.answers["/api/template"] = FakeResponse("da94|Kitchen")
+        home.find_device("nova_home_assistant")
+        assert "Nova is in the Kitchen, as Home Assistant has it" in caplog.messages
+
+        home._session.answers["/api/template"] = FakeResponse("da94|")
+        home.find_device("nova_home_assistant")
+    assert "Nova isn't in a room, as Home Assistant has it" in caplog.messages
 
 
 @pytest.mark.parametrize("request_text", ["unlock the front door", "open the garage", "open the back door",
