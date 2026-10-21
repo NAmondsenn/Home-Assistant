@@ -9,6 +9,7 @@ for paho-mqtt's client, the broker and Nova itself.
 import json
 import logging
 import threading
+import time
 from datetime import datetime
 
 import pytest
@@ -109,15 +110,20 @@ class FakeNova:
         self.reachable = True
         self.is_muted = False
         self.calls = []
-        self.spoken = threading.Event()
         self.broken = False
+        # Cleared, setting a volume waits until it's set again.
+        self.release = threading.Event()
+        self.release.set()
 
     def controls(self):
         return DeviceControls(status=lambda: self.activity, volumes=lambda: dict(self.levels),
-                              set_volume=lambda category, percent: self.calls.append(("set_volume", category, percent)),
-                              clock=lambda: self.overview, backend=lambda: self.reachable,
+                              set_volume=self._set_volume, clock=lambda: self.overview, backend=lambda: self.reachable,
                               muted=lambda: self.is_muted, set_muted=lambda muted: self.calls.append(("set_muted", muted)),
                               stop=self._stop, restart=lambda: self.calls.append(("restart",)), speak=self._speak)
+
+    def _set_volume(self, category, percent):
+        self.release.wait(2)
+        self.calls.append(("set_volume", category, percent))
 
     def _stop(self):
         if self.broken:
@@ -126,7 +132,6 @@ class FakeNova:
 
     def _speak(self, message):
         self.calls.append(("speak", message))
-        self.spoken.set()
 
 
 @pytest.fixture
@@ -153,6 +158,16 @@ def started(nova):
 def _complaints(caplog):
     return [record for record in caplog.records if record.name == ha_device.__name__
             and record.levelno >= logging.WARNING]
+
+
+def _eventually(condition, timeout=2):
+    """Whether condition comes true within timeout seconds - for what's done on the commands' own thread."""
+    give_up = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > give_up:
+            return False
+        time.sleep(0.01)
+    return True
 
 
 def test_nova_announces_itself_with_its_eleven_controls(started):
@@ -230,10 +245,11 @@ def test_the_next_alarm_and_the_timers_are_sent_as_home_assistant_reads_them(sta
     next_alarm = datetime.fromisoformat(state[f"{BASE}/next_alarm"])
     assert next_alarm.tzinfo is not None and next_alarm.timestamp() == DUE + 3600
     assert state[f"{BASE}/timers"] == "2"
-    # Home Assistant only takes attributes as a JSON object.
+    # Home Assistant only takes attributes as a JSON object. Each is only when it ends:
+    # a reminder's name is the user's own words.
     timers = json.loads(state[f"{BASE}/timers/attributes"])["timers"]
-    assert [timer["name"] for timer in timers] == ["pizza timer", "call mum reminder"]
-    assert datetime.fromisoformat(timers[1]["ends"]).timestamp() == DUE + 600
+    assert [datetime.fromisoformat(timer["ends"]).timestamp() for timer in timers] == [DUE, DUE + 600]
+    assert all(set(timer) == {"ends"} for timer in timers)
 
     # With no backend set up, whether it's reached isn't known.
     nova.reachable = None
@@ -246,21 +262,28 @@ def test_the_next_alarm_and_the_timers_are_sent_as_home_assistant_reads_them(sta
 def test_home_assistants_commands_reach_nova(started, nova):
     device, client = started
     client.connects()
+    # A volume which takes a while - the music's, through Spotify - doesn't hold up
+    # paho's thread, which has the connection to keep alive.
+    nova.release.clear()
     client.delivers(f"{BASE}/volume/alarm/set", "40")
     client.delivers(f"{BASE}/muted/set", "ON")
     client.delivers(f"{BASE}/stop", "PRESS")
     client.delivers(f"{BASE}/restart", "PRESS")
     client.delivers(f"{BASE}/speak", "Washing's done")
-    assert nova.spoken.wait(2)
+    client.delivers(f"{BASE}/speak", "The dryer's done too")
+    assert nova.calls == []
+
+    # Then they're carried out one at a time, in the order they came.
+    nova.release.set()
+    assert _eventually(lambda: len(nova.calls) == 6)
     assert nova.calls == [("set_volume", "alarm", 40), ("set_muted", True), ("stop",), ("restart",),
-                          ("speak", "Washing's done")]
+                          ("speak", "Washing's done"), ("speak", "The dryer's done too")]
 
     # What a command changed is sent straight back, so Home Assistant's slider and
     # switch don't wait to catch up.
-    before = len(client.published)
     nova.is_muted = True
     client.delivers(f"{BASE}/muted/set", "ON")
-    assert client.published[before:] == [(f"{BASE}/muted", "ON", 1, True)]
+    assert _eventually(lambda: client.latest()[f"{BASE}/muted"] == "ON")
 
 
 def test_junk_commands_are_ignored(started, nova, caplog):
@@ -277,11 +300,17 @@ def test_junk_commands_are_ignored(started, nova, caplog):
     # over from something else - and would act every time Nova connected, restarting
     # it over and over.
     client.delivers(f"{BASE}/restart", "PRESS", retain=True)
-    assert nova.calls == [("set_volume", "general", 100), ("set_volume", "music", 0)]
+    # Commands are carried out in the order they came, so once this one has been,
+    # anything above which was going to be has been too.
+    client.delivers(f"{BASE}/stop", "PRESS")
+    assert _eventually(lambda: ("stop",) in nova.calls)
+    assert nova.calls == [("set_volume", "general", 100), ("set_volume", "music", 0), ("stop",)]
 
-    # A control which fails is logged, rather than let loose on paho's own thread.
+    # A control which fails is logged, and the commands after it are still carried out.
     nova.broken = True
     client.delivers(f"{BASE}/stop", "PRESS")
+    client.delivers(f"{BASE}/muted/set", "ON")
+    assert _eventually(lambda: ("set_muted", True) in nova.calls)
     assert any("the speaker's gone" in record.getMessage() for record in _complaints(caplog))
 
 
@@ -353,16 +382,20 @@ def test_stopping_says_its_offline(started):
 
 def test_nothing_said_is_published(started, nova):
     device, client = started
+    # A reminder's name is what the user said - "remind me to take my tablets".
+    nova.overview = {"timers": [{"id": 1, "name": "take my tablets reminder", "due_at": DUE}], "alarms": []}
     client.connects()
     client.delivers(f"{BASE}/speak", "Washing's done")
-    assert nova.spoken.wait(2)
+    assert _eventually(lambda: ("speak", "Washing's done") in nova.calls)
     nova.activity = "speaking"
     device.publish_state()
     client.delivers("homeassistant/status", "online")
 
     # Only how Nova is set and what it's doing - nothing anyone said, nor its answers.
+    assert client.latest()[f"{BASE}/timers"] == "1"
     assert {topic for topic, _, _, _ in client.published} <= {
         DISCOVERY, f"{BASE}/availability", f"{BASE}/status", f"{BASE}/volume/general", f"{BASE}/volume/alarm",
         f"{BASE}/volume/music", f"{BASE}/next_alarm", f"{BASE}/timers", f"{BASE}/timers/attributes",
         f"{BASE}/backend", f"{BASE}/muted"}
-    assert not any("Washing" in payload for _, payload, _, _ in client.published)
+    for said in ("tablets", "Washing"):
+        assert not any(said in topic or said in payload for topic, payload, _, _ in client.published)

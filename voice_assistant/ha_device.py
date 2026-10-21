@@ -20,6 +20,7 @@ needed, so Nova runs without it until mqtt.host is set.
 import json
 import logging
 import math
+import queue
 import re
 import socket
 import threading
@@ -61,7 +62,17 @@ QOS = 1
 
 @dataclass
 class DeviceControls:
-    """What Home Assistant can see and do of Nova, each a function main.py gives it."""
+    """
+    What Home Assistant can see and do of Nova, each a function main.py gives it.
+
+    The ones which read how Nova is - status, volumes, clock, backend and muted - are
+    called every second on the device's own state thread, and on paho's as it connects,
+    so they must return at once. The commands - set_volume, set_muted, stop, restart
+    and speak - are carried out one at a time, in the order Home Assistant sent them,
+    on a thread of their own. A slow one holds up only the commands behind it, never
+    the connection - but it does hold them up, so a speak which waited until the words
+    had been said would keep a Stop pressed meanwhile waiting too.
+    """
     # What Nova's doing: one of STATUSES.
     status: Callable[[], str]
     # Each volume's level, as a percentage, by its category - "general", "alarm" and "music".
@@ -152,6 +163,8 @@ class NovaDevice:
         self._connected = False
         self._stopping = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        # Home Assistant's commands, waiting their turn - see _queue().
+        self._commands = queue.Queue()
         # What each state topic was last sent, so only what's changed is sent again.
         self._lock = threading.Lock()
         self._published: Dict[str, str] = {}
@@ -258,6 +271,7 @@ class NovaDevice:
         client.loop_start()
         self._thread = threading.Thread(target=self._keep_publishing, name="ha-device", daemon=True)
         self._thread.start()
+        threading.Thread(target=self._carry_out, name="ha-device-commands", daemon=True).start()
 
     def stop(self):
         """Says Nova's offline, and disconnects."""
@@ -265,6 +279,9 @@ class NovaDevice:
         client, self._client = self._client, None
         if client is None:
             return
+        # Ends the commands' thread once it's carried out those already waiting - not
+        # waited for, since one may be a message still to be said.
+        self._commands.put(None)
         connected, self._connected = self._connected, False
         try:
             # The broker only sends the last will for a connection which drops, not
@@ -343,9 +360,11 @@ class NovaDevice:
         state[self._next_alarm] = _time(min(alarm["due_at"] for alarm in alarms)) if alarms else UNKNOWN
         timers = overview.get("timers") or []
         state[self._timers] = str(len(timers))
-        # Home Assistant takes attributes only as a JSON object, so the list is in one.
-        state[self._timers_attributes] = json.dumps(
-            {"timers": [{"name": timer["name"], "ends": _time(timer["due_at"])} for timer in timers]})
+        # When each one ends, and not its name: a reminder's is the user's own words -
+        # "take my tablets reminder" - which would be kept by the broker and in Home
+        # Assistant's history. Home Assistant takes attributes only as a JSON object,
+        # so the list is in one.
+        state[self._timers_attributes] = json.dumps({"timers": [{"ends": _time(timer["due_at"])} for timer in timers]})
         backend = controls.backend()
         state[self._backend] = UNKNOWN if backend is None else (ON if backend else OFF)
         state[self._muted] = ON if controls.muted() else OFF
@@ -389,7 +408,7 @@ class NovaDevice:
 
     def _command(self, topic: str, payload: str, retained: bool):
         """
-        Carries out one of Home Assistant's commands.
+        Checks one of Home Assistant's commands, and queues it to be carried out.
 
         Args:
             topic: Where it came in.
@@ -408,31 +427,55 @@ class NovaDevice:
 
         if topic == self._stop:
             logger.info("Stop, from Home Assistant")
-            self.controls.stop()
+            self._queue("Stop", self.controls.stop)
         elif topic == self._restart:
             logger.info("Restart, from Home Assistant")
-            self.controls.restart()
+            self._queue("Restart", self.controls.restart)
         elif topic == self._speak:
             if payload:
                 logger.info(f"Home Assistant asked to say: '{payload}'", extra=TRANSCRIPT)
-                # Speaking waits for any conversation to finish, which mustn't hold up
-                # paho's thread - nor a Stop pressed meanwhile.
-                threading.Thread(target=self._say, args=(payload,), name="ha-device-speak", daemon=True).start()
+                self._queue("Speak", self.controls.speak, payload)
         elif topic == f"{self._muted}/set":
             if payload in (ON, OFF):
                 logger.info(f"Microphone {'muted' if payload == ON else 'unmuted'} from Home Assistant")
-                self.controls.set_muted(payload == ON)
-                self.publish_state()
+                self._queue("Microphone muted", self._set_muted, payload == ON)
         else:
-            for category, _, _, _ in VOLUMES:
+            for category, _, name, _ in VOLUMES:
                 if topic == f"{self._volume[category]}/set":
                     percent = _percent(payload)
                     if percent is not None:
-                        self.controls.set_volume(category, percent)
-                        self.publish_state()
+                        self._queue(name, self._set_volume, category, percent)
 
-    def _say(self, message: str):
-        try:
-            self.controls.speak(message)
-        except Exception as e:
-            logger.error(f"Couldn't say what Home Assistant sent: {e}")
+    def _queue(self, what: str, action: Callable, *args):
+        """
+        Hands a command to the commands' own thread, rather than carrying it out on
+        paho's, which keeps the connection alive - the music's volume goes through
+        Spotify, which can take seconds.
+
+        Args:
+            what: The control it came from, as Home Assistant names it.
+            action: What carries it out.
+            *args: What action is given.
+        """
+        self._commands.put((what, action, args))
+
+    def _carry_out(self):
+        """Carries out Home Assistant's commands one at a time, in the order they came, until stopped."""
+        while True:
+            command = self._commands.get()
+            if command is None:
+                return
+            what, action, args = command
+            try:
+                action(*args)
+            except Exception as e:
+                logger.error(f"Home Assistant's {what} failed: {e}")
+
+    def _set_volume(self, category: str, percent: int):
+        # Sent straight back, so Home Assistant's slider doesn't wait to catch up.
+        self.controls.set_volume(category, percent)
+        self.publish_state()
+
+    def _set_muted(self, muted: bool):
+        self.controls.set_muted(muted)
+        self.publish_state()
