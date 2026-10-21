@@ -1,138 +1,932 @@
-/* Nova's settings page - see voice_assistant/settings_page.py. */
+/* Nova's settings page - see voice_assistant/settings_page.py.
 
-:root {
-  --background: #f6f5f2;
-  --card: #ffffff;
-  --text: #1d1d1f;
-  --quiet: #6e6e73;
-  --line: #e3e1dc;
-  --accent: #3b5bdb;
-  --good: #2b8a3e;
-  --bad: #c92a2a;
-  --warning: #b35c00;
-  color-scheme: light dark;
+   A night sky, as a sibling of the Home Assistant and Homepage dashboards: headings
+   sit on the sky itself, and everything Nova shows or changes sits on frosted glass
+   over it. The one bright thing is Nova's own star, which shows what it's doing. */
+
+/* Outfit, by The Outfit Project Authors, under the SIL Open Font License - see
+   Outfit-OFL.txt. The one file has every weight. */
+@font-face {
+  font-family: "Outfit";
+  src: url("Outfit.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #141416;
-    --card: #1e1e22;
-    --text: #f2f2f4;
-    --quiet: #9a9aa2;
-    --line: #2e2e34;
-    --accent: #8ea2ff;
-    --good: #69db7c;
-    --bad: #ff8787;
-    --warning: #ffb15c;
-  }
+:root {
+  /* The sky, from the top down. */
+  --night: #0a1024;
+  --deep: #04060e;
+  /* Text, and the quieter text beside it. */
+  --moon: #e8ecf6;
+  --dusk: #96a1c0;
+  /* Nova's own light: its star, the sliders and the buttons. */
+  --starlight: #f3d6a0;
+  /* All's well, and something's wrong. */
+  --aurora: #79d9b9;
+  --ember: #ff9077;
+  /* The frosted glass, and the lines and fields on it. */
+  --glass: rgba(12, 18, 40, 0.5);
+  --glass-edge: rgba(255, 255, 255, 0.07);
+  --hairline: rgba(255, 255, 255, 0.06);
+  --field: rgba(255, 255, 255, 0.045);
+  --field-edge: rgba(255, 255, 255, 0.1);
+  /* Corners get tighter as things get smaller, and buttons are round. */
+  --panel-round: 18px;
+  --field-round: 10px;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 
-/* Hidden means hidden - without this, the restart banner's own display: flex won over
+/* Hidden means hidden - without this, the restart notice's own display: flex won over
    it, and asked for a restart when nothing needed one. */
 [hidden] { display: none !important; }
 
+/* The sky's colour is the page's own rather than the body's: a body background
+   would be painted over the stars on #sky. */
+html {
+  min-height: 100%;
+  background: var(--deep) linear-gradient(180deg, var(--night), var(--deep)) no-repeat;
+}
+
 body {
   margin: 0;
-  background: var(--background);
-  color: var(--text);
-  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--moon);
+  font: 400 15px/1.5 "Outfit", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
 }
 
-header, main { max-width: 680px; margin: 0 auto; padding: 0 16px; }
-header { padding-top: 24px; }
-h1 { margin: 0; font-size: 1.8rem; }
-#summary { margin: 4px 0 16px; color: var(--quiet); }
-
-section, .banner {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 16px;
-  margin-bottom: 16px;
+#sky {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100vh;
+  /* As tall as the screen gets, so a phone's address bar coming and going neither
+     leaves a gap nor redraws the stars. */
+  height: 100lvh;
+  pointer-events: none;
 }
-h2 { margin: 0 0 12px; font-size: 1.15rem; }
-h3 { margin: 16px 0 8px; font-size: 0.95rem; color: var(--quiet); font-weight: 600; }
 
-.banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-color: var(--accent); }
-.banner p { margin: 0; }
-
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
-dt { color: var(--quiet); }
-dd { margin: 0; }
-
-ul { list-style: none; margin: 0; padding: 0; }
-.rows li, .plain li { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
-.rows li:first-child, .plain li:first-child { border-top: 0; }
-.rows li > span:first-child { flex: 1; }
-.plain li { align-items: baseline; font-size: 0.9rem; }
-.plain li.error, .plain li.critical { color: var(--bad); }
-.plain li.warning .when { color: var(--warning); }
-.when { color: var(--quiet); font-size: 0.85rem; white-space: nowrap; }
-.quiet { color: var(--quiet); }
-.good { color: var(--good); }
-.note { color: var(--quiet); font-size: 0.85rem; margin: 8px 0 0; }
-.problem { color: var(--bad); }
-
-button {
-  font: inherit;
-  border: 0;
-  border-radius: 10px;
-  padding: 8px 14px;
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
+.page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 32px max(32px, env(safe-area-inset-right)) 72px max(32px, env(safe-area-inset-left));
 }
-button.small { padding: 4px 10px; font-size: 0.85rem; background: transparent; color: var(--accent); border: 1px solid var(--line); }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-input, select {
-  font: inherit;
-  color: inherit;
-  background: var(--background);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 6px 8px;
+/* The top of the page: Nova and what it's doing, and the time */
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 44px;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 18px;
   min-width: 0;
 }
 
-.slider { display: grid; grid-template-columns: 9rem 1fr 3rem; align-items: center; gap: 12px; padding: 6px 0; }
-.slider input { width: 100%; accent-color: var(--accent); }
-.slider output { text-align: right; color: var(--quiet); }
+.name,
+.time {
+  margin: 0;
+  font-weight: 200;
+  font-size: 64px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
 
-.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.doing,
+.date {
+  margin: 8px 0 0;
+  color: var(--dusk);
+  font-size: 16px;
+}
 
-.key { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
-.key:first-child { border-top: 0; }
-.key input { grid-column: 1; }
-.key button { grid-column: 2; }
+.now {
+  flex: none;
+  text-align: right;
+}
 
-#settings label { display: grid; gap: 4px; margin-bottom: 12px; }
-#settings label span { color: var(--quiet); font-size: 0.9rem; }
-#settings label.check { grid-template-columns: 1fr auto; align-items: center; }
+.time {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
 
-/* Hidden, not just moved down, while there's nothing to say - empty, it was still
-   tall enough to peek up from the bottom of a phone's screen. */
-#toast {
+.date .short { display: none; }
+
+/* Nova's star, the one bright thing on the page */
+
+.star {
+  --size: 88px;
+  position: relative;
+  flex: none;
+  width: var(--size);
+  height: var(--size);
+  transition: opacity 0.6s ease, filter 0.6s ease;
+}
+
+.star span {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+
+.star .glow {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(243, 214, 160, 0.5), rgba(243, 214, 160, 0.14) 34%, rgba(243, 214, 160, 0) 68%);
+  transition: transform 0.6s ease;
+}
+
+/* Four long points and four short ones, as a bright star looks through a lens. */
+.star .spike {
+  width: 84%;
+  height: 84%;
+  background:
+    linear-gradient(90deg, transparent, rgba(255, 241, 216, 0.85), transparent) center / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent, rgba(255, 241, 216, 0.85), transparent) center / 1px 100% no-repeat;
+}
+
+.star .spike.crossed {
+  width: 40%;
+  height: 40%;
+  opacity: 0.55;
+  transform: rotate(45deg);
+}
+
+.star .core {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff8ec;
+  box-shadow: 0 0 6px 2px rgba(255, 245, 228, 0.9), 0 0 22px 6px rgba(243, 214, 160, 0.45);
+}
+
+.star .ring {
+  width: 100%;
+  height: 100%;
+}
+
+.star .ring::before,
+.star .ring::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 54%;
+  height: 54%;
+  margin: auto;
+  border: 1px solid rgba(243, 214, 160, 0.65);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+/* Listening: it swells, with a ring breathing round it. */
+.star[data-activity="listening"] .glow { transform: scale(1.35); }
+.star[data-activity="listening"] .ring::before { animation: breathe 1.8s ease-in-out infinite; }
+
+/* Thinking: its points turn, and it twinkles. */
+.star[data-activity="thinking"] .spike { animation: turn 9s linear infinite; }
+.star[data-activity="thinking"] .spike.crossed { animation: turn-crossed 9s linear infinite reverse; }
+.star[data-activity="thinking"] .core { animation: twinkle 1.4s ease-in-out infinite; }
+
+/* Speaking: it ripples outwards. */
+.star[data-activity="speaking"] .glow { transform: scale(1.2); }
+.star[data-activity="speaking"] .ring::before,
+.star[data-activity="speaking"] .ring::after { animation: ripple 1.8s ease-out infinite; }
+.star[data-activity="speaking"] .ring::after { animation-delay: 0.9s; }
+
+/* Out of reach: it fades. */
+.star[data-activity="offline"] {
+  opacity: 0.3;
+  filter: grayscale(1);
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.2; transform: scale(0.92); }
+  50% { opacity: 0.85; transform: scale(1.12); }
+}
+
+@keyframes turn {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes turn-crossed {
+  from { transform: rotate(45deg); }
+  to { transform: rotate(405deg); }
+}
+
+@keyframes twinkle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes ripple {
+  from { opacity: 0.75; transform: scale(0.6); }
+  to { opacity: 0; transform: scale(1.9); }
+}
+
+/* The notice asking for a restart */
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: -12px 0 36px;
+  padding: 12px 12px 12px 20px;
+  border: 1px solid rgba(243, 214, 160, 0.3);
+  border-radius: var(--panel-round);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.notice p { margin: 0; }
+
+/* The sections - four across on a laptop, two on a tablet and one on a phone, with
+   the bigger ones the whole way across */
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+  gap: 44px 28px;
+}
+
+.wide { grid-column: 1 / -1; }
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+  font-weight: 300;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+/* A thin rule out from each heading, fading into the sky. */
+.heading::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin-left: 8px;
+  background: linear-gradient(90deg, rgba(232, 236, 246, 0.24), rgba(232, 236, 246, 0));
+}
+
+.heading .icon {
+  width: 21px;
+  height: 21px;
+  color: var(--starlight);
+}
+
+.subheading {
+  margin: 24px 0 10px;
+  color: var(--dusk);
+  font-weight: 400;
+  font-size: 15px;
+}
+
+.hint {
+  margin: 12px 4px 0;
+  color: var(--dusk);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Out of sight, but still there for the icons to use. */
+.sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The frosted glass */
+
+.panel,
+.tile,
+.list {
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--panel-round);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tiles.single { grid-template-columns: minmax(0, 1fr); }
+
+.tile {
+  position: relative;
+  padding: 14px 16px 15px;
+}
+
+.tile > .icon { color: var(--dusk); }
+
+.tile .label {
+  display: block;
+  margin: 10px 0 1px;
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.tile .value {
+  display: block;
+  font-size: 19px;
+  line-height: 1.3;
+}
+
+.tile .detail {
+  margin: 3px 0 0;
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.tile > .dot {
+  position: absolute;
+  top: 19px;
+  right: 17px;
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot.good {
+  background: var(--aurora);
+  box-shadow: 0 0 10px rgba(121, 217, 185, 0.55);
+}
+
+.dot.bad {
+  background: var(--ember);
+  box-shadow: 0 0 10px rgba(255, 144, 119, 0.55);
+}
+
+/* A warning is a ring of the same colour as a problem - there, but not as solid. */
+.dot.warning { border: 1.5px solid var(--ember); }
+
+.dot.off {
+  border: 1.5px solid var(--dusk);
+  opacity: 0.7;
+}
+
+.list {
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+}
+
+.list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 8px 8px 16px;
+}
+
+.list li + li { border-top: 1px solid var(--hairline); }
+
+.list li > .icon { color: var(--dusk); }
+
+.list .what {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.list .when {
+  color: var(--dusk);
+  font-size: 13px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.list .when.counting {
+  color: var(--moon);
+  font-size: 15px;
+}
+
+.list .empty {
+  padding-right: 16px;
+  color: var(--dusk);
+}
+
+/* A problem can run to a few lines, so its dot stays by the first. */
+.problems li {
+  align-items: flex-start;
+  padding: 13px 16px;
+  font-size: 14px;
+}
+
+.problems li > .dot { margin-top: 7px; }
+
+/* Buttons and fields */
+
+:focus-visible {
+  outline: 2px solid var(--starlight);
+  outline-offset: 2px;
+}
+
+.button {
+  flex: none;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--starlight);
+  color: #21180a;
+  font: inherit;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.button:hover {
+  background: #f7e1b9;
+  box-shadow: 0 0 20px rgba(243, 214, 160, 0.3);
+}
+
+.button.quiet {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--moon);
+  box-shadow: inset 0 0 0 1px var(--field-edge);
+}
+
+.button.quiet:hover {
+  background: rgba(255, 255, 255, 0.11);
+  box-shadow: inset 0 0 0 1px rgba(243, 214, 160, 0.4);
+}
+
+.button:disabled,
+.button:disabled:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(150, 161, 192, 0.7);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  cursor: default;
+}
+
+.remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dusk);
+  cursor: pointer;
+}
+
+.remove:hover {
+  background: rgba(255, 144, 119, 0.12);
+  color: var(--ember);
+}
+
+.remove .icon {
+  width: 16px;
+  height: 16px;
+}
+
+input:not([type="range"]):not([type="checkbox"]),
+select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--field-edge);
+  border-radius: var(--field-round);
+  background: var(--field);
+  color: var(--moon);
+  font: inherit;
+  /* 16px, or a phone zooms in on a field as it's tapped. */
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+input:not([type="range"]):not([type="checkbox"]):focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: rgba(243, 214, 160, 0.7);
+  box-shadow: 0 0 0 3px rgba(243, 214, 160, 0.14);
+}
+
+input::placeholder { color: rgba(150, 161, 192, 0.65); }
+
+option { background: #10162e; }
+
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field > label,
+.field > span {
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.select {
+  position: relative;
+  display: block;
+}
+
+.select select {
+  padding-right: 36px;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.select .icon {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 16px;
+  height: 16px;
+  color: var(--dusk);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+/* A yes or no, as a switch. */
+input[type="checkbox"] {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px var(--field-edge);
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--moon);
+  transition: transform 0.2s ease;
+}
+
+input[type="checkbox"]:checked { background: var(--starlight); }
+
+input[type="checkbox"]:checked::before {
+  background: #21180a;
+  transform: translateX(18px);
+}
+
+/* The volume sliders, filled with Nova's light up to the level - which settings.js
+   keeps in --level. */
+input[type="range"] {
+  --level: 50%;
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--starlight) var(--level), rgba(255, 255, 255, 0.1) var(--level));
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  width: 20px;
+  height: 20px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: #fff7e8;
+  box-shadow: 0 0 0 5px rgba(243, 214, 160, 0.16), 0 0 16px rgba(243, 214, 160, 0.6);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+input[type="range"]::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--starlight);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff7e8;
+  box-shadow: 0 0 0 5px rgba(243, 214, 160, 0.16), 0 0 16px rgba(243, 214, 160, 0.6);
+}
+
+input[type="range"]:focus-visible { outline: none; }
+
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 5px rgba(243, 214, 160, 0.55), 0 0 16px rgba(243, 214, 160, 0.6);
+}
+
+input[type="range"]:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 5px rgba(243, 214, 160, 0.55), 0 0 16px rgba(243, 214, 160, 0.6);
+}
+
+/* Each section's own */
+
+.volume {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 12px 16px 10px;
+}
+
+.volume .label {
+  margin: 0;
+  color: var(--moon);
+  font-size: 15px;
+}
+
+.volume .value {
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+}
+
+.volume input { grid-column: 1 / -1; }
+
+.add {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+  padding: 14px;
+}
+
+.add .button { grid-column: 1 / -1; }
+
+.keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  align-items: start;
+  gap: 10px;
+}
+
+.key {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 10px 10px 16px;
+}
+
+.key .button { padding: 8px 16px; }
+
+/* The field for a new key, shown once it's asked for. */
+.key .entry {
+  display: none;
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.key.open .entry { display: flex; }
+
+.key .state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.problem {
+  margin: 0 0 12px;
+  padding: 14px 18px;
+  border-color: rgba(255, 144, 119, 0.3);
+  color: var(--ember);
+}
+
+.group {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 12px 24px;
+  padding: 18px 20px;
+}
+
+.group + .group { border-top: 1px solid var(--hairline); }
+
+.group h3 {
+  margin: 6px 0 0;
+  font-weight: 400;
+  font-size: 16px;
+}
+
+/* Lined up by their fields, so a label running to two lines doesn't knock one out of
+   line with the rest. */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  align-items: end;
+  gap: 14px 16px;
+}
+
+.field.switch {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+/* A setting changed but not saved yet, marked with a little of Nova's light. */
+.field.changed > label { color: var(--starlight); }
+
+.save-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px 14px 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+.save-bar p {
+  margin: 0 auto 0 0;
+  color: var(--dusk);
+  font-size: 14px;
+}
+
+/* What happened to a change, for a few seconds at the bottom of the screen. Hidden,
+   not just moved down, while there's nothing to say - empty, it was still tall enough
+   to peek up from the bottom of a phone's screen. */
+.toast {
   position: fixed;
+  bottom: max(24px, env(safe-area-inset-bottom));
   left: 50%;
-  bottom: 20px;
-  transform: translate(-50%, 12px);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 11px 20px 11px 16px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 22px;
+  background: rgba(14, 20, 44, 0.88);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  background: var(--text);
-  color: var(--background);
-  padding: 10px 16px;
-  border-radius: 10px;
-  max-width: calc(100% - 32px);
+  transform: translate(-50%, 12px);
   transition: transform 0.2s ease, opacity 0.2s ease, visibility 0.2s;
 }
-#toast.show { transform: translate(-50%, 0); opacity: 1; visibility: visible; }
-#toast.bad { background: var(--bad); color: #fff; }
 
-@media (max-width: 480px) {
-  .slider { grid-template-columns: 1fr 3rem; }
-  .slider span { grid-column: 1 / -1; }
+.toast::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--aurora);
+}
+
+.toast.bad::before { background: var(--ember); }
+
+.toast.show {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+@media (max-width: 1179px) {
+  .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 719px) {
+  .page { padding: 20px max(16px, env(safe-area-inset-right)) 56px max(16px, env(safe-area-inset-left)); }
+
+  .masthead {
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+
+  .identity { gap: 12px; }
+  .star { --size: 56px; }
+  .name { font-size: 44px; }
+  .time { font-size: 34px; }
+
+  .doing,
+  .date {
+    margin-top: 4px;
+    font-size: 14px;
+  }
+
+  .date .long { display: none; }
+  .date .short { display: inline; }
+
+  .notice {
+    flex-wrap: wrap;
+    margin: -8px 0 28px;
+  }
+
+  .board {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 36px;
+  }
+
+  .group {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
+  }
+
+  .group h3 { margin: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .star,
+  .star span,
+  .star span::before,
+  .star span::after,
+  .toast,
+  input[type="checkbox"],
+  input[type="checkbox"]::before {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  /* Still told apart without moving: a ring as it listens, longer points as it
+     thinks, and two rings as it speaks. */
+  .star[data-activity="listening"] .ring::before {
+    opacity: 0.8;
+    transform: scale(1.1);
+  }
+
+  .star[data-activity="thinking"] .spike.crossed {
+    opacity: 1;
+    transform: rotate(45deg) scale(1.5);
+  }
+
+  .star[data-activity="speaking"] .ring::before {
+    opacity: 0.7;
+    transform: scale(1.05);
+  }
+
+  .star[data-activity="speaking"] .ring::after {
+    opacity: 0.35;
+    transform: scale(1.6);
+  }
 }

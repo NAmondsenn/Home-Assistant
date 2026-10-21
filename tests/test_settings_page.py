@@ -118,6 +118,9 @@ def test_the_page_shows_whats_set_and_never_a_key(files):
     assert state["memories"] == ["Your sister is called Amy."]
     assert state["clock"]["timers"][0]["name"] == "pizza reminder"
     assert {"weather.location", "ntfy.alerts", "backend.address"} <= {setting["key"] for setting in state["settings"]}
+    # What can only be one of a few words comes with them, to pick from.
+    player = next(setting for setting in state["settings"] if setting["key"] == "music.player")
+    assert player["choices"] == ["navidrome", "spotify"]
 
 
 def test_the_latest_problems_in_the_log_are_shown_newest_first(files):
@@ -163,6 +166,12 @@ def test_the_music_volume_is_the_players_own_so_a_playing_song_changes_too(files
 def test_the_page_can_tell_what_nova_is_doing(files):
     assert _page(activity=lambda: "listening").live() == {"activity": "listening"}
     assert _page().live() == {"activity": "idle"}
+
+
+def test_the_page_says_what_nova_is_waiting_to_hear(files):
+    # openWakeWord's stand-in, when Nova's own model is missing.
+    assert _page(wake_word=lambda: "Hey Jarvis").state()["wake_word"] == "Hey Jarvis"
+    assert _page().state()["wake_word"] == "Hey Nova"
 
 
 def test_a_key_replaces_the_old_one_and_stays_private(files, caplog):

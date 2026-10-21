@@ -156,7 +156,8 @@ class SmartAssistant:
         self.settings_page = SettingsPage.from_config(self.config, volume=self.volume, clock=self.clock,
                                                       memory=self.memory, ntfy=self.ntfy, stt=self.stt,
                                                       music=self.music_player, boop=self._boop,
-                                                      activity=lambda: self.activity)
+                                                      activity=lambda: self.activity,
+                                                      wake_word=lambda: self.wake_word)
 
         # Claude, offered whichever of those tools can actually work here, and told
         # what's known about the user.

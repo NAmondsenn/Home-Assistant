@@ -2,70 +2,124 @@
 <html lang="en-GB">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a1024">
   <title>Nova</title>
+  <link rel="preload" href="Outfit.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="settings.css">
   <script src="settings.js" defer></script>
 </head>
 <body>
-  <header>
-    <h1>Nova</h1>
-    <p id="summary">Loading…</p>
-  </header>
+  <!-- The night sky behind everything, drawn by settings.js. -->
+  <canvas id="sky" aria-hidden="true"></canvas>
 
-  <main>
-    <div id="restart" class="banner" hidden>
-      <p>Changes take effect once Nova restarts.</p>
-      <button type="button" id="restart-button">Restart Nova</button>
+  <div class="page">
+    <header class="masthead">
+      <div class="identity">
+        <!-- Nova itself: still while it waits, swelling as it listens, turning as it
+             thinks, and rippling as it speaks. -->
+        <div class="star" id="star" data-activity="idle" aria-hidden="true">
+          <span class="glow"></span>
+          <span class="ring"></span>
+          <span class="spike"></span>
+          <span class="spike crossed"></span>
+          <span class="core"></span>
+        </div>
+        <div>
+          <h1 class="name">Nova</h1>
+          <p class="doing" id="doing">Waiting for “Hey Nova”</p>
+        </div>
+      </div>
+      <div class="now">
+        <time class="time" id="time"></time>
+        <p class="date"><span class="long" id="date-long"></span><span class="short" id="date-short"></span></p>
+      </div>
+    </header>
+
+    <div class="notice" id="restart" hidden>
+      <p>Saved changes are used once Nova restarts.</p>
+      <button type="button" class="button" id="restart-button">Restart Nova</button>
     </div>
 
-    <section>
-      <h2>How it's doing</h2>
-      <dl id="status"></dl>
-      <h3>Recent problems</h3>
-      <ul id="problems" class="plain"></ul>
-    </section>
+    <main class="board">
+      <section aria-labelledby="status-title">
+        <h2 class="heading" id="status-title"><svg class="icon" aria-hidden="true"><use href="#i-pulse"></use></svg>Status</h2>
+        <div class="tiles" id="status"></div>
+        <h3 class="subheading">Recent problems</h3>
+        <ul class="list problems" id="problems"></ul>
+      </section>
 
-    <section>
-      <h2>Volumes</h2>
-      <div id="volumes"></div>
-      <p class="note">These, the timers and alarms, and what it remembers all change straight away.</p>
-    </section>
+      <section aria-labelledby="sound-title">
+        <h2 class="heading" id="sound-title"><svg class="icon" aria-hidden="true"><use href="#i-sound"></use></svg>Sound</h2>
+        <div class="tiles single" id="volumes"></div>
+        <p class="hint">As you drag, Nova beeps at the new level, so you can hear how loud it is.</p>
+      </section>
 
-    <section>
-      <h2>Timers and alarms</h2>
-      <ul id="clock" class="rows"></ul>
-      <form id="add-alarm" class="inline">
-        <label>New alarm <input type="time" name="time" required></label>
-        <select name="repeat" aria-label="Repeats">
-          <option value="">Once</option>
-          <option value="daily">Every day</option>
-          <option value="weekdays">Weekdays</option>
-          <option value="weekends">Weekends</option>
-        </select>
-        <button type="submit">Add</button>
-      </form>
-    </section>
+      <section aria-labelledby="clock-title">
+        <h2 class="heading" id="clock-title"><svg class="icon" aria-hidden="true"><use href="#i-alarm"></use></svg>Timers and alarms</h2>
+        <ul class="list" id="clock"></ul>
+        <form class="panel add" id="add-alarm">
+          <label class="field"><span>New alarm at</span>
+            <input type="time" name="time" required>
+          </label>
+          <label class="field"><span>Repeats</span>
+            <span class="select">
+              <select name="repeat">
+                <option value="">Never</option>
+                <option value="daily">Every day</option>
+                <option value="weekdays">Weekdays</option>
+                <option value="weekends">Weekends</option>
+              </select>
+              <svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg>
+            </span>
+          </label>
+          <button type="submit" class="button quiet">Add alarm</button>
+        </form>
+      </section>
 
-    <section>
-      <h2>What it remembers</h2>
-      <ul id="memories" class="rows"></ul>
-    </section>
+      <section aria-labelledby="memory-title">
+        <h2 class="heading" id="memory-title"><svg class="icon" aria-hidden="true"><use href="#i-memory"></use></svg>Memory</h2>
+        <ul class="list" id="memories"></ul>
+      </section>
 
-    <section>
-      <h2>Keys</h2>
-      <p class="note">Saved on Nova, never shown back, and used once Nova restarts.</p>
-      <div id="keys"></div>
-    </section>
+      <section class="wide" aria-labelledby="keys-title">
+        <h2 class="heading" id="keys-title"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg>Keys</h2>
+        <div class="keys" id="keys"></div>
+        <p class="hint">Saved on Nova and never shown again. A new key is used once Nova restarts.</p>
+      </section>
 
-    <section>
-      <h2>Settings</h2>
-      <p id="settings-problem" class="problem" hidden></p>
-      <form id="settings"></form>
-      <p class="note">Used once Nova restarts. Saving rewrites ~/.config/nova/config.yaml, keeping the one before as config.yaml.bak.</p>
-    </section>
-  </main>
+      <section class="wide" aria-labelledby="settings-title">
+        <h2 class="heading" id="settings-title"><svg class="icon" aria-hidden="true"><use href="#i-settings"></use></svg>Settings</h2>
+        <p class="panel problem" id="settings-problem" hidden></p>
+        <form class="panel settings" id="settings" novalidate>
+          <div id="setting-groups"></div>
+          <div class="save-bar">
+            <p id="unsaved">Nothing's changed yet.</p>
+            <button type="submit" class="button" id="save-settings" disabled>Save settings</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
 
-  <div id="toast" role="status" aria-live="polite"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.5l1.9 7.6 7.6 1.9-7.6 1.9-1.9 7.6-1.9-7.6L2.5 12l7.6-1.9z"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 5 12 2.5-6H21"/></symbol>
+    <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+    <symbol id="i-voice" viewBox="0 0 24 24"><path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5h-9l-4.5 3.5v-3.5H5A1.5 1.5 0 0 1 3.5 15V7A1.5 1.5 0 0 1 5 5.5z"/></symbol>
+    <symbol id="i-alarm" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7"/><path d="M12 9.5V13l2.5 1.5"/><path d="M4.5 5.5l3-2.5"/><path d="M19.5 5.5l-3-2.5"/></symbol>
+    <symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7"/><path d="M12 10v3.5"/><path d="M9.5 3h5"/><path d="M12 3v3.5"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18.5V6l10-2v12.5"/><circle cx="6.5" cy="18.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/></symbol>
+    <symbol id="i-memory" viewBox="0 0 24 24"><path d="M7 3.5h10a1 1 0 0 1 1 1v16l-6-4-6 4v-16a1 1 0 0 1 1-1z"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L19 4"/><path d="M16 7l2.5 2.5"/><path d="M13.5 9.5l2 2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9"/><path d="M17 7h3"/><circle cx="15" cy="7" r="2"/><path d="M4 17h3"/><path d="M11 17h9"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="i-reply" viewBox="0 0 24 24"><path d="M13 3L5 13.5h6l-1 7.5 8-10.5h-6z"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="4.5" width="16" height="6" rx="1.5"/><rect x="4" y="13.5" width="16" height="6" rx="1.5"/><circle cx="8" cy="7.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="8" cy="16.5" r="0.9" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6.5 9.5l5.5 5.5 5.5-5.5"/></symbol>
+  </svg>
 </body>
 </html>

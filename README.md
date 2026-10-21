@@ -153,7 +153,7 @@ Then restart Nova. What it sends is tagged `nova`, so it never reads its own mes
 
 ### The settings page
 
-Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. It listens on the Pi alone, and only your own Tailscale login gets in:
+Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. The star by Nova's name shows whether it's waiting, listening, thinking or speaking, and as a volume's dragged, Nova beeps on its speaker at each new level, so you can hear how loud it is. It listens on the Pi alone, and only your own Tailscale login gets in:
 
 1. In Tailscale's admin page, turn on HTTPS certificates - under DNS.
 2. On the Pi, have Tailscale pass the tailnet's requests on to the page, with a certificate for the Pi's name:

@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, List, Optional
 import yaml
 
 from voice_assistant import paths, storage, timeline
-from voice_assistant.config import Config, ConfigError, check
+from voice_assistant.config import CHOICES, Config, ConfigError, check
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ SAFETY_HEADERS = {
 # The settings on the page - the ones most likely to change - and what each is for.
 EDITABLE = [
     ("weather", "location", "Your town or city, for the weather"),
-    ("music", "player", "What plays the music: navidrome or spotify"),
+    ("music", "player", "What plays the music"),
     ("navidrome", "url", "Navidrome's address"),
     ("navidrome", "username", "Navidrome's user for Nova"),
     ("home_assistant", "url", "Home Assistant's address"),
@@ -162,8 +162,8 @@ class SettingsPage:
 
     def __init__(self, allow: List[str], port: int = 8765, running=None, volume=None, clock=None, memory=None,
                  ntfy=None, stt=None, music=None, boop: Optional[Callable[[float], None]] = None,
-                 activity: Optional[Callable[[], str]] = None, restart: Callable[[], str] = restart_service,
-                 started: Optional[float] = None):
+                 activity: Optional[Callable[[], str]] = None, wake_word: Optional[Callable[[], str]] = None,
+                 restart: Callable[[], str] = restart_service, started: Optional[float] = None):
         """
         Args:
             allow: The Tailscale logins let in.
@@ -178,6 +178,8 @@ class SettingsPage:
             boop: Plays the volume beep at a level from 0 to 1 on Nova's speaker, so a
                 change made on the page is heard at its new level.
             activity: What Nova is doing - "idle", "listening", "thinking" or "speaking".
+            wake_word: What Nova's listening for - openWakeWord's stand-in, if Nova's
+                own wake word model is missing.
             restart: Restarts Nova, returning what to tell the user.
             started: When Nova started, in seconds.
         """
@@ -188,6 +190,7 @@ class SettingsPage:
         self.music = music
         self._boop = boop
         self._activity = activity
+        self._listening_for = wake_word
         self._restart = restart
         self.started = started or time.time()
         with open(paths.DEFAULTS_FILE) as file:
@@ -244,7 +247,11 @@ class SettingsPage:
         for section, name, label in EDITABLE:
             default = self.defaults[section][name]
             value = saved.section(section).get(name) if saved else default
-            settings.append({"key": f"{section}.{name}", "label": label, "kind": _kind(default), "value": value})
+            setting = {"key": f"{section}.{name}", "label": label, "kind": _kind(default), "value": value}
+            # One of a few words, which the page offers as a list to pick from.
+            if (section, name) in CHOICES:
+                setting["choices"] = list(CHOICES[(section, name)])
+            settings.append(setting)
         changed = saved is not None and self.running is not None and any(
             saved.section(section).get(name) != self.running.section(section).get(name)
             for section, name, _ in EDITABLE)
@@ -253,6 +260,7 @@ class SettingsPage:
                  "set": any(secrets.get(spelling) for spelling in [name] + OLDER_NAMES.get(name, []))}
                 for name, label in KEYS]
         return {"status": self._status(),
+                "wake_word": self._wake_word(),
                 "volumes": {category: self._music_level() if category == "music" else self.volume.percent(category)
                             for category in self.volume.CATEGORIES},
                 "clock": self.clock.overview(),
@@ -265,6 +273,10 @@ class SettingsPage:
     def live(self) -> Dict:
         """What Nova is doing right now - asked for every second or two while the page is open."""
         return {"activity": self._activity() if self._activity else "idle"}
+
+    def _wake_word(self) -> str:
+        """What wakes Nova, for the page to say it's waiting for it."""
+        return self._listening_for() if self._listening_for else self.defaults["assistant"]["wake_word"]
 
     def _music_level(self) -> int:
         """
