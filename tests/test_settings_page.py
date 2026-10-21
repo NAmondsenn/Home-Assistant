@@ -7,6 +7,7 @@ rest of Nova, and its files in a folder of the test's own.
 """
 
 import json
+import logging
 import os
 import stat
 import urllib.error
@@ -194,6 +195,17 @@ def test_a_restart_is_asked_for_once_whats_saved_differs_from_whats_running(file
     assert not page.state()["restart_needed"]
     page.save_settings({"weather.location": "Bristol"}, LOGIN)
     assert page.state()["restart_needed"]
+
+
+def test_looking_at_the_settings_isnt_logged(files, caplog):
+    # The page asks every 20 seconds while it's open, which was a "Settings loaded"
+    # line each time - thousands a day, burying what the log is for.
+    (files / "config.yaml").write_text("weather:\n  location: Bristol\n")
+    page = _page(running=Config())
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        page.state()
+    assert "Settings loaded" not in caplog.text
 
 
 # What it changes

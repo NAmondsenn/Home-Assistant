@@ -101,13 +101,15 @@ def check(settings: Dict, defaults: Dict, path: str):
 class Config:
     """The settings, read once at startup. section() gives one part of them."""
 
-    def __init__(self, path: str = None, defaults: str = None):
+    def __init__(self, path: str = None, defaults: str = None, quiet: bool = False):
         """
         Args:
             path: This install's settings file - ~/.config/nova/config.yaml unless
                 given. It needn't exist: the defaults are used as they are.
             defaults: The file with every setting's default - the repository's
                 config.yaml unless given.
+            quiet: Not to log where the settings came from - for the settings page,
+                which reads them every time it looks.
 
         Raises:
             ConfigError: If either file can't be used, saying why.
@@ -128,7 +130,8 @@ class Config:
             check(settings, self.data, self.path)
             for name, values in settings.items():
                 self.data[name] = {**self.data[name], **values}
-            logger.info(f"Settings loaded from {self.path}")
+            if not quiet:
+                logger.info(f"Settings loaded from {self.path}")
 
     def section(self, name):
         """

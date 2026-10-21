@@ -334,7 +334,7 @@ class SettingsPage:
     def _saved(self):
         """The settings as saved now - which take effect at the next restart - and any problem reading them."""
         try:
-            return Config(), None
+            return Config(quiet=True), None
         except (ConfigError, OSError, ValueError) as e:
             return None, str(e)
 
