@@ -652,7 +652,7 @@ def test_unanswered_alarm_shows_up_as_missed(make_clock):
 
 
 def test_a_reminder_nobody_answers_is_passed_on_once_it_stops_ringing(make_clock):
-    # So it can be sent to the user's phone - see main.py's _unanswered.
+    # So it can be sent to the user's phone - see brain.py's _unanswered.
     unanswered = []
     clock = make_clock(on_unanswered=lambda timer, kind, satellite: unanswered.append((timer["label"], kind)))
     clock.set_timer(60, label="take the bins out")
@@ -675,6 +675,23 @@ def test_a_dismissed_reminder_isnt_passed_on(make_clock):
     clock._tick(time.time() + 61)
     clock.dismiss()
     assert unanswered == []
+
+
+def test_a_reminder_which_rings_out_is_taken_out_of_its_satellites_copy(make_clock):
+    # It used to stop ringing without on_change hearing, so the satellite's copy kept
+    # it - and a satellite which lost the brain in the next few minutes rang it again.
+    copies = []
+    clock = make_clock(on_change=lambda: copies.append(clock.copy_for("bedroom")))
+    clock.set_timer(60, label="take the bins out", satellite="bedroom")
+    now = time.time()
+    clock._tick(now + 61)
+    assert [entry["kind"] for entry in copies[-1]] == ["timer"]
+
+    # As if it had rung for the five minutes a reminder's allowed.
+    clock._ringing[0]["give_up_at"] = 0
+    clock._tick(now + 1000)
+    assert not clock.is_ringing()
+    assert copies[-1] == []
 
 
 # The settings page

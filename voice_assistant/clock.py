@@ -880,7 +880,8 @@ class Clock:
         so the user can ask what they missed. Nothing needs rescheduling here -
         everything was already dealt with in its store when it started ringing.
         """
-        with self._lock:
+        # As any other change, so it goes from each satellite's copy too.
+        with self._changing():
             finished = entry in self._ringing
             if finished:
                 self._ringing.remove(entry)
