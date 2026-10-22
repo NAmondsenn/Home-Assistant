@@ -7,9 +7,11 @@ brain sends with the real protocol, and stand-ins for Piper and Nemotron. Needs 
 and soxr installed (as they are on the Pi), and is skipped anywhere they aren't.
 """
 
+import importlib
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -269,6 +271,24 @@ def running(session):
     return thread
 
 
+# On the brain
+
+def test_the_session_needs_none_of_the_satellites_audio_libraries(monkeypatch):
+    # The brain has no microphone or speaker, so no PortAudio for sounddevice to load -
+    # and the session used to need it, through the wake word's detector. Imported
+    # afresh, with every module of Nova's put back as it was afterwards.
+    before = set(sys.modules)
+    for name in [name for name in sys.modules if name.partition(".")[0] == "voice_assistant"]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "sounddevice", None)
+    try:
+        importlib.import_module("voice_assistant.session")
+    finally:
+        for name in set(sys.modules) - before:
+            if name.partition(".")[0] == "voice_assistant":
+                del sys.modules[name]
+
+
 # Answering the satellite
 
 def test_a_wake_is_recorded_heard_and_answered_through_the_satellite(brain, connect, make_session):
@@ -393,6 +413,47 @@ def test_speech_to_text_is_given_the_recording_as_its_made(brain, make_session):
     # The whole recording too, for it to fall back on.
     assert np.array_equal(np.concatenate(transcription.added), transcription.finished_with)
     assert session.conversation.heard == [("What time is it?", False)]
+
+
+def test_the_end_of_the_wake_word_sent_before_it_isnt_taken_for_the_user_talking(brain, make_session):
+    # The satellite sends the moment before it heard the wake word first, which often
+    # holds the end of "Nova". Listened to, that started the recording - and the pause
+    # for the listening sound then ended it, with nothing in it but "Nova".
+    session = make_session()
+    end_of_nova = np.concatenate([np.zeros(round(0.1 * RATE)), np.full(round(0.2 * RATE), 8000)])
+    feed = AudioFeed()
+    feed.feed(np.concatenate([end_of_nova, said(before=0.8)]).astype(np.int16))
+    feed.end()
+
+    session._handle_interaction(feed, timeline=FakeTimeline())
+    # All of what the user said, and none of "Nova".
+    assert np.count_nonzero(brain.stt.made[0].finished_with) == round(0.5 * RATE)
+
+
+def test_a_request_run_on_from_the_wake_word_is_heard_whole(brain, make_session):
+    # "Hey Nova what time is it" said in one breath has often started on "what" by the
+    # time the wake word is heard.
+    session = make_session()
+    feed = AudioFeed()
+    feed.feed(said(seconds=0.8, before=0))
+    feed.end()
+
+    session._handle_interaction(feed, timeline=FakeTimeline())
+    assert np.count_nonzero(brain.stt.made[0].finished_with) == round(0.8 * RATE)
+
+
+def test_an_answer_begun_over_the_listening_sound_is_heard(brain, make_session):
+    # The satellite sends an answer from the moment the brain asks for it, with nothing
+    # from before - so there's nothing to skip.
+    session = make_session()
+    session.conversation = ScriptedConversation(Reply())
+    brain.stt.texts = ["Yes."]
+    feed = AudioFeed()
+    feed.feed(said(seconds=0.2, before=0))
+    feed.end()
+
+    session._handle_interaction(feed, follow_up=True, timeline=FakeTimeline())
+    assert session.conversation.heard == [("Yes.", True)]
 
 
 def test_speech_to_text_is_let_go_if_the_recording_fails(brain, connect, make_session, monkeypatch):

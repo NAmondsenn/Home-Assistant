@@ -39,7 +39,7 @@ from voice_assistant.settings_page import change_volume, volume_levels
 from voice_assistant.timeline import Timeline
 from voice_assistant.vad import make_detector
 from voice_assistant.volume import VolumeControl
-from voice_assistant.wake_word import DEFAULT_WAKE_WORD, strip_wake_word
+from voice_assistant.wake_phrase import DEFAULT_WAKE_WORD, strip_wake_word
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,9 @@ class Session:
         # Decides which parts of a recording are speech - see vad.py. One for each
         # session, since it carries what it last heard from one frame to the next.
         self.speech_detector = make_detector(config)
+        # Seconds from before the wake word was detected which the satellite sends
+        # first, by the same setting - see _handle_interaction.
+        self.pre_roll = config.section("audio").get("pre_roll", 0.3)
 
         # Whether the satellite's microphone is muted - from Home Assistant or the
         # settings page - kept so it stays muted however often either end restarts.
@@ -385,13 +388,16 @@ class Session:
         # words while the user is still saying them - see speech_to_text.py.
         listening = self.brain.stt.listen()
 
-        # Records audio until silence / a timeout occurs, from the start of the feed: for
-        # a fresh request, the satellite sent the moment from before the wake word was
-        # detected first, since "Hey Nova what time is it" said in one breath has often
-        # started on "what" by then.
+        # Records audio until silence / a timeout occurs. For a fresh request, the
+        # satellite sent the moment from before the wake word was detected first, since
+        # "Hey Nova what time is it" said in one breath has often started on "what" by
+        # then. That's kept, but not listened to: it often holds the end of "Nova" too,
+        # which would otherwise start the recording, and the pause for the listening
+        # sound then end it. An answer comes with nothing from before.
+        pre_roll = 0.0 if follow_up else self.pre_roll
         try:
             audio_data = record_until_silence(
-                feed, self.speech_detector, listen_from=0, keep_before=0.0,
+                feed, self.speech_detector, listen_from=round(pre_roll * RATE), keep_before=pre_roll,
                 silence_duration=self.thresholds.get("silence_duration", 0.6),
                 speech_timeout=speech_timeout,
                 timeout=self.thresholds.get("recording_timeout", 10.0),

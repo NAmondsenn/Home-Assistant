@@ -1,8 +1,8 @@
 """
 Wake Word Test
-Checks the detector listens through the shared microphone stream, that a muted
-microphone isn't woken, and that the wake word is taken off the front of what was
-transcribed, using fakes in place of the openWakeWord model and the input stream.
+Checks the detector listens through the shared microphone stream, and that a muted
+microphone isn't woken, using fakes in place of the openWakeWord model and the input
+stream.
 Needs numpy and soxr installed (as they are on the Pi), and is skipped anywhere they
 aren't.
 """
@@ -18,7 +18,7 @@ pytest.importorskip("soxr")
 from voice_assistant import microphone as microphone_module
 from voice_assistant import wake_word as wake_word_module
 from voice_assistant.microphone import RATE, Microphone
-from voice_assistant.wake_word import CHUNK_SAMPLES, WakeWordDetector, strip_wake_word
+from voice_assistant.wake_word import CHUNK_SAMPLES, WakeWordDetector
 
 
 class FakeInputStream:
@@ -192,24 +192,3 @@ def test_without_its_model_a_stock_wake_word_stands_in(make_config, models):
     detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}))
     assert detector.wake_word_phrase == "Hey Jarvis"
     assert detector.model.loaded == ["hey_jarvis"] and detector.wake_word_key == "hey_jarvis"
-
-
-@pytest.mark.parametrize("heard, meant", [
-    ("Hey Nova, what time is it?", "What time is it?"),
-    ("Nova. Stop.", "Stop."),
-    ("nova stop", "Stop"),
-    ("Hey, Nova.", ""),
-    ("What time is it?", "What time is it?"),
-    # Only taken off the front, and only as a whole word.
-    ("What's a nova?", "What's a nova?"),
-    ("Novak Djokovic's age", "Novak Djokovic's age"),
-    # The end of the wake word, misheard - all heard on the Pi.
-    ("In Nova, what's the weather?", "What's the weather?"),
-    ("Turn over, set a one minute timer.", "Set a one minute timer."),
-    ("Get over. Cancel that alarm I just set.", "Cancel that alarm I just set."),
-    # Only with punctuation straight after, so a real "over" is left alone.
-    ("Over the weekend, remind me to call mum.", "Over the weekend, remind me to call mum."),
-    ("I'm over it.", "I'm over it."),
-])
-def test_the_wake_word_is_taken_off_the_front_of_a_transcription(heard, meant):
-    assert strip_wake_word(heard, "Hey Nova") == meant
