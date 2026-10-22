@@ -21,7 +21,7 @@ from voice_assistant import paths
 from voice_assistant import settings_page as page_module
 from voice_assistant.config import Config
 from voice_assistant.routines import Routines
-from voice_assistant.settings_page import SettingsPage, restart_service
+from voice_assistant.settings_page import SettingsPage
 
 LOGIN = "you@example.com"
 
@@ -406,11 +406,6 @@ def test_a_setting_nova_wouldnt_start_with_is_never_saved(files, changes, said):
     assert not (files / "config.yaml").exists()
 
 
-def test_a_restart_outside_systemd_is_left_to_the_user(monkeypatch):
-    monkeypatch.delenv("INVOCATION_ID", raising=False)
-    assert restart_service() == "Nova isn't running as a service here, so restart it yourself."
-
-
 def test_its_only_there_when_switched_on(make_config):
     brain = FakeBrain({})
     assert SettingsPage.from_config(make_config(settings_page={"port": 0}), brain) is None
@@ -620,7 +615,7 @@ def test_alarms_and_routines_work_with_no_satellite(files):
     assert page.add_alarm("07:30", None, LOGIN)["success"]
     # Set for the default satellite, which rings it once it's back.
     assert page.brain.clock.alarms == [(7, 30, None, "bedroom")]
-    assert page.add_alarm("08:00", None, LOGIN, "kitchen")["success"] and page.brain.clock.alarms[1][3] == "kitchen"
+    assert page.add_alarm("08:00", None, LOGIN, "bedroom")["success"] and page.brain.clock.alarms[1][3] == "bedroom"
     assert page.remove("timer", 1, LOGIN)["success"]
     assert page.forget("Your sister is called Amy.", LOGIN)["success"]
     assert page.save_routine({"name": "Good morning", "phrases": "good morning", "steps": "what's the weather"},
@@ -656,9 +651,51 @@ def test_the_page_asks_after_the_satellite_it_names(served):
     assert said == {"success": False, "message": "porch isn't connected."}
 
 
-def test_restarting_restarts_the_brain(monkeypatch):
-    started = []
-    monkeypatch.setenv("INVOCATION_ID", "abc")
-    monkeypatch.setattr(page_module.subprocess, "Popen", lambda command, **options: started.append(command))
-    restart_service()
-    assert started == [["systemctl", "restart", "nova-backend"]]
+def test_an_alarm_is_never_set_for_a_satellite_the_brain_doesnt_know(files):
+    page = _page(sessions={"bedroom": FakeSession()}, known=["bedroom", "garage"])
+    for ghost in ("ghosst", 5):
+        assert page.add_alarm("07:30", None, LOGIN, ghost) == {
+            "success": False, "message": f"There's no satellite called {ghost}."}
+    assert page.brain.clock.alarms == []
+    # One which is merely away is the brain's to set alarms for.
+    assert page.add_alarm("07:30", None, LOGIN, "garage")["success"]
+    assert page.brain.clock.alarms == [(7, 30, None, "garage")]
+
+
+def test_a_satellite_which_doesnt_exist_is_handled_everywhere(served):
+    ghost = "ghost"
+    said = {"success": False, "message": "ghost isn't connected."}
+
+    def post(path, body):
+        return json.loads(_ask(served, path, {**body, "satellite": ghost}, X_Nova="page")[2])
+
+    assert post("/api/volume", {"category": "general", "percent": 5}) == said
+    assert post("/api/mute", {"muted": True}) == said
+    assert post("/api/music", {"action": "pause"}) == said
+    assert post("/api/light", {"id": "light.kitchen", "on": True}) == said
+    assert post("/api/run", {"id": "scene.relax"}) == said
+    assert post("/api/alarms", {"time": "07:30"}) == {"success": False, "message": "There's no satellite called ghost."}
+    assert _ask(served, "/api/state?satellite=ghost")[0] == 200
+    assert json.loads(_ask(served, "/api/state?satellite=ghost")[2])["volumes"] == {}
+    assert _ask(served, "/api/cover?satellite=ghost")[0] == 404
+    assert json.loads(_ask(served, "/api/music?satellite=ghost")[2]) == {"available": False}
+    assert json.loads(_ask(served, "/api/home?satellite=ghost")[2]) == {"available": False}
+    assert json.loads(_ask(served, "/api/live?satellite=ghost")[2]) == {"activity": "idle"}
+    assert served.brain.clock.alarms == []
+
+
+def test_the_page_works_with_no_satellite_added_at_all(files):
+    page = _page(sessions={}, known=[])
+    state = page.state()
+    assert state["satellites"] == [] and state["satellite"] is None and state["volumes"] == {}
+    assert page.add_alarm("07:30", None, LOGIN)["success"]
+    assert page.brain.clock.alarms == [(7, 30, None, None)]
+    assert page.set_volume("general", 5, LOGIN) == {"success": False, "message": "There's no satellite to do that on."}
+
+
+def test_restarting_asks_the_brain_to_stop_for_a_restart(files):
+    asked = []
+    page = _page()
+    page.brain.restart = lambda: asked.append("restart") or "Restarting."
+    page._restart = None
+    assert page.restart(LOGIN) == {"success": True, "message": "Restarting."} and asked == ["restart"]

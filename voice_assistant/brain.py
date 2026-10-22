@@ -48,6 +48,16 @@ logger = logging.getLogger(__name__)
 # power went. See _note_start.
 RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
 
+# What the brain exits with once the settings page has asked it to restart. systemd
+# restarts it for this status whatever else it was told - see RestartForceExitStatus in
+# nova-backend.service - which the nova user couldn't do itself with systemctl, as
+# the service can never gain privileges.
+RESTART_EXIT_STATUS = 75
+
+# How long a restart waits before stopping, in seconds, so the settings page's answer
+# gets out first.
+RESTART_DELAY = 1.0
+
 # The least time between telling the user's phone that the brain, or one satellite,
 # had to restart, so a crash which keeps happening doesn't flood it.
 RESTART_NOTICE_GAP = 3600
@@ -162,6 +172,8 @@ class Brain:
         self.running = False
         # Set once a stop signal has arrived - see shutdown.
         self._stopping = False
+        # Whether it's stopping because the settings page asked for a restart - see restart.
+        self.restarting = False
 
         logger.info("Loading the brain...")
         # The assistant's own sound effects, which each satellite keeps and plays by name.
@@ -589,6 +601,24 @@ class Brain:
             self.serve()
         finally:
             self._clean_up()
+
+    def restart(self) -> str:
+        """
+        Stops the brain cleanly, a moment from now, for systemd to start it again - the
+        exit status says it's a restart, see RESTART_EXIT_STATUS and backend.py.
+
+        Returns:
+            What to tell the user.
+        """
+        if not os.getenv("INVOCATION_ID"):
+            return "Nova isn't running as a service here, so restart it yourself."
+        self.restarting = True
+        logger.info("Restarting, as the settings page asked")
+        # Stopping listening ends run(), which then cleans up as for any stop.
+        timer = threading.Timer(RESTART_DELAY, self.stop)
+        timer.daemon = True
+        timer.start()
+        return "Restarting - give it half a minute."
 
     def shutdown(self, *args):
         """

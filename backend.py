@@ -27,7 +27,7 @@ import sys
 from typing import List, Optional
 
 from voice_assistant import paths
-from voice_assistant.brain import Brain
+from voice_assistant.brain import RESTART_EXIT_STATUS, Brain
 from voice_assistant.config import Config
 from voice_assistant.logging_setup import log_transcripts, setup_logging
 from voice_assistant.satellite_passwords import SatellitePasswords
@@ -93,6 +93,9 @@ def main(argv: Optional[List[str]] = None):
     signal.signal(signal.SIGINT, brain.shutdown)
     signal.signal(signal.SIGTERM, brain.shutdown)
     brain.run()
+    # Cleaned up properly, but with the status systemd restarts it for.
+    if brain.restarting:
+        sys.exit(RESTART_EXIT_STATUS)
 
 
 if __name__ == "__main__":

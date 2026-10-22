@@ -29,7 +29,6 @@ import math
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -155,21 +154,6 @@ def _secrets_set(path: str) -> Dict[str, bool]:
     return found
 
 
-def restart_service() -> str:
-    """
-    Restarts the brain through systemd, when that's what's running it - see
-    nova-backend.service.
-
-    Returns:
-        What to tell the user.
-    """
-    if not os.getenv("INVOCATION_ID"):
-        return "Nova isn't running as a service here, so restart it yourself."
-    subprocess.Popen(["systemctl", "restart", "nova-backend"], start_new_session=True,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return "Restarting - give it half a minute."
-
-
 def volume_levels(volume, music) -> Dict[str, int]:
     """
     Each of Nova's volumes, as a percentage - for the page, and for Home Assistant
@@ -233,7 +217,7 @@ class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
     def __init__(self, allow: List[str], port: int = 8765, running=None, brain=None,
-                 wake_word: Optional[Callable[[], str]] = None, restart: Callable[[], str] = restart_service,
+                 wake_word: Optional[Callable[[], str]] = None, restart: Optional[Callable[[], str]] = None,
                  started: Optional[float] = None):
         """
         Args:
@@ -245,7 +229,7 @@ class SettingsPage:
                 connected, for its volumes, music, lights, mute and what it's doing.
             wake_word: What Nova's listening for - openWakeWord's stand-in, if Nova's
                 own wake word model is missing.
-            restart: Restarts the brain, returning what to tell the user.
+            restart: Restarts the brain, returning what to tell the user - or None for Brain.restart.
             started: When the brain started, in seconds.
         """
         self.allow = [login.strip().lower() for login in allow if login.strip()]
@@ -496,6 +480,10 @@ class SettingsPage:
         if not found:
             return {"success": False, "message": "That isn't a time."}
         _, name = self._session(satellite)
+        # Never one for a name nobody has: it would be saved, but never heard. A satellite
+        # which is merely away does count, as the brain keeps its alarms.
+        if name is not None and name not in self.brain.satellites():
+            return {"success": False, "message": f"There's no satellite called {name}."}
         logger.info(f"Settings page: {who} set an alarm for {at}")
         return self.brain.clock.set_alarm(int(found[1]), int(found[2]), repeat or None, satellite=name)
 
@@ -580,7 +568,7 @@ class SettingsPage:
 
     def restart(self, who: str) -> Dict:
         logger.info(f"Settings page: {who} restarted Nova")
-        return {"success": True, "message": self._restart()}
+        return {"success": True, "message": (self._restart or self.brain.restart)()}
 
     def play(self, action: str, who: str, query: str = "", playlist: str = "", satellite: Optional[str] = None) -> Dict:
         """

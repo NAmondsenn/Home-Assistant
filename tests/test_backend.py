@@ -6,6 +6,7 @@ hears with its own speech-to-text when there's no backend to use. Needs numpy
 installed (as it is on the Pi), and is skipped anywhere it isn't.
 """
 
+import os
 import signal
 import socket
 
@@ -30,6 +31,8 @@ def test_with_no_command_the_brain_runs_until_stopped(monkeypatch, make_config):
             happened.append(("made", config))
             made.append(self)
 
+        restarting = False
+
         def shutdown(self, *args):
             pass
 
@@ -48,6 +51,31 @@ def test_with_no_command_the_brain_runs_until_stopped(monkeypatch, make_config):
     assert happened == ["secrets", "logging", ("transcripts", False), ("made", config), "ran"]
     # Ctrl+C and systemd's stop both end it properly.
     assert handlers == {signal.SIGINT: made[0].shutdown, signal.SIGTERM: made[0].shutdown}
+
+
+def test_a_restart_from_the_settings_page_exits_with_the_status_systemd_restarts_on(monkeypatch, make_config):
+    class Brain:
+        restarting = True
+
+        def __init__(self, config):
+            pass
+
+        def shutdown(self, *args):
+            pass
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(backend, "Brain", Brain)
+    monkeypatch.setattr(backend, "Config", lambda: make_config(logging={"log_transcripts": False}))
+    monkeypatch.setattr(backend.paths, "load_secrets", lambda: None)
+    monkeypatch.setattr(backend, "setup_logging", lambda path: None)
+    monkeypatch.setattr(backend, "log_transcripts", lambda kept: None)
+    monkeypatch.setattr(backend.signal, "signal", lambda kind, handler: None)
+    with pytest.raises(SystemExit) as stopped:
+        backend.main([])
+    assert stopped.value.code == backend.RESTART_EXIT_STATUS
+    assert "RestartForceExitStatus=75" in open(os.path.join(os.path.dirname(backend.__file__), "nova-backend.service")).read()
 
 
 # A Pi running Nova by itself

@@ -10,6 +10,7 @@ numpy and soxr installed (as they are on the Pi), and is skipped anywhere they a
 
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -564,6 +565,25 @@ def test_the_settings_page_is_given_the_brain_to_look_after_every_satellite_by(m
     brain = make_brain(settings_page={"port": 8765, "allow": ["you@example.com"]})
     assert brain.settings_page.brain is brain
     assert brain.satellites() == ["bedroom", "kitchen"]
+
+
+def test_a_restart_stops_the_brain_cleanly_and_says_it_was_asked_for(brain, monkeypatch):
+    monkeypatch.setenv("INVOCATION_ID", "abc")
+    monkeypatch.setattr(brain_module, "RESTART_DELAY", 0)
+    done = threading.Event()
+    threading.Thread(target=lambda: (brain.run(), done.set()), daemon=True).start()
+    assert wait_for(lambda: brain.port)
+    assert not brain.restarting
+    assert brain.restart() == "Restarting - give it half a minute."
+    assert done.wait(5) and brain.restarting
+    # A clean stop, so the next start isn't taken for a crash.
+    assert not os.path.exists(brain_module.RUNNING_MARK)
+
+
+def test_a_restart_outside_systemd_is_left_to_the_user(brain, monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    assert brain.restart() == "Nova isn't running as a service here, so restart it yourself."
+    assert not brain.restarting
 
 
 # The brain's own start and stop

@@ -38,6 +38,10 @@ ReadWritePaths=/home/__USER__/.local/share/nova
 TimeoutStartSec=120
 Restart=on-failure
 RestartSec=10
+# The settings page's Restart stops the brain cleanly, then exits with this status
+# (RESTART_EXIT_STATUS in voice_assistant/brain.py), as the nova user can't ask
+# systemd itself.
+RestartForceExitStatus=75
 
 [Install]
 WantedBy=multi-user.target
