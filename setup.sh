@@ -44,8 +44,10 @@ SECRETS_FILE="${CONFIG_DIRECTORY}/.env"
 
 ROLE_FILE="${CONFIG_DIRECTORY}/role"
 # "satellite" or "brain" - worked out by decide_role, once any --brain or --satellite
-# on the command line has been read.
-ROLE="${ROLE:-}"
+# on the command line has been read. Steps run as the service user are given it, and
+# the choices below, through the environment (see run_steps) - under names of Nova's
+# own, so a ROLE someone has exported for something else can't make a Pi a brain.
+ROLE="${NOVA_SETUP_ROLE:-}"
 
 # The satellite is a user service, so it shares the audio devices' session. The brain is
 # a system service, with no audio of its own to share.
@@ -85,10 +87,10 @@ NEMOTRON_SHA256="78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db635
 RASPOTIFY_KEY_SHA256="36dd5aadd073950d55c404f0e0c6c2e0555259bf38bd8b6448c35591a3cc9cfd"
 
 # These can come from the environment, as steps run as another user (see run_steps) are
-# given what was chosen on the command line that way.
-ASSUME_YES="${ASSUME_YES:-false}"
-WITH_SPOTIFY="${WITH_SPOTIFY:-true}"
-WITH_SERVICE="${WITH_SERVICE:-true}"
+# given what was chosen on the command line that way - see ROLE.
+ASSUME_YES="${NOVA_SETUP_ASSUME_YES:-false}"
+WITH_SPOTIFY="${NOVA_SETUP_WITH_SPOTIFY:-true}"
+WITH_SERVICE="${NOVA_SETUP_WITH_SERVICE:-true}"
 
 # How each step went, said the same way every time.
 done_() { echo "  ✓ $*"; }
@@ -121,7 +123,8 @@ as_user() {
 # own when this is root's run, so every file they make is theirs. Otherwise, in this one.
 run_steps() {
     if [ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ]; then
-        as_user env ROLE="$ROLE" ASSUME_YES="$ASSUME_YES" WITH_SPOTIFY="$WITH_SPOTIFY" WITH_SERVICE="$WITH_SERVICE" \
+        as_user env NOVA_SETUP_ROLE="$ROLE" NOVA_SETUP_ASSUME_YES="$ASSUME_YES" \
+            NOVA_SETUP_WITH_SPOTIFY="$WITH_SPOTIFY" NOVA_SETUP_WITH_SERVICE="$WITH_SERVICE" \
             bash -c 'source "$1"; shift; for step in "$@"; do "$step"; done' _ "${PROJECT_DIRECTORY}/setup.sh" "$@"
     else
         local step
