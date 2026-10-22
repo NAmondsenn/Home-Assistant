@@ -17,20 +17,20 @@ was detected.
 import logging
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import sounddevice as sd
 import soxr
 
-from voice_assistant import watchdog
+from voice_assistant import recording, watchdog
 from voice_assistant.dropouts import Dropouts
+# Where the recording algorithm and its constants now live; named here too so the
+# tests, and anything else which reached for them on the microphone, still find them.
+from voice_assistant.recording import FRAME, LEAD_IN_SECONDS, RATE  # noqa: F401
 
 # Logger setup
 logger = logging.getLogger(__name__)
-
-# The rate everything downstream works at.
-RATE = 16000
 
 # How often the stream hands over audio, in seconds of it.
 BLOCK_SECONDS = 0.03
@@ -43,24 +43,6 @@ BLOCK_SECONDS = 0.03
 # in 21ms bursts, so audio reaches the wake word about 50ms after it was heard
 # rather than 130ms, and this leaves room for several of them.
 INPUT_LATENCY = 0.25
-
-# The recorder checks for speech 30ms at a time, the frame length openWakeWord's
-# copy of Silero is built around.
-FRAME = 480
-
-# Once the user has started speaking, a frame only counts towards the silence which
-# ends the recording when it's this far below the speech threshold - the same margin
-# Silero's own tools use, so a word trailing off doesn't flicker in and out of
-# "silence" and end the recording early.
-SILENCE_MARGIN = 0.15
-
-# A pause at least this long before the user starts talking means the moment kept
-# from before listening started is no longer wanted - see record_until_silence.
-PAUSE_SECONDS = 0.2
-
-# How much is kept from just before the user started talking, once anything earlier
-# has been dropped, so the first sound of their first word isn't clipped.
-LEAD_IN_SECONDS = 0.15
 
 # The longest wait between attempts to reopen a microphone which has gone quiet.
 MAX_RETRY_SECONDS = 30.0
@@ -291,125 +273,20 @@ class Microphone:
             self._last_activity = time.monotonic()
             self._retry_delay = min(self._retry_delay * 2, MAX_RETRY_SECONDS)
 
-    def record_until_silence(self, detector, listen_from: Optional[int] = None,
-                             keep_before: float = 0.0, timeout: float = 10.0,
-                             silence_duration: float = 0.6, speech_timeout: float = 3.0,
-                             min_speech: float = 0.12, timeline=None,
-                             heard: Optional[Callable[[np.ndarray], None]] = None) -> np.ndarray:
+    def record_until_silence(self, detector, **settings) -> np.ndarray:
         """
         Records until the user has spoken and then gone quiet, or a timeout is reached.
 
         Args:
             detector: Says how likely each frame is to be speech - see vad.py.
-            listen_from: Position to start listening from (see position), such as
-                the moment the wake word was heard. Now if None.
-            keep_before: Seconds of audio from before listen_from to keep as well.
-                It isn't listened to for speech, but goes to speech-to-text with the rest,
-                so words said straight after the wake word - which can come before
-                it's even been detected - aren't cut off.
-            timeout: Maximum recording duration in seconds, from listen_from.
-            silence_duration: How long the user has to be quiet, once they've
-                started talking, for the recording to stop.
-            speech_timeout: How long to wait for the user to start talking before
-                giving up, so a false wake word doesn't sit recording silence.
-            min_speech: Seconds of continuous speech which count as the user
-                starting to talk. Anything shorter - the end of the wake word, or
-                the listening sound, which the microphone hears too - doesn't.
-            timeline: Optional Timeline to mark when listening started, when speech
-                started and ended, and when the recording stopped.
-            heard: Given the recording as it's made, so speech-to-text can work out
-                the words while the user is still saying them: everything up to the
-                moment they're found to be talking, then each 30ms after it, as
-                float32 samples which add up to exactly what's returned. Nothing is
-                given until the user starts talking, so a false wake word costs
-                nothing.
+            **settings: Everything else recording.record_until_silence takes, which
+                describes it in full.
 
         Returns:
             The recording as float32 samples at 16kHz, or an empty array if the user
             never started talking.
         """
-        logger.info("Recording until silence...")
-        if listen_from is None:
-            listen_from = self.position
-        if timeline:
-            timeline.mark("recording_started")
-
-        reader = self.listen(start=max(0, listen_from - int(keep_before * RATE)))
-        kept = []
-        if reader.position < listen_from:
-            kept.append(reader.read(listen_from - reader.position))
-
-        detector.reset()
-        max_frames = int(timeout * RATE / FRAME)
-        speech_timeout_frames = int(speech_timeout * RATE / FRAME)
-        frames_to_start = max(1, round(min_speech * RATE / FRAME))
-        frames_to_stop = max(1, round(silence_duration * RATE / FRAME))
-
-        speech_frames = 0
-        silent_frames = 0
-        speech_started = False
-        # Where the user last made a sound - the moment they actually stopped talking,
-        # as opposed to when the silence after it was long enough to stop recording.
-        speech_ended_at = None
-        # Whether there was a pause before the user started talking - see below.
-        quiet_frames = 0
-        paused = False
-
-        for i in range(max_frames):
-            frame = reader.read(FRAME)
-            kept.append(frame)
-            if speech_started and heard:
-                heard(frame.astype(np.float32) / 32768.0)
-            probability = detector.speech_probability(frame)
-
-            if not speech_started:
-                # Gives up early if the user never started talking, so a false wake
-                # word doesn't leave the assistant recording silence.
-                if i >= speech_timeout_frames:
-                    logger.info(f"No speech within {speech_timeout:.1f}s, cancelling")
-                    return np.array([], dtype=np.float32)
-
-                speech_frames = speech_frames + 1 if probability >= detector.threshold else 0
-                quiet_frames = 0 if speech_frames else quiet_frames + 1
-                paused = paused or quiet_frames * FRAME >= PAUSE_SECONDS * RATE
-                if speech_frames >= frames_to_start:
-                    speech_started = True
-                    speech_ended_at = reader.position
-                    # The moment kept from before listening started is there for "Hey
-                    # Nova what time is it" said in one breath. When the user paused
-                    # after the wake word instead - for the listening sound, usually -
-                    # it only holds the end of "Nova", which Whisper hears as "Turn
-                    # over," or "Get over." and which then stops a plain "set a timer"
-                    # being recognised. So everything before the pause is dropped -
-                    # now, before any of it is handed over, since it can't be taken
-                    # back once speech-to-text has heard it.
-                    if paused:
-                        keep_from = reader.position - speech_frames * FRAME - int(LEAD_IN_SECONDS * RATE)
-                        so_far = np.concatenate(kept)
-                        kept = [so_far[max(0, keep_from - (reader.position - len(so_far))):]]
-                    if heard:
-                        heard(np.concatenate(kept).astype(np.float32) / 32768.0)
-                    logger.info("Speech detected, listening for the end of the query...")
-                    if timeline:
-                        timeline.mark("speech_started",
-                                      at=self.time_at(reader.position - speech_frames * FRAME))
-            elif probability < detector.threshold - SILENCE_MARGIN:
-                silent_frames += 1
-                if silent_frames >= frames_to_stop:
-                    logger.info(f"Silence detected after {(reader.position - listen_from) / RATE:.1f}s")
-                    break
-            else:
-                silent_frames = 0
-                speech_ended_at = reader.position
-
-        if timeline:
-            if speech_started:
-                timeline.mark("speech_ended", at=self.time_at(speech_ended_at))
-            timeline.mark("recording_stopped")
-
-        audio = np.concatenate(kept).astype(np.float32) / 32768.0
-        logger.info(f"Recorded {len(audio)} samples")
-        return audio
+        return recording.record_until_silence(self, detector, **settings)
 
     def close(self):
         """Stops the stream for good."""
