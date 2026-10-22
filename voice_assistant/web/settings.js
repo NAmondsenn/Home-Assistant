@@ -26,6 +26,23 @@ const HOME_EVERY = 15000;
 const VOLUME_EVERY = 180;
 const LIGHT_EVERY = 250;
 
+// The colours offered as swatches on a light which can be set to one, as a hue in
+// degrees and a saturation in percent.
+const SWATCHES = [
+  { name: "Red", hue: 0, saturation: 100 },
+  { name: "Orange", hue: 28, saturation: 100 },
+  { name: "Yellow", hue: 52, saturation: 100 },
+  { name: "Green", hue: 120, saturation: 100 },
+  { name: "Cyan", hue: 180, saturation: 100 },
+  { name: "Blue", hue: 240, saturation: 100 },
+  { name: "Purple", hue: 275, saturation: 100 },
+  { name: "Pink", hue: 325, saturation: 70 },
+];
+
+// The warmest and coolest white a light's icon is tinted as, in red, green and blue.
+const WARM_WHITE = [255, 177, 90];
+const COOL_WHITE = [214, 230, 255];
+
 // How many playlists are offered before the rest are tucked behind a button.
 const MOST_PLAYLISTS = 12;
 
@@ -55,6 +72,8 @@ const DAY = 24 * 60 * 60 * 1000;
 
 let activity = "idle";
 let wakeWord = "Hey Nova";
+// Whether the microphone's muted, as /api/state last said - Home Assistant can change it too.
+let muted = false;
 
 // The timers on the page, ticked down every second, as [where it's shown, when it's due].
 let counting = [];
@@ -246,8 +265,10 @@ async function load() {
     return;
   }
   wakeWord = state.wake_word || wakeWord;
+  muted = Boolean(state.muted);
   showActivity();
   showStatus(state.status);
+  showMuted();
   showVolumes(state.volumes);
   drawIfChanged("clock", state.clock, showClock);
   drawIfChanged("memories", state.memories, showMemories);
@@ -308,7 +329,8 @@ function drawIfChanged(part, data, draw) {
 
 function showActivity() {
   document.getElementById("star").dataset.activity = activity in DOING ? activity : "idle";
-  document.getElementById("doing").textContent = DOING[activity] || `Waiting for “${wakeWord}”`;
+  document.getElementById("doing").textContent =
+    DOING[activity] || (muted ? "Microphone muted" : `Waiting for “${wakeWord}”`);
 }
 
 function tile(about) {
@@ -360,6 +382,14 @@ function showStatus(status) {
     return row;
   });
   document.getElementById("problems").replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
+}
+
+function showMuted() {
+  document.getElementById("mute").checked = muted;
+  document.getElementById("microphone").classList.toggle("muted", muted);
+  document.getElementById("mute-detail").textContent = muted
+    ? `Not listening for “${wakeWord}”. Alarms and timers still ring.`
+    : `Listening for “${wakeWord}”`;
 }
 
 function showVolumes(volumes) {
@@ -588,9 +618,19 @@ function showHome() {
     routines.hidden = true;
     return;
   }
-  drawIfChanged("lights", home.lights.map((light) => light.id), () => {
+  drawIfChanged("lights", home.lights.map((light) => [light.id, light.area]), () => {
     for (const id of Object.keys(lights)) delete lights[id];
-    const rows = home.lights.map((light) => (lights[light.id] = lightRow(light)).row);
+    // The lights come in order of room, Nova's own first, so each room's heading goes
+    // in where its first light does.
+    const rows = [];
+    let area;
+    for (const light of home.lights) {
+      if (light.area !== area || !rows.length) {
+        area = light.area;
+        rows.push(element("li", area || "No room", "area"));
+      }
+      rows.push((lights[light.id] = lightRow(light)).row);
+    }
     document.getElementById("lights").replaceChildren(...(rows.length ? rows : [emptyRow("Home Assistant has no lights.")]));
   });
   for (const light of home.lights) lights[light.id].show(light);
@@ -598,7 +638,21 @@ function showHome() {
   drawIfChanged("routines", home.routines, showRoutines);
 }
 
-// A light: its switch, and while it's on, how bright it is - dragged as a volume is.
+// How a colour looks at full brightness, for a light's icon and swatches.
+function colourOf(hue, saturation) {
+  return `hsl(${hue}, 100%, ${100 - saturation / 2}%)`;
+}
+
+// How a white looks, from amber at the warmest the light makes to cool white at the coolest.
+function whiteOf(kelvin, light) {
+  const span = light.max_kelvin - light.min_kelvin;
+  const cool = span > 0 ? Math.min(1, Math.max(0, (kelvin - light.min_kelvin) / span)) : 0.5;
+  return `rgb(${WARM_WHITE.map((part, i) => Math.round(part + (COOL_WHITE[i] - part) * cool)).join(", ")})`;
+}
+
+// A light: its switch, and while it's on, how bright it is - dragged as a volume is -
+// and, if it can, its colour as swatches and a hue slider, or how warm its white is.
+// The icon takes the colour it's set to.
 function lightRow(light) {
   const id = `light-${light.id}`;
   const row = element("li");
@@ -614,16 +668,75 @@ function lightRow(light) {
   slider.setAttribute("aria-label", `How bright ${light.name} is`);
   const output = element("output");
   level.append(slider, output);
-  row.append(icon("i-bulb"), name, toggle, unreachable, level);
+  const tones = element("div", undefined, "tones");
+  row.append(icon("i-bulb"), name, toggle, unreachable, level, tones);
 
-  let held = false;
   let switching = false;
   let current = light;
-  const sender = steadily(LIGHT_EVERY, (brightness) => send("/api/light", { id: light.id, brightness })
-    .then((result) => {
-      if (!result.success) toast(result.message || "Couldn't change the light.", false);
-    })
-    .catch(() => toast("Couldn't reach Nova.", false)));
+  const check = (result) => {
+    if (!result.success) toast(result.message || "Couldn't change the light.", false);
+  };
+  const tell = (body) => send("/api/light", { id: light.id, ...body }).then(check)
+    .catch(() => toast("Couldn't reach Nova.", false));
+
+  // A slider whose newest value goes out steadily as it's dragged, as the brightness
+  // does. moved draws what's being dragged to, and while it is, or a value is on its
+  // way, what Home Assistant says is left alone.
+  function dragged(control, body, moved) {
+    const made = { sender: steadily(LIGHT_EVERY, (value) => tell(body(value))), held: false };
+    control.addEventListener("input", () => {
+      made.held = true;
+      moved(Number(control.value));
+      made.sender.send(Number(control.value));
+    });
+    control.addEventListener("change", () => {
+      made.held = false;
+      made.sender.send(Number(control.value));
+      setTimeout(loadHome, 900);
+    });
+    return made;
+  }
+  const idle = (made) => !made || !(made.held || made.sender.busy);
+
+  const brightness = dragged(slider, (percent) => ({ brightness: percent }), (percent) => drawLevel(slider, output, percent));
+
+  let hue = null;
+  let hueSlider = null;
+  if (light.colour_modes.includes("hs")) {
+    const swatches = element("div", undefined, "swatches");
+    for (const swatch of SWATCHES) {
+      const button = element("button", undefined, "swatch");
+      button.type = "button";
+      button.title = swatch.name;
+      button.setAttribute("aria-label", `Make ${light.name} ${swatch.name.toLowerCase()}`);
+      button.style.setProperty("background", colourOf(swatch.hue, swatch.saturation));
+      button.addEventListener("click", () => {
+        row.style.setProperty("--tint", colourOf(swatch.hue, swatch.saturation));
+        tell({ hue: swatch.hue, saturation: swatch.saturation });
+        setTimeout(loadHome, 900);
+      });
+      swatches.append(button);
+    }
+    hueSlider = element("input", undefined, "hue");
+    Object.assign(hueSlider, { type: "range", min: 0, max: 360, step: 1 });
+    hueSlider.setAttribute("aria-label", `The colour of ${light.name}`);
+    // The slider keeps whatever saturation the light has, or is fully saturated if it's set to a white.
+    const saturation = () => current.saturation ?? 100;
+    hue = dragged(hueSlider, (degrees) => ({ hue: degrees, saturation: saturation() }),
+      (degrees) => row.style.setProperty("--tint", colourOf(degrees, saturation())));
+    tones.append(swatches, hueSlider);
+  }
+
+  let warmth = null;
+  let warmthSlider = null;
+  if (light.colour_modes.includes("color_temp") && light.min_kelvin && light.max_kelvin) {
+    warmthSlider = element("input", undefined, "warmth");
+    Object.assign(warmthSlider, { type: "range", min: light.min_kelvin, max: light.max_kelvin, step: 50 });
+    warmthSlider.setAttribute("aria-label", `How warm the white of ${light.name} is`);
+    warmth = dragged(warmthSlider, (kelvin) => ({ kelvin }),
+      (kelvin) => row.style.setProperty("--tint", whiteOf(kelvin, light)));
+    tones.append(warmthSlider);
+  }
 
   toggle.addEventListener("change", async () => {
     switching = true;
@@ -642,16 +755,6 @@ function lightRow(light) {
     // Home Assistant takes a moment to say it's changed.
     setTimeout(loadHome, 700);
   });
-  slider.addEventListener("input", () => {
-    held = true;
-    drawLevel(slider, output, Number(slider.value));
-    sender.send(Number(slider.value));
-  });
-  slider.addEventListener("change", () => {
-    held = false;
-    sender.send(Number(slider.value));
-    setTimeout(loadHome, 900);
-  });
 
   return {
     row,
@@ -666,9 +769,26 @@ function lightRow(light) {
         row.classList.toggle("on", now.on);
       }
       level.hidden = !(now.on && now.dimmable && now.reachable);
-      if (now.brightness !== null && !held && !sender.busy) {
-        sender.settled(now.brightness);
+      tones.hidden = !(now.on && now.reachable && tones.childElementCount > 0);
+      if (now.brightness !== null && idle(brightness)) {
+        brightness.sender.settled(now.brightness);
         drawLevel(slider, output, now.brightness);
+      }
+      if (!idle(hue) || !idle(warmth)) return;
+      if (now.hue !== null) {
+        row.style.setProperty("--tint", colourOf(now.hue, now.saturation));
+        if (hueSlider) {
+          hue.sender.settled(now.hue);
+          hueSlider.value = now.hue;
+        }
+      } else if (now.kelvin !== null) {
+        row.style.setProperty("--tint", whiteOf(now.kelvin, now));
+        if (warmthSlider) {
+          warmth.sender.settled(now.kelvin);
+          warmthSlider.value = now.kelvin;
+        }
+      } else {
+        row.style.removeProperty("--tint");
       }
     },
   };
@@ -1078,6 +1198,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("restart-button").addEventListener("click", () => {
     if (confirm("Restart Nova now? It takes about half a minute.")) change("/api/restart");
+  });
+
+  // Put back as Nova last had it if the change didn't work - even with Nova out of
+  // reach, when the page can't be shown afresh.
+  document.getElementById("mute").addEventListener("change", async (event) => {
+    const result = await change("/api/mute", { muted: event.target.checked });
+    if (!result.success) showMuted();
   });
 
   const cover = document.getElementById("cover");

@@ -7,7 +7,7 @@ actions, so each rule can be checked on its own.
 
 from voice_assistant.actions import Action, ActionResult
 from voice_assistant.clock import Clock
-from voice_assistant.conversation import Conversation
+from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation
 
 
 class FakeClock:
@@ -16,8 +16,9 @@ class FakeClock:
     looks_like_dismissal = staticmethod(Clock.looks_like_dismissal)
     answer_to_offer = staticmethod(Clock.answer_to_offer)
 
-    def __init__(self, ringing=False):
+    def __init__(self, ringing=False, timers=()):
         self.ringing = ringing
+        self.timers = list(timers)
         self.dismissed = 0
         self.silenced = []
 
@@ -33,7 +34,7 @@ class FakeClock:
         self.silenced.append(entries)
 
     def describe_all(self):
-        return []
+        return list(self.timers)
 
 
 class FakeIntents:
@@ -50,12 +51,15 @@ class FakeLLM:
     def __init__(self, *replies):
         self.replies = list(replies)
         self.asked, self.remembered, self.recorded, self.tool_answers = [], [], [], []
+        self.contexts, self.lights = [], []
 
     def forget_stale_history(self):
         pass
 
-    def process_query(self, text, context=None):
+    def process_query(self, text, context=None, lights=None):
         self.asked.append(text)
+        self.contexts.append(context)
+        self.lights.append(lights)
         return self.replies.pop(0)
 
     def remember(self, text, reply):
@@ -67,13 +71,26 @@ class FakeLLM:
 
 
 class FakeActions:
-    def __init__(self, results=None):
+    def __init__(self, results=None, home=None):
         self.results = results or {}
+        self.home = home
         self.run = []
 
     def execute(self, action):
         self.run.append(action.tool)
         return self.results.get(action.tool, ActionResult(True, "Done."))
+
+
+class FakeHome:
+    """Stands in for Home Assistant: the lights it describes, and how long it was given to read them."""
+
+    def __init__(self, lights):
+        self.lights = lights
+        self.timeouts = []
+
+    def describe_lights(self, timeout=None):
+        self.timeouts.append(timeout)
+        return self.lights
 
 
 class FakeMusic:
@@ -141,6 +158,122 @@ def test_a_question_is_listened_for_but_only_so_many_times_in_a_row():
     llm = FakeLLM(*[_answer("Which one?")] * 3)
     conversation = _conversation(llm=llm, max_follow_ups=2)
     assert [conversation.handle("cancel it").listen_again for _ in range(3)] == [True, True, False]
+
+
+# What Home Assistant doesn't understand
+
+def _lights_assist_didnt_understand(llm=None, home=None, **settings):
+    """A conversation in which "dim the lights" goes to Assist, which matches nothing, and so to Claude."""
+    intents = FakeIntents({"dim the lights": _answer("Okay.", Action("control_home", {"command": "dim the lights"}))})
+    actions = FakeActions({"control_home": ActionResult(False, "Sorry, I couldn't understand that", understood=False),
+                           "set_lights": ActionResult(True, "Done.", confirm="chime")}, home=home)
+    llm = llm or FakeLLM(_answer("Okay.", Action("set_lights", {"on": True, "brightness": 30})))
+    return _conversation(intents=intents, llm=llm, actions=actions, **settings), llm, actions
+
+
+def test_a_local_command_assist_didnt_understand_goes_to_claude():
+    conversation, llm, actions = _lights_assist_didnt_understand()
+    reply = conversation.handle("dim the lights")
+    assert llm.asked == ["dim the lights"] and actions.run == ["control_home", "set_lights"]
+    assert "couldn't understand" not in reply.say and reply.sounds == [("success_chime.wav", "general")]
+
+
+def test_a_request_which_falls_through_to_claude_isnt_remembered_twice():
+    # Claude keeps the exchanges it answers itself, so remembering the local command's
+    # "Okay." as well would give it the same request twice.
+    conversation, llm, _ = _lights_assist_didnt_understand()
+    conversation.handle("dim the lights")
+    assert llm.remembered == []
+
+
+def test_what_claude_says_after_a_fall_through_is_kept_and_listened_for():
+    llm = FakeLLM(_answer("Which room?"))
+    conversation, llm, actions = _lights_assist_didnt_understand(llm=llm)
+    reply = conversation.handle("dim the lights")
+    assert (reply.say, reply.listen_again) == ("Which room?", True)
+    assert llm.recorded == [("dim the lights", "Which room?")] and actions.last_answer == ("dim the lights", "Which room?")
+
+
+def test_a_fall_through_inside_a_routine_is_answered_like_any_other_step():
+    evening = FakeRoutines({"name": "Evening", "phrases": ["evening"], "steps": ["dim the lights"]})
+    conversation, llm, _ = _lights_assist_didnt_understand(routines=evening)
+    reply = conversation.handle("evening")
+    assert llm.asked == ["dim the lights"] and reply.sounds == [("success_chime.wav", "general")]
+
+
+def test_a_local_command_assist_understood_but_couldnt_do_stays_with_assist():
+    # "Understood" is about Assist having matched a sentence, not about it having worked:
+    # the lamp being unreachable isn't something Claude can do anything about.
+    intents = FakeIntents({"lamp off": _answer("Okay.", Action("control_home", {"command": "lamp off"}))})
+    actions = FakeActions({"control_home": ActionResult(False, "The lamp is unavailable")})
+    llm = FakeLLM()
+    reply = _conversation(intents=intents, llm=llm, actions=actions).handle("lamp off")
+    assert llm.asked == [] and reply.say == "The lamp is unavailable"
+    assert llm.remembered == [("lamp off", "Okay.")]
+
+
+# What Claude is told about the lights
+
+LAMP_OFF = "Nova is in the Bedroom. Lights: Bedroom Light (light.bedroom_light, Bedroom) off; Lamp (light.lamp, Bedroom) off"
+
+
+def test_claude_is_told_about_the_lights_beside_the_timers():
+    # Separately: the lights aren't a timer, so they aren't put in the list of timers.
+    home = FakeHome(LAMP_OFF)
+    llm = FakeLLM(_answer("It's sunny."))
+    _conversation(clock=FakeClock(timers=["timer 1: 5 minutes"]), llm=llm, actions=FakeActions(home=home)).handle("is it sunny")
+    assert llm.contexts == ["timer 1: 5 minutes"] and llm.lights == [LAMP_OFF]
+    assert "Nova is in the Bedroom" in llm.lights[0]
+
+
+def test_claude_is_told_about_the_lights_with_no_timers_running():
+    llm = FakeLLM(_answer("It's sunny."))
+    _conversation(llm=llm, actions=FakeActions(home=FakeHome(LAMP_OFF))).handle("is it sunny")
+    assert llm.contexts == [None] and llm.lights == [LAMP_OFF]
+
+
+def test_claude_is_told_when_novas_room_isnt_known():
+    told = "Nova's room isn't known. Lights: Lamp (light.lamp, Bedroom) off"
+    llm = FakeLLM(_answer("Which room?"))
+    _conversation(llm=llm, actions=FakeActions(home=FakeHome(told))).handle("dim the lights")
+    assert llm.lights == [told]
+
+
+def test_claude_goes_without_the_lights_when_they_cant_be_read():
+    # describe_lights is "" when Home Assistant is down, or too slow to wait for.
+    llm = FakeLLM(_answer("It's sunny."), _answer("It's sunny."))
+    home = FakeHome("")
+    _conversation(clock=FakeClock(timers=["timer 1: 5 minutes"]), llm=llm, actions=FakeActions(home=home)).handle("is it sunny")
+    _conversation(llm=llm, actions=FakeActions(home=home)).handle("is it sunny")
+    assert llm.contexts == ["timer 1: 5 minutes", None] and llm.lights == [None, None]
+
+
+def test_without_home_assistant_claude_is_only_told_about_the_timers():
+    llm = FakeLLM(_answer("It's sunny."))
+    _conversation(clock=FakeClock(timers=["timer 1: 5 minutes"]), llm=llm).handle("is it sunny")
+    assert llm.contexts == ["timer 1: 5 minutes"] and llm.lights == [None]
+
+
+def test_a_slow_home_assistant_is_only_waited_for_a_moment_to_read_the_lights():
+    # Every request to Claude asks for the lights, so waiting out Home Assistant's own
+    # five seconds each time would slow every reply when it's down.
+    home = FakeHome(LAMP_OFF)
+    _conversation(llm=FakeLLM(_answer("It's sunny.")), actions=FakeActions(home=home)).handle("is it sunny")
+    assert home.timeouts == [LIGHTS_TIMEOUT] and 0 < LIGHTS_TIMEOUT <= 2
+
+
+def test_the_lights_are_only_read_when_claude_is_asked():
+    home = FakeHome(LAMP_OFF)
+    intents = FakeIntents({"pause": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    _conversation(intents=intents, actions=FakeActions(home=home)).handle("pause")
+    assert home.timeouts == []
+
+
+def test_a_fall_through_tells_claude_about_the_lights_too():
+    home = FakeHome(LAMP_OFF)
+    conversation, llm, _ = _lights_assist_didnt_understand(home=home)
+    conversation.handle("dim the lights")
+    assert llm.lights == [LAMP_OFF]
 
 
 # Something ringing

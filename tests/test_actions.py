@@ -152,6 +152,12 @@ def test_a_controllers_flags_are_read_into_one_way_of_confirming():
     assert ActionResult.from_reply({"success": False, "chime": True, "message": "No"}).confirm == "speak"
 
 
+def test_a_request_assist_didnt_understand_is_told_apart_from_one_which_failed():
+    assert ActionResult.from_reply({"success": False, "message": "x", "not_understood": True}).understood is False
+    assert ActionResult.from_reply({"success": False, "message": "x"}).understood is True
+    assert ActionResult.from_reply({"success": True}).understood is True
+
+
 def test_an_action_which_confirms_itself_has_nothing_said_about_it():
     # Even when there's something else to say: a reminder offer after a skipped
     # song used to have the skip's own message read out in front of it.
@@ -230,9 +236,63 @@ def test_one_thing_is_looked_for_rather_than_reading_whole_days():
 
 
 def test_without_home_assistant_the_lights_say_so():
-    result = ActionExecutor().execute(Action("control_home", {"command": "lights on"}))
-    assert result.say == "Home Assistant isn't set up yet."
-    assert "control_home" in {schema["name"] for schema in ActionExecutor(home=object()).tool_schemas()}
+    for action in (Action("control_home", {"command": "lights on"}), Action("set_lights", {"on": True})):
+        result = ActionExecutor().execute(action)
+        assert (result.ok, result.say) == (False, "Home Assistant isn't set up yet."), action.tool
+
+
+def test_claude_isnt_offered_control_home_but_is_offered_set_lights():
+    names = [schema["name"] for schema in ActionExecutor(home=object()).tool_schemas()]
+    assert "set_lights" in names and "control_home" not in names
+    assert "set_lights" not in [schema["name"] for schema in ActionExecutor().tool_schemas()]
+
+
+def test_a_local_light_command_still_reaches_assist():
+    # What Claude isn't offered can still be asked for: the local phrases ("lamp off") and the
+    # offline keyword fallback both produce control_home, which goes to Assist as it always did.
+    class FakeHome:
+        def command(self, request):
+            self.asked = request
+            return {"success": True, "message": "Turned off the lamp", "chime": True}
+
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(Action("control_home", {"command": "lamp off"}))
+    assert home.asked == "lamp off" and (result.ok, result.confirm) == (True, "chime")
+
+
+def test_claude_works_the_lights_by_light_room_brightness_colour_and_warmth():
+    class FakeHome:
+        def set_lights(self, on, light=None, area=None, brightness=None, colour=None, warmth=None):
+            self.asked = (on, light, area, brightness, colour, warmth)
+            return {"success": True, "message": "Done.", "chime": True}
+
+    home = FakeHome()
+    executor = ActionExecutor(home=home)
+    result = executor.execute(Action("set_lights", {"on": True, "area": "Kitchen", "brightness": 30, "colour": "blue",
+                                                   "warmth": 2700, "volume": 11}))
+    assert home.asked == (True, None, "Kitchen", 30, "blue", 2700)
+    assert (result.ok, result.confirm) == (True, "chime")
+
+    executor.execute(Action("set_lights", {"on": False, "light": "light.lamp"}))
+    assert home.asked == (False, "light.lamp", None, None, None, None)
+
+
+def test_the_lights_wont_be_switched_without_knowing_which_way():
+    class FakeHome:
+        def set_lights(self, on, **others):
+            raise AssertionError("shouldn't be asked")
+
+    result = ActionExecutor(home=FakeHome()).execute(Action("set_lights", {"area": "Kitchen"}))
+    assert (result.ok, result.say) == (False, "I didn't catch whether to switch the lights on or off.")
+
+
+def test_a_light_which_cant_be_worked_is_told_in_homes_words():
+    class FakeHome:
+        def set_lights(self, on, **others):
+            return {"success": False, "message": "Which room?"}
+
+    result = ActionExecutor(home=FakeHome()).execute(Action("set_lights", {"on": True}))
+    assert (result.ok, result.say) == (False, "Which room?")
 
 
 def test_an_activity_is_asked_of_home_assistant_for_the_days_given():

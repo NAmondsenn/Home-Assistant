@@ -4,6 +4,7 @@ Checks the lights and the calendar through Home Assistant, using a fake in place
 its API, so nothing is sent anywhere.
 """
 
+import json
 import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -12,7 +13,7 @@ import pytest
 import requests
 
 from voice_assistant import network
-from voice_assistant.home_assistant import HomeAssistant, describe_agenda, describe_found
+from voice_assistant.home_assistant import REQUEST_TIMEOUT, HomeAssistant, describe_agenda, describe_found
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +34,8 @@ class FakeResponse:
     def __init__(self, body, status=200):
         self.body = body
         self.status_code = status
+        # The template endpoint answers in plain text, not JSON.
+        self.text = body if isinstance(body, str) else ""
 
     def json(self):
         return self.body
@@ -49,10 +52,12 @@ class FakeSession:
         self.answers = answers
         self.headers = {}
         self.requests = []
+        self.timeouts = []
 
     def request(self, method, url, timeout=None, **kwargs):
         path = url.split("8123", 1)[1]
         self.requests.append((method, path, kwargs))
+        self.timeouts.append(timeout)
         answer = self.answers[path]
         if isinstance(answer, Exception):
             raise answer
@@ -93,6 +98,100 @@ def test_something_assist_couldnt_do_says_why(make_home):
     home = make_home({"/api/conversation/process": _assist("error", "Sorry, I am not aware of any area called attic")})
     assert home.command("turn on the attic lights") == {
         "success": False, "message": "Sorry, I am not aware of any area called attic"}
+
+
+def test_assist_is_told_which_device_is_speaking(make_home):
+    home = make_home({"/api/conversation/process": _assist("action_done", "Turned on the lights")})
+    home.device_id = "da94"
+    home.command("lights on")
+    assert home._session.requests[0][2]["json"]["device_id"] == "da94"
+
+
+def test_without_a_device_assist_is_asked_as_before(make_home):
+    home = make_home({"/api/conversation/process": _assist("action_done", "Done")})
+    home.command("lights on")
+    assert "device_id" not in home._session.requests[0][2]["json"]
+
+
+@pytest.mark.parametrize("code", ["no_intent_match", "no_valid_targets"])
+def test_assist_not_understanding_is_told_apart(make_home, code):
+    reply = _assist("error", "Sorry, I couldn't understand that")
+    reply["response"]["data"] = {"code": code}
+    result = make_home({"/api/conversation/process": reply}).command("dim the lights")
+    assert result == {"success": False, "message": "Sorry, I couldn't understand that", "not_understood": True}
+
+
+def test_an_error_which_isnt_not_understanding_is_not_told_apart(make_home):
+    # A request Assist understood but couldn't carry out has its answer already, so
+    # Claude shouldn't be asked to have another go at it.
+    reply = _assist("error", "Sorry, something went wrong")
+    reply["response"]["data"] = {"code": "failed_to_handle"}
+    result = make_home({"/api/conversation/process": reply}).command("turn on the lights")
+    assert result == {"success": False, "message": "Sorry, something went wrong"}
+
+
+def test_the_device_is_found_by_its_identifier_not_an_entity_name(make_home):
+    home = make_home({"/api/template": FakeResponse("da94|Bedroom")})
+    assert home.find_device("nova_home_assistant") is True
+    assert (home.device_id, home.area) == ("da94", "Bedroom")
+    assert "nova_home_assistant" in home._session.requests[0][2]["json"]["template"]
+
+    home._session.answers["/api/template"] = FakeResponse("|")
+    assert home.find_device("nova_home_assistant") is False
+    assert (home.device_id, home.area) == (None, None)
+
+
+def test_a_device_not_yet_placed_in_an_area_is_still_found(make_home):
+    home = make_home({"/api/template": FakeResponse("da94|")})
+    assert home.find_device("nova_home_assistant") is True
+    assert (home.device_id, home.area) == ("da94", None)
+
+
+def test_when_home_assistant_cant_be_asked_the_device_is_remembered(make_home):
+    home = make_home({"/api/template": FakeResponse("da94|Bedroom")})
+    home.find_device("nova_home_assistant")
+    home._session.answers["/api/template"] = requests.ConnectionError("down")
+    assert home.find_device("nova_home_assistant") is False
+    assert (home.device_id, home.area) == ("da94", "Bedroom")
+
+
+def test_looking_for_the_device_logs_each_problem_once(make_home, caplog):
+    # It's looked for every 30 seconds until it's found, which was a line in the log
+    # every time while Home Assistant was down.
+    home = make_home({"/api/template": requests.ConnectionError("down")})
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        home.find_device("nova_home_assistant")
+        home.find_device("nova_home_assistant")
+        assert len(caplog.records) == 1 and caplog.records[0].levelname == "ERROR"
+
+        # Back, but without Nova's device - not taken in yet, or set up wrongly.
+        home._session.answers["/api/template"] = FakeResponse("|")
+        home.find_device("nova_home_assistant")
+        home.find_device("nova_home_assistant")
+        assert len(caplog.records) == 3
+        assert caplog.records[1].message == "Home Assistant's answering again"
+        assert caplog.records[2].levelname == "WARNING" and "nova_home_assistant" in caplog.records[2].message
+
+        home._session.answers["/api/template"] = FakeResponse("da94|Bedroom")
+        home.find_device("nova_home_assistant")
+        assert caplog.records[3].message == "Nova is in the Bedroom, as Home Assistant has it"
+        assert len(caplog.records) == 4
+
+
+def test_the_room_is_only_logged_when_it_changes(make_home, caplog):
+    home = make_home({"/api/template": FakeResponse("da94|Bedroom")})
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        home.find_device("nova_home_assistant")
+        home.find_device("nova_home_assistant")
+        assert caplog.messages.count("Nova is in the Bedroom, as Home Assistant has it") == 1
+
+        home._session.answers["/api/template"] = FakeResponse("da94|Kitchen")
+        home.find_device("nova_home_assistant")
+        assert "Nova is in the Kitchen, as Home Assistant has it" in caplog.messages
+
+        home._session.answers["/api/template"] = FakeResponse("da94|")
+        home.find_device("nova_home_assistant")
+    assert "Nova isn't in a room, as Home Assistant has it" in caplog.messages
 
 
 @pytest.mark.parametrize("request_text", ["unlock the front door", "open the garage", "open the back door",
@@ -137,10 +236,6 @@ def test_without_an_address_and_a_token_its_off(make_config):
 # The settings page
 
 STATES = [
-    {"entity_id": "light.kitchen", "state": "on",
-     "attributes": {"friendly_name": "Kitchen", "brightness": 128, "supported_color_modes": ["color_temp"]}},
-    {"entity_id": "light.porch", "state": "off", "attributes": {"friendly_name": "Porch", "supported_color_modes": ["onoff"]}},
-    {"entity_id": "light.garage", "state": "unavailable", "attributes": {"friendly_name": "Garage light"}},
     {"entity_id": "script.movie_night", "state": "off", "attributes": {"friendly_name": "Movie night"}},
     {"entity_id": "scene.relax", "state": "2026-10-20T21:00:00", "attributes": {"friendly_name": "Relax"}},
     {"entity_id": "script.open_garage", "state": "off", "attributes": {"friendly_name": "Garage"}},
@@ -155,21 +250,89 @@ def _state(entity):
 
 
 def test_the_page_is_shown_the_lights_and_only_whats_safe_to_run(make_home):
-    overview = make_home({"/api/states": STATES}).overview()
+    # The lights come from the template, with their areas; the scripts and scenes from the states.
+    lights = _rendered(
+        _rendered_light("light.kitchen", "Kitchen", "Kitchen", brightness=128, supported_color_modes=["color_temp"],
+                        color_mode="color_temp", color_temp_kelvin=3000),
+        _rendered_light("light.porch", "Porch", "Hall", state="off", supported_color_modes=["onoff"]),
+        _rendered_light("light.garage", "Garage light", None, state="unavailable", supported_color_modes=None))
+    overview = make_home({"/api/states": STATES, "/api/template": lights}).overview()
 
-    assert [light["name"] for light in overview["lights"]] == ["Garage light", "Kitchen", "Porch"]
-    assert overview["lights"][1] == {"id": "light.kitchen", "name": "Kitchen", "on": True, "reachable": True,
-                                     "dimmable": True, "brightness": 50}
-    assert not overview["lights"][2]["dimmable"] and not overview["lights"][0]["reachable"]
+    assert [light["name"] for light in overview["lights"]] == ["Porch", "Kitchen", "Garage light"]
+    assert overview["lights"][1] == {"id": "light.kitchen", "name": "Kitchen", "area": "Kitchen", "on": True,
+                                     "reachable": True, "dimmable": True, "brightness": 50,
+                                     "colour_modes": ["color_temp"], "hue": None, "saturation": None, "kelvin": 3000,
+                                     "min_kelvin": 2500, "max_kelvin": 6500}
+    assert not overview["lights"][0]["dimmable"] and not overview["lights"][2]["reachable"]
     # A light can't let anyone in, whatever it's called; a script or scene might, and
     # nothing else is offered at all.
     assert overview["routines"] == [{"id": "script.movie_night", "name": "Movie night", "kind": "script"},
                                     {"id": "scene.relax", "name": "Relax", "kind": "scene"}]
 
 
-def test_the_page_is_told_when_home_assistant_cant_be_reached(make_home):
-    assert make_home({"/api/states": requests.ConnectionError("down")}).overview() == {
-        "success": False, "message": "I can't reach Home Assistant right now."}
+def test_the_page_lists_novas_own_room_first_then_the_rest_by_room_and_name(make_home):
+    home = make_home({"/api/states": [], "/api/template": _rendered(
+        _rendered_light("light.zed", "Zed", "Bedroom"), _rendered_light("light.hall", "Hall", "Hall"),
+        _rendered_light("light.loft", "Loft", None), _rendered_light("light.bed", "Bed", "Bedroom"),
+        _rendered_light("light.attic", "Attic lamp", "Attic"))})
+
+    home.area = "Bedroom"
+    assert [light["name"] for light in home.overview()["lights"]] == ["Bed", "Zed", "Attic lamp", "Hall", "Loft"]
+    # Without a room of its own, none comes first - and the lights in no room still come last.
+    home.area = None
+    assert [light["name"] for light in home.overview()["lights"]] == ["Attic lamp", "Bed", "Zed", "Hall", "Loft"]
+
+
+@pytest.mark.parametrize("down", [{"/api/states": requests.ConnectionError("down")},
+                                  {"/api/states": [], "/api/template": requests.ConnectionError("down")}])
+def test_the_page_is_told_when_home_assistant_cant_be_reached(make_home, down):
+    assert make_home(down).overview() == {"success": False, "message": "I can't reach Home Assistant right now."}
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_without_an_administrators_token_the_page_still_has_the_lights(make_home, status):
+    # Home Assistant only renders templates for an administrator, which Nova's user
+    # needn't be - so the lights come from the states instead, as they did before
+    # Nova had rooms, just without theirs.
+    kitchen = {"entity_id": "light.kitchen", "state": "on",
+               "attributes": {"friendly_name": "Kitchen", "brightness": 128, "supported_color_modes": ["color_temp"],
+                              "color_mode": "color_temp", "color_temp_kelvin": 3000, "min_color_temp_kelvin": 2500,
+                              "max_color_temp_kelvin": 6500, "icon": "mdi:ceiling-light"}}
+    home = make_home({"/api/states": STATES + [kitchen], "/api/template": FakeResponse({}, status=status)})
+    overview = home.overview()
+
+    assert overview["lights"] == [{"id": "light.kitchen", "name": "Kitchen", "area": None, "on": True,
+                                   "reachable": True, "dimmable": True, "brightness": 50,
+                                   "colour_modes": ["color_temp"], "hue": None, "saturation": None, "kelvin": 3000,
+                                   "min_kelvin": 2500, "max_kelvin": 6500}]
+    assert [routine["id"] for routine in overview["routines"]] == ["script.movie_night", "scene.relax"]
+
+
+def test_the_page_is_told_when_home_assistant_fails_at_the_lights_otherwise(make_home):
+    home = make_home({"/api/states": [], "/api/template": FakeResponse({}, status=500)})
+    assert home.overview() == {"success": False, "message": "Home Assistant had a problem with that."}
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_token_which_isnt_an_administrators_is_said_once(make_home, caplog, status):
+    # Nova's device is looked for every half a minute, and the lights read for Claude
+    # with every request, so a line each time would bury the one which says what to do.
+    home = make_home({"/api/states": [], "/api/template": FakeResponse({}, status=status)})
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        for _ in range(3):
+            assert home.find_device("nova_home_assistant") is False
+            assert home.describe_lights() == ""
+            home.overview()
+        assert len(caplog.records) == 1 and caplog.records[0].levelname == "WARNING"
+        assert "administrator" in caplog.records[0].message
+
+        # Made an administrator, the same token works - and if that's undone, it's said again.
+        home._session.answers["/api/template"] = FakeResponse("da94|Bedroom")
+        assert home.find_device("nova_home_assistant") is True
+        home._session.answers["/api/template"] = FakeResponse({}, status=status)
+        home.describe_lights()
+        home.describe_lights()
+    assert sum("administrator" in message for message in caplog.messages) == 2
 
 
 def test_a_light_is_switched_and_dimmed_by_its_own_id(make_home):
@@ -179,6 +342,47 @@ def test_a_light_is_switched_and_dimmed_by_its_own_id(make_home):
     assert [(path, sent["json"]) for _, path, sent in home._session.requests] == [
         ("/api/services/light/turn_off", {"entity_id": "light.kitchen"}),
         ("/api/services/light/turn_on", {"entity_id": "light.kitchen", "brightness_pct": 30})]
+
+
+def test_a_light_is_set_to_a_colour(make_home):
+    home = make_home({"/api/services/light/turn_on": []})
+    assert home.set_light("light.lamp", hue=240, saturation=100)["success"]
+    # Out of range is kept to it, and brightness goes along with the colour.
+    assert home.set_light("light.lamp", brightness=50, hue=400, saturation=-5)["success"]
+    assert [(path, sent["json"]) for _, path, sent in home._session.requests] == [
+        ("/api/services/light/turn_on", {"entity_id": "light.lamp", "hs_color": [240, 100]}),
+        ("/api/services/light/turn_on", {"entity_id": "light.lamp", "brightness_pct": 50, "hs_color": [360, 0]})]
+
+
+def test_a_hue_needs_its_saturation(make_home):
+    home = make_home({})
+    assert not home.set_light("light.lamp", hue=240)["success"]
+    assert not home.set_light("light.lamp", saturation=50)["success"]
+    assert home._session.requests == []
+
+
+@pytest.mark.parametrize("asked, sent", [(9000, 6500), (1000, 2500), (4000, 4000)])
+def test_a_whites_warmth_is_kept_to_the_lights_own_range(make_home, asked, sent):
+    lamp = {"entity_id": "light.lamp", "attributes": {"min_color_temp_kelvin": 2500, "max_color_temp_kelvin": 6500}}
+    home = make_home({"/api/states/light.lamp": lamp, "/api/services/light/turn_on": []})
+    assert home.set_light("light.lamp", kelvin=asked)["success"]
+    assert [(method, path, sent_.get("json")) for method, path, sent_ in home._session.requests] == [
+        ("GET", "/api/states/light.lamp", None),
+        ("POST", "/api/services/light/turn_on", {"entity_id": "light.lamp", "color_temp_kelvin": sent})]
+
+
+def test_a_colour_and_a_warmth_together_are_just_the_colour(make_home):
+    # Home Assistant answers 400 to both, and nothing needs asking about the range.
+    home = make_home({"/api/services/light/turn_on": []})
+    assert home.set_light("light.lamp", hue=10, saturation=20, kelvin=3000)["success"]
+    assert [(path, sent["json"]) for _, path, sent in home._session.requests] == [
+        ("/api/services/light/turn_on", {"entity_id": "light.lamp", "hs_color": [10, 20]})]
+
+
+def test_a_light_which_cant_be_asked_about_its_range_says_so(make_home):
+    home = make_home({"/api/states/light.lamp": requests.ConnectionError("down")})
+    assert home.set_light("light.lamp", kelvin=3000) == {
+        "success": False, "message": "I can't reach Home Assistant right now."}
 
 
 @pytest.mark.parametrize("entity", ["lock.front_door", "switch.adguard_protection", "light.kitchen/../lock", ""])
@@ -204,6 +408,217 @@ def test_a_script_which_could_let_anyone_in_isnt_run_from_the_page_either(make_h
     home = make_home({f"/api/states/{entity}": _state(entity), "/api/services/script/turn_on": []})
     assert not home.run(entity)["success"]
     assert [path for _, path, _ in home._session.requests] == [f"/api/states/{entity}"]
+
+
+# Reading and working the lights
+
+# The attributes the lights template asks Home Assistant for, as the settings page and Claude need them.
+LIGHT_ATTRIBUTES = ("friendly_name", "brightness", "supported_color_modes", "color_mode", "hs_color",
+                    "color_temp_kelvin", "min_color_temp_kelvin", "max_color_temp_kelvin")
+
+
+def _rendered_light(entity, name, area, state="on", **attributes):
+    """
+    One light as the template renders it: its state and area's name, and every
+    attribute asked for, null where Home Assistant has none - a light which is off
+    has no brightness or colour. The capabilities are those of the user's lights.
+    """
+    shown = {"friendly_name": name, "supported_color_modes": ["color_temp", "hs"], "min_color_temp_kelvin": 2500,
+             "max_color_temp_kelvin": 6500, **attributes}
+    return {"entity_id": entity, "area": area, "state": state,
+            "attributes": {key: shown.get(key) for key in LIGHT_ATTRIBUTES}}
+
+
+def _rendered(*lights):
+    """What Home Assistant answers the lights template with - plain text, like any template."""
+    return FakeResponse(json.dumps(list(lights)))
+
+
+# Home Assistant can give a colour temperature in colour mode, and a colour in colour temperature
+# mode, so neither is to be taken for what the light is set to.
+LAMP_BLUE = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=102, color_mode="hs",
+                            hs_color=[240.0, 100.0], color_temp_kelvin=6500)
+LAMP_OFF = _rendered_light("light.lamp", "Lamp", "Bedroom", state="off")
+BEDROOM_LIGHT_WARM = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=102,
+                                     color_mode="color_temp", color_temp_kelvin=2700, hs_color=[30.0, 56.0])
+
+
+def test_lights_come_with_their_area_and_colour(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_BLUE)})
+    assert home.lights() == [{"id": "light.lamp", "name": "Lamp", "area": "Bedroom", "on": True, "reachable": True,
+                              "brightness": 40, "colour_modes": ["color_temp", "hs"], "hue": 240, "saturation": 100,
+                              "kelvin": None, "min_kelvin": 2500, "max_kelvin": 6500}]
+
+
+def test_every_light_is_read_in_one_request(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_OFF, BEDROOM_LIGHT_WARM)})
+    off, warm = home.lights()
+
+    assert (off["on"], off["brightness"], off["hue"], off["saturation"], off["kelvin"]) == (False, None, None, None, None)
+    assert off["colour_modes"] == ["color_temp", "hs"] and (off["min_kelvin"], off["max_kelvin"]) == (2500, 6500)
+    assert (warm["brightness"], warm["kelvin"], warm["hue"], warm["saturation"]) == (40, 2700, None, None)
+    (method, path, sent), = home._session.requests
+    assert (method, path) == ("POST", "/api/template")
+    assert "states.light" in sent["json"]["template"] and "area_name" in sent["json"]["template"]
+
+
+def test_a_light_in_no_room_or_out_of_reach_is_still_a_light(make_home):
+    hall = _rendered_light("light.hall", None, None, state="unavailable", supported_color_modes=None,
+                           min_color_temp_kelvin=None, max_color_temp_kelvin=None)
+    light, = make_home({"/api/template": _rendered(hall)}).lights()
+    assert (light["name"], light["area"], light["reachable"], light["on"]) == ("light.hall", None, False, False)
+    assert light["colour_modes"] == [] and (light["min_kelvin"], light["max_kelvin"]) == (None, None)
+
+
+@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), requests.ReadTimeout("too slow"),
+                                    FakeResponse("<html>not the lights</html>")])
+def test_lights_which_cant_be_read_are_an_error_not_no_lights(make_home, answer):
+    with pytest.raises((requests.RequestException, ValueError)):
+        make_home({"/api/template": answer}).lights()
+
+
+def test_claude_is_told_the_lights_and_the_room_nova_is_in(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_OFF, BEDROOM_LIGHT_WARM)})
+    home.area = "Bedroom"
+    assert home.describe_lights() == ("Nova is in the Bedroom. Lights: Bedroom Light (light.bedroom_light, Bedroom) "
+                                      "on at 40%, 2700K; Lamp (light.lamp, Bedroom) off")
+
+
+def test_a_light_set_to_a_colour_is_told_by_its_hue(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_BLUE)})
+    assert home.describe_lights().endswith("Lamp (light.lamp, Bedroom) on at 40%, hue 240 saturation 100%")
+
+
+def test_lights_are_told_by_room_with_novas_first(make_home):
+    hall = _rendered_light("light.hall", "Hall", "Hall", state="unavailable")
+    loft = _rendered_light("light.loft", "Loft", None, supported_color_modes=["onoff"])
+    home = make_home({"/api/template": _rendered(hall, loft, LAMP_OFF)})
+    home.area = "Bedroom"
+    assert home.describe_lights() == ("Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off; "
+                                      "Hall (light.hall, Hall) unavailable; Loft (light.loft) on")
+
+
+def test_claude_is_told_when_novas_room_isnt_known(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_OFF)})
+    assert home.describe_lights() == "Nova's room isn't known. Lights: Lamp (light.lamp, Bedroom) off"
+
+
+def test_claude_is_told_when_there_are_no_lights(make_home):
+    home = make_home({"/api/template": _rendered()})
+    home.area = "Bedroom"
+    assert home.describe_lights() == "Nova is in the Bedroom. There are no lights."
+
+
+@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), requests.ReadTimeout("too slow"),
+                                    FakeResponse("<html>not the lights</html>")])
+def test_claude_is_told_nothing_when_the_lights_cant_be_read(make_home, answer):
+    home = make_home({"/api/template": answer})
+    home.area = "Bedroom"
+    assert home.describe_lights() == ""
+
+
+@pytest.mark.parametrize("odd", [{"state": "on", "attributes": {}},
+                                 {"entity_id": "light.lamp", "attributes": {"color_mode": "hs", "hs_color": 240}},
+                                 "light.lamp"])
+def test_an_odd_light_leaves_claude_without_the_lights_not_without_a_reply(make_home, caplog, odd):
+    # They're read with every request to Claude, so anything going wrong here would
+    # lose the whole turn, rather than just the lights.
+    home = make_home({"/api/template": _rendered(LAMP_OFF, odd)})
+    assert home.describe_lights() == ""
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
+def test_the_lights_can_be_asked_for_with_less_time_than_usual(make_home):
+    # Claude is told the lights with every request, so a slow Home Assistant mustn't
+    # hold each reply up for the usual five seconds.
+    home = make_home({"/api/template": _rendered(LAMP_OFF)})
+    home.lights(timeout=1.5)
+    home.describe_lights(timeout=1.5)
+    assert home._session.timeouts == [1.5, 1.5]
+
+
+def test_the_lights_are_otherwise_given_the_usual_time(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_OFF)})
+    home.lights()
+    home.describe_lights()
+    assert home._session.timeouts == [REQUEST_TIMEOUT, REQUEST_TIMEOUT]
+
+
+def test_set_lights_defaults_to_novas_own_room(make_home):
+    home = make_home({"/api/template": FakeResponse("bedroom"), "/api/services/light/turn_on": []})
+    home.area = "Bedroom"
+
+    assert home.set_lights(on=True, warmth=2700) == {"success": True, "message": "Done.", "chime": True}
+    (_, _, asked), (_, service_path, sent) = home._session.requests
+    assert 'area_id("Bedroom")' in asked["json"]["template"]
+    assert (service_path, sent["json"]) == ("/api/services/light/turn_on",
+                                            {"area_id": "bedroom", "color_temp_kelvin": 2700})
+
+
+def test_set_lights_asks_which_room_when_novas_isnt_known(make_home):
+    home = make_home({})
+    assert home.set_lights(on=True) == {"success": False, "message": "Which room?"}
+    assert home._session.requests == []
+
+
+def test_set_lights_wont_touch_anything_but_a_light(make_home):
+    home = make_home({})
+    for entity in ("lock.front_door", "switch.adguard_protection", "light.lamp/../lock", "light.lamp, lock.front_door"):
+        assert not home.set_lights(on=False, light=entity)["success"]
+    assert home._session.requests == []
+
+
+def test_a_named_light_is_switched_by_its_entity_id_whatever_room_nova_is_in(make_home):
+    home = make_home({"/api/services/light/turn_off": []})
+    home.area = "Kitchen"
+    assert home.set_lights(on=False, light="light.lamp")["success"]
+    assert [(path, sent["json"]) for _, path, sent in home._session.requests] == [
+        ("/api/services/light/turn_off", {"entity_id": "light.lamp"})]
+
+
+def test_a_named_room_is_looked_up_and_brightness_and_colour_are_passed_on(make_home):
+    home = make_home({"/api/template": FakeResponse("living_room\n"), "/api/services/light/turn_on": []})
+    assert home.set_lights(on=True, area="Living room", brightness=30, colour="Light Blue")["success"]
+    assert [(path, sent["json"]) for _, path, sent in home._session.requests][1:] == [
+        ("/api/services/light/turn_on", {"area_id": "living_room", "brightness_pct": 30, "color_name": "lightblue"})]
+
+
+@pytest.mark.parametrize("asked, sent", [(150, 100), (0, 1), (-20, 1), ("40", 40)])
+def test_brightness_stays_between_1_and_100(make_home, asked, sent):
+    home = make_home({"/api/services/light/turn_on": []})
+    home.set_lights(on=True, light="light.lamp", brightness=asked)
+    assert home._session.requests[0][2]["json"]["brightness_pct"] == sent
+
+
+def test_switching_off_asks_for_nothing_else(make_home):
+    # There's no brightness or colour to give a turn_off.
+    home = make_home({"/api/template": FakeResponse("bedroom"), "/api/services/light/turn_off": []})
+    home.set_lights(on=False, area="Bedroom", brightness=30, colour="red", warmth=2700)
+    assert home._session.requests[1][2]["json"] == {"area_id": "bedroom"}
+
+
+def test_a_room_name_cant_break_out_of_the_template(make_home):
+    # Claude makes up the room's name from what was said, and it goes into a template.
+    name = 'x") }}{{ states | list }}{{ ("'
+    home = make_home({"/api/template": FakeResponse("None")})
+    home.set_lights(on=True, area=name)
+    assert f"area_id({json.dumps(name)})" in home._session.requests[0][2]["json"]["template"]
+
+
+@pytest.mark.parametrize("unknown", ["None", ""])
+def test_a_room_home_assistant_hasnt_got_is_said_not_guessed(make_home, unknown):
+    home = make_home({"/api/template": FakeResponse(unknown)})
+    assert home.set_lights(on=True, area="Attic") == {"success": False, "message": "I don't know a room called Attic."}
+    assert len(home._session.requests) == 1
+
+
+@pytest.mark.parametrize("down", [{"/api/template": requests.ConnectionError("down")},
+                                  {"/api/template": FakeResponse("bedroom"),
+                                   "/api/services/light/turn_on": requests.ConnectionError("down")}])
+def test_set_lights_says_when_home_assistant_cant_be_reached(make_home, down):
+    home = make_home(down)
+    home.area = "Bedroom"
+    assert home.set_lights(on=True) == {"success": False, "message": "I can't reach Home Assistant right now."}
 
 
 # The calendar

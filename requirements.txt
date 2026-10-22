@@ -21,6 +21,10 @@ anthropic>=0.120.0
 # Spotify
 spotipy>=2.26.0
 
+# Home Assistant, which Nova joins as a device of its own over MQTT - see
+# voice_assistant/ha_device.py
+paho-mqtt>=2.1
+
 # Utilities
 python-dotenv>=1.0.0
 pyyaml>=6.0

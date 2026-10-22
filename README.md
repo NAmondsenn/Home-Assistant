@@ -10,7 +10,8 @@ It's being built in stages - see [docs/roadmap.md](docs/roadmap.md). The standal
 - **Alarms** - "wake me up at 7 on weekdays". They ring in bursts, building up from quiet, with gaps for "Hey Nova, stop" to be heard in.
 - **Music** - from your own [Navidrome](https://www.navidrome.org/) server, or from Spotify: play a song, artist, album, genre or playlist (or your liked songs), pause, skip, go back, shuffle, repeat, "what's this song?". The music pauses while Nova is talking, and comes back when it's done. Navidrome's plays through Nova itself, so it pauses instantly and keeps working with the internet down.
 - **Volume** - for Nova's voice, for timers and alarms, and for the music, each kept separately.
-- **The lights** - "turn off the kitchen lights", "set the living room lights to 30 percent", through Home Assistant.
+- **The lights** - "turn off the kitchen lights", "set the living room lights to 30 percent", "make the lamp blue", "make the lights warmer", through Home Assistant. Short commands like "lights on" mean the lights in the room Nova is in.
+- **In Home Assistant** - Nova is a device there, with its volumes, next alarm, timers, stop, restart, a box to make it say something, and a switch to mute its microphone. See "Nova in Home Assistant" below.
 - **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar. "What have I got on this week?" is an overview - which days there's work or uni, and anything else by day - rather than every time of every day. "When's my MOT?" looks for one thing, up to three months ahead. And "what time do I have work tomorrow?", "when's my next shift?" or "when do I finish uni today?" - say what each is called on the calendar in `home_assistant.activities`.
 - **The weather** - now, today or tomorrow, from Open-Meteo.
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
@@ -103,9 +104,9 @@ venv/bin/python -m voice_assistant.spotify_controller
 
 ### Home Assistant, for the lights and the calendar
 
-Nova asks Home Assistant for things in plain words, through its own Assist, so it can only reach the devices you've exposed to Assist - nothing else in Home Assistant. Whatever's exposed, it never locks, unlocks or opens anything by voice.
+Nova asks Home Assistant for things in plain words, through its own Assist, which can only reach the devices you've exposed to it. What Assist doesn't understand - "dim the lights" - goes to Claude, which can switch and set any light, exposed or not, but nothing else. Whatever's exposed, Nova never locks, unlocks or opens anything by voice.
 
-1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in, **not** an administrator.
+1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in. Knowing Nova's room, and Claude working the lights, need it to be an administrator, as Home Assistant only lets administrators ask what's in which room. As an ordinary user, Nova still works through Assist, without rooms.
 2. Log in as that user, and under its profile > Security, make a long-lived access token.
 3. On the Pi, add it to `~/.config/nova/.env` yourself - it's a password, so don't paste it anywhere else:
 
@@ -118,10 +119,31 @@ Nova asks Home Assistant for things in plain words, through its own Assist, so i
    home_assistant:
      url: "http://homeassistant.local:8123"
    ```
-5. In Settings > Voice assistants > Expose, choose which lights Nova may control. Their names and areas are what you'll call them.
+5. In Settings > Voice assistants > Expose, choose which lights Assist may control. Their names and areas are what you'll call them. Claude isn't limited to these - it can work any light.
 6. For your calendar, add Google Calendar (or any other) to Home Assistant through its integration. Every calendar it has is read, unless you list the ones you want in `home_assistant.calendars`.
 
 Then restart Nova. The log says `Home Assistant at ...` once it's on.
+
+### Nova in Home Assistant
+
+Nova can also be a device of its own in Home Assistant, through its MQTT broker (the Mosquitto add-on), so you can see and change things from Home Assistant's dashboards and automations. It has eleven controls: Status, Volume, Alarm volume, Music volume, Next alarm, Timers, Stop, Restart, Speak, Backend and Microphone muted. Nothing said to Nova, and none of its answers, is sent there - timers show only when they end. Without this, Nova works as it always did, and it carries on if the broker goes down.
+
+1. In Home Assistant, make another user for Nova - Settings > People > Users > Add user, called `nova`, **not** an administrator, and with "Can only log in from the local network" on. The Users tab is only there with Advanced mode on in your profile. The broker accepts Home Assistant's users.
+2. On the Pi, add its password to `~/.config/nova/.env` yourself:
+
+   ```
+   MQTT_PASSWORD=the-password
+   ```
+3. Say where the broker is in `~/.config/nova/config.yaml`. The host is Home Assistant's own address on your home network, not its web address:
+
+   ```yaml
+   mqtt:
+     host: "192.168.1.20"
+     username: "nova"
+   ```
+4. Restart Nova, and the device appears in Home Assistant. Put it in an area (its page > the pencil > Area): with an administrator's `HA_TOKEN`, that's how Nova knows what room it's in, so "lights on" means that room's lights. It looks every half a minute until Home Assistant has the device, then every five minutes, so giving it an area or moving it takes a few minutes to be noticed.
+
+The microphone switch works from Home Assistant or the settings page, and stays as it was through a restart. While it's muted, Nova doesn't hear "Hey Nova", but what you send it with Speak is still said.
 
 ### ntfy, for alerts and your phone
 
@@ -154,7 +176,7 @@ Then restart Nova. What it sends is tagged `nova`, so it never reads its own mes
 
 ### The settings page
 
-Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. The star by Nova's name shows whether it's waiting, listening, thinking or speaking, and as a volume's dragged, Nova beeps on its speaker at each new level, so you can hear how loud it is. With music set up, it shows what's playing, and plays something else; with Home Assistant, it switches and dims your lights, and runs your scripts and scenes - never one whose name says it locks or opens anything. It listens on the Pi alone, and only your own Tailscale login gets in:
+Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. The star by Nova's name shows whether it's waiting, listening, thinking or speaking, and as a volume's dragged, Nova beeps on its speaker at each new level, so you can hear how loud it is. With music set up, it shows what's playing, and plays something else; with Home Assistant, it switches and dims your lights, sets their colour and warmth, groups them by room, and runs your scripts and scenes - never one whose name says it locks or opens anything. It listens on the Pi alone, and only your own Tailscale login gets in:
 
 1. In Tailscale's admin page, turn on HTTPS certificates - under DNS.
 2. On the Pi, have Tailscale pass the tailnet's requests on to the page, with a certificate for the Pi's name:

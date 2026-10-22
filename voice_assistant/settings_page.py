@@ -1,10 +1,10 @@
 """
 Settings Page Module.
 
-A page for looking after Nova from a phone or a laptop: how it's doing, what's playing,
-the lights and Home Assistant's scripts and scenes, its volumes, its timers and alarms,
-what it remembers, its keys and its main settings. Nova serves it itself, so a Pi on
-its own has it too.
+A page for looking after Nova from a phone or a laptop: how it's doing, its microphone's
+mute, what's playing, the lights and Home Assistant's scripts and scenes, its volumes,
+its timers and alarms, what it remembers, its keys and its main settings. Nova serves
+it itself, so a Pi on its own has it too.
 
 Only the user gets in. It listens on this machine alone, and Tailscale passes the
 tailnet's requests on to it over HTTPS, with its own certificate -
@@ -23,6 +23,7 @@ which the page can do.
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -79,8 +80,8 @@ EDITABLE = [
 ]
 
 # The keys, and what each is for. Claude's can be under an older name too.
-KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant"), ("NAVIDROME_PASSWORD", "Navidrome"),
-        ("NTFY_TOKEN", "ntfy"), ("NOVA_BACKEND_TOKEN", "Nova's backend"),
+KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant"), ("MQTT_PASSWORD", "Home Assistant's MQTT"),
+        ("NAVIDROME_PASSWORD", "Navidrome"), ("NTFY_TOKEN", "ntfy"), ("NOVA_BACKEND_TOKEN", "Nova's backend"),
         ("SPOTIFY_CLIENT_ID", "Spotify client ID"), ("SPOTIFY_CLIENT_SECRET", "Spotify client secret")]
 OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}
 
@@ -166,11 +167,70 @@ def restart_service() -> str:
     return "Restarting - give it half a minute."
 
 
+def volume_levels(volume, music) -> Dict[str, int]:
+    """
+    Each of Nova's volumes, as a percentage - for the page, and for Home Assistant
+    every second. The music's is Navidrome's own, but Spotify's would mean asking
+    Spotify's servers every time, so Nova's own note of it is used instead.
+
+    Args:
+        volume: The VolumeControl.
+        music: The music player, or None.
+
+    Returns:
+        Each level by its category - "general", "alarm" and "music".
+    """
+    levels = {category: volume.percent(category) for category in volume.CATEGORIES}
+    if music is not None and not getattr(music, "needs_internet", True):
+        levels["music"] = music.get_volume()
+    return levels
+
+
+def change_volume(volume, music, category: str, percent: int) -> Dict:
+    """
+    Changes one of Nova's volumes, from the page or Home Assistant. The music's belongs
+    to the music player, which also changes the song playing - the same way asking
+    Nova out loud does.
+
+    Args:
+        volume: The VolumeControl.
+        music: The music player, or None.
+        category: "general", "alarm" or "music".
+        percent: The new level, from 0 to 100.
+
+    Returns:
+        Dict with 'success' and a 'message'.
+    """
+    if category != "music" or music is None:
+        return volume.set(category, percent)
+    result = music.set_volume(percent)
+    # Spotify's level is shown from Nova's own note of it (see volume_levels), so the
+    # note follows - or Home Assistant's slider would spring back to the old level.
+    if result.get("success") and getattr(music, "needs_internet", True):
+        volume.set("music", percent)
+    return result
+
+
+def _number(value: Any) -> Optional[float]:
+    """
+    What the page sent as a number, or None if it isn't one - a yes or no, text which
+    isn't a number, or one which isn't finite, such as the NaN and Infinity which JSON
+    lets through. A number as text, e.g. "40", counts.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
     def __init__(self, allow: List[str], port: int = 8765, running=None, volume=None, clock=None, memory=None,
-                 ntfy=None, stt=None, music=None, actions=None, home=None, routines=None,
+                 ntfy=None, stt=None, music=None, actions=None, home=None, routines=None, wake=None,
                  run_routine: Optional[Callable[[Dict], None]] = None,
                  boop: Optional[Callable[[float], None]] = None,
                  activity: Optional[Callable[[], str]] = None, wake_word: Optional[Callable[[], str]] = None,
@@ -191,6 +251,7 @@ class SettingsPage:
                 asking out loud does.
             home: The HomeAssistant, or None, for the lights and the scripts and scenes.
             routines: The user's Routines, or None.
+            wake: The WakeWordDetector, which keeps whether the microphone's muted.
             run_routine: Runs a routine by itself, as at its time - SmartAssistant.run_routine.
             boop: Plays the volume beep at a level from 0 to 1 on Nova's speaker, so a
                 change made on the page is heard at its new level.
@@ -206,6 +267,7 @@ class SettingsPage:
         self.volume, self.clock, self.memory, self.ntfy, self.stt = volume, clock, memory, ntfy, stt
         self.music, self.actions, self.home = music, actions, home
         self.routines, self._run_routine = routines, run_routine
+        self.wake = wake
         self._playlists: Optional[Tuple[List[str], float]] = None
         self._boop = boop
         self._activity = activity
@@ -280,8 +342,8 @@ class SettingsPage:
                 for name, label in KEYS]
         return {"status": self._status(),
                 "wake_word": self._wake_word(),
-                "volumes": {category: self._music_level() if category == "music" else self.volume.percent(category)
-                            for category in self.volume.CATEGORIES},
+                "muted": self.wake is not None and self.wake.muted,
+                "volumes": volume_levels(self.volume, self.music),
                 "clock": self.clock.overview(),
                 "memories": self.memory.facts(),
                 "routines": self.routines.all() if self.routines is not None else [],
@@ -325,16 +387,7 @@ class SettingsPage:
         """
         if self.home is None:
             return {"available": False}
-        return {"available": True, **self.home.overview()}
-
-    def _music_level(self) -> int:
-        """
-        The music's volume, which Navidrome keeps itself. Spotify's would mean asking
-        Spotify's servers every time the page looks, so Nova's own note of it is shown.
-        """
-        if self.music is not None and not getattr(self.music, "needs_internet", True):
-            return self.music.get_volume()
-        return self.volume.percent("music")
+        return {"available": True, "area": self.home.area, **self.home.overview()}
 
     def _saved(self):
         """The settings as saved now - which take effect at the next restart - and any problem reading them."""
@@ -383,18 +436,21 @@ class SettingsPage:
         the slider is dragged, so the user hears how loud it now is.
         """
         percent = int(percent)
-        # The music's volume belongs to the music player, which also changes the song
-        # playing - the same way asking Nova out loud does.
-        if category == "music" and self.music is not None:
-            result = self.music.set_volume(percent)
-            level = percent / 100
-        else:
-            result = self.volume.set(category, percent)
-            level = self.volume.get(category)
+        result = change_volume(self.volume, self.music, category, percent)
         if result.get("success") and self._boop:
-            self._boop(level)
+            self._boop(percent / 100 if category == "music" and self.music is not None else self.volume.get(category))
         logger.info(f"Settings page: {who} set the {category} volume to {percent}%")
         return result
+
+    def set_muted(self, muted: bool, who: str) -> Dict:
+        """Mutes or unmutes the microphone - see WakeWordDetector.set_muted."""
+        if self.wake is None or not isinstance(muted, bool):
+            return {"success": False, "message": "That didn't make sense."}
+        self.wake.set_muted(muted)
+        logger.info(f"Settings page: {who} {'muted' if muted else 'unmuted'} the microphone")
+        if muted:
+            return {"success": True, "message": f"Muted. Nova won't hear \"{self._wake_word()}\" until it's unmuted."}
+        return {"success": True, "message": "Unmuted."}
 
     def add_alarm(self, at: str, repeat: Optional[str], who: str) -> Dict:
         found = re.fullmatch(r"(\d{1,2}):(\d\d)", (at or "").strip())
@@ -513,14 +569,25 @@ class SettingsPage:
         logger.info(f"Settings page: {who} asked the music to {action}")
         return {"success": bool(result.get("success")), "message": result.get("message") or ""}
 
-    def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None) -> Dict:
-        """Switches or dims a light - see HomeAssistant.set_light."""
+    def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
+                  hue=None, saturation=None, kelvin=None) -> Dict:
+        """
+        Switches a light, or dims it, or sets its colour or its white - see
+        HomeAssistant.set_light. Anything which isn't a number is turned away here, as
+        a number which can't be one (JSON allows NaN and Infinity) would otherwise
+        raise further in.
+        """
         if self.home is None:
             return {"success": False, "message": "Nova isn't connected to Home Assistant."}
-        if on is not None and not isinstance(on, bool):
+        given = (brightness, hue, saturation, kelvin)
+        numbers = [None if value is None else _number(value) for value in given]
+        if (on is not None and not isinstance(on, bool)) or any(
+                number is None and value is not None for number, value in zip(numbers, given)):
             return {"success": False, "message": "That didn't make sense."}
+        brightness, hue, saturation, kelvin = numbers
         logger.info(f"Settings page: {who} changed {entity_id}")
-        return self.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness))
+        return self.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness),
+                                   hue=hue, saturation=saturation, kelvin=kelvin)
 
     def run(self, entity_id: str, who: str) -> Dict:
         """Runs a script or sets a scene - see HomeAssistant.run."""
@@ -566,8 +633,11 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/keys": lambda page, body, who: page.set_key(body["name"], body["value"], who),
     "/api/settings": lambda page, body, who: page.save_settings(body["changes"], who),
     "/api/restart": lambda page, body, who: page.restart(who),
+    "/api/mute": lambda page, body, who: page.set_muted(body["muted"], who),
     "/api/music": lambda page, body, who: page.play(body["action"], who, body.get("query", ""), body.get("playlist", "")),
-    "/api/light": lambda page, body, who: page.set_light(body["id"], who, body.get("on"), body.get("brightness")),
+    "/api/light": lambda page, body, who: page.set_light(
+        body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
+        body.get("kelvin")),
     "/api/run": lambda page, body, who: page.run(body["id"], who),
     "/api/routines": lambda page, body, who: page.save_routine(body["routine"], who),
     "/api/routines/remove": lambda page, body, who: page.remove_routine(body["id"], who),

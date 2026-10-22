@@ -6,6 +6,7 @@ responses in place of the API, so no request is ever made.
 
 from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import anthropic
 import pytest
@@ -115,6 +116,50 @@ def test_the_instructions_are_the_same_every_time_so_they_can_be_cached(llm, mon
     first, second = (request["system"] for request in llm.client.requests)
     assert first == second and first[-1]["cache_control"] == {"type": "ephemeral"}
     assert "walk the dogs reminder" in llm.client.requests[1]["messages"][-1]["content"]
+
+
+# What Claude is told beside what the user said
+
+LUNCHTIME = datetime(2026, 10, 21, 11, 50, tzinfo=ZoneInfo("Europe/London"))
+LAMP = "Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off"
+
+
+def test_the_timers_are_told_as_they_always_were_when_there_are_no_lights():
+    assert LLMHandler._situation(LUNCHTIME, None) == (
+        "[Wednesday 21 October 2026, 11:50 AM (BST). Timers and reminders running: none.] ")
+    assert LLMHandler._situation(LUNCHTIME, "timer 1: 5 minutes") == (
+        "[Wednesday 21 October 2026, 11:50 AM (BST). Timers and reminders running: timer 1: 5 minutes.] ")
+
+
+def test_the_lights_follow_the_timers_in_the_same_brackets():
+    # Their own sentences, not part of the timers' list: "Timers and reminders running:
+    # Nova is in the Bedroom" would have Claude reading the lights as a timer.
+    assert LLMHandler._situation(LUNCHTIME, None, LAMP) == (
+        "[Wednesday 21 October 2026, 11:50 AM (BST). Timers and reminders running: none. "
+        "Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off.] ")
+    assert "running: timer 1: 5 minutes. Nova is in the Bedroom." in LLMHandler._situation(
+        LUNCHTIME, "timer 1: 5 minutes", LAMP)
+
+
+def test_lights_which_already_end_in_a_full_stop_arent_given_another():
+    assert LLMHandler._situation(LUNCHTIME, None, "Nova is in the Bedroom. There are no lights.").endswith(
+        "There are no lights.] ")
+
+
+def test_the_lights_reach_claude_with_the_message(llm):
+    llm.client = FakeClient(_reply("Okay."))
+    llm.process_query("dim the lights", context="timer 1: 5 minutes", lights=LAMP)
+    said = llm.client.requests[0]["messages"][-1]["content"]
+    assert "Timers and reminders running: timer 1: 5 minutes. Nova is in the Bedroom. Lights: Lamp" in said
+    assert said.endswith("off.] dim the lights")
+
+
+def test_the_instructions_are_the_same_with_the_lights_in_the_message(llm):
+    llm.client = FakeClient(_reply("Okay."))
+    llm.process_query("what time is it")
+    llm.process_query("dim the lights", lights=LAMP)
+    first, second = (request["system"] for request in llm.client.requests)
+    assert first == second
 
 
 # Timeouts and failures

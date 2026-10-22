@@ -134,18 +134,30 @@ class FakeHome:
 
     def __init__(self):
         self.changed = []
+        self.area = "Bedroom"
 
     def overview(self):
         return {"success": True, "lights": [{"id": "light.kitchen", "name": "Kitchen", "on": True}],
                 "routines": [{"id": "scene.relax", "name": "Relax", "kind": "scene"}]}
 
-    def set_light(self, entity_id, on=None, brightness=None):
-        self.changed.append((entity_id, on, brightness))
+    def set_light(self, entity_id, on=None, brightness=None, hue=None, saturation=None, kelvin=None):
+        self.changed.append((entity_id, on, brightness) if hue is saturation is kelvin is None
+                            else (entity_id, hue, saturation, kelvin))
         return {"success": True, "message": "Done."}
 
     def run(self, entity_id):
         self.changed.append((entity_id, "run", None))
         return {"success": True, "message": "Set Relax."}
+
+
+class FakeWake:
+    """Stands in for the wake word detector, which keeps the microphone's mute."""
+
+    def __init__(self):
+        self.muted = False
+
+    def set_muted(self, muted):
+        self.muted = muted
 
 
 def _page(running=None, **parts):
@@ -228,6 +240,21 @@ def test_the_music_volume_is_the_players_own_so_a_playing_song_changes_too(files
     assert page.state()["volumes"]["music"] == 25
 
 
+def test_spotifys_volume_is_shown_as_last_set_without_asking_spotify(files):
+    # Asking Spotify's servers every time the page - or Home Assistant - looks would be
+    # slow, so Nova keeps its own note of the level, which follows each change.
+    class Spotify(FakePlayer):
+        needs_internet = True
+
+        def get_volume(self):
+            raise AssertionError("Spotify was asked for its volume")
+
+    player = Spotify()
+    page = _page(music=player)
+    page.set_volume("music", 25, LOGIN)
+    assert player.level == 25 and page.state()["volumes"]["music"] == 25
+
+
 def test_the_page_can_tell_what_nova_is_doing(files):
     assert _page(activity=lambda: "listening").live() == {"activity": "listening"}
     assert _page().live() == {"activity": "idle"}
@@ -265,6 +292,7 @@ def test_the_lights_and_scenes_come_from_home_assistant_and_go_back_to_it(files)
     assert home.changed == [("light.kitchen", False, None), ("light.kitchen", None, 40), ("scene.relax", "run", None)]
     # Only a yes or no switches a light.
     assert not page.set_light("light.kitchen", LOGIN, on="off")["success"]
+    assert page.home_state()["area"] == "Bedroom"
     assert _page().home_state() == {"available": False}
     assert not _page().run("scene.relax", LOGIN)["success"]
 
@@ -440,8 +468,41 @@ def test_music_and_home_assistant_changes_reach_them(served):
     assert served.home.changed == [("light.kitchen", None, 70), ("scene.relax", "run", None)]
 
 
+def test_the_settings_page_shows_and_changes_mute(served):
+    def state():
+        return json.loads(_ask(served, "/api/state")[2])
+
+    served.wake = FakeWake()
+    assert state()["muted"] is False
+    status, _, body = _ask(served, "/api/mute", {"muted": True}, X_Nova="page")
+    assert status == 200 and json.loads(body)["success"]
+    assert served.wake.muted and state()["muted"] is True
+
+    # Only a yes or no mutes it.
+    assert not json.loads(_ask(served, "/api/mute", {"muted": "no"}, X_Nova="page")[2])["success"]
+    assert served.wake.muted
+
+
 def test_nonsense_is_answered_rather_than_crashing_on(served):
     assert json.loads(_ask(served, "/api/volume", {}, X_Nova="page")[2]) == {
         "success": False, "message": "That didn't make sense."}
     assert _ask(served, "/api/nothing", {}, X_Nova="page")[0] == 400
     assert _ask(served, "/nothing")[0] == 404
+
+
+def test_a_lights_colour_and_warmth_reach_home_assistant(files):
+    home = FakeHome()
+    page = _page(home=home)
+    assert page.set_light("light.kitchen", LOGIN, hue=240, saturation="100")["success"]
+    assert page.set_light("light.kitchen", LOGIN, kelvin=2700)["success"]
+    assert home.changed == [("light.kitchen", 240.0, 100.0, None), ("light.kitchen", None, None, 2700.0)]
+
+
+@pytest.mark.parametrize("sent", [{"brightness": "bright"}, {"hue": "red", "saturation": 50}, {"kelvin": [2700]},
+                                  {"hue": True, "saturation": 50}, {"kelvin": float("nan")},
+                                  {"brightness": float("inf")}, {"hue": 10, "saturation": {}}])
+def test_a_light_is_never_set_to_something_which_isnt_a_number(files, sent):
+    home = FakeHome()
+    assert _page(home=home).set_light("light.kitchen", LOGIN, **sent) == {
+        "success": False, "message": "That didn't make sense."}
+    assert home.changed == []

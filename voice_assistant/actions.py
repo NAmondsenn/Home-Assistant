@@ -4,9 +4,9 @@ Everything the assistant can do for the user, each declared once.
 
 Each tool is a method of ActionExecutor, with what the model is told about it - its
 description and parameters - written in a @tool line just above the code which
-carries it out. The model is offered exactly these (see tool_schemas), and whatever
-it calls, or a local command or the offline keyword fallback asks for, comes back
-here as an Action naming one of them.
+carries it out. The model is offered these (see tool_schemas), bar any kept for the
+local commands and the offline keyword fallback alone, and whatever it calls, or they
+ask for, comes back here as an Action naming one of them.
 
 Adding a tool used to mean editing three places in two files - the description in
 llm.py, a mapping from the model's call to an action dict, and the dispatch here -
@@ -75,12 +75,16 @@ class ActionResult:
             after the answer to the question it came up in.
         sound: The sound, for "sound" - e.g. "volume_beep.wav".
         sound_category: Which volume the sound plays at.
+        understood: False when Home Assistant's Assist matched nothing in what was
+            said - which the model may be able to do something with - rather than
+            understanding it and failing.
     """
     ok: bool
     say: str = ""
     confirm: str = "speak"
     sound: Optional[str] = None
     sound_category: str = "general"
+    understood: bool = True
 
     @classmethod
     def from_reply(cls, reply: Dict) -> "ActionResult":
@@ -107,7 +111,8 @@ class ActionResult:
                        sound_category=reply.get("sound_category", "general"))
         if ok and reply.get("chime"):
             return cls(ok, say, confirm="chime")
-        return cls(ok, say)
+        # Only a failure can be not understood, and a failure always gets this far.
+        return cls(ok, say, understood=not reply.get("not_understood"))
 
 
 def confirm(results: List[ActionResult], chime_enabled: bool = True,
@@ -169,7 +174,7 @@ def _words(text: str) -> str:
     return re.sub(r"[^a-z ]", "", text.lower()).strip()
 
 
-def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (),
+def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (), for_model: bool = True,
          **parameters: Dict[str, Any]) -> Callable:
     """
     Declares an ActionExecutor method as a tool the model can call.
@@ -179,6 +184,9 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
         needs: The ActionExecutor attribute it can't work without, e.g. "music". The
             tool isn't offered while that isn't set up.
         required: The parameters it must always be given.
+        for_model: Whether the model is offered it at all. False for one which is
+            still run when a local command or the offline keyword fallback asks for it,
+            but which the model has a better tool for.
         parameters: Each parameter's JSON schema, by name - the method's own
             keyword arguments, which it's called with.
 
@@ -187,7 +195,7 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
     """
     def declare(method: Callable) -> Callable:
         method.tool = {"description": description, "needs": needs,
-                       "required": list(required), "parameters": parameters}
+                       "required": list(required), "for_model": for_model, "parameters": parameters}
         return method
     return declare
 
@@ -227,13 +235,15 @@ class ActionExecutor:
     def tool_schemas(self) -> List[Dict]:
         """
         The tools to offer the model, in the API's format - only those which can
-        actually work, so it isn't invited to call one that can only fail.
+        actually work, so it isn't invited to call one that can only fail, and not
+        those which are only for the local commands and the offline fallback.
         """
         return [{"name": name,
                  "description": method.tool["description"],
                  "input_schema": {"type": "object", "properties": method.tool["parameters"],
                                   "required": method.tool["required"]}}
-                for name, method in self.tools().items() if self._available(method)]
+                for name, method in self.tools().items()
+                if method.tool["for_model"] and self._available(method)]
 
     def _available(self, method: Callable) -> bool:
         needs = method.tool["needs"]
@@ -725,6 +735,9 @@ class ActionExecutor:
 
     # Home Assistant
 
+    # Not offered to the model, which works the lights itself with set_lights, but the
+    # local commands ("lamp off") and the offline keyword fallback still pass their words
+    # on to Home Assistant's Assist this way.
     @tool(
         "Control the lights through Home Assistant - on, off, brighter, dimmer, a "
         "percentage or a colour - or ask whether one is on. Pass the request on as a "
@@ -734,12 +747,53 @@ class ActionExecutor:
         "user hears, so just reply 'Okay.'",
         needs="home",
         required=["command"],
+        for_model=False,
         command={"type": "string", "description": "The request, in plain English."},
     )
     def control_home(self, command: Optional[str] = None):
         if not command:
             return {"success": False, "message": "I didn't catch what to do with the lights."}
         return self.home.command(command)
+
+    @tool(
+        "Work the lights through Home Assistant: switch them on or off, set how bright "
+        "they are, or change their colour or warmth - one light, or all the lights in a "
+        "room. It works lights and nothing else. Name a light by its entity id, from the "
+        "list of lights you were given, or a room by its name; with neither, as for 'turn "
+        "on the lights' or 'dim the lights', it's the room Nova is in. If Nova's room "
+        "isn't known, don't guess a room: ask which one. Work out 'brighter', 'a bit "
+        "dimmer' and the like from how bright the lights are now, in that list. To "
+        "change a colour or warmth, or brightness, pass on=true. The lights changing, "
+        "or a chime, is what the user hears, so just reply 'Okay.'",
+        needs="home",
+        required=["on"],
+        on={
+            "type": "boolean",
+            "description": "true to switch them on, or to change how they look; false to switch them off.",
+        },
+        light={"type": "string", "description": "One light's entity id, e.g. 'light.lamp'. Leave out for a room."},
+        area={
+            "type": "string",
+            "description": ("A room's name, e.g. 'Bedroom', for all its lights. Leave out for the room "
+                            "Nova is in, or when a light is given."),
+        },
+        brightness={"type": "integer", "description": "How bright, 1 to 100 percent. Leave out unless asked."},
+        colour={
+            "type": "string",
+            "description": ("A colour, by its name in one or two words, e.g. 'blue' or 'light green'. "
+                            "Leave out unless asked."),
+        },
+        warmth={
+            "type": "integer",
+            "description": ("A white's colour temperature in kelvin: 2700 for warm white, 4000 for neutral, "
+                            "6500 for cool daylight. Lower is warmer. Leave out unless asked."),
+        },
+    )
+    def set_lights(self, on: Optional[bool] = None, light: Optional[str] = None, area: Optional[str] = None,
+                   brightness: Optional[int] = None, colour: Optional[str] = None, warmth: Optional[int] = None):
+        if on is None:
+            return {"success": False, "message": "I didn't catch whether to switch the lights on or off."}
+        return self.home.set_lights(on, light=light, area=area, brightness=brightness, colour=colour, warmth=warmth)
 
     @tool(
         "Read the user's calendar for a day or a few days, for 'what have I got on "

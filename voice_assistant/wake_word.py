@@ -2,10 +2,14 @@ import os
 import re
 import logging
 from openwakeword.model import Model
-from voice_assistant import paths
+from voice_assistant import paths, storage
 from voice_assistant.microphone import RATE, Microphone
 
 logger = logging.getLogger(__name__)
+
+# Whether the microphone's muted - from Home Assistant or the settings page - kept in
+# the data folder (see paths.py), so it stays muted across a restart.
+MICROPHONE_FILE = os.path.join(paths.DATA_DIR, "microphone.json")
 
 # openWakeWord works through audio 80ms at a time - this many samples at 16kHz.
 CHUNK_SAMPLES = 1280
@@ -78,7 +82,9 @@ class WakeWordDetector:
     A simple wake word detector using the openWakeWord library. The wake word phrase,
     whose .onnx model gets loaded, comes from config.yaml rather than being hardcoded.
     The sensitivity can be adjusted to make detection more or less strict, with a value
-    between 0 and 1.
+    between 0 and 1. Muted, from Home Assistant or the settings page, it never hears the
+    wake word - but alarms and timers still ring, and Home Assistant's messages are
+    still said.
     """
 
     def __init__(self, config=None, sensitivity=None, microphone=None):
@@ -124,6 +130,40 @@ class WakeWordDetector:
         self.model = Model(wakeword_models=[model_path], inference_framework="onnx")
         logger.info(f"openWakeWord initialised with '{self.wake_word_key}' model")
 
+        self._muted = self._load_muted()
+        if self._muted:
+            logger.info(f"The microphone's muted, so '{self.wake_word_phrase}' won't be heard until it's unmuted")
+
+    @property
+    def muted(self) -> bool:
+        """Whether the microphone's muted, so the wake word goes unheard."""
+        return self._muted
+
+    def set_muted(self, muted: bool):
+        """
+        Mutes or unmutes the microphone, straight away - even part way through
+        listen_once - and for every restart after.
+
+        Args:
+            muted: True to stop the wake word being heard.
+        """
+        self._muted = bool(muted)
+        try:
+            storage.save_json(MICROPHONE_FILE, {"muted": self._muted})
+        except OSError as e:
+            # It's still muted or unmuted until Nova restarts, just not after.
+            logger.error(f"Couldn't save whether the microphone's muted: {e}")
+
+    @staticmethod
+    def _load_muted() -> bool:
+        """Whether the last run left the microphone muted - not, if that can't be told."""
+        try:
+            saved = storage.load_json(MICROPHONE_FILE, default={})
+        except (OSError, ValueError) as e:
+            logger.error(f"Couldn't read whether the microphone's muted, so it isn't: {e}")
+            return False
+        return isinstance(saved, dict) and saved.get("muted") is True
+
     def listen_once(self, until=None):
         """
         Listens for the wake word, reading the shared microphone stream 80ms at a
@@ -160,8 +200,12 @@ class WakeWordDetector:
                 continue
             score = prediction.get(self.wake_word_key, 0)
 
-            # Returns the confidence score and logs it if the wake word is detected
-            if score >= self.sensitivity:
+            # Returns the confidence score and logs it if the wake word is detected.
+            # Muted, the wake word is ignored here, rather than the audio going
+            # unread, so the model keeps up with the microphone and hears it again
+            # the moment it's unmuted. The same goes for the wake word said over a
+            # reply - see _say in main.py.
+            if score >= self.sensitivity and not self._muted:
                 self.heard_at = reader.position
                 logger.info(f"Wake word detected! (confidence: {score:.2f})")
                 return float(score)
