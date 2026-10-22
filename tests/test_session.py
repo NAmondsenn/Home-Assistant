@@ -500,6 +500,19 @@ def test_saying_the_wake_word_over_a_reply_stops_it(connect, make_session):
     assert timeline.notes["talked_over"] is True
 
 
+def test_a_wake_word_heard_just_as_the_reply_ends_starts_the_next_request(connect, make_session):
+    # Missed as a question finished, the recording of the new request was taken for
+    # the answer.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    satellite.wakes.put({"talked_over": False, "feed": AudioFeed()})
+    finished = SimpleNamespace(done=True, duration=0.0)
+
+    heard_over = session._heard_over(finished)
+    assert heard_over is not None and isinstance(heard_over["feed"], AudioFeed)
+    assert satellite.wakes.empty()
+
+
 def test_a_reply_nobody_talks_over_plays_to_the_end(connect, make_session):
     satellite, pi = connect()
     session = make_session(satellite)

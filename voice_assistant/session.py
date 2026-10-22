@@ -551,7 +551,13 @@ class Session:
                 return self.satellite.wakes.get(timeout=TALKED_OVER_CHECK)
             except queue.Empty:
                 pass
-        return None
+        # One last look, for a wake word said just as the reply ended - a question,
+        # whose answer would otherwise be listened for next, and the new request taken
+        # for it.
+        try:
+            return self.satellite.wakes.get_nowait()
+        except queue.Empty:
+            return None
 
     def _show(self, line):
         """

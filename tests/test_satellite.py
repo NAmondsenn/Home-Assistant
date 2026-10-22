@@ -407,6 +407,25 @@ def test_the_wake_word_over_a_reply_stops_it_and_says_so(brain, make):
     assert brain.messages("played") == [{"type": "played", "id": "reply-1", "stopped": True, "position": 3}]
 
 
+def test_the_brain_asking_to_hear_an_answer_during_a_wake_sends_nothing_more(brain, make):
+    # The brain finished asking a question as the wake word was said, so asked to hear
+    # the answer while the wake's recording was being sent. That recording is all it
+    # gets: sent again as a follow-up, it was 10 seconds of nobody talking, while the
+    # wake word went unheard.
+    made = make()
+    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 3)
+    brain.say("listen")
+    brain.say("stop_listening")
+
+    assert wait_for(lambda: made.wake.listening)
+    sent = len(brain.recordings())
+    time.sleep(0.1)
+    assert len(brain.recordings()) == sent
+    assert brain.messages("audio_end") == []
+
+
 def test_a_wake_while_streaming_starts_nothing_new(brain, make):
     made = make()
     assert wait_for(lambda: brain.hellos and made.wake.listening)

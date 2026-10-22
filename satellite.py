@@ -274,9 +274,16 @@ class Satellite:
             self.speaker.allow("announcement")
             return
         start = max(0, heard_at - round(self.pre_roll * RATE))
-        if recording is None or self._send_recording(start, heard_at - start, recording) == "dropped":
-            with self._lock:
+        ended = "dropped" if recording is None else self._send_recording(start, heard_at - start, recording)
+        with self._lock:
+            # The brain asked to hear an answer while this was being sent, having
+            # finished a question just as the wake word was said - and this recording,
+            # which it has had, is what came next. Sent again as a follow-up, it was
+            # ten seconds of nobody talking, with the wake word going unheard.
+            self._listen_from = None
+            if ended == "dropped":
                 self._save_timeline(outcome="no_brain")
+        if ended == "dropped":
             self._say_cant_reach()
 
     def _send_follow_up(self):
