@@ -127,6 +127,7 @@ raspotify plays on regardless when Spotify is used from a phone. There's no Moon
 **11. The future.**
 
 - Claude stays behind `llm.py`, so the user's own model can take its place later without the satellites knowing.
+- The user is getting a machine of its own for AI, with a graphics card. Hearing (`speech_to_text.py`), Nova's voice (`text_to_speech.py`) and the model (`llm.py`) each stay behind their own module, so any of them can move onto that machine later, with PVE2 still the brain. Nothing for it is built now.
 - The connection is Wyoming's message shape, so a converter for ready-made satellites could be added later.
 
 **Order.** This comes before the rest of Phase 5:
@@ -187,7 +188,8 @@ The user would rather add hardware than settle, so every call made here because 
 - **Bigger files go on `library`, not the container's own disk,** because `local-lvm` is nearly full (below).
   - With more space for `local-lvm` - a bigger or second SSD - everything could sit on the container's disk, in the same backup, as one thing.
 - **Speech-to-text runs on PVE2's processor (Nemotron),** because PVE2 has no NVIDIA graphics card.
-  - With one, Parakeet or a larger model could run on it: fewer words wrong, and quicker still.
+  - It hardly matters now: the words are ready 0.29s after the user stops, with 5.1% of words wrong. The reply's real wait is Claude, about a second.
+  - A graphics card might bring that under 0.1s and a few points fewer wrong. That's an estimate, not a measurement.
 - **No local language model; Claude stays,** for the same reason.
   - The user's own always-on assistant needs a graphics card with plenty of memory - 16GB or more, for a model that can reason and act at talking speed - or a machine of its own.
   - Nothing in this design is in its way: the model sits behind `llm.py`.
