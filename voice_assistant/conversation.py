@@ -58,7 +58,7 @@ class Conversation:
     """The rules for answering the user, from one wake word to the end of any follow-ups."""
 
     def __init__(self, clock, intents, llm, actions, music, chime_enabled: bool = True, max_follow_ups: int = 3,
-                 routines=None):
+                 routines=None, satellite: Optional[str] = None):
         """
         Args:
             clock: The Clock, for what's ringing and for dismissing it.
@@ -72,6 +72,8 @@ class Conversation:
                 and listen for the answer without the wake word, so it can't hold
                 the microphone indefinitely.
             routines: The user's Routines, or None, for the words which start one.
+            satellite: The satellite the user is talking to, whose ringing alone they
+                can hear, and so stop - or None for anything ringing anywhere.
         """
         self.clock = clock
         self.intents = intents
@@ -81,6 +83,7 @@ class Conversation:
         self.chime_enabled = chime_enabled
         self.max_follow_ups = max_follow_ups
         self.routines = routines
+        self.satellite = satellite
         self.start()
 
     def start(self, ringing: Optional[Dict] = None, talked_over: bool = False):
@@ -137,7 +140,7 @@ class Conversation:
                 logger.info("Reminder left running at the user's request")
                 return Reply(say="Okay, I'll leave it.")
             if answer:
-                self.clock.dismiss()
+                self.clock.dismiss(satellite=self.satellite)
                 logger.info("Reminder dismissed after being offered")
                 return self._chime("Okay.")
             # Anything else is a fresh request, so it falls through and is handled
@@ -146,8 +149,8 @@ class Conversation:
         # Anything short said while a timer is going off means "make it stop", so it's
         # handled here rather than going to the model, making it quicker and easier
         # to silence.
-        if self.clock.is_ringing() and self.clock.looks_like_dismissal(text):
-            result = self.clock.dismiss()
+        if self.clock.is_ringing(satellite=self.satellite) and self.clock.looks_like_dismissal(text):
+            result = self.clock.dismiss(satellite=self.satellite)
             timeline.note(outcome="dismissed_locally")
             logger.info("Dismissed by voice without asking the model")
             return self._chime(result["message"])
@@ -237,7 +240,7 @@ class Conversation:
         # Nor in a routine, whose next step would be taken for the answer.
         reminder = self.ringing.get("reminder")
         if (reminder and not in_routine and not self.ringing.get("reminder_sounding") and not self.reminder_offered
-                and self.clock.is_ringing() and not response_text.rstrip().endswith("?")):
+                and self.clock.is_ringing(satellite=self.satellite) and not response_text.rstrip().endswith("?")):
             self.reminder_offered = True
             self.reminder_answer_pending = True
             response_text = f"{response_text} Also, your {reminder} reminder is still going. Shall I turn it off?".strip()

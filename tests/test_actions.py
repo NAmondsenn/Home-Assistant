@@ -162,6 +162,19 @@ def test_timers_and_alarms_ring_on_the_satellite_they_were_set_from():
     assert clock.set == [("timer", "bedroom"), ("alarm", "bedroom")]
 
 
+def test_only_what_rings_on_the_satellite_asked_is_dismissed():
+    # "Okay, thanks" in the kitchen dismissed the bedroom's timer too, which nobody
+    # there could hear.
+    class FakeClock:
+        def dismiss(self, satellite=None):
+            self.dismissed = satellite
+            return {"success": True, "message": "Okay.", "chime": True}
+
+    clock = FakeClock()
+    ActionExecutor(clock=clock, satellite="kitchen").execute(Action("dismiss_timer", {}))
+    assert clock.dismissed == "kitchen"
+
+
 # Confirming what was done
 
 def test_a_controllers_flags_are_read_into_one_way_of_confirming():

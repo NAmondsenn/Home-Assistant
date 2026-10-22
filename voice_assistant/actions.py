@@ -477,7 +477,8 @@ class ActionExecutor:
         needs="clock",
     )
     def dismiss_timer(self):
-        return self.clock.dismiss()
+        # Only what rings where the user is talking, which is all they can hear.
+        return self.clock.dismiss(satellite=self.satellite)
 
     @tool(
         "Report timers and reminders which went off without being acknowledged, for "

@@ -260,6 +260,43 @@ def test_a_timer_rings_when_due_and_dismisses(make_clock):
     assert not clock.is_ringing()
 
 
+def test_whats_ringing_is_heard_and_dismissed_only_where_it_rings(make_clock):
+    # With a second satellite, the kitchen saying "stop" dismissed the bedroom's alarm,
+    # and talking to it at all silenced the bedroom's timer - neither of which could
+    # be heard there.
+    clock = make_clock()
+    clock.set_timer(60, satellite="bedroom")
+    clock.set_timer(120, label="pizza", satellite="kitchen")
+    clock._tick(time.time() + 121)
+    assert clock.is_ringing() and clock.is_ringing("bedroom") and clock.is_ringing("kitchen")
+    assert not clock.is_ringing("hall")
+
+    kitchen = clock.ringing_state("kitchen")
+    assert kitchen["insistent_entries"] == [] and kitchen["reminder"] == "pizza"
+    assert [entry["timer"]["satellite"] for entry in clock.ringing_state("bedroom")["insistent_entries"]] == ["bedroom"]
+
+    assert clock.dismiss(satellite="kitchen")["success"]
+    assert not clock.is_ringing("kitchen") and clock.is_ringing("bedroom")
+    # Anywhere, when nothing says where.
+    clock.dismiss()
+    assert not clock.is_ringing()
+
+
+def test_dismissing_only_clears_what_was_missed_where_it_was_dismissed(make_clock):
+    clock = make_clock()
+    clock.set_timer(60, satellite="bedroom")
+    clock.set_timer(120, satellite="kitchen")
+    now = time.time()
+    clock._tick(now + 121)
+    # As if both had rung out, with nobody there.
+    for entry in clock._ringing:
+        entry["give_up_at"] = 0
+    clock._tick(now + 1000)
+
+    assert clock.dismiss(satellite="kitchen")["success"]
+    assert [timer["satellite"] for timer in clock._unacknowledged] == ["bedroom"]
+
+
 def test_talking_only_silences_what_was_ringing_at_the_wake_word(make_clock):
     # A timer which comes due while the assistant is replying hasn't been heard yet,
     # since announcements wait for the conversation to end - so it mustn't be

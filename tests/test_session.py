@@ -634,6 +634,30 @@ def test_volumes_are_kept_per_satellite_and_sent_to_it(brain, connect, make_sess
     assert os.path.exists(os.path.join(paths.DATA_DIR, "volume-kitchen.json"))
 
 
+def test_only_whats_ringing_on_a_satellite_is_heard_or_stopped_there(brain, connect, make_session):
+    # With a second satellite, saying "stop" in the kitchen dismissed the bedroom's
+    # timer, which nobody there could hear - as did asking it anything at all, and its
+    # Stop in Home Assistant.
+    bedroom, _ = connect("bedroom", "bedroom-pi")
+    kitchen, kitchen_pi = connect("kitchen", "kitchen-pi")
+    make_session(bedroom)
+    in_kitchen = make_session(kitchen)
+    brain.clock.set_timer(60, satellite="bedroom")
+    brain.clock._tick(time.time() + 61)
+    running(in_kitchen)
+
+    # The bedroom's timer is the only thing ringing, so still ringing means it is.
+    brain.stt.texts = ["Stop.", "What time is it?"]
+    kitchen_pi.wake(said())
+    assert wait_for(lambda: len(kitchen_pi.messages("allow")) == 1)
+    assert brain.clock.is_ringing()
+    kitchen_pi.wake(said())
+    assert wait_for(lambda: len(kitchen_pi.messages("allow")) == 2)
+    assert brain.clock.is_ringing()
+    in_kitchen._device_controls().stop()
+    assert brain.clock.is_ringing()
+
+
 def test_the_device_is_named_from_the_satellites_hostname(brain, connect, make_session, monkeypatch):
     # The brain runs it now, and the Pi's device - and with it the room Home Assistant
     # has it in - has to stay the one it always was.
@@ -796,13 +820,15 @@ def test_speak_is_said_in_turn_even_when_muted(make_session):
 def test_stop_silences_what_rings_and_what_nova_is_saying(brain, make_session):
     session = make_session()
     happened, ringing = [], [True]
-    brain.clock = SimpleNamespace(is_ringing=lambda: ringing[0],
-                                  dismiss=lambda: happened.append("dismissed") or {"success": True, "message": "Okay."})
+    brain.clock = SimpleNamespace(is_ringing=lambda satellite=None: ringing[0],
+                                  dismiss=lambda satellite=None: happened.append(("dismissed", satellite))
+                                  or {"success": True, "message": "Okay."})
     session.speaker = SimpleNamespace(stop=lambda kinds: happened.append(("stopped", list(kinds))), close=lambda: None)
     controls = session._device_controls()
 
     controls.stop()
-    assert happened == ["dismissed", ("stopped", ["reply", "announcement"])]
+    # Only what rings on this satellite.
+    assert happened == [("dismissed", "bedroom"), ("stopped", ["reply", "announcement"])]
 
     # With nothing ringing, there's nothing to dismiss.
     ringing[0] = False

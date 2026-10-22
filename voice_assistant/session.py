@@ -183,7 +183,7 @@ class Session:
         self.conversation = Conversation(brain.clock, self.intents, self.llm, self.actions, self.music,
                                          chime_enabled=self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
-                                         routines=brain.routines)
+                                         routines=brain.routines, satellite=satellite.name)
 
     # The satellite's mute and volumes
 
@@ -336,8 +336,9 @@ class Session:
 
         # What was audibly going off at the moment the wake word fired,
         # read before the interaction quietens anything, since what
-        # matters is what the user could hear when they started talking.
-        ringing = self.brain.clock.ringing_state()
+        # matters is what the user could hear when they started talking -
+        # which is only ever what rings on this satellite.
+        ringing = self.brain.clock.ringing_state(satellite=self.satellite.name)
 
         # Anything going off stops the moment the wake word is heard, rather than
         # playing on over the user - and into the microphone - until its sound
@@ -813,9 +814,9 @@ class Session:
             speak=self._speak_from_home_assistant)
 
     def _stop_from_home_assistant(self):
-        """Home Assistant's Stop: silences anything ringing, and stops Nova talking."""
-        if self.brain.clock.is_ringing():
-            self.brain.clock.dismiss()
+        """Home Assistant's Stop: silences anything ringing on the satellite, and stops Nova talking."""
+        if self.brain.clock.is_ringing(satellite=self.satellite.name):
+            self.brain.clock.dismiss(satellite=self.satellite.name)
         self.speaker.stop(["reply", "announcement"])
 
     def _speak_from_home_assistant(self, message):

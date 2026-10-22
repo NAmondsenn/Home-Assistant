@@ -1158,10 +1158,21 @@ class Clock:
         "uh", "um", "very", "was", "well", "will", "would", "you", "your",
     }
 
-    def is_ringing(self) -> bool:
-        """Whether a timer or reminder is going off and waiting to be acknowledged."""
+    def is_ringing(self, satellite: Optional[str] = None) -> bool:
+        """
+        Whether a timer or reminder is going off and waiting to be acknowledged.
+
+        Args:
+            satellite: Only what rings on this satellite - what can be heard where the
+                user is talking - or None for anywhere.
+        """
         with self._lock:
-            return bool(self._ringing)
+            return any(self._rings_on(entry, satellite) for entry in self._ringing)
+
+    @staticmethod
+    def _rings_on(entry: Dict, satellite: Optional[str]) -> bool:
+        """Whether a ringing entry rings on a satellite - any, for None."""
+        return satellite is None or entry["timer"]["satellite"] == satellite
 
     @staticmethod
     def _is_insistent(entry: Dict) -> bool:
@@ -1171,11 +1182,15 @@ class Clock:
         """
         return entry["kind"] == "alarm" or not entry["timer"]["label"]
 
-    def ringing_state(self) -> Dict:
+    def ringing_state(self, satellite: Optional[str] = None) -> Dict:
         """
         What's going off right now, split by how it should be treated when the user
         starts talking. Meant to be read at the moment the wake word fires, since
         what matters is what the user could actually hear when they spoke.
+
+        Args:
+            satellite: Only what rings on the satellite the user is talking to - all
+                they could hear - or None for anywhere.
 
         Returns:
             Dict with:
@@ -1190,7 +1205,7 @@ class Clock:
                                    than in the quiet gap between its rounds.
         """
         with self._lock:
-            entries = list(self._ringing)
+            entries = [entry for entry in self._ringing if self._rings_on(entry, satellite)]
 
         reminders = [e for e in entries if not self._is_insistent(e)]
         insistent = [e for e in entries if self._is_insistent(e)]
@@ -1312,7 +1327,7 @@ class Clock:
             return True
         return None
 
-    def dismiss(self) -> Dict:
+    def dismiss(self, satellite: Optional[str] = None) -> Dict:
         """
         Acknowledges anything currently going off, stopping it repeating.
 
@@ -1321,15 +1336,22 @@ class Clock:
         repeat is a separate, explicit request (see cancel_alarm), never implied
         by just dismissing it.
 
+        Args:
+            satellite: Only what rings on the satellite the user is talking to - a
+                "stop" in the kitchen mustn't silence the bedroom's alarm, which
+                can't be heard there - or None for anywhere.
+
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
         with self._changing():
-            ringing = self._ringing
-            self._ringing = []
+            ringing = [entry for entry in self._ringing if self._rings_on(entry, satellite)]
+            self._ringing = [entry for entry in self._ringing if not self._rings_on(entry, satellite)]
             # Dismissing also clears what was missed, since the user has now heard it.
-            missed = len(self._unacknowledged)
-            self._unacknowledged = []
+            heard = [timer for timer in self._unacknowledged if satellite is None or timer["satellite"] == satellite]
+            missed = len(heard)
+            self._unacknowledged = [timer for timer in self._unacknowledged
+                                    if not any(timer is other for other in heard)]
             if ringing:
                 self._save()
 

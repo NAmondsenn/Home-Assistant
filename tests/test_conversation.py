@@ -22,11 +22,13 @@ class FakeClock:
         self.dismissed = 0
         self.silenced = []
 
-    def is_ringing(self):
+    def is_ringing(self, satellite=None):
+        self.asked_about = satellite
         return self.ringing
 
-    def dismiss(self):
+    def dismiss(self, satellite=None):
         self.dismissed += 1
+        self.dismissed_on = satellite
         self.ringing = False
         return {"success": True, "message": "Okay, stopped."}
 
@@ -291,6 +293,13 @@ def test_stop_heard_as_so_while_ringing_is_still_a_stop():
     clock, llm = FakeClock(ringing=True), FakeLLM()
     _conversation(clock=clock, llm=llm).handle("So")
     assert clock.dismissed == 1 and llm.asked == []
+
+
+def test_only_whats_ringing_where_the_user_is_talking_is_stopped():
+    # The kitchen's "stop" dismissed the bedroom's alarm, which couldn't be heard there.
+    clock = FakeClock(ringing=True)
+    _conversation(clock=clock, satellite="kitchen").handle("Stop.")
+    assert clock.asked_about == "kitchen" and clock.dismissed_on == "kitchen"
 
 
 def test_without_the_chime_a_dismissal_is_shown_not_said():
