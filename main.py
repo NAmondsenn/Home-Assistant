@@ -344,7 +344,7 @@ class SmartAssistant:
                 return
 
     def _announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None,
-                  start=0.0, length=None, level=1.0):
+                  start=0.0, length=None, level=1.0, satellite=None):
         """
         Speaks a message which the user has scheduled, e.g. a timer.
 
@@ -366,6 +366,8 @@ class SmartAssistant:
             level: How loud the sound plays, as a share of the volume - an alarm
                    builds up from quiet. The message itself is always at full volume.
         """
+        # satellite is ignored - this Nova is its own one speaker, and a later task removes main.py.
+
         # The music is held from now, before waiting for any conversation to finish,
         # so it doesn't come back in the gap between the two.
         self.music.hold()
@@ -432,7 +434,7 @@ class SmartAssistant:
         self.actions.last_answer = (alert.title or f"From {alert.topic}", alert.details)
         self._announce(f"{alert.topic.capitalize()}: {alert.headline}")
 
-    def _unanswered(self, timer, kind):
+    def _unanswered(self, timer, kind, satellite=None):
         """
         Sends a reminder nobody answered to the user's phone, once it's stopped ringing.
         Only a reminder: a plain timer or an alarm going unanswered has nothing more
@@ -442,6 +444,7 @@ class SmartAssistant:
             timer: What stopped ringing.
             kind: "clock" for a timer or reminder, "alarm" for an alarm.
         """
+        # satellite is ignored - this Nova is its own one speaker, and a later task removes main.py.
         if self.ntfy and self.ntfy.reminders and kind == "clock" and timer.get("label"):
             label = timer["label"]
             self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")

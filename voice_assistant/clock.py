@@ -16,6 +16,7 @@ import re
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
@@ -49,6 +50,8 @@ MISSED_TIMER_GRACE_SECONDS = 3600
 
 # How loud an alarm's first burst plays, as a share of full volume - see _alarm_level.
 ALARM_START_LEVEL = 0.3
+# What an alarm rings with, here and on a satellite ringing from its copy (see copy_for).
+ALARM_SOUND = "alarm_sound.wav"
 # Waits until NTP corrects the time, so the clock is accurate on startup.
 PLAUSIBLE_TIME_AFTER = 1735689600
 
@@ -251,30 +254,41 @@ class Clock:
 
     def __init__(self, on_timer_finished: Optional[Callable[..., None]] = None,
                  check_interval: float = 0.5, config=None, start: bool = True,
-                 on_unanswered: Optional[Callable[[Dict, str], None]] = None):
+                 on_unanswered: Optional[Callable[..., None]] = None,
+                 on_change: Optional[Callable[[], None]] = None):
         """
         Args:
-            on_timer_finished: Called with (message, sound, boost, still_wanted=...),
-                               plus start, length and level for an alarm's bursts,
-                               when a timer goes off. This is how the assistant speaks
-                               it - the Clock itself has no audio.
+            on_timer_finished: Called with (message, sound, boost, still_wanted=...,
+                               satellite=...), plus start, length and level for an
+                               alarm's bursts, when a timer goes off. This is how the
+                               assistant speaks it - the Clock itself has no audio -
+                               and satellite is where it was set from, so it rings there.
             on_unanswered: Called with a timer, reminder or alarm which stopped
-                           ringing without anyone answering it, and which it was -
-                           "clock" or "alarm" - so a reminder can be sent to the
-                           user's phone. Called on the clock's own thread, so it
-                           mustn't wait on anything.
+                           ringing without anyone answering it, which it was -
+                           "clock" or "alarm" - and satellite=, where it rang, so a
+                           reminder can be sent to the user's phone. Called on the
+                           clock's own thread, so it mustn't wait on anything.
+            on_change: Called with nothing once anything has been set, cancelled,
+                       removed, dismissed or rung, and saved - so each satellite's
+                       copy (see copy_for) can be brought up to date. Called on
+                       whichever thread made the change, the clock's own among them,
+                       so it mustn't wait on anything either.
             check_interval: How often the background thread checks for due timers.
             start: Whether to start the background thread. Only the tests turn
                    this off, so they can step the clock along with _tick() instead.
         """
         self.on_timer_finished = on_timer_finished
         self.on_unanswered = on_unanswered
+        self.on_change = on_change
         self.check_interval = check_interval
 
         self._timers: Dict[int, Dict] = {}
         self._next_id = 1
         # Guards the timers dict, since the background thread and the assistant's main loop both touch it.
         self._lock = threading.Lock()
+        # How many times anything's been saved, which is how _changing knows
+        # whether what it guarded actually changed anything.
+        self._saves = 0
 
         # An unlabelled reminder waiting to be named. Holds the exact time it was
         # originally due, so naming it later doesn't drift from re-deriving "in 20
@@ -359,6 +373,7 @@ class Clock:
         Saved atomically (see storage.py), so losing power mid-write leaves the
         previous file intact. The caller is expected to already hold the lock.
         """
+        self._saves += 1
         try:
             storage.save_json(TIMERS_FILE, {
                 "next_id": self._next_id,
@@ -388,6 +403,7 @@ class Clock:
 
         now = time.time()
         restored = missed = dropped = 0
+        unnumbered = []
 
         # Anything which was going off when the assistant stopped is past its due
         # time, so it's treated the same as one which came due while it was off.
@@ -399,15 +415,21 @@ class Clock:
             try:
                 timer["due_at"] = float(timer["due_at"])
                 timer["duration"] = int(timer.get("duration", 0))
-                timer["id"] = int(timer.get("id", 0))
+                timer["id"] = int(timer.get("id") or 0)
             except (TypeError, ValueError):
                 continue
 
             label = timer.get("label")
             timer["label"] = str(label) if label else None
+            # None for one set before there were satellites - see assign_unowned.
+            satellite = timer.get("satellite")
+            timer["satellite"] = str(satellite) if satellite else None
 
             if timer["due_at"] > now:
-                self._timers[timer["id"]] = timer
+                if timer["id"]:
+                    self._timers[timer["id"]] = timer
+                else:
+                    unnumbered.append(timer)
                 restored += 1
             elif now - timer["due_at"] <= MISSED_TIMER_GRACE_SECONDS:
                 # Recently missed, so it's still worth mentioning once started.
@@ -420,13 +442,21 @@ class Clock:
         self._next_id = max([int(data.get("next_id", 1))]
                             + [t["id"] + 1 for t in self._timers.values()] or [1])
 
+        # A satellite's copy names each occurrence by its timer's id (see copy_for),
+        # so one saved without an id is given one, and saved with it below so it
+        # keeps it.
+        for timer in unnumbered:
+            timer["id"] = self._next_id
+            self._next_id += 1
+            self._timers[timer["id"]] = timer
+
         if restored or missed or dropped:
             logger.info(f"Restored {restored} timer(s), {missed} missed, {dropped} too old")
 
         # Saved straight away without the missed ones, which are now only in memory
         # waiting to be announced. Otherwise a crash loop announced the same "while
         # I was off" on every start, since the file still had them.
-        if missed or dropped:
+        if missed or dropped or unnumbered:
             self._save()
 
     def _save_alarms(self):
@@ -434,11 +464,31 @@ class Clock:
         Writes the alarms to disk, the same atomic way _save writes timers. The
         caller is expected to already hold the lock.
         """
+        self._saves += 1
         try:
             storage.save_json(ALARMS_FILE, {"next_id": self._next_alarm_id,
                                             "alarms": list(self._alarms.values())})
         except Exception as e:
             logger.error(f"Could not save alarms: {e}")
+
+    @contextmanager
+    def _changing(self):
+        """
+        Holds the lock for something which may change what's set, then tells
+        on_change once it's let go - if anything was saved meanwhile, since that's
+        what changing something always does. Told outside the lock, because the
+        brain asks straight back for each satellite's copy_for, which needs it.
+        """
+        with self._lock:
+            saves = self._saves
+            yield
+            changed = self._saves != saves
+        if changed and self.on_change:
+            try:
+                self.on_change()
+            except Exception as e:
+                # Passing it on must never stop whatever made the change.
+                logger.error(f"Couldn't pass on a change to the timers and alarms: {e}")
 
     def _load_alarms(self):
         """
@@ -461,12 +511,13 @@ class Clock:
 
         now = time.time()
         restored = missed = 0
+        unnumbered = []
         for alarm in data.get("alarms", []):
             if not isinstance(alarm, dict):
                 continue
             try:
                 hour, minute = int(alarm["hour"]), int(alarm["minute"])
-                alarm_id = int(alarm.get("id", 0))
+                alarm_id = int(alarm.get("id") or 0)
             except (TypeError, ValueError, KeyError):
                 continue
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
@@ -487,7 +538,10 @@ class Clock:
                 # Saved without a usable due time, so the next one is worked out afresh.
                 due_at = self._next_occurrence(hour, minute, repeat)
 
-            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at}
+            # None for one set before there were satellites - see assign_unowned.
+            satellite = alarm.get("satellite")
+            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at,
+                     "satellite": str(satellite) if satellite else None}
 
             if due_at <= now:
                 # Recently missed, so it's still worth mentioning once started.
@@ -498,15 +552,24 @@ class Clock:
                     continue
                 alarm["due_at"] = self._next_occurrence(hour, minute, repeat, after=max(due_at + 60, now))
 
-            self._alarms[alarm_id] = alarm
+            if alarm_id:
+                self._alarms[alarm_id] = alarm
+            else:
+                unnumbered.append(alarm)
             restored += 1
 
         self._next_alarm_id = max([int(data.get("next_id", 1))]
                                   + [a["id"] + 1 for a in self._alarms.values()] or [1])
 
+        # Given an id if it was saved without one, as a timer is in _load.
+        for alarm in unnumbered:
+            alarm["id"] = self._next_alarm_id
+            self._next_alarm_id += 1
+            self._alarms[alarm["id"]] = alarm
+
         # Saved straight away if anything was missed, so a second restart soon after
         # doesn't mention the same missed alarm all over again.
-        if missed:
+        if missed or unnumbered:
             self._save_alarms()
 
         if restored or missed:
@@ -641,11 +704,12 @@ class Clock:
                     base, sound = f"your {self._describe_alarm(item)}", "announcement_sound.wav"
                 else:
                     base = item["label"] or f"your {format_duration(item['duration'])} timer"
-                    sound = "announcement_sound.wav" if item["label"] else "timer_beep.wav"
-                self._announce(f"While I was off: {base}. That was {late} ago.", sound)
+                    sound = self._timer_sound(item)
+                self._announce(f"While I was off: {base}. That was {late} ago.", sound,
+                               satellite=item["satellite"])
 
         due = []
-        with self._lock:
+        with self._changing():
             for timer_id, timer in list(self._timers.items()):
                 if timer["due_at"] <= now:
                     due.append(self._timers.pop(timer_id))
@@ -657,7 +721,7 @@ class Clock:
         # away, rather than once it stops ringing - otherwise a restart while it was
         # ringing (up to a quarter of an hour) would lose it from the file for good.
         due_alarms = []
-        with self._lock:
+        with self._changing():
             for alarm_id, alarm in list(self._alarms.items()):
                 if alarm["due_at"] <= now:
                     due_alarms.append({**alarm, "kind": "alarm"})
@@ -809,7 +873,7 @@ class Clock:
         self._record_unacknowledged(entry["timer"])
         if self.on_unanswered:
             try:
-                self.on_unanswered(entry["timer"], entry["kind"])
+                self.on_unanswered(entry["timer"], entry["kind"], satellite=entry["timer"]["satellite"])
             except Exception as e:
                 # Passing it on must never stop the clock's thread.
                 logger.error(f"Couldn't pass on an unanswered {entry['kind']}: {e}")
@@ -897,21 +961,27 @@ class Clock:
         # obviously a reminder to someone across the room.
         if timer["label"]:
             message = f"This is a reminder: {timer['label']}"
-            sound = "announcement_sound.wav"
         else:
             message = f"Timer for {format_duration(timer['duration'])}."
-            # A plain timer uses its own more insistent sound rather than the
-            # general announcement chime, since it's something to act on right
-            # away rather than hear about eventually.
-            sound = "timer_beep.wav"
+        sound = self._timer_sound(timer)
 
         for announcement in range(self.announcements):
             # Stops mid-round if the user dismisses it, rather than talking over them.
             if announcement and not self._is_ringing(timer):
                 return
-            self._announce(message, sound, boost, still_wanted=lambda: self._is_ringing(timer))
+            self._announce(message, sound, boost, still_wanted=lambda: self._is_ringing(timer),
+                           satellite=timer["satellite"])
             if announcement < self.announcements - 1:
                 time.sleep(self.repeat_gap)
+
+    @staticmethod
+    def _timer_sound(timer: Dict) -> str:
+        """
+        The sound a timer or reminder rings with. A plain timer uses its own more
+        insistent sound rather than the general announcement chime, since it's
+        something to act on right away rather than hear about eventually.
+        """
+        return "announcement_sound.wav" if timer["label"] else "timer_beep.wav"
 
     def _ring_alarm(self, alarm: Dict) -> bool:
         """
@@ -938,7 +1008,7 @@ class Clock:
         started = time.time()
         now = datetime.now()
         cutin = f"It's {spoken_clock_time(now.hour, now.minute)}. Time to get up."
-        self._announce(cutin, "alarm_sound.wav", boost=True, still_wanted=still_wanted,
+        self._announce(cutin, ALARM_SOUND, boost=True, still_wanted=still_wanted, satellite=alarm["satellite"],
                        start=0.0, length=self.alarm_burst, level=self._alarm_level(0.0))
         if not self._is_ringing(alarm):
             return False
@@ -950,7 +1020,7 @@ class Clock:
         while time.time() < end_at:
             if not self._wait_while_ringing(alarm, self.alarm_burst_gap):
                 return False
-            self._announce(None, "alarm_sound.wav", boost=True, still_wanted=still_wanted,
+            self._announce(None, ALARM_SOUND, boost=True, still_wanted=still_wanted, satellite=alarm["satellite"],
                            start=position, length=self.alarm_burst,
                            level=self._alarm_level(time.time() - started))
             position += self.alarm_burst
@@ -1110,7 +1180,7 @@ class Clock:
         Returns:
             True if anything was actually silenced.
         """
-        with self._lock:
+        with self._changing():
             keep, silenced = [], []
             for entry in self._ringing:
                 wanted = self._is_insistent(entry) and (heard is None or any(entry is h for h in heard))
@@ -1213,7 +1283,7 @@ class Clock:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
-        with self._lock:
+        with self._changing():
             ringing = self._ringing
             self._ringing = []
             # Dismissing also clears what was missed, since the user has now heard it.
@@ -1249,7 +1319,8 @@ class Clock:
         return {"success": True, "message": "You missed " + "; ".join(described) + "."}
 
     def _announce(self, message: str, sound: str = "announcement_sound.wav", boost: bool = False,
-                  still_wanted: Optional[Callable[[], bool]] = None, **playback):
+                  still_wanted: Optional[Callable[[], bool]] = None, satellite: Optional[str] = None,
+                  **playback):
         """
         Passes a message to the callback which speaks it.
 
@@ -1262,6 +1333,7 @@ class Clock:
                           announcement can be held back while the user talks to the
                           assistant, and they may dismiss it in that very conversation -
                           without this it would still play once it was finally let through.
+            satellite: The satellite it rings on - the one it was set from.
             playback: Which part of the sound to play, and how loud - start and length
                       in seconds, and level as a share of the volume. Only an alarm's
                       bursts give these - see _ring_alarm.
@@ -1273,13 +1345,15 @@ class Clock:
 
         if self.on_timer_finished:
             try:
-                self.on_timer_finished(message, sound, boost, still_wanted=still_wanted, **playback)
+                self.on_timer_finished(message, sound, boost, still_wanted=still_wanted, satellite=satellite,
+                                       **playback)
             except Exception as e:
                 # A failed announcement must not kill the timer thread.
                 logger.error(f"Timer announcement failed: {e}")
 
     def set_timer(self, duration_seconds: Optional[int] = None, label: Optional[str] = None,
-                  is_reminder: bool = False, at: Optional[str] = None) -> Dict:
+                  is_reminder: bool = False, at: Optional[str] = None,
+                  satellite: Optional[str] = None) -> Dict:
         """
         Start a countdown timer, or a reminder if it carries a label.
 
@@ -1294,6 +1368,7 @@ class Clock:
                          this is True and no label was given, the user is asked
                          to name it instead of a nameless reminder being set.
             at: A clock time to count down to instead - see seconds_until.
+            satellite: The satellite it was set from, which it rings on.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
@@ -1326,10 +1401,10 @@ class Clock:
         # takes.
         if is_reminder and not label:
             with self._lock:
-                self._pending_reminder = {"due_at": due_at, "duration": duration_seconds}
+                self._pending_reminder = {"due_at": due_at, "duration": duration_seconds, "satellite": satellite}
             return {"success": False, "message": "What would you like to name this reminder?"}
 
-        with self._lock:
+        with self._changing():
             # Two plain timers due in the same minute would be indistinguishable
             # once they're both running, so this is caught up front rather than
             # leaving the user with two timers they can't tell apart. A reminder is
@@ -1354,6 +1429,7 @@ class Clock:
                 "label": label,
                 "duration": duration_seconds,
                 "due_at": due_at,
+                "satellite": satellite,
             }
             # Saved immediately, so the timer survives a restart moments later.
             self._save()
@@ -1394,7 +1470,7 @@ class Clock:
         if remaining <= 0:
             return {"success": False, "message": "Sorry, that reminder's time has already passed."}
 
-        return self.set_timer(remaining, label, is_reminder=True)
+        return self.set_timer(remaining, label, is_reminder=True, satellite=pending["satellite"])
 
     def timer_count(self) -> int:
         """How many timers and reminders are counting down."""
@@ -1554,9 +1630,13 @@ class Clock:
         Returns:
             How many were silenced.
         """
-        with self._lock:
+        with self._changing():
             silenced = [entry for entry in self._ringing if entry["kind"] == kind]
             self._ringing = [entry for entry in self._ringing if entry["kind"] != kind]
+            # Saved as dismiss() saves, so a restart doesn't report a timer silenced
+            # here as missed - and so on_change hears of it.
+            if silenced:
+                self._save()
         return len(silenced)
 
     def cancel_timer(self, label: Optional[str] = None, cancel_all: bool = False) -> Dict:
@@ -1585,7 +1665,7 @@ class Clock:
         if not cancel_all and self._about_ringing(label, "clock"):
             return self.dismiss()
 
-        with self._lock:
+        with self._changing():
             if not self._timers:
                 if silenced:
                     return {"success": True, "message": "Okay.", "chime": True}
@@ -1672,7 +1752,7 @@ class Clock:
         repeat_desc = self._repeat_description(alarm["repeat"])
         return f"{base}, {repeat_desc}" if repeat_desc else base
 
-    def set_alarm(self, hour: int, minute: int, repeat=None) -> Dict:
+    def set_alarm(self, hour: int, minute: int, repeat=None, satellite: Optional[str] = None) -> Dict:
         """
         Set an alarm for a time of day, optionally repeating.
 
@@ -1685,6 +1765,7 @@ class Clock:
             repeat: None for a one-off alarm, or a repeat pattern in any form
                     parse_repeat understands - "daily", "weekdays", "weekends",
                     or the days themselves.
+            satellite: The satellite it was set from, which it rings on.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
@@ -1708,7 +1789,7 @@ class Clock:
 
         due_at = self._next_occurrence(hour, minute, repeat)
 
-        with self._lock:
+        with self._changing():
             # Same idea as a timer set for the same clock minute as another - two
             # alarms due at once would be indistinguishable once they're ringing.
             # Only alarms which would actually ring on the same day clash, though:
@@ -1721,7 +1802,8 @@ class Clock:
 
             alarm_id = self._next_alarm_id
             self._next_alarm_id += 1
-            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at}
+            alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at,
+                     "satellite": satellite}
             self._alarms[alarm_id] = alarm
             self._save_alarms()
 
@@ -1746,17 +1828,24 @@ class Clock:
             return {"success": True, "message": f"One alarm: {described[0]}."}
         return {"success": True, "message": f"{len(described)} alarms: " + ", ".join(described) + "."}
 
-    def overview(self) -> Dict[str, List[Dict]]:
+    def overview(self, satellite: Optional[str] = None) -> Dict[str, List[Dict]]:
         """
         The timers, reminders and alarms set, for the settings page.
+
+        Args:
+            satellite: Only those which ring on this satellite, or None for all of them.
 
         Returns:
             Dict of "timers" and "alarms", each a list - soonest first - of their
             "id", "name" as Nova says it, and when they're next "due_at".
         """
         with self._lock:
-            timers = sorted(self._timers.values(), key=lambda timer: timer["due_at"])
-            alarms = sorted(self._alarms.values(), key=lambda alarm: alarm["due_at"])
+            timers = sorted((timer for timer in self._timers.values()
+                             if satellite is None or timer["satellite"] == satellite),
+                            key=lambda timer: timer["due_at"])
+            alarms = sorted((alarm for alarm in self._alarms.values()
+                             if satellite is None or alarm["satellite"] == satellite),
+                            key=lambda alarm: alarm["due_at"])
             return {"timers": [{"id": t["id"], "name": self._describe(t), "due_at": t["due_at"]} for t in timers],
                     "alarms": [{"id": a["id"], "name": self._describe_alarm(a), "due_at": a["due_at"]}
                                for a in alarms]}
@@ -1773,7 +1862,7 @@ class Clock:
         Returns:
             Dict with 'success' and a 'message'.
         """
-        with self._lock:
+        with self._changing():
             store = self._alarms if kind == "alarm" else self._timers
             item = store.pop(item_id, None)
             if item is None:
@@ -1785,6 +1874,124 @@ class Clock:
         name = self._describe_alarm(item) if kind == "alarm" else self._describe(item)
         logger.info(f"Removed on the settings page: {name}")
         return {"success": True, "message": f"Removed the {name}."}
+
+    def assign_unowned(self, satellite: str) -> int:
+        """
+        Gives every timer and alarm which rings on no satellite to this one - those
+        set before there were satellites, when the Pi was all of Nova.
+
+        Args:
+            satellite: The satellite they should ring on.
+
+        Returns:
+            How many it gave.
+        """
+        with self._changing():
+            timers = [timer for timer in self._timers.values() if not timer["satellite"]]
+            alarms = [alarm for alarm in self._alarms.values() if not alarm["satellite"]]
+            for item in timers + alarms:
+                item["satellite"] = satellite
+            if timers:
+                self._save()
+            if alarms:
+                self._save_alarms()
+
+        if timers or alarms:
+            logger.info(f"Gave {len(timers)} timer(s) and {len(alarms)} alarm(s) to {satellite}")
+        return len(timers) + len(alarms)
+
+    @staticmethod
+    def _occurrence(item: Dict, due: float) -> str:
+        """
+        The id of one occurrence of a timer or alarm, as a satellite knows it - see
+        copy_for. A repeating alarm has one for each day it rings, so dismissing
+        Monday's while away can't also dismiss Tuesday's.
+        """
+        return f"{item['id']}@{int(due)}"
+
+    def copy_for(self, satellite: str, within: float = 7 * 86400) -> List[Dict]:
+        """
+        What a satellite needs to ring its own timers and alarms while it can't
+        reach the brain: each occurrence due within a while, with a repeating
+        alarm's days spelt out, so all the satellite has to do is ring each one
+        when it's due.
+
+        Args:
+            satellite: The satellite they ring on.
+            within: How many seconds ahead to look.
+
+        Returns:
+            A list, soonest first, of each occurrence's "id" - which apply_away is
+            given back - when it's "due" in epoch seconds, its "kind", "timer" or
+            "alarm", and the "sound" it rings with.
+        """
+        with self._lock:
+            until = time.time() + within
+            copy = [{"id": self._occurrence(timer, timer["due_at"]), "due": timer["due_at"], "kind": "timer",
+                     "sound": self._timer_sound(timer)}
+                    for timer in self._timers.values()
+                    if timer["satellite"] == satellite and timer["due_at"] <= until]
+            for alarm in self._alarms.values():
+                if alarm["satellite"] != satellite:
+                    continue
+                due = alarm["due_at"]
+                while due <= until:
+                    copy.append({"id": self._occurrence(alarm, due), "due": due, "kind": "alarm",
+                                 "sound": ALARM_SOUND})
+                    if not alarm["repeat"]:
+                        break
+                    # Moved on the way _tick moves it on once it's rung.
+                    due = self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"], after=due + 60)
+        return sorted(copy, key=lambda entry: entry["due"])
+
+    def apply_away(self, satellite: str, rang: List[str], dismissed: List[str]):
+        """
+        Catches up on what a satellite did while it couldn't reach the brain, which
+        it reports by the ids copy_for gave it.
+
+        What was dismissed there is dealt with as if it had been dismissed here: a
+        timer goes, an alarm moves on to its next occurrence (or goes, if it doesn't
+        repeat), and one which the brain is ringing as well stops. What only rang is
+        left as it is, to ring here - nobody answered it, and the satellite can be
+        reached again.
+
+        Args:
+            satellite: The satellite reporting.
+            rang: The occurrences which rang there.
+            dismissed: The occurrences dismissed there.
+        """
+        dismissed = set(dismissed)
+
+        def was_dismissed(item):
+            return item["satellite"] == satellite and self._occurrence(item, item["due_at"]) in dismissed
+
+        with self._changing():
+            timers = [timer for timer in self._timers.values() if was_dismissed(timer)]
+            for timer in timers:
+                del self._timers[timer["id"]]
+
+            moved = 0
+            for alarm in list(self._alarms.values()):
+                # Once for each occurrence dismissed in a row - two mornings away, say.
+                while was_dismissed(alarm):
+                    moved += 1
+                    if not alarm["repeat"]:
+                        del self._alarms[alarm["id"]]
+                        break
+                    alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"],
+                                                            after=alarm["due_at"] + 60)
+
+            keep = [entry for entry in self._ringing if not was_dismissed(entry["timer"])]
+            stopped = len(self._ringing) - len(keep)
+            self._ringing = keep
+
+            if timers or stopped:
+                self._save()
+            if moved:
+                self._save_alarms()
+
+        if rang or dismissed:
+            logger.info(f"While {satellite} was away, {len(rang)} rang and {len(dismissed)} were dismissed")
 
     def next_alarm(self) -> Dict:
         """
@@ -1842,7 +2049,7 @@ class Clock:
             # "Stop it repeating" said to a ringing alarm means the whole schedule,
             # not just today's - which dismissing alone would leave in place.
             if scope == "all":
-                with self._lock:
+                with self._changing():
                     removed = [self._alarms.pop(alarm_id) for alarm_id in ringing_ids if alarm_id in self._alarms]
                     if removed:
                         self._save_alarms()
@@ -1850,7 +2057,7 @@ class Clock:
                     return {"success": True, "message": f"{self._describe_alarm(removed[0])} cancelled."}
             return result
 
-        with self._lock:
+        with self._changing():
             if not self._alarms:
                 if silenced:
                     return {"success": True, "message": "Okay.", "chime": True}
