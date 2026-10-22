@@ -804,7 +804,8 @@ class Session:
             status=lambda: self.activity,
             volumes=lambda: volume_levels(self.volume, self.music_player),
             set_volume=lambda category, percent: change_volume(self.volume, self.music_player, category, percent),
-            clock=lambda: self.brain.clock.overview(),
+            # Only what rings on this satellite - each has its own device and sensors.
+            clock=lambda: self.brain.clock.overview(satellite=self.satellite.name),
             # Whether the brain has its speech-to-text to hear the satellite with.
             backend=lambda: self.brain.stt.loaded,
             muted=lambda: self.muted,

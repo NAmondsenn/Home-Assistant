@@ -796,6 +796,19 @@ def test_home_assistant_sees_and_changes_nova_as_the_settings_page_does(brain, c
     assert wait_for(lambda: pi.messages("restart"))
 
 
+def test_home_assistant_sees_only_the_satellites_own_timers_and_alarms(brain, connect, make_session):
+    # Each satellite's clock sensors showed every satellite's.
+    in_bedroom = make_session(connect("bedroom", "bedroom-pi")[0])
+    in_kitchen = make_session(connect("kitchen", "kitchen-pi")[0])
+    brain.clock.set_timer(600, satellite="bedroom")
+    brain.clock.set_timer(1200, label="pizza", satellite="kitchen")
+    brain.clock.set_alarm(7, 0, satellite="kitchen")
+
+    bedroom, kitchen = in_bedroom._device_controls().clock(), in_kitchen._device_controls().clock()
+    assert [timer["name"] for timer in bedroom["timers"]] == ["10 minute timer"] and bedroom["alarms"] == []
+    assert [timer["name"] for timer in kitchen["timers"]] == ["pizza reminder"] and len(kitchen["alarms"]) == 1
+
+
 def test_speak_is_said_in_turn_even_when_muted(make_session):
     # Mute only stops Nova hearing "Hey Nova", so an automation's "the washing's done"
     # is still said. It's handed off at once, so a Stop pressed in Home Assistant
