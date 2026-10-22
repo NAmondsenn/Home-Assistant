@@ -24,6 +24,15 @@ def test_a_message_and_its_audio_arrive_as_sent():
     assert protocol.receive(stream) == ({"type": "text", "text": "Pause"}, b"")
 
 
+def test_a_message_can_carry_a_field_named_kind():
+    # As play_stream, play_sound, silence and allow all do.
+    stream = io.BytesIO()
+    protocol.send(stream, "silence", kind="announcement")
+    stream.seek(0)
+
+    assert protocol.receive(stream) == ({"type": "silence", "kind": "announcement"}, b"")
+
+
 @pytest.mark.parametrize("sent", [
     b'{"type": "ping"',
     b"not a message\n",

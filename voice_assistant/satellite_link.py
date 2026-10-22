@@ -165,7 +165,7 @@ class SatelliteLink:
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join()
 
-    def send(self, kind: str, payload: bytes = b"", **fields) -> bool:
+    def send(self, kind: str, payload: bytes = b"", /, **fields) -> bool:
         """
         Sends the brain a message. Safe from any thread, and never blocks for longer
         than SOCKET_TIMEOUT.
@@ -173,7 +173,8 @@ class SatelliteLink:
         Args:
             kind: What it is, e.g. "wake".
             payload: Audio to go with it.
-            fields: Anything else it carries.
+            fields: Anything else it carries - even a "kind", as the arguments above
+                are positional only.
 
         Returns:
             False if it wasn't sent, because the satellite isn't connected or the

@@ -220,6 +220,14 @@ def test_send_says_false_while_not_connected(brain, make):
     assert link.send("wake") is False
 
 
+def test_a_message_can_carry_a_field_named_kind(brain, make):
+    link, events, messages = make(brain.address)
+    link.start()
+    assert wait_for(lambda: link.connected)
+    assert link.send("note", kind="reply") is True
+    assert wait_for(lambda: "note" in brain.received)
+
+
 def test_pings_go_out_while_the_brain_keeps_talking(brain, make, monkeypatch):
     monkeypatch.setattr(satellite_link, "PING_EVERY", 0.1)
     link, events, messages = make(brain.address)

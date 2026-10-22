@@ -58,7 +58,7 @@ class ProtocolError(Exception):
     """Something arrived which isn't a message."""
 
 
-def send(stream: BinaryIO, kind: str, payload: bytes = b"", **fields):
+def send(stream: BinaryIO, kind: str, payload: bytes = b"", /, **fields):
     """
     Sends one message.
 
@@ -66,7 +66,9 @@ def send(stream: BinaryIO, kind: str, payload: bytes = b"", **fields):
         stream: The connection, as a file - socket.makefile("rwb").
         kind: What it is, e.g. "audio".
         payload: Audio to go with it.
-        fields: Anything else it carries, e.g. text="Pause".
+        fields: Anything else it carries, e.g. text="Pause". The arguments above are
+            positional only, so a field may share a name with one - as play_stream's
+            "kind" does.
     """
     message = {"type": kind, **fields}
     if payload:
