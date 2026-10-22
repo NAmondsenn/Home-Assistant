@@ -387,6 +387,68 @@ def test_a_dropped_connection_mid_recording_says_the_phrase(brain, make):
     assert wait_for(lambda: made.wake.listening)
 
 
+def noting_when_the_brain_is_forgotten(made):
+    """An Event set once the satellite has done all it does on losing the brain."""
+    forgotten = threading.Event()
+    forget = made._forget_the_brain
+
+    def forget_and_note():
+        forget()
+        forgotten.set()
+
+    made._forget_the_brain = forget_and_note
+    return forgotten
+
+
+def test_losing_the_brain_after_the_recording_says_the_phrase(brain, make):
+    # The brain had heard the user, and went before it answered - which was silence.
+    made = make()
+    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+    assert wait_for(lambda: made.wake.listening)
+    brain.drop()
+
+    assert wait_for(lambda: PHRASE in made.speaker.files())
+    assert "announcement" not in made.speaker.silenced
+
+
+def test_losing_the_brain_once_it_has_answered_says_nothing(brain, make):
+    made = make()
+    forgotten = noting_when_the_brain_is_forgotten(made)
+    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+    # The end of the turn, which lets back what the wake word silenced.
+    brain.say("allow", kind="announcement")
+    assert wait_for(lambda: made.wake.listening and "announcement" not in made.speaker.silenced)
+    brain.drop()
+
+    assert forgotten.wait(5)
+    assert PHRASE not in made.speaker.files()
+
+
+def test_losing_the_brain_during_a_follow_up_says_the_phrase_once(brain, make):
+    made = make()
+    forgotten = noting_when_the_brain_is_forgotten(made)
+    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+    assert wait_for(lambda: made.wake.listening)
+    # A question, and the answer to it on its way.
+    sent = len(brain.recordings())
+    brain.say("listen")
+    assert wait_for(lambda: len(brain.recordings()) >= sent + 2)
+    brain.drop()
+
+    assert forgotten.wait(5)
+    assert wait_for(lambda: PHRASE in made.speaker.files() and made.wake.listening)
+    assert made.speaker.files().count(PHRASE) == 1
+
+
 def test_the_wake_word_over_a_reply_stops_it_and_says_so(brain, make):
     made = make()
     assert wait_for(lambda: brain.hellos and made.wake.listening)

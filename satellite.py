@@ -143,6 +143,10 @@ class Satellite:
         self._listen_from: Optional[int] = None
         # Set by the brain's stop_listening - one for each recording, while it's sent.
         self._recording: Optional[threading.Event] = None
+        # Whether the brain has had all of a recording and not yet answered it - from
+        # the recording's end until its allow, at the end of the turn. Losing the brain
+        # then says the phrase, as losing it part way through a recording does.
+        self._turn_open = False
         # The last wake's timing, until its reply starts to play.
         self._timeline: Optional[Timeline] = None
 
@@ -162,7 +166,7 @@ class Satellite:
             "set_playback": self._set_playback,
             "stop": self._stop,
             "silence": lambda message, payload: self.speaker.silence(message["kind"]),
-            "allow": lambda message, payload: self.speaker.allow(message["kind"]),
+            "allow": self._allow,
             "state": self._take_state,
             "alarms": lambda message, payload: self.alarms.replace(message["entries"]),
             "phrase": lambda message, payload: self.phrase.replace(payload, message["rate"]),
@@ -268,6 +272,7 @@ class Satellite:
                 # Made before the brain hears of the wake, which it could answer with
                 # stop_listening straight away.
                 recording = self._recording = threading.Event()
+                self._turn_open = False
                 if not self.link.send("wake", talked_over=talked_over):
                     recording = self._recording = None
         if dismissing:
@@ -293,6 +298,7 @@ class Satellite:
             if start is None:
                 return
             recording = self._recording = threading.Event()
+            self._turn_open = False
         if self._send_recording(start, 0, recording) == "dropped":
             self._say_cant_reach()
 
@@ -325,6 +331,8 @@ class Satellite:
                     return "dropped"
                 sent += len(audio)
                 if sent >= limit:
+                    with self._lock:
+                        self._turn_open = True
                     self.link.send("audio_end", reason="limit")
                     return "limit"
         except BaseException:
@@ -384,6 +392,15 @@ class Satellite:
         with self._lock:
             if self._recording is not None:
                 self._recording.set()
+                # Here rather than once the main loop sees it's stopped, which can be
+                # after the brain's allow has arrived, when it has nothing to say.
+                self._turn_open = True
+
+    def _allow(self, message: Dict, payload: bytes):
+        # Sent as the brain's turn ends, whatever came of it.
+        with self._lock:
+            self._turn_open = False
+        self.speaker.allow(message["kind"])
 
     def _play_sound(self, message: Dict, payload: bytes):
         kind = message.get("kind", "reply")
@@ -490,14 +507,26 @@ class Satellite:
                 self.alarms.clear_report()
 
     def _forget_the_brain(self):
-        """Stops what the brain was playing, which nothing will now come to finish or stop."""
+        """
+        Stops what the brain was playing, which nothing will now come to finish or
+        stop - and says the brain can't be reached, if it went with the user waiting
+        for its answer.
+        """
         with self._lock:
             playing, self._playing = list(self._playing.values()), {}
             # Nobody is left to hear a follow-up.
             self._listen_from = None
+            waiting, self._turn_open = self._turn_open and not self._stopping, False
+            if waiting:
+                self._save_timeline(outcome="no_brain")
         for each in playing:
             each.playback.stop()
             each.let_go()
+        if waiting:
+            # After the brain's own sounds have stopped, so it isn't stopped with them.
+            # It lets the alarms ring again too.
+            self._say_cant_reach()
+            return
         # The brain may have silenced the alarms while it talked to the user, and can't
         # let them ring again now - when the satellite's own copy may need to.
         self.speaker.allow("announcement")
