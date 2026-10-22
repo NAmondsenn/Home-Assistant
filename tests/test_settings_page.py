@@ -134,13 +134,15 @@ class FakeHome:
 
     def __init__(self):
         self.changed = []
+        self.area = "Bedroom"
 
     def overview(self):
         return {"success": True, "lights": [{"id": "light.kitchen", "name": "Kitchen", "on": True}],
                 "routines": [{"id": "scene.relax", "name": "Relax", "kind": "scene"}]}
 
-    def set_light(self, entity_id, on=None, brightness=None):
-        self.changed.append((entity_id, on, brightness))
+    def set_light(self, entity_id, on=None, brightness=None, hue=None, saturation=None, kelvin=None):
+        self.changed.append((entity_id, on, brightness) if hue is saturation is kelvin is None
+                            else (entity_id, hue, saturation, kelvin))
         return {"success": True, "message": "Done."}
 
     def run(self, entity_id):
@@ -290,6 +292,7 @@ def test_the_lights_and_scenes_come_from_home_assistant_and_go_back_to_it(files)
     assert home.changed == [("light.kitchen", False, None), ("light.kitchen", None, 40), ("scene.relax", "run", None)]
     # Only a yes or no switches a light.
     assert not page.set_light("light.kitchen", LOGIN, on="off")["success"]
+    assert page.home_state()["area"] == "Bedroom"
     assert _page().home_state() == {"available": False}
     assert not _page().run("scene.relax", LOGIN)["success"]
 
@@ -485,3 +488,21 @@ def test_nonsense_is_answered_rather_than_crashing_on(served):
         "success": False, "message": "That didn't make sense."}
     assert _ask(served, "/api/nothing", {}, X_Nova="page")[0] == 400
     assert _ask(served, "/nothing")[0] == 404
+
+
+def test_a_lights_colour_and_warmth_reach_home_assistant(files):
+    home = FakeHome()
+    page = _page(home=home)
+    assert page.set_light("light.kitchen", LOGIN, hue=240, saturation="100")["success"]
+    assert page.set_light("light.kitchen", LOGIN, kelvin=2700)["success"]
+    assert home.changed == [("light.kitchen", 240.0, 100.0, None), ("light.kitchen", None, None, 2700.0)]
+
+
+@pytest.mark.parametrize("sent", [{"brightness": "bright"}, {"hue": "red", "saturation": 50}, {"kelvin": [2700]},
+                                  {"hue": True, "saturation": 50}, {"kelvin": float("nan")},
+                                  {"brightness": float("inf")}, {"hue": 10, "saturation": {}}])
+def test_a_light_is_never_set_to_something_which_isnt_a_number(files, sent):
+    home = FakeHome()
+    assert _page(home=home).set_light("light.kitchen", LOGIN, **sent) == {
+        "success": False, "message": "That didn't make sense."}
+    assert home.changed == []

@@ -23,6 +23,7 @@ which the page can do.
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -210,6 +211,21 @@ def change_volume(volume, music, category: str, percent: int) -> Dict:
     return result
 
 
+def _number(value: Any) -> Optional[float]:
+    """
+    What the page sent as a number, or None if it isn't one - a yes or no, text which
+    isn't a number, or one which isn't finite, such as the NaN and Infinity which JSON
+    lets through. A number as text, e.g. "40", counts.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
@@ -371,7 +387,7 @@ class SettingsPage:
         """
         if self.home is None:
             return {"available": False}
-        return {"available": True, **self.home.overview()}
+        return {"available": True, "area": self.home.area, **self.home.overview()}
 
     def _saved(self):
         """The settings as saved now - which take effect at the next restart - and any problem reading them."""
@@ -553,14 +569,25 @@ class SettingsPage:
         logger.info(f"Settings page: {who} asked the music to {action}")
         return {"success": bool(result.get("success")), "message": result.get("message") or ""}
 
-    def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None) -> Dict:
-        """Switches or dims a light - see HomeAssistant.set_light."""
+    def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
+                  hue=None, saturation=None, kelvin=None) -> Dict:
+        """
+        Switches a light, or dims it, or sets its colour or its white - see
+        HomeAssistant.set_light. Anything which isn't a number is turned away here, as
+        a number which can't be one (JSON allows NaN and Infinity) would otherwise
+        raise further in.
+        """
         if self.home is None:
             return {"success": False, "message": "Nova isn't connected to Home Assistant."}
-        if on is not None and not isinstance(on, bool):
+        given = (brightness, hue, saturation, kelvin)
+        numbers = [None if value is None else _number(value) for value in given]
+        if (on is not None and not isinstance(on, bool)) or any(
+                number is None and value is not None for number, value in zip(numbers, given)):
             return {"success": False, "message": "That didn't make sense."}
+        brightness, hue, saturation, kelvin = numbers
         logger.info(f"Settings page: {who} changed {entity_id}")
-        return self.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness))
+        return self.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness),
+                                   hue=hue, saturation=saturation, kelvin=kelvin)
 
     def run(self, entity_id: str, who: str) -> Dict:
         """Runs a script or sets a scene - see HomeAssistant.run."""
@@ -608,7 +635,9 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/restart": lambda page, body, who: page.restart(who),
     "/api/mute": lambda page, body, who: page.set_muted(body["muted"], who),
     "/api/music": lambda page, body, who: page.play(body["action"], who, body.get("query", ""), body.get("playlist", "")),
-    "/api/light": lambda page, body, who: page.set_light(body["id"], who, body.get("on"), body.get("brightness")),
+    "/api/light": lambda page, body, who: page.set_light(
+        body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
+        body.get("kelvin")),
     "/api/run": lambda page, body, who: page.run(body["id"], who),
     "/api/routines": lambda page, body, who: page.save_routine(body["routine"], who),
     "/api/routines/remove": lambda page, body, who: page.remove_routine(body["id"], who),

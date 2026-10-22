@@ -379,27 +379,50 @@ class HomeAssistant:
             return f"{room} There are no lights."
         return f"{room} Lights: " + "; ".join(_light_said(light) for light in lights)
 
-    def set_light(self, entity_id: str, on: Optional[bool] = None, brightness: Optional[int] = None) -> Dict:
+    def set_light(self, entity_id: str, on: Optional[bool] = None, brightness: Optional[int] = None,
+                  hue: Optional[float] = None, saturation: Optional[float] = None,
+                  kelvin: Optional[float] = None) -> Dict:
         """
-        Switches a light on or off, or sets how bright it is, from the settings page.
+        Switches a light on or off, or sets how bright it is, or what colour, from the
+        settings page.
 
         Args:
             entity_id: The light, e.g. "light.kitchen".
-            on: Whether to switch it on or off, unless a brightness is given.
+            on: Whether to switch it on or off, unless something else is given.
             brightness: How bright, from 1 to 100 percent - which switches it on.
+            hue: A colour's hue, from 0 to 360 degrees. Needs a saturation too.
+            saturation: How much of a colour, from 0 to 100 percent.
+            kelvin: A white's colour temperature, e.g. 2700 for a warm one, kept to
+                the warmest and coolest the light makes. Ignored if there's a colour,
+                as Home Assistant answers a request for both with an error.
 
         Returns:
             Dict with 'success' and a 'message'.
         """
         if not LIGHT.fullmatch(entity_id or ""):
             return {"success": False, "message": "That isn't a light."}
+        if (hue is None) != (saturation is None):
+            return {"success": False, "message": "A colour needs its hue and its saturation."}
         data = {"entity_id": entity_id}
         if brightness is not None:
             data["brightness_pct"] = max(1, min(100, int(brightness)))
-        service = "turn_on" if on or brightness is not None else "turn_off"
+        if hue is not None:
+            data["hs_color"] = [round(max(0, min(360, hue))), round(max(0, min(100, saturation)))]
         try:
+            if kelvin is not None and hue is None:
+                # The light's own range is asked of Home Assistant rather than taken
+                # from the page, e.g. 9000K on a light which stops at 6500K is 6500K -
+                # sent as it is, Home Assistant would refuse it.
+                attributes = self._request("GET", f"/api/states/{entity_id}").json().get("attributes") or {}
+                warmest = attributes.get("min_color_temp_kelvin")
+                coolest = attributes.get("max_color_temp_kelvin")
+                if isinstance(warmest, (int, float)) and isinstance(coolest, (int, float)):
+                    kelvin = max(warmest, min(coolest, kelvin))
+                data["color_temp_kelvin"] = round(kelvin)
+            changes = brightness is not None or hue is not None or kelvin is not None
+            service = "turn_on" if on or changes else "turn_off"
             self._request("POST", f"/api/services/light/{service}", json=data)
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": "Done."}

@@ -298,6 +298,47 @@ def test_a_light_is_switched_and_dimmed_by_its_own_id(make_home):
         ("/api/services/light/turn_on", {"entity_id": "light.kitchen", "brightness_pct": 30})]
 
 
+def test_a_light_is_set_to_a_colour(make_home):
+    home = make_home({"/api/services/light/turn_on": []})
+    assert home.set_light("light.lamp", hue=240, saturation=100)["success"]
+    # Out of range is kept to it, and brightness goes along with the colour.
+    assert home.set_light("light.lamp", brightness=50, hue=400, saturation=-5)["success"]
+    assert [(path, sent["json"]) for _, path, sent in home._session.requests] == [
+        ("/api/services/light/turn_on", {"entity_id": "light.lamp", "hs_color": [240, 100]}),
+        ("/api/services/light/turn_on", {"entity_id": "light.lamp", "brightness_pct": 50, "hs_color": [360, 0]})]
+
+
+def test_a_hue_needs_its_saturation(make_home):
+    home = make_home({})
+    assert not home.set_light("light.lamp", hue=240)["success"]
+    assert not home.set_light("light.lamp", saturation=50)["success"]
+    assert home._session.requests == []
+
+
+@pytest.mark.parametrize("asked, sent", [(9000, 6500), (1000, 2500), (4000, 4000)])
+def test_a_whites_warmth_is_kept_to_the_lights_own_range(make_home, asked, sent):
+    lamp = {"entity_id": "light.lamp", "attributes": {"min_color_temp_kelvin": 2500, "max_color_temp_kelvin": 6500}}
+    home = make_home({"/api/states/light.lamp": lamp, "/api/services/light/turn_on": []})
+    assert home.set_light("light.lamp", kelvin=asked)["success"]
+    assert [(method, path, sent_.get("json")) for method, path, sent_ in home._session.requests] == [
+        ("GET", "/api/states/light.lamp", None),
+        ("POST", "/api/services/light/turn_on", {"entity_id": "light.lamp", "color_temp_kelvin": sent})]
+
+
+def test_a_colour_and_a_warmth_together_are_just_the_colour(make_home):
+    # Home Assistant answers 400 to both, and nothing needs asking about the range.
+    home = make_home({"/api/services/light/turn_on": []})
+    assert home.set_light("light.lamp", hue=10, saturation=20, kelvin=3000)["success"]
+    assert [(path, sent["json"]) for _, path, sent in home._session.requests] == [
+        ("/api/services/light/turn_on", {"entity_id": "light.lamp", "hs_color": [10, 20]})]
+
+
+def test_a_light_which_cant_be_asked_about_its_range_says_so(make_home):
+    home = make_home({"/api/states/light.lamp": requests.ConnectionError("down")})
+    assert home.set_light("light.lamp", kelvin=3000) == {
+        "success": False, "message": "I can't reach Home Assistant right now."}
+
+
 @pytest.mark.parametrize("entity", ["lock.front_door", "switch.adguard_protection", "light.kitchen/../lock", ""])
 def test_only_a_light_is_switched(make_home, entity):
     home = make_home({})
