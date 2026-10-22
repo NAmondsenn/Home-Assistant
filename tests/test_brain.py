@@ -352,6 +352,29 @@ def test_a_satellite_removed_while_connected_is_let_go(brain, connect, passwords
     assert brain.session_for("bedroom") is not None and not bedroom.gone.is_set()
 
 
+def test_a_satellite_removed_while_its_session_is_made_isnt_let_stay(brain, passwords):
+    # The bad order: the brain checks which satellites are still let in while this one's
+    # session is being made, so it isn't there to be let go - and, the file seen, that
+    # is never checked again. Its session must be refused when it's made instead.
+    removed = SimpleNamespace(name="kitchen", connected=False, close=lambda: None)
+    passwords.remove("kitchen")
+    brain._shut_out_removed()
+    assert brain.session_for("kitchen") is None
+
+    assert brain._start_session(removed) is None
+
+    assert brain.session_for("kitchen") is None and "kitchen" not in brain.sessions
+    assert brain._caught_up == set()
+
+
+def test_a_satellite_still_let_in_gets_its_session(brain, passwords):
+    kept = SimpleNamespace(name="kitchen", connected=False, close=lambda: None)
+
+    session = brain._start_session(kept)
+
+    assert session is not None and brain.sessions["kitchen"] is session
+
+
 def test_a_timer_rings_on_its_satellite_or_waits_for_its_copy(brain, connect):
     serving(brain)
     brain.clock.set_timer(60, satellite="bedroom")

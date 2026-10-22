@@ -454,7 +454,30 @@ class Brain:
         if stopped:
             session.close()
             return None
+
+        # Checked once it's registered, never before: remove-satellite is only seen
+        # through the file (see _shut_out_removed), which lets go of whatever is in
+        # sessions as it reads it. A removal before this is seen here; one after it is
+        # seen there, as the session is in sessions by then - so whichever way round
+        # the two threads run, a satellite removed while its session was being made
+        # can't stay.
+        if self._removed(name):
+            logger.info(f"The {name} satellite was removed as it connected, so it's let go")
+            session.close()
+            self._forget(session)
+            return None
         return session
+
+    def _removed(self, name: str) -> bool:
+        """
+        Whether a satellite has had its password removed. One which can't be told,
+        because the file can't be read, is taken to be let in, as _shut_out_removed does.
+        """
+        try:
+            return name not in self.passwords.names()
+        except Exception as e:
+            logger.error(f"Couldn't read the satellites' passwords to see if the {name} satellite is still let in: {e}")
+            return False
 
     def _catch_up(self, session: Session):
         """
