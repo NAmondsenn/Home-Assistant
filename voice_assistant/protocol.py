@@ -25,7 +25,7 @@ and what the brain sends a satellite:
     stream_audio  {"id": ...}  (payload)
     stream_end  {"id": ...}
     set_playback  {"id": ..., "paused"?: ..., "volume"?: ...}
-    stop  {"kinds": [...]|null}
+    stop  {"kinds": [...]|null} or {"id": ...}  (whole kinds of sound, or one playback)
     silence  {"kind": ...}
     allow  {"kind": ...}
     state  {"volumes": {"general": ..., "alarm": ..., "music": ...}, "muted": ...}

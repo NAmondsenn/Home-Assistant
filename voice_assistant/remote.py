@@ -146,12 +146,12 @@ class RemotePlayback:
         return self._finished.wait(timeout)
 
     def stop(self):
-        """
-        Stops it straight away - along with every other sound of its kind, as the
-        satellite only stops sounds a kind at a time.
-        """
-        if not self.done:
-            self._speaker.stop([self.kind])
+        """Stops it straight away, part way through or not - and nothing else."""
+        if self.done:
+            return
+        # Told first, and only then finished here - see RemoteSpeaker.stop.
+        self._speaker._send("stop", id=self.id)
+        self._finish()
 
     def _moved(self, position: int):
         """Notes how far the satellite has got, as it reports while the music plays."""
@@ -213,7 +213,7 @@ class RemoteSpeaker:
         self._playing: Dict[str, RemotePlayback] = {}
 
     def play(self, audio: np.ndarray, sample_rate: Optional[int] = None, volume: float = 1.0,
-             kind: str = "reply") -> Optional[RemotePlayback]:
+             kind: str = "reply") -> RemotePlayback:
         """
         Starts playing a sound, without waiting for it.
 
@@ -225,7 +225,8 @@ class RemoteSpeaker:
             kind: What sort of sound it is, e.g. "reply" or "announcement".
 
         Returns:
-            The RemotePlayback, or None if the satellite isn't connected.
+            The RemotePlayback, to wait for or stop. Already finished if the satellite
+            isn't connected, as Speaker's is with no speaker to play it on.
         """
         audio = np.asarray(audio, dtype=np.float32)
         if audio.ndim > 1:
@@ -234,7 +235,7 @@ class RemoteSpeaker:
 
     def play_stream(self, pieces: Iterable[np.ndarray], sample_rate: Optional[int] = None, volume: float = 1.0,
                     kind: str = "reply", paused: bool = False,
-                    most_ahead: Optional[float] = None) -> Optional[RemotePlayback]:
+                    most_ahead: Optional[float] = None) -> RemotePlayback:
         """
         Starts playing a sound which is still being made, sending each piece to the
         satellite as it arrives, on a thread of its own.
@@ -253,7 +254,8 @@ class RemoteSpeaker:
                 sends it all as fast as it comes, as for speech.
 
         Returns:
-            The RemotePlayback, or None if the satellite isn't connected.
+            The RemotePlayback, to wait for or stop. Already finished if the satellite
+            isn't connected, with its pieces closed, as Speaker's is with no speaker.
         """
         rate = sample_rate or self.sample_rate
         # Music is the one thing Nova plays in stereo - navidrome.py decodes it so - and
@@ -266,7 +268,7 @@ class RemoteSpeaker:
         if not self._start(playback, "play_stream", rate=rate, channels=channels, volume=volume, kind=kind,
                            paused=bool(paused)):
             _close(pieces)
-            return None
+            return playback
         # The satellite only says how far it has got with music, so only music can be held back.
         most_ahead = most_ahead if kind == "music" else None
         threading.Thread(target=self._feed, args=(playback, pieces, channels, most_ahead),
@@ -274,7 +276,7 @@ class RemoteSpeaker:
         return playback
 
     def play_file(self, filename: str, volume: float = 1.0, kind: str = "reply", cache: bool = True,
-                  start: float = 0.0, length: Optional[float] = None) -> Optional[RemotePlayback]:
+                  start: float = 0.0, length: Optional[float] = None) -> RemotePlayback:
         """
         Has the satellite play one of its own sounds, or part of one, without waiting for it.
 
@@ -288,14 +290,15 @@ class RemoteSpeaker:
             length: Seconds to play, or None for the rest of it.
 
         Returns:
-            The RemotePlayback, or None if the satellite isn't connected. One the
-            satellite can't play finishes at once.
+            The RemotePlayback, to wait for or stop. Already finished if the satellite
+            isn't connected, as Speaker's is with no speaker. Never None, as Speaker's
+            is for a missing file: the files are the satellite's, and one it can't
+            play is reported finished at once.
         """
         volume = max(0.0, min(1.0, float(volume)))
         playback = RemotePlayback(self, str(next(self._ids)), kind, volume)
-        if not self._start(playback, "play_sound", name=os.path.basename(filename), volume=volume, kind=kind,
-                           start=start, length=length):
-            return None
+        self._start(playback, "play_sound", name=os.path.basename(filename), volume=volume, kind=kind,
+                    start=start, length=length)
         return playback
 
     def stop(self, kinds: Optional[Iterable[str]] = None):
@@ -345,7 +348,8 @@ class RemoteSpeaker:
             fields: What the message carries besides the sound's id.
 
         Returns:
-            Whether the satellite was told.
+            Whether the satellite was told. If it wasn't, the sound is finished
+            already, so nothing waits on it.
         """
         # Kept by its id first, so the satellite's word that it has ended can't arrive
         # before there's anything to end.
@@ -355,6 +359,7 @@ class RemoteSpeaker:
             return True
         with self._lock:
             self._playing.pop(playback.id, None)
+        playback._finish()
         return False
 
     def _feed(self, playback: RemotePlayback, pieces: Iterable[np.ndarray], channels: int,

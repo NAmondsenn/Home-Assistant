@@ -234,13 +234,28 @@ def test_pausing_music_tells_the_satellite(pair):
     assert playback.volume == 0.3
 
 
+def test_stopping_one_sound_stops_only_that_one(pair):
+    satellite, fake, serving = pair
+    beep = satellite.speaker.play_file("volume_beep.wav", volume=0.5)
+    reply = satellite.speaker.play_file("reply.wav")
+
+    beep.stop()
+    assert beep.done and not reply.done
+    # Already stopped, so there's nothing more to say.
+    beep.stop()
+
+    assert wait_for(lambda: fake.messages("stop"))
+    time.sleep(0.05)
+    assert fake.messages("stop") == [{"type": "stop", "id": beep.id}]
+
+
 def test_stopping_tells_the_satellite_what_to_stop(pair):
     satellite, fake, serving = pair
     speaker = satellite.speaker
     reply = speaker.play_file("reply.wav")
     alarm = speaker.play_file("alarm.wav", kind="announcement")
 
-    reply.stop()
+    speaker.stop(["reply"])
     assert reply.done and not alarm.done
     speaker.silence("announcement")
     assert alarm.done
@@ -352,11 +367,16 @@ def test_nothing_plays_on_a_satellite_which_isnt_connected(pair):
     serving.join(2)
 
     speech = Pieces([np.zeros(100, dtype=np.float32)])
-    assert speaker.play(np.zeros(100, dtype=np.float32)) is None
-    assert speaker.play_stream(speech) is None
+    played = [speaker.play(np.zeros(100, dtype=np.float32)), speaker.play_stream(speech),
+              speaker.play_file("chime.wav")]
+    # Already finished, as Speaker's are with no speaker to play on, so whatever
+    # waits on one doesn't need to check for None first.
+    assert all(playback.done and playback.wait(0) and playback.duration == 0 for playback in played)
     # Closed, so whatever was making it stops.
     assert speech.closed.is_set()
-    assert speaker.play_file("chime.wav") is None
+    for playback in played:
+        playback.paused = True
+        playback.stop()
     assert satellite.send("restart") is False
     assert ends_at_once(satellite.listen())
     time.sleep(0.1)

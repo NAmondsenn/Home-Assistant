@@ -81,14 +81,8 @@ class FakeBrain:
             pass
 
     def say(self, message_type, payload=b"", **fields):
-        # Written out here rather than with protocol.send, whose own "kind" argument
-        # leaves it unable to send play_stream's "kind" field.
-        message = {"type": message_type, **fields}
-        if payload:
-            message["bytes"] = len(payload)
         with self.lock:
-            self.stream.write(json.dumps(message).encode() + b"\n" + payload)
-            self.stream.flush()
+            protocol.send(self.stream, message_type, payload, **fields)
 
     def drop(self):
         """Goes down part way through, and stays down."""
@@ -476,6 +470,29 @@ def test_a_stream_from_the_brain_plays_and_is_reported_done(brain, make):
     brain.say("set_playback", id="music-1", paused=False)
     time.sleep(0.05)
     assert music.paused
+
+
+def test_the_brain_can_stop_one_playback_and_leave_the_rest_of_its_kind(brain, make):
+    made = make()
+    assert wait_for(lambda: brain.hellos)
+    brain.say("play_sound", id="beep-1", name="volume_beep.wav", volume=0.5, kind="reply", start=0.0, length=None)
+    brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=1.0, kind="reply", paused=False)
+    assert wait_for(lambda: made.speaker.files() and made.speaker.streams())
+    (beep,) = [playback for playback in made.speaker.playing if playback.filename]
+    (reply,) = made.speaker.streams()
+
+    brain.say("stop", id="beep-1")
+    assert wait_for(lambda: brain.messages("played"))
+    assert brain.messages("played") == [{"type": "played", "id": "beep-1", "stopped": True, "position": 0}]
+    assert beep.stopped
+    assert not reply.done
+
+    # One which has already ended, or never played, is left as it is.
+    brain.say("stop", id="beep-1")
+    brain.say("stop", id="never-played")
+    time.sleep(0.05)
+    assert not reply.done
+    assert len(brain.messages("played")) == 1
 
 
 def test_with_no_brain_the_wake_word_gets_the_phrase(brain, make):

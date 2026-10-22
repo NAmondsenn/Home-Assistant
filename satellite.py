@@ -160,7 +160,7 @@ class Satellite:
             "stream_audio": self._stream_audio,
             "stream_end": self._stream_end,
             "set_playback": self._set_playback,
-            "stop": lambda message, payload: self.speaker.stop(message.get("kinds")),
+            "stop": self._stop,
             "silence": lambda message, payload: self.speaker.silence(message["kind"]),
             "allow": lambda message, payload: self.speaker.allow(message["kind"]),
             "state": self._take_state,
@@ -426,6 +426,18 @@ class Satellite:
             playing.playback.paused = bool(message["paused"])
         if "volume" in message:
             playing.playback.volume = max(0.0, min(1.0, float(message["volume"])))
+
+    def _stop(self, message: Dict, payload: bytes):
+        # One of the brain's playbacks by its id - a volume beep, say, without the reply
+        # playing alongside it - or whole kinds of sound.
+        if "id" not in message:
+            self.speaker.stop(message.get("kinds"))
+            return
+        with self._lock:
+            playing = self._playing.get(message["id"])
+        # One which has already ended has been reported, or is about to be.
+        if playing is not None:
+            playing.playback.stop()
 
     def _take_state(self, message: Dict, payload: bytes):
         self.state.update(message)
