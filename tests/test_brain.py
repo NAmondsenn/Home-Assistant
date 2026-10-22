@@ -334,6 +334,22 @@ def test_a_second_connection_replaces_the_first(brain, connect):
     assert second.messages("phrase") and not second.gone.is_set()
 
 
+def test_a_satellite_removed_while_connected_is_let_go(brain, connect, passwords):
+    # Its password was only checked as it connected, so it stayed for as long as it
+    # stayed connected - and removing a satellite is meant to shut it out.
+    serving(brain)
+    bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen")
+
+    # As remove-satellite does, run by itself.
+    passwords.remove("kitchen")
+    assert kitchen.gone.wait(5)
+    assert wait_for(lambda: brain.session_for("kitchen") is None and "kitchen" not in brain.sessions)
+    # Every other is left be.
+    assert brain.session_for("bedroom") is not None and not bedroom.gone.is_set()
+
+
 def test_a_timer_rings_on_its_satellite_or_waits_for_its_copy(brain, connect):
     serving(brain)
     brain.clock.set_timer(60, satellite="bedroom")

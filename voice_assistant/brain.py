@@ -114,8 +114,13 @@ class _Server(socketserver.ThreadingTCPServer):
         super().__init__(("127.0.0.1", port), _Connection)
 
     def service_actions(self):
-        # Run between connections, every STOP_CHECK: the brain's main loop is still
-        # going - see watchdog.py.
+        # Run between connections, every STOP_CHECK. Nothing in it may stop the brain
+        # listening.
+        try:
+            self.brain._shut_out_removed()
+        except Exception:
+            logger.exception("Couldn't check for satellites which have been removed")
+        # The brain's main loop is still going - see watchdog.py.
         watchdog.beat()
 
 
@@ -142,6 +147,9 @@ class Brain:
         self.port = config.section("backend").get("port", 10400)
         # The satellites it lets in, in the order they were added - see default_satellite.
         self.passwords = SatellitePasswords()
+        # How the passwords' file looked when it was last read for who's still let in -
+        # see _shut_out_removed.
+        self._passwords_seen = self._passwords_file()
 
         # Each satellite's session, by its name, for as long as it's connected.
         self.sessions: Dict[str, Session] = {}
@@ -345,6 +353,44 @@ class Brain:
         with self._lock:
             self._why_turned_away.pop(hello["name"], None)
         return hello
+
+    def _passwords_file(self) -> Optional[Tuple[int, int, int]]:
+        """
+        The passwords' file, as it is now - which changes with every add-satellite and
+        remove-satellite, as each saves it afresh, as a new file.
+
+        Returns:
+            Its inode, modification time and size, or None if there isn't one.
+        """
+        try:
+            found = os.stat(self.passwords.path)
+        except OSError:
+            return None
+        return found.st_ino, found.st_mtime_ns, found.st_size
+
+    def _shut_out_removed(self):
+        """
+        Lets go of any satellite connected which has been removed since, with
+        remove-satellite - run by itself, so the brain only hears of it through the
+        file. A password is only proved as a satellite connects, so a satellite
+        removed otherwise stayed for as long as it stayed connected.
+        """
+        now = self._passwords_file()
+        if now == self._passwords_seen:
+            return
+        # Noted first, so a file which can't be read is said once, not every check.
+        self._passwords_seen = now
+        try:
+            names = set(self.passwords.names())
+        except Exception as e:
+            logger.error(f"Couldn't read the satellites' passwords to see which are still let in: {e}")
+            return
+        with self._lock:
+            removed = [session for name, session in self.sessions.items() if name not in names]
+        for session in removed:
+            logger.info(f"The {session.satellite.name} satellite was removed, so it's let go")
+            session.close()
+            session.satellite.close()
 
     def _turned_away(self, name: str, why: str):
         """Logs why a satellite was turned away - once, however often it tries again, until it's let in."""
