@@ -1,5 +1,8 @@
-# Exact versions of every package Nova needs, frozen from the venv on the Pi
-# (Debian 13, Python 3.13) on 19 October 2026, once it was working there.
+# Exact versions of every package the satellite needs, frozen from the venv on the Pi
+# (Debian 13, Python 3.13) on 19 October 2026, once it was working there, and trimmed
+# on 22 October 2026 to what satellite.py uses - the brain, on PVE2, has the rest (see
+# requirements-backend.txt and docs/decisions/0006). requests stays because
+# openWakeWord imports it, though the satellite makes no requests of its own.
 # requirements.txt says what's needed; this says what's known to work.
 #
 # Install it without dependency resolution, since it already lists everything -
@@ -10,57 +13,37 @@
 #
 # It's for Python 3.13 - on any other version use requirements.txt instead. After a
 # tested upgrade, regenerate it with "venv/bin/pip freeze", leaving out pip, wheel and
-# anything nothing needs. librosa and PyAudio, and the 17 packages only they needed,
-# were dropped on 20 October 2026; an existing venv can keep them, unused.
-# paho-mqtt, for Home Assistant, was added on 21 October 2026 at the version pip
-# chose on the Pi that day.
-
-annotated-types==0.8.0
-anthropic==0.120.2
-anyio==4.14.2
-av==18.0.0
+# anything nothing needs. An existing venv can keep the packages this dropped, unused.
+# scipy, scikit-learn, joblib, threadpoolctl, cloudpickle and narwhals are there because importing openwakeword
+# at all imports its custom-verifier trainer, which needs them, though Nova never trains
+# one. They were in the first lock (19 October) and dropped with librosa on 20 October,
+# which left a fresh install from it unable to import openwakeword (the Pi's existing
+# venv kept them, so it didn't show). Re-added at the versions pip chose on the Pi on
+# 22 October 2026, checked by importing openwakeword in a fresh venv.
 certifi==2026.7.22
 cffi==2.1.0
 charset-normalizer==3.4.9
-click==8.4.2
-ctranslate2==4.8.1
-distro==1.9.0
-docstring_parser==0.18.0
-faster-whisper==1.2.1
-filelock==3.32.0
+cloudpickle==3.1.2
 flatbuffers==25.12.19
-fsspec==2026.7.0
-google-crc32c==1.9.0
-h11==0.16.0
-hf-xet==1.5.2
-httpcore==1.0.9
-httpx==0.28.1
-huggingface_hub==1.25.1
 idna==3.18
-jiter==0.16.0
-moonshine-voice==0.1.5
+joblib==1.6.0
+narwhals==2.27.1
 numpy==2.4.6
 onnxruntime==1.28.0
 openwakeword==0.6.0
 packaging==26.2
-paho-mqtt==2.1.0
-platformdirs==4.11.0
 protobuf==7.35.1
 pycparser==3.0
-pydantic==2.13.4
-pydantic_core==2.46.4
 python-dotenv==1.2.2
 PyYAML==6.0.3
-redis==8.0.1
 requests==2.34.2
+scikit-learn==1.9.1
+scipy==1.18.1
 setuptools==83.0.0
-sniffio==1.3.1
 sounddevice==0.5.5
 soundfile==0.14.0
 soxr==1.1.0
-spotipy==2.26.0
-tokenizers==0.23.1
+threadpoolctl==3.7.0
 tqdm==4.70.0
-typing-inspection==0.4.2
 typing_extensions==4.16.0
 urllib3==2.8.0

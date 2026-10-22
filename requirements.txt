@@ -1,31 +1,27 @@
+# What the satellite needs - satellite.py, on the Raspberry Pi: the microphone, speaker
+# and wake word, and nothing else. Everything which thinks - speech-to-text, Claude,
+# Spotify, Home Assistant, the voice - is on the brain, in its own container on PVE2,
+# which installs requirements-backend.txt instead (docs/decisions/0006).
+
 # Audio processing
 numpy>=1.24.0
 soundfile>=0.12.0
 sounddevice>=0.5.0
 soxr>=0.3.0
 
-# Speech recognition - Moonshine, with faster-whisper kept as the alternative
-moonshine-voice>=0.1.5
-faster-whisper>=0.10.0
-
 # Wake word detection:
 # openwakeword is installed separately in setup.sh (pip install --no-deps),
 # because it pins tflite-runtime on Linux which has no wheels for Python 3.12+.
-# The assistant uses openwakeword's ONNX runtime instead, and every package the
-# parts of openwakeword it uses need (onnxruntime, tqdm, requests) is already
-# installed via faster-whisper and requests below.
-
-# LLM
-anthropic>=0.120.0
-
-# Spotify
-spotipy>=2.26.0
-
-# Home Assistant, which Nova joins as a device of its own over MQTT - see
-# voice_assistant/ha_device.py
-paho-mqtt>=2.1
+# The assistant uses openwakeword's ONNX runtime instead, so the packages the
+# parts of openwakeword it uses need are listed here: onnxruntime, tqdm and requests
+# (which it imports at start-up, and downloads its models with), and scipy and
+# scikit-learn, which it imports for a custom-verifier trainer Nova never uses.
+onnxruntime>=1.16.0
+tqdm>=4.60.0
+requests>=2.31.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
 
 # Utilities
 python-dotenv>=1.0.0
 pyyaml>=6.0
-requests>=2.31.0

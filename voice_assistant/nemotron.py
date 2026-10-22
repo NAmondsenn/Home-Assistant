@@ -7,10 +7,10 @@ on speech as it's heard: on recordings of the user's own voice, it got 5.1% of w
 wrong where Moonshine got 16%, and had the words 0.29s after the recording stopped,
 where Parakeet - which only starts then - took 0.58s.
 
-The model isn't one Nova downloads itself: unpack
-sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2, from the
-asr-models release of k2-fsa/sherpa-onnx on GitHub, into the models folder. It's
-under NVIDIA's Open Model License.
+The model isn't downloaded by Nova itself but by setup.sh --brain (and update.sh),
+which checks and unpacks sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25.tar.bz2,
+from the asr-models release of k2-fsa/sherpa-onnx on GitHub, into the models folder.
+It's under NVIDIA's Open Model License.
 """
 
 import numpy as np

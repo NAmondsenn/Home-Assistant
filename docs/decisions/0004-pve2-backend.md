@@ -1,6 +1,6 @@
 # 4. PVE2 as a backend, with the Pi keeping everything that has to be instant
 
-20 October 2026 · Phase 4 · Stage 1 agreed, with Nemotron, and being built
+20 October 2026 · Phase 4 · Stage 1 agreed, with Nemotron, and built · Stage 2 and standalone mode are replaced by [0006](0006-the-pi-as-a-satellite.md): the Pi is a light satellite with no Moonshine, Whisper, Piper or Claude, and the brain does the rest
 
 **Context.** Phase 4 moves the heavy work off the Pi and onto PVE2. A look at PVE2 found an Intel i5-8400 (6 cores, AVX2), 31GB of memory with about 24GB free, and no NVIDIA graphics card - just the processor's own Intel graphics. It already runs six containers (Jellyfin, Immich, Navidrome and others) and is mostly idle. So there's no Parakeet on a graphics card, and no local language model quick enough to replace Claude. What PVE2 does have is a faster processor for speech-to-text, and room for the things several devices will share later.
 

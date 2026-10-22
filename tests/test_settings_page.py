@@ -223,7 +223,10 @@ def test_the_page_shows_whats_set_and_never_a_key(files):
     assert state["volumes"] == {"general": 60, "alarm": 80, "music": 40}
     assert state["memories"] == ["Your sister is called Amy."]
     assert state["clock"]["timers"][0]["name"] == "pizza reminder"
-    assert {"weather.location", "ntfy.alerts", "backend.address"} <= {setting["key"] for setting in state["settings"]}
+    assert {"weather.location", "ntfy.alerts"} <= {setting["key"] for setting in state["settings"]}
+    # What belongs to a satellite - the brain's address, and the satellite's own password - isn't on the brain's page.
+    assert "backend.address" not in {setting["key"] for setting in state["settings"]}
+    assert "NOVA_BACKEND_TOKEN" not in keys
     # What can only be one of a few words comes with them, to pick from.
     player = next(setting for setting in state["settings"] if setting["key"] == "music.player")
     assert player["choices"] == ["navidrome", "spotify"]

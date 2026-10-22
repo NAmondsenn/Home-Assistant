@@ -73,6 +73,14 @@ def test_a_restart_from_the_settings_page_exits_with_the_status_systemd_restarts
     assert "RestartForceExitStatus=75" in open(os.path.join(os.path.dirname(backend.__file__), "nova-backend.service")).read()
 
 
+def test_the_service_may_write_only_where_the_settings_page_saves():
+    """ProtectHome would otherwise stop it saving settings, keys and data."""
+    service = open(os.path.join(os.path.dirname(backend.__file__), "nova-backend.service")).read()
+    writable = next(line for line in service.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+    assert sorted(writable) == ["__HOME__/.config/nova", "__HOME__/.local/share/nova"]
+    assert "Type=notify" in service and "WatchdogSec=60" in service
+
+
 # The satellites' passwords
 
 @pytest.fixture

@@ -69,7 +69,6 @@ EDITABLE = [
     ("navidrome", "url", "Navidrome's address"),
     ("navidrome", "username", "Navidrome's user for Nova"),
     ("home_assistant", "url", "Home Assistant's address"),
-    ("backend", "address", "Nova's backend, as name:port"),
     ("ntfy", "url", "Your ntfy server"),
     ("ntfy", "alerts", "Topics read out as they arrive, separated by commas"),
     ("ntfy", "phone", "Topic for sending things to your phone"),
@@ -83,7 +82,7 @@ EDITABLE = [
 
 # The keys, and what each is for. Claude's can be under an older name too.
 KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant"), ("MQTT_PASSWORD", "Home Assistant's MQTT"),
-        ("NAVIDROME_PASSWORD", "Navidrome"), ("NTFY_TOKEN", "ntfy"), ("NOVA_BACKEND_TOKEN", "Nova's backend"),
+        ("NAVIDROME_PASSWORD", "Navidrome"), ("NTFY_TOKEN", "ntfy"),
         ("SPOTIFY_CLIENT_ID", "Spotify client ID"), ("SPOTIFY_CLIENT_SECRET", "Spotify client secret")]
 OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}
 

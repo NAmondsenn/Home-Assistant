@@ -13,7 +13,7 @@
 #
 # Running as a user service (rather than system-wide) keeps the assistant in the
 # same session as the audio devices, so the microphone and speaker behave exactly
-# as they do when main.py is run by hand.
+# as they do when satellite.py is run by hand.
 Description=Voice Assistant
 
 # There's no waiting for the network: a user service can't wait on the system's
@@ -30,7 +30,7 @@ NotifyAccess=main
 WatchdogSec=60
 TimeoutStartSec=180
 WorkingDirectory=__PROJECT_DIRECTORY__
-ExecStart=__PYTHON__ __PROJECT_DIRECTORY__/main.py
+ExecStart=__PYTHON__ __PROJECT_DIRECTORY__/satellite.py
 
 # Anything the assistant writes - the Spotify token cache, saved timers, logs - is
 # readable by this user only, rather than by everyone on the machine.

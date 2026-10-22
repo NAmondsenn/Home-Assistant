@@ -56,9 +56,11 @@ spotify:
   pause_while_speaking: true
 
 backend:
-  # Nova's backend on PVE2, which does the speech-to-text for this Pi - see
-  # docs/decisions/0004 - as "name:port" on the tailnet, e.g. "nova:10400". Both
-  # need the same password, as NOVA_BACKEND_TOKEN in ~/.config/nova/.env.
+  # On a satellite: Nova's brain, as "name:port" on the tailnet, e.g. "nova:10400" -
+  # see docs/decisions/0006. The satellite needs the password the brain gave it from
+  # add-satellite, as NOVA_BACKEND_TOKEN in ~/.config/nova/.env. There's no standalone
+  # mode: without a brain it can only ring its timers and alarms, and say it can't
+  # reach it.
   address: ""
   # This satellite's name, which the brain knows its password by - see add-satellite
   # in backend.py. Left empty, it's this machine's own name.

@@ -6,6 +6,7 @@
 # project is filled in:
 #
 #   sed -e "s|__PROJECT_DIRECTORY__|/home/nova/Home-Assistant|g" -e "s|__USER__|nova|g" \
+#       -e "s|__HOME__|/home/nova|g" \
 #       nova-backend.service > /etc/systemd/system/nova-backend.service
 #   systemctl daemon-reload
 #   systemctl enable --now nova-backend
@@ -26,13 +27,15 @@ ExecStart=__PROJECT_DIRECTORY__/venv/bin/python __PROJECT_DIRECTORY__/backend.py
 
 # What it writes - its log, and the user's timers, alarms, memory and routines - is
 # readable by its own user only, and it can never gain more privileges than it starts
-# with. Everything but its own data folder is read-only to it.
+# with. Everything but its own settings and data folders is read-only to it - those two
+# it needs to write, as the settings page saves settings and keys in the first, and the
+# brain keeps timers, memory and passwords in the second.
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/__USER__/.local/share/nova
+ReadWritePaths=__HOME__/.config/nova __HOME__/.local/share/nova
 
 # Loading Piper and Nemotron takes a few seconds; a crash is restarted after a short pause.
 TimeoutStartSec=120

@@ -3,7 +3,7 @@
 # conftest.py stands in for the hardware and network ones - so this doesn't install
 # the whole of requirements.txt, and takes well under a minute.
 #
-# Once a week it also checks requirements.lock for packages with known security
+# Once a week it also checks requirements.lock and requirements-backend.txt for packages with known security
 # problems, since those turn up without the code changing at all.
 name: Checks
 
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Check the locked packages for known vulnerabilities
+      - name: Check the locked packages (the satellite's and the brain's) for known vulnerabilities
         run: |
           pip install pip-audit
-          pip-audit -r requirements.lock --no-deps --disable-pip
+          pip-audit -r requirements.lock -r requirements-backend.txt --no-deps --disable-pip
