@@ -94,7 +94,7 @@ In order, it:
 2. Installs the system packages, makes a Python environment in `venv/`, and installs the Python packages - the exact versions in `requirements.lock`, which is only what the microphone, speaker and wake word need.
 3. Moves anything an older install kept in the repository folder to its new place (see Configuring).
 4. Asks for the assistant's name, wake word, Spotify speaker name and the brain's address (`nova:10400`), saving them to `~/.config/nova/config.yaml`.
-5. Asks for the satellite's password and writes it to `~/.config/nova/.env` as `NOVA_BACKEND_TOKEN`, readable only by you. It's the only secret a satellite holds.
+5. Says the name the brain knows this satellite by - its machine's name - and asks for the password `add-satellite` gave for it (not shown as it's typed), writing it to `~/.config/nova/.env` as `NOVA_BACKEND_TOKEN`, readable only by you. It's the only secret a satellite holds. Left blank, the satellite won't start until it's added there, which setup says.
 6. Finds your wake word model (see below) and copies it into `models/`, and downloads openWakeWord's own models there. A satellite downloads no speech or voice models - the brain does the hearing and the speaking.
 7. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone - in short bursts, so a sound stops quickly and the wake word reacts sooner - backing up the old one.
 8. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.

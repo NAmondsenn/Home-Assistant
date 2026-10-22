@@ -303,20 +303,28 @@ write_secrets() {
     # The satellite keeps no key but its own password: everything else is on the brain,
     # so a stolen Pi gives up nothing but a way to ask the brain to say things.
     if [ "$ROLE" = "satellite" ]; then
-        local password=""
+        # The brain knows each satellite by its machine's name - see backend.satellite.
+        local password="" name
+        name="$(hostname)"
         if [ "$ASSUME_YES" = false ]; then
-            echo "  This satellite's password comes from the brain: on the brain, in its clone, run"
-            echo "  'venv/bin/python backend.py add-satellite NAME' as the brain's user - from root,"
-            echo "  with 'runuser -u nova -- ' in front (nova being the user the brain runs as)."
+            echo "  This satellite's password comes from the brain, which knows it by this machine's"
+            echo "  name, ${name}. On the brain, in its clone, run this as the brain's user - from"
+            echo "  root, with 'runuser -u nova -- ' in front (nova being the user the brain runs as):"
+            echo "      venv/bin/python backend.py add-satellite ${name}"
             echo "  Leave it blank to add it to ${SECRETS_FILE} by hand later."
-            read -rp "  Password: " password
+            read -rsp "  Password (not shown as it's typed): " password
+            echo ""
         fi
         mkdir -p -m 700 "$CONFIG_DIRECTORY"
         (
             umask 077
             echo "NOVA_BACKEND_TOKEN=${password}" > "$SECRETS_FILE"
         )
-        done_ "Saved to ${SECRETS_FILE}"
+        if [ -n "$password" ]; then
+            done_ "Saved to ${SECRETS_FILE}"
+        else
+            problem "No password yet, so the satellite won't start until it has one: put it after NOVA_BACKEND_TOKEN= in ${SECRETS_FILE}, then run 'systemctl --user restart ${SERVICE_NAME}'."
+        fi
         return
     fi
     local anthropic="" spotify_id="" spotify_secret=""
@@ -673,6 +681,11 @@ main() {
     fi
     echo ""
     echo "Done. Settings: ${SETTINGS_FILE} · keys: ${SECRETS_FILE}"
+    # Said again here, at the end, where it's seen - a satellite with no password
+    # restarts every few seconds, and is only ever told it can't reach the brain.
+    if [ "$ROLE" = "satellite" ] && ! grep -qE "^NOVA_BACKEND_TOKEN=.+" "$SECRETS_FILE" 2> /dev/null; then
+        problem "The satellite won't start until its password is in ${SECRETS_FILE}, as NOVA_BACKEND_TOKEN - see Keys above."
+    fi
     if [ "$ROLE" = "brain" ]; then
         echo "Let a satellite in:         cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python backend.py add-satellite NAME"
         echo "For Spotify, sign in once:  cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python -m voice_assistant.spotify_controller"
