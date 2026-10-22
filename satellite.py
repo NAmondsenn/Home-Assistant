@@ -227,6 +227,10 @@ class Satellite:
         """
         while True:
             try:
+                # First, as well as once listening returns, since listening which keeps
+                # going wrong never returns - which is when the brain's Restart, from
+                # Home Assistant, is needed most.
+                self._exit_if_asked()
                 heard = self.wake.listen_once(until=self._interrupted)
                 self._exit_if_asked()
                 if heard is not None:

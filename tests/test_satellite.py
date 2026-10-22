@@ -571,3 +571,20 @@ def test_a_restart_from_the_brain_exits_for_systemd_to_start_it_again(brain, mak
     assert made.exited == [1]
     # Asked to, so it stopped properly.
     assert not (tmp_path / "running").exists()
+
+
+def test_a_restart_from_the_brain_is_heard_while_listening_keeps_failing(brain, make):
+    # Which is when Home Assistant's Restart is needed most - and it was only looked
+    # for once listening had worked.
+    made = make(start=False)
+
+    def broken(until=None):
+        raise RuntimeError("The microphone has gone")
+
+    made.wake.listen_once = broken
+    make.begin(made)
+    assert wait_for(lambda: brain.hellos)
+    brain.say("restart")
+
+    assert wait_for(lambda: made.exited)
+    assert made.exited == [1]
