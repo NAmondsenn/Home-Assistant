@@ -1,10 +1,12 @@
 """
 Settings Page Module.
 
-A page for looking after Nova from a phone or a laptop: how it's doing, its microphone's
-mute, what's playing, the lights and Home Assistant's scripts and scenes, its volumes,
-its timers and alarms, what it remembers, its keys and its main settings. Nova serves
-it itself, so a Pi on its own has it too.
+A page for looking after Nova from a phone or a laptop: how it's doing, each
+satellite's microphone mute, what's playing on it, the lights and Home Assistant's
+scripts and scenes, its volumes, the timers and alarms, what Nova remembers, its keys
+and its main settings. The brain serves it, for every satellite - see brain.py - and
+what's a satellite's own is looked up in its session at each request, so the page
+never holds one which has gone.
 
 Only the user gets in. It listens on this machine alone, and Tailscale passes the
 tailnet's requests on to it over HTTPS, with its own certificate -
@@ -32,6 +34,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 import yaml
 
@@ -154,15 +157,15 @@ def _secrets_set(path: str) -> Dict[str, bool]:
 
 def restart_service() -> str:
     """
-    Restarts Nova through systemd, when that's what's running it - see
-    voice-assistant.service.
+    Restarts the brain through systemd, when that's what's running it - see
+    nova-backend.service.
 
     Returns:
         What to tell the user.
     """
     if not os.getenv("INVOCATION_ID"):
         return "Nova isn't running as a service here, so restart it yourself."
-    subprocess.Popen(["systemctl", "--user", "restart", "voice-assistant"], start_new_session=True,
+    subprocess.Popen(["systemctl", "restart", "nova-backend"], start_new_session=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return "Restarting - give it half a minute."
 
@@ -229,48 +232,28 @@ def _number(value: Any) -> Optional[float]:
 class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
-    def __init__(self, allow: List[str], port: int = 8765, running=None, volume=None, clock=None, memory=None,
-                 ntfy=None, stt=None, music=None, actions=None, home=None, routines=None, wake=None,
-                 run_routine: Optional[Callable[[Dict], None]] = None,
-                 boop: Optional[Callable[[float], None]] = None,
-                 activity: Optional[Callable[[], str]] = None, wake_word: Optional[Callable[[], str]] = None,
-                 restart: Callable[[], str] = restart_service, started: Optional[float] = None):
+    def __init__(self, allow: List[str], port: int = 8765, running=None, brain=None,
+                 wake_word: Optional[Callable[[], str]] = None, restart: Callable[[], str] = restart_service,
+                 started: Optional[float] = None):
         """
         Args:
             allow: The Tailscale logins let in.
             port: Where to listen, on this machine alone - 0 for any free one.
             running: The Config Nova started with, to tell when a restart is needed.
-            volume: The VolumeControl.
-            clock: The Clock, for the timers and alarms.
-            memory: The Memory, for what Nova remembers.
-            ntfy: The Ntfy, or None, for whether it's listening.
-            stt: The speech-to-text, for whether the backend is answering.
-            music: The music player, or None - it keeps the music's volume itself,
-                and says what's playing.
-            actions: The ActionExecutor, which the music buttons go through, as
-                asking out loud does.
-            home: The HomeAssistant, or None, for the lights and the scripts and scenes.
-            routines: The user's Routines, or None.
-            wake: The WakeWordDetector, which keeps whether the microphone's muted.
-            run_routine: Runs a routine by itself, as at its time - Session.run_routine.
-            boop: Plays the volume beep at a level from 0 to 1 on Nova's speaker, so a
-                change made on the page is heard at its new level.
-            activity: What Nova is doing - "idle", "listening", "thinking" or "speaking".
+            brain: The Brain, which has what every satellite shares - the clock, memory,
+                ntfy, speech-to-text and routines - and the session of each satellite
+                connected, for its volumes, music, lights, mute and what it's doing.
             wake_word: What Nova's listening for - openWakeWord's stand-in, if Nova's
                 own wake word model is missing.
-            restart: Restarts Nova, returning what to tell the user.
-            started: When Nova started, in seconds.
+            restart: Restarts the brain, returning what to tell the user.
+            started: When the brain started, in seconds.
         """
         self.allow = [login.strip().lower() for login in allow if login.strip()]
         self.port = port
         self.running = running
-        self.volume, self.clock, self.memory, self.ntfy, self.stt = volume, clock, memory, ntfy, stt
-        self.music, self.actions, self.home = music, actions, home
-        self.routines, self._run_routine = routines, run_routine
-        self.wake = wake
-        self._playlists: Optional[Tuple[List[str], float]] = None
-        self._boop = boop
-        self._activity = activity
+        self.brain = brain
+        # Each satellite's playlists, with when they were asked for.
+        self._playlists: Dict[str, Tuple[List[str], float]] = {}
         self._listening_for = wake_word
         self._restart = restart
         self.started = started or time.time()
@@ -280,12 +263,13 @@ class SettingsPage:
         self._server: Optional[ThreadingHTTPServer] = None
 
     @classmethod
-    def from_config(cls, config, **parts) -> Optional["SettingsPage"]:
+    def from_config(cls, config, brain, **parts) -> Optional["SettingsPage"]:
         """
         The page settings_page in config.yaml describes, or None if it's switched off.
 
         Args:
             config: Configs loaded from config.yaml.
+            brain: The Brain the page looks after the satellites of.
             parts: Everything else the page needs - see __init__.
         """
         settings = config.section("settings_page")
@@ -295,7 +279,7 @@ class SettingsPage:
         allow = settings.get("allow") or []
         if not allow:
             logger.warning("The settings page lets nobody in until settings_page.allow names your Tailscale login")
-        return cls(allow, port, running=config, **parts)
+        return cls(allow, port, running=config, brain=brain, **parts)
 
     # Serving it
 
@@ -321,8 +305,43 @@ class SettingsPage:
 
     # What it shows
 
-    def state(self) -> Dict:
-        """Everything on the page - never a key's value, only whether it's set."""
+    def _session(self, satellite: Optional[str]):
+        """
+        Args:
+            satellite: A satellite's name, or None for the default.
+
+        Returns:
+            Its session if it's connected - else None - and the name the request is
+            for, which is None if there are no satellites at all.
+        """
+        return self.brain.session_for(satellite), satellite or self.brain.default_satellite()
+
+    @staticmethod
+    def _not_connected(name: Optional[str]) -> Dict:
+        """What to say when a change is for a satellite which isn't connected."""
+        if name is None:
+            return {"success": False, "message": "There's no satellite to do that on."}
+        return {"success": False, "message": f"{name} isn't connected."}
+
+    def _satellites(self) -> List[Dict]:
+        """Each satellite the brain lets in, and whether it's connected - with what it's doing and its mute if so."""
+        found = []
+        for name in self.brain.satellites():
+            session = self.brain.session_for(name)
+            found.append({"name": name, "connected": session is not None,
+                          "activity": session.activity if session is not None else "idle",
+                          "muted": session is not None and session.muted})
+        return found
+
+    def state(self, satellite: Optional[str] = None) -> Dict:
+        """
+        Everything on the page - never a key's value, only whether it's set.
+
+        Args:
+            satellite: The satellite whose volumes, mute and timers are shown, or None
+                for the default. Those are empty while it isn't connected.
+        """
+        session, chosen = self._session(satellite)
         saved, problem = self._saved()
         settings = []
         for section, name, label in EDITABLE:
@@ -340,54 +359,65 @@ class SettingsPage:
         keys = [{"name": name, "label": label,
                  "set": any(secrets.get(spelling) for spelling in [name] + OLDER_NAMES.get(name, []))}
                 for name, label in KEYS]
+        routines = self.brain.routines
         return {"status": self._status(),
+                "satellites": self._satellites(),
+                "satellite": chosen,
                 "wake_word": self._wake_word(),
-                "muted": self.wake is not None and self.wake.muted,
-                "volumes": volume_levels(self.volume, self.music),
-                "clock": self.clock.overview(),
-                "memories": self.memory.facts(),
-                "routines": self.routines.all() if self.routines is not None else [],
+                "muted": session is not None and session.muted,
+                "volumes": volume_levels(session.volume, session.music_player) if session is not None else {},
+                "clock": self.brain.clock.overview(satellite=chosen),
+                "memories": self.brain.memory.facts(),
+                "routines": routines.all() if routines is not None else [],
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,
                 "restart_needed": changed or self._keys_changed}
 
-    def live(self) -> Dict:
-        """What Nova is doing right now - asked for every second or two while the page is open."""
-        return {"activity": self._activity() if self._activity else "idle"}
+    def live(self, satellite: Optional[str] = None) -> Dict:
+        """What a satellite's Nova is doing right now - asked for every second or two while the page is open."""
+        session, _ = self._session(satellite)
+        return {"activity": session.activity if session is not None else "idle"}
 
     def _wake_word(self) -> str:
         """What wakes Nova, for the page to say it's waiting for it."""
         return self._listening_for() if self._listening_for else self.defaults["assistant"]["wake_word"]
 
-    def music_state(self) -> Dict:
+    def music_state(self, satellite: Optional[str] = None) -> Dict:
         """
-        What's playing, and the playlists to pick from - asked for every few seconds
-        while the page is open, apart from everything else, so a slow music player
-        doesn't hold the rest up.
+        What's playing on a satellite, and the playlists to pick from - asked for every
+        few seconds while the page is open, apart from everything else, so a slow
+        music player doesn't hold the rest up.
         """
-        if self.music is None:
+        session, name = self._session(satellite)
+        music = session.music_player if session is not None else None
+        if music is None:
             return {"available": False}
-        return {"available": True, "player": getattr(self.music, "name", "Music"), "now": self.music.now_playing(),
-                "playlists": self._user_playlists()}
+        return {"available": True, "player": getattr(music, "name", "Music"), "now": music.now_playing(),
+                "playlists": self._user_playlists(name, music)}
 
-    def _user_playlists(self) -> List[str]:
-        if self._playlists is None or time.monotonic() - self._playlists[1] > PLAYLISTS_KEPT:
-            self._playlists = (self.music.playlists(), time.monotonic())
-        return self._playlists[0]
+    def _user_playlists(self, name: str, music) -> List[str]:
+        kept = self._playlists.get(name)
+        if kept is None or time.monotonic() - kept[1] > PLAYLISTS_KEPT:
+            kept = self._playlists[name] = (music.playlists(), time.monotonic())
+        return kept[0]
 
-    def cover(self) -> Optional[Tuple[bytes, str]]:
-        """The cover of what's playing, as an image and its type, or None."""
-        return self.music.cover() if self.music is not None else None
+    def cover(self, satellite: Optional[str] = None) -> Optional[Tuple[bytes, str]]:
+        """The cover of what's playing on a satellite, as an image and its type, or None."""
+        session, _ = self._session(satellite)
+        music = session.music_player if session is not None else None
+        return music.cover() if music is not None else None
 
-    def home_state(self) -> Dict:
+    def home_state(self, satellite: Optional[str] = None) -> Dict:
         """
-        The lights, and the scripts and scenes, from Home Assistant - asked for apart
-        from everything else, like the music.
+        The lights, and the scripts and scenes, from Home Assistant, as a satellite
+        sees them - asked for apart from everything else, like the music.
         """
-        if self.home is None:
+        session, _ = self._session(satellite)
+        home = session.home if session is not None else None
+        if home is None:
             return {"available": False}
-        return {"available": True, "area": self.home.area, **self.home.overview()}
+        return {"available": True, "area": home.area, **home.overview()}
 
     def _saved(self):
         """The settings as saved now - which take effect at the next restart - and any problem reading them."""
@@ -398,6 +428,7 @@ class SettingsPage:
 
     def _status(self) -> Dict:
         """How Nova's doing."""
+        stt, ntfy = self.brain.stt, self.brain.ntfy
         reply = None
         try:
             rows = timeline.summarise(timeline.load(os.path.join(paths.LOGS_DIR, "latency.jsonl"))[-REPLIES_COUNTED:])
@@ -405,18 +436,18 @@ class SettingsPage:
         except OSError:
             pass
         backend = None
-        if hasattr(self.stt, "reachable"):
-            backend = "answering" if self.stt.reachable else "not answering"
-        ntfy = None if self.ntfy is None else ("listening" if self.ntfy.listening else "not connected")
+        if hasattr(stt, "reachable"):
+            backend = "answering" if stt.reachable else "not answering"
+        ntfy = None if ntfy is None else ("listening" if ntfy.listening else "not connected")
         return {"started": self.started, "reply_ms": reply["p50"] if reply else None,
                 "replies": reply["count"] if reply else 0, "backend": backend, "ntfy": ntfy,
                 "problems": self._problems()}
 
     @staticmethod
     def _problems() -> List[Dict]:
-        """The latest warnings and errors in the log, newest first."""
+        """The latest warnings and errors in the brain's log, newest first."""
         try:
-            with open(os.path.join(paths.LOGS_DIR, "smart_assistant.log"), "rb") as file:
+            with open(os.path.join(paths.LOGS_DIR, "backend.log"), "rb") as file:
                 file.seek(max(0, os.fstat(file.fileno()).st_size - LOG_TAIL))
                 lines = file.read().decode(errors="replace").splitlines()
         except OSError:
@@ -430,42 +461,51 @@ class SettingsPage:
 
     # What it changes
 
-    def set_volume(self, category: str, percent, who: str) -> Dict:
+    def set_volume(self, category: str, percent, who: str, satellite: Optional[str] = None) -> Dict:
         """
-        Changes a volume, and plays the beep at its new level on Nova's speaker - as
-        the slider is dragged, so the user hears how loud it now is.
+        Changes a satellite's volume, and plays the beep at its new level on its speaker
+        - as the slider is dragged, so the user hears how loud it now is.
         """
         percent = int(percent)
-        result = change_volume(self.volume, self.music, category, percent)
-        if result.get("success") and self._boop:
-            self._boop(percent / 100 if category == "music" and self.music is not None else self.volume.get(category))
-        logger.info(f"Settings page: {who} set the {category} volume to {percent}%")
+        session, name = self._session(satellite)
+        if session is None:
+            return self._not_connected(name)
+        music = session.music_player
+        result = change_volume(session.volume, music, category, percent)
+        if result.get("success"):
+            session.boop(percent / 100 if category == "music" and music is not None else session.volume.get(category))
+        logger.info(f"Settings page: {who} set the {name} satellite's {category} volume to {percent}%")
         return result
 
-    def set_muted(self, muted: bool, who: str) -> Dict:
-        """Mutes or unmutes the microphone - see WakeWordDetector.set_muted."""
-        if self.wake is None or not isinstance(muted, bool):
+    def set_muted(self, muted: bool, who: str, satellite: Optional[str] = None) -> Dict:
+        """Mutes or unmutes a satellite's microphone - see Session.set_muted."""
+        if not isinstance(muted, bool):
             return {"success": False, "message": "That didn't make sense."}
-        self.wake.set_muted(muted)
-        logger.info(f"Settings page: {who} {'muted' if muted else 'unmuted'} the microphone")
+        session, name = self._session(satellite)
+        if session is None:
+            return self._not_connected(name)
+        session.set_muted(muted)
+        logger.info(f"Settings page: {who} {'muted' if muted else 'unmuted'} the {name} satellite's microphone")
         if muted:
             return {"success": True, "message": f"Muted. Nova won't hear \"{self._wake_word()}\" until it's unmuted."}
         return {"success": True, "message": "Unmuted."}
 
-    def add_alarm(self, at: str, repeat: Optional[str], who: str) -> Dict:
+    def add_alarm(self, at: str, repeat: Optional[str], who: str, satellite: Optional[str] = None) -> Dict:
+        """Sets an alarm on a satellite - connected or not, as it rings from its copy while away."""
         found = re.fullmatch(r"(\d{1,2}):(\d\d)", (at or "").strip())
         if not found:
             return {"success": False, "message": "That isn't a time."}
+        _, name = self._session(satellite)
         logger.info(f"Settings page: {who} set an alarm for {at}")
-        return self.clock.set_alarm(int(found[1]), int(found[2]), repeat or None)
+        return self.brain.clock.set_alarm(int(found[1]), int(found[2]), repeat or None, satellite=name)
 
     def remove(self, kind: str, item_id: int, who: str) -> Dict:
         logger.info(f"Settings page: {who} removed {kind} {item_id}")
-        return self.clock.remove(kind, item_id)
+        return self.brain.clock.remove(kind, item_id)
 
     def forget(self, fact: str, who: str) -> Dict:
         logger.info(f"Settings page: {who} had something forgotten")
-        return self.memory.forget(fact)
+        return self.brain.memory.forget(fact)
 
     def set_key(self, name: str, value: str, who: str) -> Dict:
         """
@@ -542,7 +582,7 @@ class SettingsPage:
         logger.info(f"Settings page: {who} restarted Nova")
         return {"success": True, "message": self._restart()}
 
-    def play(self, action: str, who: str, query: str = "", playlist: str = "") -> Dict:
+    def play(self, action: str, who: str, query: str = "", playlist: str = "", satellite: Optional[str] = None) -> Dict:
         """
         Plays, pauses, skips or goes back, or plays something or a playlist - through
         the same actions as asking out loud, so that a pause from the page isn't undone
@@ -555,29 +595,36 @@ class SettingsPage:
             who: Whose login asked.
             query: What to play, as it would be said.
             playlist: The playlist's name.
+            satellite: Where it plays, or None for the default.
         """
-        if self.music is None or self.actions is None:
+        session, name = self._session(satellite)
+        if session is None:
+            return self._not_connected(name)
+        if session.music_player is None or session.actions is None:
             return {"success": False, "message": "Nova has no music player set up."}
         if action == "play":
-            result = self.actions.play_music(str(query).strip() or None)
+            result = session.actions.play_music(str(query).strip() or None)
         elif action == "playlist":
-            result = self.actions.play_playlist(str(playlist))
+            result = session.actions.play_playlist(str(playlist))
         elif action in PLAYBACK:
-            result = self.actions.control_playback(action)
+            result = session.actions.control_playback(action)
         else:
             return {"success": False, "message": "That isn't something the music does."}
         logger.info(f"Settings page: {who} asked the music to {action}")
         return {"success": bool(result.get("success")), "message": result.get("message") or ""}
 
     def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
-                  hue=None, saturation=None, kelvin=None) -> Dict:
+                  hue=None, saturation=None, kelvin=None, satellite: Optional[str] = None) -> Dict:
         """
         Switches a light, or dims it, or sets its colour or its white - see
         HomeAssistant.set_light. Anything which isn't a number is turned away here, as
         a number which can't be one (JSON allows NaN and Infinity) would otherwise
         raise further in.
         """
-        if self.home is None:
+        session, name = self._session(satellite)
+        if session is None:
+            return self._not_connected(name)
+        if session.home is None:
             return {"success": False, "message": "Nova isn't connected to Home Assistant."}
         given = (brightness, hue, saturation, kelvin)
         numbers = [None if value is None else _number(value) for value in given]
@@ -586,59 +633,65 @@ class SettingsPage:
             return {"success": False, "message": "That didn't make sense."}
         brightness, hue, saturation, kelvin = numbers
         logger.info(f"Settings page: {who} changed {entity_id}")
-        return self.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness),
+        return session.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness),
                                    hue=hue, saturation=saturation, kelvin=kelvin)
 
-    def run(self, entity_id: str, who: str) -> Dict:
+    def run(self, entity_id: str, who: str, satellite: Optional[str] = None) -> Dict:
         """Runs a script or sets a scene - see HomeAssistant.run."""
-        if self.home is None:
+        session, name = self._session(satellite)
+        if session is None:
+            return self._not_connected(name)
+        if session.home is None:
             return {"success": False, "message": "Nova isn't connected to Home Assistant."}
         logger.info(f"Settings page: {who} ran {entity_id}")
-        return self.home.run(str(entity_id))
+        return session.home.run(str(entity_id))
 
     def save_routine(self, routine: Dict, who: str) -> Dict:
         """Adds or changes one of the user's routines - see Routines.save."""
-        if self.routines is None or not isinstance(routine, dict):
+        if self.brain.routines is None or not isinstance(routine, dict):
             return {"success": False, "message": "That didn't make sense."}
-        result = self.routines.save(routine)
+        result = self.brain.routines.save(routine)
         if result["success"]:
             logger.info(f"Settings page: {who} saved a routine")
         return {"success": result["success"], "message": result["message"]}
 
     def remove_routine(self, routine_id: str, who: str) -> Dict:
-        if self.routines is None:
+        if self.brain.routines is None:
             return {"success": False, "message": "That didn't make sense."}
         logger.info(f"Settings page: {who} deleted a routine")
-        return self.routines.remove(str(routine_id))
+        return self.brain.routines.remove(str(routine_id))
 
     def start_routine(self, routine_id: str, who: str) -> Dict:
         """
         Runs one of the user's routines now, on a thread of its own, as it waits for
-        any conversation to finish first - see Session.run_routine.
+        any conversation to finish first - see Brain.run_routine, which runs it on
+        the satellite it names.
         """
-        routine = self.routines.get(str(routine_id)) if self.routines is not None else None
-        if routine is None or self._run_routine is None:
+        routines = self.brain.routines
+        routine = routines.get(str(routine_id)) if routines is not None else None
+        if routine is None:
             return {"success": False, "message": "That routine's gone."}
-        threading.Thread(target=self._run_routine, args=(routine,), daemon=True, name="routine").start()
+        threading.Thread(target=self.brain.run_routine, args=(routine,), daemon=True, name="routine").start()
         logger.info(f"Settings page: {who} ran a routine")
         return {"success": True, "message": f"Running {routine['name']}."}
 
 
 # What each kind of change is sent to, and what it's given.
 ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
-    "/api/volume": lambda page, body, who: page.set_volume(body["category"], body["percent"], who),
-    "/api/alarms": lambda page, body, who: page.add_alarm(body["time"], body.get("repeat"), who),
+    "/api/volume": lambda page, body, who: page.set_volume(body["category"], body["percent"], who, body.get("satellite")),
+    "/api/alarms": lambda page, body, who: page.add_alarm(body["time"], body.get("repeat"), who, body.get("satellite")),
     "/api/remove": lambda page, body, who: page.remove(body["kind"], int(body["id"]), who),
     "/api/forget": lambda page, body, who: page.forget(body["fact"], who),
     "/api/keys": lambda page, body, who: page.set_key(body["name"], body["value"], who),
     "/api/settings": lambda page, body, who: page.save_settings(body["changes"], who),
     "/api/restart": lambda page, body, who: page.restart(who),
-    "/api/mute": lambda page, body, who: page.set_muted(body["muted"], who),
-    "/api/music": lambda page, body, who: page.play(body["action"], who, body.get("query", ""), body.get("playlist", "")),
+    "/api/mute": lambda page, body, who: page.set_muted(body["muted"], who, body.get("satellite")),
+    "/api/music": lambda page, body, who: page.play(
+        body["action"], who, body.get("query", ""), body.get("playlist", ""), body.get("satellite")),
     "/api/light": lambda page, body, who: page.set_light(
         body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
-        body.get("kelvin")),
-    "/api/run": lambda page, body, who: page.run(body["id"], who),
+        body.get("kelvin"), body.get("satellite")),
+    "/api/run": lambda page, body, who: page.run(body["id"], who, body.get("satellite")),
     "/api/routines": lambda page, body, who: page.save_routine(body["routine"], who),
     "/api/routines/remove": lambda page, body, who: page.remove_routine(body["id"], who),
     "/api/routines/run": lambda page, body, who: page.start_routine(body["id"], who),
@@ -659,22 +712,25 @@ class _Handler(BaseHTTPRequestHandler):
         page = self.server.page
         if not self._let_in(page):
             return
-        path = self.path.split("?", 1)[0]
+        url = urlsplit(self.path)
+        path = url.path
+        # Which satellite the page is looking at, if it has a choice of them.
+        satellite = (parse_qs(url.query).get("satellite") or [None])[0]
         if path in FILES:
             name, content_type = FILES[path]
             with open(os.path.join(WEB_FOLDER, name), "rb") as file:
                 self._send(200, file.read(), content_type)
         elif path == "/api/state":
-            self._send_json(page.state())
+            self._send_json(page.state(satellite))
         elif path == "/api/live":
-            self._send_json(page.live())
+            self._send_json(page.live(satellite))
         elif path == "/api/music":
-            self._send_json(page.music_state())
+            self._send_json(page.music_state(satellite))
         elif path == "/api/home":
-            self._send_json(page.home_state())
+            self._send_json(page.home_state(satellite))
         elif path == "/api/cover":
             # Whatever's playing now - the page adds its id only so a new one is fetched.
-            cover = page.cover()
+            cover = page.cover(satellite)
             if cover is None:
                 self._send_json({"success": False, "message": "Nothing's playing with a cover."}, 404)
             else:

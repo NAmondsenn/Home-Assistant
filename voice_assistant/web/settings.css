@@ -996,6 +996,15 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   gap: 8px;
 }
 
+/* Which satellite to look after, under the list of them. */
+#satellite-choice {
+  margin-top: 10px;
+}
+
+.chips .button[aria-pressed="true"] {
+  border-color: var(--ember);
+}
+
 .chips .button {
   padding: 7px 14px;
   font-weight: 400;

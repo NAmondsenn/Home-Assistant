@@ -48,15 +48,16 @@ class FakeClock:
         self.removed = []
         self.alarms = []
 
-    def overview(self):
+    def overview(self, satellite=None):
+        self.overviewed = satellite
         return {"timers": [{"id": 1, "name": "pizza reminder", "due_at": 1_800_000_000}], "alarms": []}
 
     def remove(self, kind, item_id):
         self.removed.append((kind, item_id))
         return {"success": True, "message": "Removed."}
 
-    def set_alarm(self, hour, minute, repeat=None):
-        self.alarms.append((hour, minute, repeat))
+    def set_alarm(self, hour, minute, repeat=None, satellite=None):
+        self.alarms.append((hour, minute, repeat, satellite))
         return {"success": True, "message": "Alarm set."}
 
 
@@ -150,22 +151,61 @@ class FakeHome:
         return {"success": True, "message": "Set Relax."}
 
 
-class FakeWake:
-    """Stands in for the wake word detector, which keeps the microphone's mute."""
+class FakeSession:
+    """Stands in for one connected satellite's session: its volumes, music, lights and mute."""
 
-    def __init__(self):
+    def __init__(self, music=None, actions=None, home=None, activity="idle"):
+        self.volume = FakeVolume()
+        self.music_player, self.actions, self.home = music, actions, home
+        self.activity = activity
         self.muted = False
+        self.booped = []
 
     def set_muted(self, muted):
         self.muted = muted
 
+    def boop(self, level):
+        self.booped.append(level)
 
-def _page(running=None, **parts):
+
+class FakeBrain:
+    """Stands in for the brain: what every satellite shares, and the sessions of those connected."""
+
+    def __init__(self, sessions, known=None, **parts):
+        self.sessions = sessions
+        self.known = list(sessions) if known is None else known
+        self.clock, self.memory = FakeClock(), FakeMemory()
+        self.ntfy = self.stt = self.routines = None
+        self.ran = []
+        for name, part in parts.items():
+            setattr(self, name, part)
+
+    def satellites(self):
+        return list(self.known)
+
+    def default_satellite(self):
+        return self.known[0] if self.known else None
+
+    def session_for(self, satellite):
+        return self.sessions.get(satellite or self.default_satellite())
+
+    def run_routine(self, routine):
+        self.ran.append(routine)
+
+
+def _page(running=None, sessions=None, known=None, wake_word=None, **parts):
+    """A page over a brain with one satellite connected, the bedroom - or the sessions given."""
+    if sessions is None:
+        sessions = {"bedroom": FakeSession()}
+    brain = FakeBrain(sessions, known, **parts)
     # The login as Tailscale might capitalise it, which mustn't matter.
-    made = dict(running=running, volume=FakeVolume(), clock=FakeClock(), memory=FakeMemory(),
-                restart=lambda: "Restarting.", started=1_800_000_000)
-    made.update(parts)
-    return SettingsPage([LOGIN.upper()], port=0, **made)
+    page = SettingsPage([LOGIN.upper()], port=0, running=running, brain=brain, wake_word=wake_word,
+                        restart=lambda: "Restarting.", started=1_800_000_000)
+    return page
+
+
+def _bedroom(page):
+    return page.brain.sessions["bedroom"]
 
 
 # What it shows
@@ -191,7 +231,7 @@ def test_the_page_shows_whats_set_and_never_a_key(files):
 
 def test_the_latest_problems_in_the_log_are_shown_newest_first(files):
     (files / "logs").mkdir()
-    (files / "logs" / "smart_assistant.log").write_text(
+    (files / "logs" / "backend.log").write_text(
         "2026-10-20 16:50:01,100 - main - INFO - Transcription complete: 'what's on today'\n"
         "2026-10-20 16:51:58,131 - voice_assistant.dropouts - WARNING - The speaker ran dry\n"
         "2026-10-20 17:02:00,001 - voice_assistant.ntfy - ERROR - Couldn't say the alert\n")
@@ -226,17 +266,16 @@ def test_looking_at_the_settings_isnt_logged(files, caplog):
 
 def test_a_volume_change_is_heard_at_its_new_level(files):
     # So the user hears how loud it now is, on Nova's own speaker, as they drag.
-    booped = []
-    page = _page(boop=booped.append)
+    page = _page()
     page.set_volume("alarm", 30, LOGIN)
-    assert page.volume.levels["alarm"] == 30 and booped == [0.3]
+    assert _bedroom(page).volume.levels["alarm"] == 30 and _bedroom(page).booped == [0.3]
 
 
 def test_the_music_volume_is_the_players_own_so_a_playing_song_changes_too(files):
-    player, booped = FakePlayer(), []
-    page = _page(music=player, boop=booped.append)
+    player = FakePlayer()
+    page = _page(sessions={"bedroom": FakeSession(music=player)})
     page.set_volume("music", 25, LOGIN)
-    assert player.level == 25 and booped == [0.25]
+    assert player.level == 25 and _bedroom(page).booped == [0.25]
     assert page.state()["volumes"]["music"] == 25
 
 
@@ -250,19 +289,21 @@ def test_spotifys_volume_is_shown_as_last_set_without_asking_spotify(files):
             raise AssertionError("Spotify was asked for its volume")
 
     player = Spotify()
-    page = _page(music=player)
+    page = _page(sessions={"bedroom": FakeSession(music=player)})
     page.set_volume("music", 25, LOGIN)
     assert player.level == 25 and page.state()["volumes"]["music"] == 25
 
 
 def test_the_page_can_tell_what_nova_is_doing(files):
-    assert _page(activity=lambda: "listening").live() == {"activity": "listening"}
+    assert _page(sessions={"bedroom": FakeSession(activity="listening")}).live() == {"activity": "listening"}
     assert _page().live() == {"activity": "idle"}
+    # A satellite which isn't connected isn't doing anything.
+    assert _page(sessions={}, known=["bedroom"]).live() == {"activity": "idle"}
 
 
 def test_the_page_is_told_whats_playing_and_the_playlists_are_kept_a_while(files):
     player = FakePlayer()
-    page = _page(music=player)
+    page = _page(sessions={"bedroom": FakeSession(music=player)})
     state = page.music_state()
     assert state["player"] == "Navidrome" and state["now"]["track"] == "Gooba" and state["playlists"] == ["Chill", "Workout"]
     page.music_state()
@@ -272,7 +313,7 @@ def test_the_page_is_told_whats_playing_and_the_playlists_are_kept_a_while(files
 
 def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files):
     actions = FakeActions()
-    page = _page(music=FakePlayer(), actions=actions)
+    page = _page(sessions={"bedroom": FakeSession(music=FakePlayer(), actions=actions)})
     page.play("play", LOGIN, query=" Gooba by 6ix9ine ")
     page.play("play", LOGIN)
     page.play("playlist", LOGIN, playlist="Workout")
@@ -284,7 +325,7 @@ def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files)
 
 def test_the_lights_and_scenes_come_from_home_assistant_and_go_back_to_it(files):
     home = FakeHome()
-    page = _page(home=home)
+    page = _page(sessions={"bedroom": FakeSession(home=home)})
     assert page.home_state()["lights"][0]["id"] == "light.kitchen"
     page.set_light("light.kitchen", LOGIN, on=False)
     page.set_light("light.kitchen", LOGIN, brightness="40")
@@ -298,8 +339,8 @@ def test_the_lights_and_scenes_come_from_home_assistant_and_go_back_to_it(files)
 
 
 def test_a_routine_is_made_run_and_deleted_from_the_page(files):
-    ran = []
-    page = _page(routines=Routines(path=str(files / "routines.json")), run_routine=ran.append)
+    page = _page(routines=Routines(path=str(files / "routines.json")))
+    ran = page.brain.ran
     made = page.save_routine({"name": "Good morning", "phrases": "good morning", "steps": "what's the weather"}, LOGIN)
     assert made == {"success": True, "message": "Saved Good morning."}
     routine = page.state()["routines"][0]
@@ -371,9 +412,10 @@ def test_a_restart_outside_systemd_is_left_to_the_user(monkeypatch):
 
 
 def test_its_only_there_when_switched_on(make_config):
-    assert SettingsPage.from_config(make_config(settings_page={"port": 0})) is None
-    page = SettingsPage.from_config(make_config(settings_page={"port": 8765, "allow": [LOGIN]}))
-    assert (page.port, page.allow) == (8765, [LOGIN])
+    brain = FakeBrain({})
+    assert SettingsPage.from_config(make_config(settings_page={"port": 0}), brain) is None
+    page = SettingsPage.from_config(make_config(settings_page={"port": 8765, "allow": [LOGIN]}), brain)
+    assert (page.port, page.allow, page.brain) == (8765, [LOGIN], brain)
 
 
 # Serving it
@@ -421,10 +463,10 @@ def test_a_change_has_to_come_from_the_page_itself(served):
     # As another website open in the user's browser would send it.
     assert _ask(served, "/api/volume", change)[0] == 403
     assert _ask(served, "/api/volume", change, X_Nova="page", Sec_Fetch_Site="cross-site")[0] == 403
-    assert served.volume.levels["music"] == 40
+    assert _bedroom(served).volume.levels["music"] == 40
 
     status, _, body = _ask(served, "/api/volume", change, X_Nova="page", Sec_Fetch_Site="same-origin")
-    assert status == 200 and json.loads(body)["success"] and served.volume.levels["music"] == 20
+    assert status == 200 and json.loads(body)["success"] and _bedroom(served).volume.levels["music"] == 20
 
 
 def test_each_change_reaches_the_right_part_of_nova(served):
@@ -435,8 +477,10 @@ def test_each_change_reaches_the_right_part_of_nova(served):
     change("/api/remove", {"kind": "timer", "id": 1})
     change("/api/forget", {"fact": "Your sister is called Amy."})
 
-    assert served.clock.alarms == [(7, 30, "weekdays")] and served.clock.removed == [("timer", 1)]
-    assert served.memory.known == []
+    # The alarm is the default satellite's, as none was named.
+    assert served.brain.clock.alarms == [(7, 30, "weekdays", "bedroom")]
+    assert served.brain.clock.removed == [("timer", 1)]
+    assert served.brain.memory.known == []
     assert change("/api/restart", {})["message"] == "Restarting."
 
 
@@ -451,36 +495,36 @@ def test_its_typeface_icon_and_what_nova_is_doing_are_served(served):
 def test_the_cover_of_whats_playing_is_served(served):
     # Nothing's playing without a music player.
     assert _ask(served, "/api/cover")[0] == 404
-    served.music = FakePlayer()
+    _bedroom(served).music_player = FakePlayer()
     status, headers, body = _ask(served, "/api/cover?for=al-1")
     assert status == 200 and headers["Content-Type"] == "image/jpeg" and body == b"a cover"
 
 
 def test_music_and_home_assistant_changes_reach_them(served):
-    served.music, served.actions, served.home = FakePlayer(), FakeActions(), FakeHome()
+    bedroom = _bedroom(served)
+    bedroom.music_player, bedroom.actions, bedroom.home = FakePlayer(), FakeActions(), FakeHome()
     assert json.loads(_ask(served, "/api/music")[2])["now"]["artist"] == "6ix9ine"
     assert json.loads(_ask(served, "/api/home")[2])["routines"][0]["name"] == "Relax"
 
     _ask(served, "/api/music", {"action": "skip"}, X_Nova="page")
     _ask(served, "/api/light", {"id": "light.kitchen", "brightness": 70}, X_Nova="page")
     _ask(served, "/api/run", {"id": "scene.relax"}, X_Nova="page")
-    assert served.actions.asked == [("skip", None)]
-    assert served.home.changed == [("light.kitchen", None, 70), ("scene.relax", "run", None)]
+    assert bedroom.actions.asked == [("skip", None)]
+    assert bedroom.home.changed == [("light.kitchen", None, 70), ("scene.relax", "run", None)]
 
 
 def test_the_settings_page_shows_and_changes_mute(served):
     def state():
         return json.loads(_ask(served, "/api/state")[2])
 
-    served.wake = FakeWake()
     assert state()["muted"] is False
     status, _, body = _ask(served, "/api/mute", {"muted": True}, X_Nova="page")
     assert status == 200 and json.loads(body)["success"]
-    assert served.wake.muted and state()["muted"] is True
+    assert _bedroom(served).muted and state()["muted"] is True
 
     # Only a yes or no mutes it.
     assert not json.loads(_ask(served, "/api/mute", {"muted": "no"}, X_Nova="page")[2])["success"]
-    assert served.wake.muted
+    assert _bedroom(served).muted
 
 
 def test_nonsense_is_answered_rather_than_crashing_on(served):
@@ -492,7 +536,7 @@ def test_nonsense_is_answered_rather_than_crashing_on(served):
 
 def test_a_lights_colour_and_warmth_reach_home_assistant(files):
     home = FakeHome()
-    page = _page(home=home)
+    page = _page(sessions={"bedroom": FakeSession(home=home)})
     assert page.set_light("light.kitchen", LOGIN, hue=240, saturation="100")["success"]
     assert page.set_light("light.kitchen", LOGIN, kelvin=2700)["success"]
     assert home.changed == [("light.kitchen", 240.0, 100.0, None), ("light.kitchen", None, None, 2700.0)]
@@ -503,6 +547,118 @@ def test_a_lights_colour_and_warmth_reach_home_assistant(files):
                                   {"brightness": float("inf")}, {"hue": 10, "saturation": {}}])
 def test_a_light_is_never_set_to_something_which_isnt_a_number(files, sent):
     home = FakeHome()
-    assert _page(home=home).set_light("light.kitchen", LOGIN, **sent) == {
+    assert _page(sessions={"bedroom": FakeSession(home=home)}).set_light("light.kitchen", LOGIN, **sent) == {
         "success": False, "message": "That didn't make sense."}
     assert home.changed == []
+
+
+# Every satellite
+
+def _two_satellites(**kitchen):
+    """The bedroom and the kitchen, both connected."""
+    return {"bedroom": FakeSession(activity="speaking"), "kitchen": FakeSession(**kitchen)}
+
+
+def test_the_page_lists_each_satellite(files):
+    sessions = _two_satellites()
+    sessions["kitchen"].muted = True
+    # The garage has been added to the brain but isn't connected.
+    page = _page(sessions=sessions, known=["bedroom", "kitchen", "garage"])
+    state = page.state()
+
+    assert state["satellites"] == [
+        {"name": "bedroom", "connected": True, "activity": "speaking", "muted": False},
+        {"name": "kitchen", "connected": True, "activity": "idle", "muted": True},
+        {"name": "garage", "connected": False, "activity": "idle", "muted": False}]
+    # What's shown below is the default's, unless another is asked for.
+    assert state["muted"] is False and page.state("kitchen")["muted"] is True
+
+
+def test_a_volume_change_goes_to_the_satellite_named(files):
+    page = _page(sessions=_two_satellites())
+    assert page.set_volume("general", 20, LOGIN, "kitchen")["success"]
+    assert page.brain.sessions["kitchen"].volume.levels["general"] == 20
+    assert page.brain.sessions["kitchen"].booped == [0.2]
+    assert page.brain.sessions["bedroom"].volume.levels["general"] == 60 and not page.brain.sessions["bedroom"].booped
+    # None named, so the default's.
+    page.set_volume("general", 10, LOGIN)
+    assert page.brain.sessions["bedroom"].volume.levels["general"] == 10
+
+    page.set_muted(True, LOGIN, "kitchen")
+    assert page.brain.sessions["kitchen"].muted and not page.brain.sessions["bedroom"].muted
+
+
+def test_the_music_and_lights_are_the_satellite_named(files):
+    actions, home = FakeActions(), FakeHome()
+    page = _page(sessions=_two_satellites(music=FakePlayer(), actions=actions, home=home))
+    assert page.music_state("kitchen")["available"] and page.home_state("kitchen")["available"]
+    assert not page.music_state()["available"] and not page.home_state()["available"]
+    page.play("skip", LOGIN, satellite="kitchen")
+    page.set_light("light.kitchen", LOGIN, on=False, satellite="kitchen")
+    assert actions.asked == [("skip", None)] and home.changed == [("light.kitchen", False, None)]
+    assert not page.play("skip", LOGIN)["success"]
+
+
+def test_a_satellite_which_isnt_connected_is_said_so(files):
+    page = _page(sessions={"bedroom": FakeSession()}, known=["bedroom", "garage"])
+    said = {"success": False, "message": "garage isn't connected."}
+    assert page.set_volume("general", 20, LOGIN, "garage") == said
+    assert page.set_muted(True, LOGIN, "garage") == said
+    assert page.play("pause", LOGIN, satellite="garage") == said
+    assert page.set_light("light.kitchen", LOGIN, on=True, satellite="garage") == said
+    assert page.run("scene.relax", LOGIN, satellite="garage") == said
+    # The default is named in the same way when it's the one which isn't connected.
+    away = _page(sessions={}, known=["bedroom"])
+    assert away.set_volume("general", 20, LOGIN) == {"success": False, "message": "bedroom isn't connected."}
+    assert away.music_state() == {"available": False} and away.home_state() == {"available": False}
+    assert away.cover() is None and away.state()["volumes"] == {}
+
+
+def test_alarms_and_routines_work_with_no_satellite(files):
+    page = _page(sessions={}, known=["bedroom"], routines=Routines(path=str(files / "routines.json")))
+
+    assert page.add_alarm("07:30", None, LOGIN)["success"]
+    # Set for the default satellite, which rings it once it's back.
+    assert page.brain.clock.alarms == [(7, 30, None, "bedroom")]
+    assert page.add_alarm("08:00", None, LOGIN, "kitchen")["success"] and page.brain.clock.alarms[1][3] == "kitchen"
+    assert page.remove("timer", 1, LOGIN)["success"]
+    assert page.forget("Your sister is called Amy.", LOGIN)["success"]
+    assert page.save_routine({"name": "Good morning", "phrases": "good morning", "steps": "what's the weather"},
+                             LOGIN)["success"]
+    assert page.set_key("HA_TOKEN", "a-token", LOGIN)["success"]
+
+    state = page.state()
+    assert state["clock"]["timers"] and state["memories"] == [] and state["routines"][0]["name"] == "Good morning"
+    assert state["volumes"] == {} and state["muted"] is False
+    assert state["satellites"] == [{"name": "bedroom", "connected": False, "activity": "idle", "muted": False}]
+    # Without any satellite added at all, too.
+    assert _page(sessions={}, known=[]).state()["satellites"] == []
+
+
+def test_the_clock_is_shown_for_the_satellite_asked_about(files):
+    page = _page(sessions=_two_satellites())
+    page.state()
+    assert page.brain.clock.overviewed == "bedroom"
+    page.state("kitchen")
+    assert page.brain.clock.overviewed == "kitchen"
+
+
+def test_the_page_asks_after_the_satellite_it_names(served):
+    served.brain.sessions["kitchen"] = FakeSession(activity="thinking")
+    served.brain.known.append("kitchen")
+    assert json.loads(_ask(served, "/api/live?satellite=kitchen")[2]) == {"activity": "thinking"}
+    assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle"}
+    assert json.loads(_ask(served, "/api/state?satellite=kitchen")[2])["satellite"] == "kitchen"
+
+    _ask(served, "/api/volume", {"category": "general", "percent": 5, "satellite": "kitchen"}, X_Nova="page")
+    assert served.brain.sessions["kitchen"].volume.levels["general"] == 5
+    said = json.loads(_ask(served, "/api/mute", {"muted": True, "satellite": "porch"}, X_Nova="page")[2])
+    assert said == {"success": False, "message": "porch isn't connected."}
+
+
+def test_restarting_restarts_the_brain(monkeypatch):
+    started = []
+    monkeypatch.setenv("INVOCATION_ID", "abc")
+    monkeypatch.setattr(page_module.subprocess, "Popen", lambda command, **options: started.append(command))
+    restart_service()
+    assert started == [["systemctl", "restart", "nova-backend"]]

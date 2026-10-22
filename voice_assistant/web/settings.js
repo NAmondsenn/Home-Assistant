@@ -75,6 +75,11 @@ let wakeWord = "Hey Nova";
 // Whether the microphone's muted, as /api/state last said - Home Assistant can change it too.
 let muted = false;
 
+// The satellites, as /api/state last said, and the one the user has chosen to look
+// after - or null for the default. The choice is only offered when there's more than one.
+let satellites = [];
+let chosen = null;
+
 // The timers on the page, ticked down every second, as [where it's shown, when it's due].
 let counting = [];
 
@@ -231,12 +236,19 @@ function toast(message, ok) {
   toast.timer = setTimeout(() => shown.classList.remove("show"), 4000);
 }
 
-// Sends Nova a change, answering with what it said.
+// A path which asks after the chosen satellite, if there is one.
+function forChosen(path) {
+  if (!chosen) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}satellite=${encodeURIComponent(chosen)}`;
+}
+
+// Sends Nova a change, answering with what it said - for the chosen satellite, which
+// only the changes to its own volumes, music, lights, mute and alarms look at.
 async function send(path, body) {
   const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Nova": "page" },
-    body: JSON.stringify(body || {}),
+    body: JSON.stringify(chosen ? { ...body, satellite: chosen } : body || {}),
   });
   return response.json().catch(() => ({ success: false, message: "Nova didn't answer properly." }));
 }
@@ -257,7 +269,7 @@ async function change(path, body) {
 async function load() {
   let state;
   try {
-    const response = await fetch("/api/state");
+    const response = await fetch(forChosen("/api/state"));
     if (!response.ok) throw new Error(await response.text());
     state = await response.json();
   } catch (error) {
@@ -266,8 +278,10 @@ async function load() {
   }
   wakeWord = state.wake_word || wakeWord;
   muted = Boolean(state.muted);
+  satellites = state.satellites;
   showActivity();
   showStatus(state.status);
+  showSatellites(state);
   showMuted();
   showVolumes(state.volumes);
   drawIfChanged("clock", state.clock, showClock);
@@ -282,7 +296,7 @@ async function load() {
 async function live() {
   let now = "offline";
   try {
-    const response = await fetch("/api/live");
+    const response = await fetch(forChosen("/api/live"));
     if (response.ok) now = (await response.json()).activity;
   } catch (error) {
     // Out of reach, then.
@@ -384,6 +398,50 @@ function showStatus(status) {
   document.getElementById("problems").replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
 }
 
+// Each satellite, and whether it's connected - with a choice of which to look after
+// below, when there's more than one.
+function showSatellites(state) {
+  const rows = satellites.map((satellite) => {
+    const row = element("li");
+    const what = element("span", undefined, "what");
+    what.append(satellite.name, element("span",
+      satellite.connected ? (DOING[satellite.activity] || (satellite.muted ? "Microphone muted" : "Listening for its wake word"))
+        : "Not connected", "detail"));
+    row.append(dot(satellite.connected ? "good" : "off"), what);
+    return row;
+  });
+  drawIfChanged("satellites", satellites, () => document.getElementById("satellites").replaceChildren(
+    ...(rows.length ? rows : [emptyRow("No satellites have been added.")])));
+
+  const choice = document.getElementById("satellite-choice");
+  choice.hidden = satellites.length < 2;
+  drawIfChanged("satellite-choice", [satellites.map((satellite) => satellite.name), state.satellite], () => {
+    choice.replaceChildren(...satellites.map((satellite) => {
+      const chip = element("button", satellite.name, "button quiet");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", String(satellite.name === state.satellite));
+      chip.addEventListener("click", () => choose(satellite.name));
+      return chip;
+    }));
+  });
+}
+
+// Looks after another satellite, showing what's its own from the start.
+function choose(name) {
+  chosen = name;
+  for (const part of ["satellite-choice", "clock", "lights", "routines"]) delete drawn[part];
+  for (const category of Object.keys(sliders)) {
+    sliders[category].remove();
+    delete sliders[category];
+  }
+  music = null;
+  home = null;
+  load();
+  live();
+  loadMusic();
+  loadHome();
+}
+
 function showMuted() {
   document.getElementById("mute").checked = muted;
   document.getElementById("microphone").classList.toggle("muted", muted);
@@ -393,6 +451,16 @@ function showMuted() {
 }
 
 function showVolumes(volumes) {
+  const none = Object.keys(volumes).length === 0;
+  // A satellite which isn't connected has no volumes to show.
+  document.getElementById("volumes-missing").hidden = !none;
+  document.getElementById("mute").disabled = none;
+  if (none) {
+    for (const category of Object.keys(sliders)) {
+      sliders[category].remove();
+      delete sliders[category];
+    }
+  }
   for (const [category, percent] of Object.entries(volumes)) {
     sliders[category] = sliders[category] || volumeSlider(category);
     sliders[category].show(percent);
@@ -484,6 +552,7 @@ function volumeSlider(category) {
   });
 
   return {
+    remove: () => made.remove(),
     // Shows the level Nova has - unless the slider's being moved, or a change to it
     // is on its way.
     show(percent) {
@@ -498,7 +567,7 @@ function volumeSlider(category) {
 
 async function loadMusic() {
   try {
-    const response = await fetch("/api/music");
+    const response = await fetch(forChosen("/api/music"));
     if (!response.ok) return;
     music = await response.json();
     musicAt = Date.now();
@@ -519,7 +588,7 @@ function showMusic() {
 
   // The cover's only fetched again once it's a different one.
   const cover = document.getElementById("cover");
-  const wanted = now && now.cover ? `/api/cover?for=${encodeURIComponent(now.cover)}` : "";
+  const wanted = now && now.cover ? forChosen(`/api/cover?for=${encodeURIComponent(now.cover)}`) : "";
   if (cover.dataset.for !== wanted) {
     cover.dataset.for = wanted;
     cover.hidden = true;
@@ -596,7 +665,7 @@ async function playMusic(body, say) {
 
 async function loadHome() {
   try {
-    const response = await fetch("/api/home");
+    const response = await fetch(forChosen("/api/home"));
     if (!response.ok) return;
     home = await response.json();
   } catch (error) {

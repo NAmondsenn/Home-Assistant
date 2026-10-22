@@ -46,6 +46,10 @@
       <section aria-labelledby="status-title">
         <h2 class="heading" id="status-title"><svg class="icon" aria-hidden="true"><use href="#i-pulse"></use></svg>Status</h2>
         <div class="tiles" id="status"></div>
+        <!-- Each satellite, and a choice of which to look after when there's more than one. -->
+        <h3 class="subheading">Satellites</h3>
+        <ul class="list" id="satellites"></ul>
+        <div class="chips" id="satellite-choice" role="group" aria-label="Look after" hidden></div>
         <!-- The microphone's mute, which Home Assistant can change too. -->
         <ul class="list microphone">
           <li id="microphone">
@@ -149,6 +153,7 @@
       <section aria-labelledby="sound-title">
         <h2 class="heading" id="sound-title"><svg class="icon" aria-hidden="true"><use href="#i-sound"></use></svg>Sound</h2>
         <div class="tiles single" id="volumes"></div>
+        <p class="panel note" id="volumes-missing" hidden>This satellite isn't connected, so its volumes can't be changed.</p>
         <p class="hint">As you drag, Nova beeps at the new level, so you can hear how loud it is.</p>
       </section>
 

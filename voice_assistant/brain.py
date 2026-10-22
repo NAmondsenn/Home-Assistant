@@ -188,14 +188,18 @@ class Brain:
         self.phrase = self._make_phrase()
 
         # The page for looking after Nova from a phone or a laptop, or None if it's
-        # switched off - see settings_page.py. What's a satellite's own on it is the
-        # default satellite's, while it's connected - see _put_on_page.
-        self.settings_page = SettingsPage.from_config(config, clock=self.clock, memory=self.memory, ntfy=self.ntfy,
-                                                      stt=self.stt, routines=self.routines,
-                                                      run_routine=self.run_routine, boop=self._boop,
-                                                      activity=self._activity)
+        # switched off - see settings_page.py. It looks each satellite's session up at
+        # every request, so it never holds one which has gone.
+        self.settings_page = SettingsPage.from_config(config, self)
 
     # The satellites
+
+    def satellites(self) -> List[str]:
+        """
+        Returns:
+            Every satellite which may connect, in the order they were added - connected or not.
+        """
+        return self.passwords.names()
 
     def default_satellite(self) -> Optional[str]:
         """
@@ -363,8 +367,6 @@ class Brain:
         if stopped:
             session.close()
             return None
-        if name == self.default_satellite():
-            self._put_on_page(session)
         return session
 
     def _catch_up(self, session: Session):
@@ -400,25 +402,6 @@ class Brain:
                 return
             del self.sessions[name]
             self._caught_up.discard(name)
-        if name == self.default_satellite():
-            self._put_on_page(None)
-
-    def _put_on_page(self, session: Optional[Session]):
-        """
-        Puts the default satellite's own volumes, music, lights and mute on the
-        settings page, while it's connected.
-
-        Args:
-            session: Its session, or None once it has gone.
-        """
-        page = self.settings_page
-        if page is None:
-            return
-        page.volume = session.volume if session else None
-        page.music = session.music_player if session else None
-        page.actions = session.actions if session else None
-        page.home = session.home if session else None
-        page.wake = session
 
     def _give_out_unowned(self):
         """
@@ -542,19 +525,6 @@ class Brain:
             except Exception as e:
                 logger.error(f"Couldn't check the routines: {e}")
             time.sleep(ROUTINE_CHECK)
-
-    # For the settings page
-
-    def _boop(self, level):
-        """Plays the volume beep at a level on the default satellite - see Session.boop."""
-        session = self.session_for(None)
-        if session is not None:
-            session.boop(level)
-
-    def _activity(self) -> str:
-        """What the default satellite's Nova is doing, for the settings page's star."""
-        session = self.session_for(None)
-        return session.activity if session is not None else "idle"
 
     # Starting and stopping
 

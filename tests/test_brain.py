@@ -187,10 +187,10 @@ def make_brain(tmp_path, monkeypatch, make_config, passwords):
     monkeypatch.setattr(brain_module, "Session", lambda brain, satellite: FakeSession(brain, satellite, happened))
     made = []
 
-    def make():
+    def make(**sections):
         # One announcement a round, and no pauses, so ringing never sleeps in a test.
         config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"}, backend={"port": 0},
-                             timers={"announcements": 1, "repeat_gap": 0})
+                             timers={"announcements": 1, "repeat_gap": 0}, **sections)
         made.append(brain_module.Brain(config))
         return made[-1]
 
@@ -560,18 +560,10 @@ def test_listening_for_satellites_tells_the_watchdog_the_brain_is_working(brain,
     assert wait_for(lambda: len(beats) >= 2)
 
 
-def test_the_settings_page_looks_after_the_default_satellite(brain, connect):
-    brain.settings_page = SimpleNamespace(volume=None, music=None, actions=None, home=None, wake=None)
-    serving(brain)
-    satellite = connect(brain)
-    session = connected(brain)
-    page = brain.settings_page
-    assert (page.volume, page.music, page.actions, page.home, page.wake) == (
-        session.volume, session.music_player, session.actions, session.home, session)
-
-    satellite.go()
-    assert wait_for(lambda: page.volume is None)
-    assert (page.music, page.actions, page.home, page.wake) == (None, None, None, None)
+def test_the_settings_page_is_given_the_brain_to_look_after_every_satellite_by(make_brain, make_config):
+    brain = make_brain(settings_page={"port": 8765, "allow": ["you@example.com"]})
+    assert brain.settings_page.brain is brain
+    assert brain.satellites() == ["bedroom", "kitchen"]
 
 
 # The brain's own start and stop
