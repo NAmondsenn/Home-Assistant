@@ -341,13 +341,19 @@ def world(tmp_path, monkeypatch, make_config):
 
     brains, satellites = [], []
 
-    def make_brain(port=0):
-        """A brain, listening for satellites."""
+    def make_brain(port=0, clock=False):
+        """
+        A brain, listening for satellites - its clock ringing what comes due, if asked,
+        started first, as Brain.run starts it.
+        """
         config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"}, backend={"port": port},
                              timers={"alarm_ring_duration": 10})
         made = brain_module.Brain(config)
         brains.append(made)
-        threading.Thread(target=made.serve, daemon=True).start()
+        if clock:
+            made.clock.start()
+        made.serving = threading.Thread(target=made.serve, daemon=True)
+        made.serving.start()
         assert wait_for(lambda: made._server is not None)
         return made
 
@@ -445,12 +451,14 @@ def test_an_alarm_rung_while_the_brain_restarted_rings_on_from_it(world):
     alarm = f"alarm-1@{int(due)}"
     assert wait_for(lambda: [entry["id"] for entry in satellite.alarms.due(due)] == [alarm])
 
+    # Gone, and its port free again. Its clock never ran, so it never rang the alarm.
     first.stop()
+    first.serving.join(5)
+    assert not first.serving.is_alive()
     assert wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
 
     # Back, with everything it saved, where the satellite knows to find it.
-    restarted = world.make_brain(port=first.port)
-    restarted.clock.start()
+    restarted = world.make_brain(port=first.port, clock=True)
     assert wait_for(lambda: caught_up(restarted))
 
     assert wait_for(lambda: restarted.clock.is_ringing("bedroom"))
