@@ -170,6 +170,13 @@ def record_until_silence(source, detector, listen_from: Optional[int] = None,
     return audio
 
 
+# How long a feed may go without any audio, while something is waiting for it, before
+# it counts as ended - the same as the microphone's stall timeout. A satellite which
+# drops off the network without a clean disconnect (a Wi-Fi drop, say) never says it
+# has finished, and nothing would otherwise wake the recording waiting on it.
+STALL_SECONDS = 2.0
+
+
 class AudioFeed:
     """
     A source of audio fed from elsewhere, such as a satellite's microphone arriving
@@ -179,7 +186,13 @@ class AudioFeed:
     fed is kept, since one feed is only ever one query's worth of audio.
     """
 
-    def __init__(self):
+    def __init__(self, stall_seconds: float = STALL_SECONDS):
+        """
+        Args:
+            stall_seconds: How long a reader waits with no new audio before the feed
+                is taken to have ended.
+        """
+        self.stall_seconds = stall_seconds
         self._samples = np.zeros(0, dtype=np.int16)
         # The position each piece fed ends at, and when it arrived, for time_at.
         self._arrivals: List[Tuple[int, float]] = []
@@ -246,10 +259,18 @@ class AudioFeed:
         ended, then returns them.
 
         Returns:
-            The samples - fewer than asked for, or none, only if the feed ended.
+            The samples - fewer than asked for, or none, only if the feed ended or
+            stalled.
         """
         with self._condition:
-            self._condition.wait_for(lambda: self._ended or len(self._samples) >= start + count)
+            while not self._ended and len(self._samples) < start + count:
+                heard = len(self._samples)
+                if not self._condition.wait_for(
+                        lambda: self._ended or len(self._samples) != heard,
+                        timeout=self.stall_seconds):
+                    logger.warning(f"No audio for {self.stall_seconds:.1f}s, "
+                                   f"taking the feed to have ended")
+                    self._ended = True
             return self._samples[start:start + count].copy()
 
 

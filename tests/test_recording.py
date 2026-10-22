@@ -1,5 +1,8 @@
 """Tests for recording until the user stops, from a feed of audio."""
 
+import threading
+import time
+
 import numpy as np
 
 from voice_assistant.recording import FRAME, RATE, AudioFeed, record_until_silence
@@ -57,3 +60,43 @@ def test_a_feed_with_no_speech_gives_nothing():
 
     assert len(audio) == 0
     assert audio.dtype == np.float32
+
+
+def test_a_recording_follows_audio_fed_from_another_thread():
+    feed = AudioFeed()
+
+    def feeder():
+        for value in [2000] * 5 + [0] * 10:
+            feed.feed(seconds(0.1, value))
+            time.sleep(0.01)
+
+    thread = threading.Thread(target=feeder)
+    thread.start()
+    audio = record(feed, listen_from=0)
+    thread.join()
+
+    assert 0.5 * RATE < len(audio) < 1.5 * RATE
+    assert np.all(audio[:int(0.4 * RATE)] > 0.05)
+
+
+def test_end_wakes_a_reader_already_waiting():
+    feed = AudioFeed()
+    feed.feed(seconds(0.5, 2000))
+    threading.Timer(0.2, feed.end).start()
+
+    started = time.monotonic()
+    audio = record(feed, listen_from=0)
+
+    assert time.monotonic() - started < 1.5
+    assert len(audio) == 0.5 * RATE // FRAME * FRAME
+
+
+def test_a_feed_which_stalls_counts_as_ended():
+    feed = AudioFeed(stall_seconds=0.2)
+    feed.feed(seconds(0.5, 2000))
+
+    started = time.monotonic()
+    audio = record(feed, listen_from=0)
+
+    assert time.monotonic() - started < 1.0
+    assert len(audio) == 0.5 * RATE // FRAME * FRAME
