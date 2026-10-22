@@ -424,13 +424,16 @@ class HomeAssistant:
             room isn't known." to begin with, when it isn't. "" if the lights couldn't
             be read.
         """
+        # Read with every request to Claude, so nothing here may lose the whole turn -
+        # a light Home Assistant gives oddly is the lights being unreadable, as much as
+        # Home Assistant being down is.
         try:
             lights = self._in_order(self.lights(timeout=timeout))
-        except (requests.RequestException, ValueError) as e:
+        except Exception as e:
             # Being turned down for want of an administrator's token is said once, by
             # _template, rather than with every request.
             if not _refused(e):
-                logger.error(f"Couldn't read the lights: {e}")
+                logger.error(f"Couldn't read the lights ({type(e).__name__}): {e}")
             return ""
         room = f"Nova is in the {self.area}." if self.area else "Nova's room isn't known."
         if not lights:

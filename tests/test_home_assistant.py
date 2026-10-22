@@ -517,6 +517,17 @@ def test_claude_is_told_nothing_when_the_lights_cant_be_read(make_home, answer):
     assert home.describe_lights() == ""
 
 
+@pytest.mark.parametrize("odd", [{"state": "on", "attributes": {}},
+                                 {"entity_id": "light.lamp", "attributes": {"color_mode": "hs", "hs_color": 240}},
+                                 "light.lamp"])
+def test_an_odd_light_leaves_claude_without_the_lights_not_without_a_reply(make_home, caplog, odd):
+    # They're read with every request to Claude, so anything going wrong here would
+    # lose the whole turn, rather than just the lights.
+    home = make_home({"/api/template": _rendered(LAMP_OFF, odd)})
+    assert home.describe_lights() == ""
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+
+
 def test_the_lights_can_be_asked_for_with_less_time_than_usual(make_home):
     # Claude is told the lights with every request, so a slow Home Assistant mustn't
     # hold each reply up for the usual five seconds.
