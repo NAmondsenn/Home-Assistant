@@ -37,8 +37,9 @@ REQUEST_RETRIES = 1
 CACHE_SECONDS = 600
 
 # Said when there's no Spotify login to use, rather than a bare "not authenticated" -
-# signing in again is done by hand, by running this module on the Pi (see the bottom).
-NOT_SIGNED_IN = "Spotify needs signing in again on the Pi."
+# signing in again is done by hand, by running this module on the brain, which drives
+# Spotify for every satellite (see the bottom).
+NOT_SIGNED_IN = "Spotify needs signing in again on the server."
 
 # About how big a cover the settings page is given, in pixels a side - Spotify has
 # each in a few sizes.
