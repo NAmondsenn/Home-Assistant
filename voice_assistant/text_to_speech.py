@@ -75,7 +75,7 @@ class TextToSpeech:
         # Stores the config and resolves the paths to Piper TTS and the voice model.
         self.config = config
         self.piper_path = os.path.join(paths.MODELS_DIR, "piper", "piper")
-        self.model_path = os.path.join(paths.MODELS_DIR, "en_GB-cori-medium.onnx")
+        self.model_path = os.path.join(paths.MODELS_DIR, "en_US-hfc_female-medium.onnx")
 
         # Reads the assistant's name from the "assistant" section in config.yaml.
         assistant_config = self.config.section("assistant")
