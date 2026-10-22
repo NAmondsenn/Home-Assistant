@@ -27,8 +27,8 @@ SERVICE_TEMPLATE="${PROJECT_DIRECTORY}/${SERVICE_NAME}.service"
 SERVICE_FILE="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
 
 PIPER_VERSION="2023.11.14-2"
-VOICE_MODEL="en_GB-cori-medium"
-VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/medium"
+VOICE_MODEL="en_US-hfc_female-medium"
+VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/hfc_female/medium"
 
 # The SHA-256 of everything downloaded and then run or trusted, so a tampered
 # release or mirror stops setup rather than being run on the Pi. Taken from the
@@ -38,8 +38,8 @@ VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/c
 # VOICE_MODEL means updating these too.
 PIPER_SHA256_AARCH64="fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb"
 PIPER_SHA256_X86_64="a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
-VOICE_SHA256_MODEL="1899f98e5fb8310154f3c2973f4b8a929ba7245e722b3d3a85680b833d95f10d"
-VOICE_SHA256_CONFIG="e262c16d7f192f69d4edd6b4ef8a5915379e67495fcc402f1ab15eeb33da3d36"
+VOICE_SHA256_MODEL="914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7"
+VOICE_SHA256_CONFIG="03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c58b6c"
 RASPOTIFY_KEY_SHA256="36dd5aadd073950d55c404f0e0c6c2e0555259bf38bd8b6448c35591a3cc9cfd"
 
 ASSUME_YES=false

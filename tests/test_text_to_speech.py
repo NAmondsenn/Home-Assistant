@@ -38,9 +38,9 @@ def tts(tmp_path, monkeypatch, make_config):
     piper.parent.mkdir(parents=True)
     piper.write_text(FAKE_PIPER)
     piper.chmod(0o755)
-    voice = tmp_path / "models" / "en_GB-cori-medium.onnx"
+    voice = tmp_path / "models" / "en_US-hfc_female-medium.onnx"
     voice.write_text("")
-    (tmp_path / "models" / "en_GB-cori-medium.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 16000}}))
+    (tmp_path / "models" / "en_US-hfc_female-medium.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 16000}}))
     log = tmp_path / "piper.log"
     monkeypatch.setenv("FAKE_PIPER_LOG", str(log))
     monkeypatch.setattr(text_to_speech.paths, "MODELS_DIR", str(tmp_path / "models"))
