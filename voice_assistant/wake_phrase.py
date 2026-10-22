@@ -20,7 +20,7 @@ def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
     Removes the wake word from the start of a transcription.
 
     A recording starts a moment before the wake word was detected (see
-    Microphone.record_until_silence), so its end is sometimes transcribed too -
+    recording.record_until_silence), so its end is sometimes transcribed too -
     "Nova. Stop." - which would stop a short reply like that being recognised as
     dismissing a timer, since every word of one has to be a dismissal.
 

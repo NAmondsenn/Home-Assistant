@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from voice_assistant.config import Config
 from voice_assistant.microphone import RATE, Microphone
+from voice_assistant.recording import record_until_silence
 from voice_assistant.speaker import Speaker
 from voice_assistant.vad import make_detector
 
@@ -48,13 +49,13 @@ def check_audio():
     microphone = Microphone(sample_rate=mic_rate)
     speaker = Speaker(sample_rate=mic_rate)
     try:
-        # Records through the same microphone stream and speech detector main.py uses,
+        # Records through the same microphone stream and speech detector the satellite uses,
         # which keep their audio at 16kHz.
         print("-" * 60)
         print("[2/3] Recording until you stop talking")
         input("Press Enter, then speak and pause when you're done...")
-        recording = microphone.record_until_silence(
-            make_detector(config),
+        recording = record_until_silence(
+            microphone, make_detector(config),
             silence_duration=thresholds_config.get('silence_duration', 0.6),
             timeout=10.0
         )

@@ -8,17 +8,12 @@ installed (as it is on the Pi), and is skipped anywhere it isn't.
 
 import os
 import signal
-import socket
 
 import pytest
 
 np = pytest.importorskip("numpy")
 
 import backend
-from voice_assistant.speech_to_text import BackendSpeechToText
-
-TOKEN = "correct-horse-battery-staple"
-
 
 # Running the brain
 
@@ -76,51 +71,6 @@ def test_a_restart_from_the_settings_page_exits_with_the_status_systemd_restarts
         backend.main([])
     assert stopped.value.code == backend.RESTART_EXIT_STATUS
     assert "RestartForceExitStatus=75" in open(os.path.join(os.path.dirname(backend.__file__), "nova-backend.service")).read()
-
-
-# A Pi running Nova by itself
-
-class FakeLocal:
-    """Stands in for the Pi's own speech-to-text."""
-
-    def __init__(self):
-        self.transcribed = None
-
-    def transcribe(self, audio):
-        self.transcribed = len(audio)
-        return {"text": "Heard on the Pi."}
-
-    def listen(self):
-        return "listening on the Pi"
-
-
-@pytest.fixture
-def local():
-    """Loads the Pi's own speech-to-text when asked, keeping each one loaded."""
-    loaded = []
-
-    def load():
-        loaded.append(FakeLocal())
-        return loaded[-1]
-
-    return loaded, load
-
-
-def _nothing_listening():
-    """An address nothing is listening on."""
-    with socket.socket() as spare:
-        spare.bind(("127.0.0.1", 0))
-        return f"127.0.0.1:{spare.getsockname()[1]}"
-
-
-def test_with_the_backend_down_the_pis_own_is_loaded_straight_away(local):
-    loaded, load = local
-    stt = BackendSpeechToText(_nothing_listening(), TOKEN, load)
-    try:
-        assert len(loaded) == 1 and not stt.reachable
-        assert stt.listen() == "listening on the Pi"
-    finally:
-        stt.close()
 
 
 # The satellites' passwords

@@ -213,8 +213,8 @@ find_wake_word_model() {
     fi
 }
 
-# Downloads whatever models aren't there yet - Piper and its voice, the Whisper models
-# config.yaml names, and openWakeWord's own. Run by update.sh too, for any new ones.
+# Downloads whatever models aren't there yet - Piper and its voice, and
+# openWakeWord's own. Run by update.sh too, for any new ones.
 download_models() {
     step "Models"
     mkdir -p "$MODELS_DIRECTORY"
@@ -250,37 +250,14 @@ download_models() {
             done_ "${file}"
         fi
     done
-    # Into the folder config.yaml names, rather than left to the first start - which
-    # then needed the internet, and kept them in ~/.cache, where clearing the cache
-    # broke the next offline boot.
+    # Now, rather than left to the first start, which would need the internet.
     (cd "$PROJECT_DIRECTORY" && "$PYTHON" - <<'EOF'
-import os
-from faster_whisper.utils import download_model
 from openwakeword.utils import download_models
-from voice_assistant import paths
-from voice_assistant.config import Config
 
-config = Config()
-whisper = config.section("whisper")
-root = os.path.join(paths.PROJECT_DIRECTORY, whisper["download_root"])
-for name in filter(None, [whisper.get("model"), whisper.get("fallback_model")]):
-    # Looked for locally first, so one already there isn't checked online every update.
-    try:
-        download_model(name, cache_dir=root, local_files_only=True)
-    except Exception:
-        download_model(name, cache_dir=root)
 download_models()
-
-# Moonshine's model, if that's the speech-to-text in use. It keeps the files it has.
-if config.section("speech_to_text").get("engine") == "moonshine":
-    import moonshine_voice
-    moonshine = config.section("moonshine")
-    architecture = moonshine_voice.string_to_model_arch(moonshine["model"].strip().lower().replace("_", "-"))
-    moonshine_voice.get_model_for_language("en", architecture, on_progress=lambda fraction, name: None,
-                                           cache_root=os.path.join(paths.PROJECT_DIRECTORY, moonshine["download_root"]))
 EOF
     )
-    done_ "Whisper, Moonshine and openWakeWord models are in place"
+    done_ "openWakeWord models are in place"
 }
 
 # Lets the assistant and Spotify share the speaker and microphone. Without it, whichever

@@ -23,7 +23,7 @@ import numpy as np
 import sounddevice as sd
 import soxr
 
-from voice_assistant import recording, watchdog
+from voice_assistant import watchdog
 from voice_assistant.dropouts import Dropouts
 # Where the recording algorithm and its constants now live; named here too so the
 # tests, and anything else which reached for them on the microphone, still find them.
@@ -272,21 +272,6 @@ class Microphone:
         with self._condition:
             self._last_activity = time.monotonic()
             self._retry_delay = min(self._retry_delay * 2, MAX_RETRY_SECONDS)
-
-    def record_until_silence(self, detector, **settings) -> np.ndarray:
-        """
-        Records until the user has spoken and then gone quiet, or a timeout is reached.
-
-        Args:
-            detector: Says how likely each frame is to be speech - see vad.py.
-            **settings: Everything else recording.record_until_silence takes, which
-                describes it in full.
-
-        Returns:
-            The recording as float32 samples at 16kHz, or an empty array if the user
-            never started talking.
-        """
-        return recording.record_until_silence(self, detector, **settings)
 
     def close(self):
         """Stops the stream for good."""

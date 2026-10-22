@@ -652,7 +652,7 @@ def test_unanswered_alarm_shows_up_as_missed(make_clock):
 
 
 def test_a_reminder_nobody_answers_is_passed_on_once_it_stops_ringing(make_clock):
-    # So it can be sent to the user's phone - see brain.py's _unanswered.
+    # So it can be sent to the user's phone - see the brain's _unanswered.
     unanswered = []
     clock = make_clock(on_unanswered=lambda timer, kind, satellite: unanswered.append((timer["label"], kind)))
     clock.set_timer(60, label="take the bins out")

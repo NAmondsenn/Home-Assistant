@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Full Voice Pipeline Test
-Tests the complete flow: Record -> Whisper -> Claude -> Piper -> Output
+Tests the complete flow: Record -> Nemotron -> Claude -> Piper -> Output
 
 Run manually to check the full pipeline works end-to-end without needing
 the wake word detector.
@@ -19,7 +19,10 @@ from voice_assistant.config import Config
 from voice_assistant.microphone import Microphone
 from voice_assistant.speaker import Speaker
 from voice_assistant.vad import make_detector
-from voice_assistant.speech_to_text import SpeechToText
+from voice_assistant.nemotron import Nemotron
+from voice_assistant.speech_to_text import NemotronSpeechToText
+from voice_assistant import paths
+from voice_assistant.recording import record_until_silence
 from voice_assistant.llm import LLMHandler
 from voice_assistant.text_to_speech import TextToSpeech
 
@@ -51,19 +54,13 @@ def test_pipeline():
     mic_rate = audio_config.get('sample_rate', 48000)
 
     # Recording and playback go through the same microphone stream, speech detector
-    # and speaker main.py uses.
+    # and speaker the satellite uses.
     microphone = Microphone(sample_rate=mic_rate)
     speaker = Speaker(sample_rate=mic_rate)
     speech_detector = make_detector(config)
 
-    # Retrieves Whisper config
-    whisper_config = config.section('whisper')
-    stt = SpeechToText(
-        model_size=whisper_config.get('model', 'base.en'),
-        device=whisper_config.get('device', 'cpu'),
-        compute_type=whisper_config.get('compute_type', 'int8'),
-        fallback_model=whisper_config.get('fallback_model', 'tiny.en')
-    )
+    # Nemotron is the brain's speech-to-text, so this runs where it's installed.
+    stt = NemotronSpeechToText(Nemotron(os.path.join(paths.PROJECT_DIRECTORY, config.section('backend').get('model'))))
 
     # LLMHandler pulls its configuration from config.yaml
     llm = LLMHandler(config=config, api_key=None)  # api_key loaded from .env
@@ -94,9 +91,9 @@ def test_pipeline():
         try:
             # Step 1: Record audio
             print("\n[1/4] Recording... (speak now, will auto-stop on silence)")
-            # Already at Whisper's rate, since the microphone keeps its audio at 16kHz.
-            audio_data = microphone.record_until_silence(
-                speech_detector,
+            # Already at the speech model's rate, since the microphone keeps its audio at 16kHz.
+            audio_data = record_until_silence(
+                microphone, speech_detector,
                 silence_duration=config.section('thresholds').get('silence_duration', 0.6),
                 timeout=10.0
             )
@@ -111,7 +108,7 @@ def test_pipeline():
                 continue
 
             text = transcription['text']
-            # How sure Whisper was of the language - always 1 for an English-only model.
+            # How sure the model was of the language - always 1 for an English-only model.
             language_probability = transcription.get('language_probability', 0)
 
             print(f"Transcription: '{text}'")

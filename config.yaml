@@ -55,46 +55,10 @@ spotify:
   device_name: "Voice-Assistant"
   pause_while_speaking: true
 
-speech_to_text:
-  # Which model turns speech into text: "moonshine", or "whisper" (below). Measured on
-  # the Pi, Moonshine took 0.8s where Whisper took 2.2s, with fewer words wrong.
-  engine: "moonshine"
-
-moonshine:
-  # "small-streaming" suits the Pi. "tiny-streaming" is quicker, at 0.35s, but got
-  # twice as many words wrong as Whisper; "medium-streaming" was slower, not better.
-  model: "small-streaming"
-  # Where the model files are kept, inside the project. setup.sh downloads them here.
-  download_root: "models/moonshine"
-  # Words to listen out for - names it would otherwise mishear. No commas in them.
-  keyterms: ["Nova", "Hey Nova", "Spotify", "Navidrome", "uni"]
-
-whisper:
-  model: "base.en"
-  # Where the model files are kept, inside the project. setup.sh downloads them here,
-  # so the first start doesn't need the internet.
-  download_root: "models/whisper"
-  device: "cpu"
-  compute_type: "int8"
-  fallback_model: "tiny.en"
-  # How many guesses at the words Whisper keeps open as it goes. Higher is meant to be
-  # more accurate, but on 20 spoken commands on the Pi, 1 heard them as well as 5 did
-  # and was 0.15s quicker - nearly all of Whisper's time goes on listening to the
-  # audio, not on choosing the words.
-  beam_size: 1
-  # Words the model is told to expect, which biases it towards the names this
-  # assistant actually hears rather than similar sounding ones.
-  initial_prompt: >-
-    Hey Nova. Play some music. Pause Spotify, skip this track, shuffle,
-    repeat, play my playlist. Set a timer, set a reminder, cancel the timer.
-    Turn off the kitchen lights. What have I got on Thursday? What time is it?
-    What's the weather?
-
 backend:
   # Nova's backend on PVE2, which does the speech-to-text for this Pi - see
-  # docs/decisions/0004 - as "name:port" on the tailnet, e.g. "nova:10400". Left
-  # empty, this Pi does it all itself, as above. Both need the same password, as
-  # NOVA_BACKEND_TOKEN in ~/.config/nova/.env.
+  # docs/decisions/0004 - as "name:port" on the tailnet, e.g. "nova:10400". Both
+  # need the same password, as NOVA_BACKEND_TOKEN in ~/.config/nova/.env.
   address: ""
   # This satellite's name, which the brain knows its password by - see add-satellite
   # in backend.py. Left empty, it's this machine's own name.
