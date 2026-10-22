@@ -90,6 +90,30 @@ def test_stopping_part_way_stops_piper(tts):
     assert taken[0].poll() is not None
 
 
+def test_two_sessions_can_speak_at_once(tts):
+    # The brain's one Piper is every satellite's, so two of them can be saying
+    # something at the same moment - each with a Piper process of its own.
+    import threading
+
+    begun = threading.Barrier(2, timeout=5)
+    heard = {}
+
+    def speak(satellite, text):
+        pieces = tts.stream(text, remember=False)
+        first = next(pieces)
+        # Neither finishes before both have begun.
+        begun.wait()
+        heard[satellite] = len(first) + sum(len(piece) for piece in pieces)
+
+    speakers = [threading.Thread(target=speak, args=("bedroom", "slow one two")),
+                threading.Thread(target=speak, args=("kitchen", "slow one two three four"))]
+    for speaker in speakers:
+        speaker.start()
+    for speaker in speakers:
+        speaker.join(5)
+    assert heard == {"bedroom": 300, "kitchen": 500}
+
+
 def test_something_said_again_soon_comes_from_memory(tts):
     # A timer says the same thing every round until it's dismissed.
     list(tts.stream("Your timer is done"))

@@ -29,7 +29,7 @@ def make_clock(tmp_path, monkeypatch, make_config):
     monkeypatch.setattr(clock_module, "TIMERS_FILE", str(tmp_path / "timers.json"))
     monkeypatch.setattr(clock_module, "ALARMS_FILE", str(tmp_path / "alarms.json"))
 
-    def factory(on_announce=None, on_unanswered=None, on_change=None, **timers_config):
+    def factory(on_announce=None, on_unanswered=None, on_change=None, can_hear=None, **timers_config):
         # One announcement per round and no pauses, so ringing never sleeps in a test.
         settings = {"announcements": 1, "repeat_gap": 0, **timers_config}
         announced = []
@@ -40,7 +40,7 @@ def make_clock(tmp_path, monkeypatch, make_config):
                 on_announce(made, announced[-1])
 
         made = Clock(on_timer_finished=announce, config=make_config(timers=settings), start=False,
-                     on_unanswered=on_unanswered, on_change=on_change)
+                     on_unanswered=on_unanswered, on_change=on_change, can_hear=can_hear)
         made.announced = announced
         return made
 
@@ -951,6 +951,47 @@ def test_what_rang_while_away_isnt_announced_as_missed(make_clock, tmp_path):
     clock._tick(time.time())
     assert len(clock.announced) == 1
     assert clock.announced[0]["message"].startswith("While I was off: your 15 minutes timer.")
+
+
+def test_whats_missed_waits_until_its_satellite_can_hear_it(make_clock, tmp_path):
+    # The brain was off as both came due, and neither satellite is back to say what it
+    # rang from its copy meanwhile - so neither can be told yet what it missed.
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 90, "duration": 900, "label": None, "satellite": "kitchen"}]}))
+    back = set()
+    clock = make_clock(can_hear=lambda satellite: satellite in back)
+    clock._tick(time.time())
+    assert clock.announced == []
+
+    back.add("bedroom")
+    clock._tick(time.time())
+    clock._tick(time.time())
+    assert [entry["satellite"] for entry in clock.announced] == ["bedroom"]
+    # The kitchen's is still kept for it.
+    clock.apply_away("kitchen", rang=[f"timer-2@{int(now - 90)}"], dismissed=[])
+    back.add("kitchen")
+    clock._tick(time.time())
+    assert len(clock.announced) == 1
+
+
+def test_a_clock_made_without_its_thread_can_be_started_later(make_clock):
+    # The brain makes its clock without, so it can give what rings on no satellite to
+    # the default before anything rings.
+    clock = make_clock()
+    clock.check_interval = 0.01
+    clock.set_timer(60)
+    for timer in clock._timers.values():
+        timer["due_at"] = time.time() - 1
+    clock.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not clock.announced and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert clock.announced[0]["message"] == "Timer for 1 minute."
+    finally:
+        clock.stop()
 
 
 def test_an_alarm_saved_without_an_id_gets_one(make_clock, tmp_path):

@@ -1,6 +1,6 @@
 [Unit]
-# systemd service for Nova's backend, in its own container on PVE2 - see backend.py
-# and docs/decisions/0004.
+# systemd service for Nova's brain, in its own container on PVE2 - see backend.py
+# and docs/decisions/0006.
 #
 # This is a template. Installed as root, with the user it runs as and where the
 # project is filled in:
@@ -9,19 +9,24 @@
 #       nova-backend.service > /etc/systemd/system/nova-backend.service
 #   systemctl daemon-reload
 #   systemctl enable --now nova-backend
-Description=Nova's backend
+Description=Nova's brain
 # Tailscale passes the tailnet's connections on to it.
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
 [Service]
+# It tells systemd once it has loaded, then keeps telling it it's still working, so a
+# brain which has hung is restarted rather than left sitting there - see
+# voice_assistant/watchdog.py.
+Type=notify
+WatchdogSec=60
 User=__USER__
 WorkingDirectory=__PROJECT_DIRECTORY__
 ExecStart=__PROJECT_DIRECTORY__/venv/bin/python __PROJECT_DIRECTORY__/backend.py
 
-# What it writes - its log - is readable by its own user only, and it can never gain
-# more privileges than it starts with. Everything but its own data folder is
-# read-only to it, since all it does is listen and hear.
+# What it writes - its log, and the user's timers, alarms, memory and routines - is
+# readable by its own user only, and it can never gain more privileges than it starts
+# with. Everything but its own data folder is read-only to it.
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -29,7 +34,7 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/__USER__/.local/share/nova
 
-# Loading Nemotron takes a few seconds; a crash is restarted after a short pause.
+# Loading Piper and Nemotron takes a few seconds; a crash is restarted after a short pause.
 TimeoutStartSec=120
 Restart=on-failure
 RestartSec=10

@@ -255,7 +255,8 @@ class Clock:
     def __init__(self, on_timer_finished: Optional[Callable[..., None]] = None,
                  check_interval: float = 0.5, config=None, start: bool = True,
                  on_unanswered: Optional[Callable[..., None]] = None,
-                 on_change: Optional[Callable[[], None]] = None):
+                 on_change: Optional[Callable[[], None]] = None,
+                 can_hear: Optional[Callable[[Optional[str]], bool]] = None):
         """
         Args:
             on_timer_finished: Called with (message, sound, boost, still_wanted=...,
@@ -273,13 +274,24 @@ class Clock:
                        copy (see copy_for) can be brought up to date. Called on
                        whichever thread made the change, the clock's own among them,
                        so it mustn't wait on anything either.
+            can_hear: Called with a satellite's name - or None, for something which
+                      rings on no satellite - to ask whether it's there to be told
+                      what came due while the brain was off: connected, and having
+                      said what it rang from its copy meanwhile (see apply_away). Each
+                      is kept until it is, rather than said to nobody - or said for
+                      something the satellite rang itself. Called with the clock's
+                      lock held, so it mustn't wait on anything, nor call the clock.
+                      None says them all at the first tick.
             check_interval: How often the background thread checks for due timers.
-            start: Whether to start the background thread. Only the tests turn
-                   this off, so they can step the clock along with _tick() instead.
+            start: Whether to start the background thread now. The brain starts it
+                   later, once it has given what rings on no satellite to the
+                   default (see start), and the tests never do, so they can step
+                   the clock along with _tick() instead.
         """
         self.on_timer_finished = on_timer_finished
         self.on_unanswered = on_unanswered
         self.on_change = on_change
+        self.can_hear = can_hear
         self.check_interval = check_interval
 
         self._timers: Dict[int, Dict] = {}
@@ -353,16 +365,20 @@ class Clock:
         self._load_alarms()
 
         self._running = True
-        # A daemon thread so it never keeps the assistant alive on shutdown.
         # Each round of ringing runs on a thread of its own when the clock has its
         # background thread - see _run_round. The tests step through without one,
         # so there a round simply runs in whatever called it.
-        self._rounds_on_threads = start
+        self._rounds_on_threads = False
 
         if start:
-            self._thread = threading.Thread(target=self._run, daemon=True, name="clock")
-            self._thread.start()
+            self.start()
 
+    def start(self):
+        """Starts the background thread, which rings everything as it comes due."""
+        self._rounds_on_threads = True
+        # A daemon thread so it never keeps the assistant alive on shutdown.
+        self._thread = threading.Thread(target=self._run, daemon=True, name="clock")
+        self._thread.start()
         logger.info("Clock started")
 
     def _save(self):
@@ -712,10 +728,15 @@ class Clock:
 
         # Anything which came due while the assistant was off is announced first,
         # with a note that it's late so the user isn't misled. It's only mentioned,
-        # not rung - by the time it's noticed, the moment's passed.
+        # not rung - by the time it's noticed, the moment's passed. Each waits until
+        # its satellite can hear it - see can_hear.
         if self._missed:
             with self._lock:
-                missed, self._missed = self._missed, []
+                missed, waiting = [], []
+                for item in self._missed:
+                    ready = self.can_hear is None or self.can_hear(item["satellite"])
+                    (missed if ready else waiting).append(item)
+                self._missed = waiting
             for item in missed:
                 late = format_duration(now - item["due_at"])
                 if item.get("kind") == "alarm":

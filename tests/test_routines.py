@@ -31,6 +31,13 @@ def test_a_routine_is_kept_as_the_page_sent_it_tidied(routines, tmp_path):
     assert Routines(path=str(tmp_path / "routines.json")).all() == [routine]
 
 
+def test_a_routine_keeps_the_satellite_it_runs_on(routines):
+    # None runs it on the default satellite.
+    assert routines.save(MORNING)["routine"]["satellite"] is None
+    dinner = routines.save({**MORNING, "name": "Dinner", "phrases": "dinner", "satellite": " kitchen "})
+    assert dinner["routine"]["satellite"] == "kitchen"
+
+
 def test_changing_a_routine_keeps_it_one_routine(routines):
     routine = routines.save(MORNING)["routine"]
     changed = routines.save({**routine, "steps": ["what's the weather"]})
@@ -40,7 +47,8 @@ def test_changing_a_routine_keeps_it_one_routine(routines):
 
 @pytest.mark.parametrize("changes, said", [({"name": " "}, "needs a name"), ({"steps": "\n \n"}, "something to do"),
                                            ({"at": "25:00"}, "isn't a time"), ({"repeat": "fortnightly"}, "can run"),
-                                           ({"steps": ["x"] * 11}, "10 steps")])
+                                           ({"steps": ["x"] * 11}, "10 steps"),
+                                           ({"satellite": "x" * 61}, "satellite's name")])
 def test_a_routine_which_doesnt_make_sense_isnt_kept(routines, changes, said):
     result = routines.save({**MORNING, **changes})
     assert not result["success"] and said in result["message"]

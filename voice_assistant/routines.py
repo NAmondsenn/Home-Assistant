@@ -94,10 +94,16 @@ def _checked(given: Dict) -> Dict:
     if any(len(step) > LONGEST_STEP for step in steps):
         raise ValueError("One of those steps is too long.")
 
+    # The satellite it runs on at its time, by name - or None for the default one, the
+    # first added (see SatellitePasswords).
+    satellite = str(given.get("satellite") or "").strip()
+    if len(satellite) > LONGEST_NAME:
+        raise ValueError("That satellite's name is too long.")
+
     known = str(given.get("id") or "")
     return {"id": known if re.fullmatch(r"[a-z0-9]{1,16}", known) else uuid.uuid4().hex[:8], "name": name,
             "phrases": phrases, "at": f"{int(found[1]):02d}:{found[2]}" if at else "", "repeat": repeat,
-            "steps": steps}
+            "steps": steps, "satellite": satellite or None}
 
 
 class Routines:
