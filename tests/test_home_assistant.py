@@ -289,6 +289,52 @@ def test_the_page_is_told_when_home_assistant_cant_be_reached(make_home, down):
     assert make_home(down).overview() == {"success": False, "message": "I can't reach Home Assistant right now."}
 
 
+@pytest.mark.parametrize("status", [401, 403])
+def test_without_an_administrators_token_the_page_still_has_the_lights(make_home, status):
+    # Home Assistant only renders templates for an administrator, which Nova's user
+    # needn't be - so the lights come from the states instead, as they did before
+    # Nova had rooms, just without theirs.
+    kitchen = {"entity_id": "light.kitchen", "state": "on",
+               "attributes": {"friendly_name": "Kitchen", "brightness": 128, "supported_color_modes": ["color_temp"],
+                              "color_mode": "color_temp", "color_temp_kelvin": 3000, "min_color_temp_kelvin": 2500,
+                              "max_color_temp_kelvin": 6500, "icon": "mdi:ceiling-light"}}
+    home = make_home({"/api/states": STATES + [kitchen], "/api/template": FakeResponse({}, status=status)})
+    overview = home.overview()
+
+    assert overview["lights"] == [{"id": "light.kitchen", "name": "Kitchen", "area": None, "on": True,
+                                   "reachable": True, "dimmable": True, "brightness": 50,
+                                   "colour_modes": ["color_temp"], "hue": None, "saturation": None, "kelvin": 3000,
+                                   "min_kelvin": 2500, "max_kelvin": 6500}]
+    assert [routine["id"] for routine in overview["routines"]] == ["script.movie_night", "scene.relax"]
+
+
+def test_the_page_is_told_when_home_assistant_fails_at_the_lights_otherwise(make_home):
+    home = make_home({"/api/states": [], "/api/template": FakeResponse({}, status=500)})
+    assert home.overview() == {"success": False, "message": "Home Assistant had a problem with that."}
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_token_which_isnt_an_administrators_is_said_once(make_home, caplog, status):
+    # Nova's device is looked for every half a minute, and the lights read for Claude
+    # with every request, so a line each time would bury the one which says what to do.
+    home = make_home({"/api/states": [], "/api/template": FakeResponse({}, status=status)})
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        for _ in range(3):
+            assert home.find_device("nova_home_assistant") is False
+            assert home.describe_lights() == ""
+            home.overview()
+        assert len(caplog.records) == 1 and caplog.records[0].levelname == "WARNING"
+        assert "administrator" in caplog.records[0].message
+
+        # Made an administrator, the same token works - and if that's undone, it's said again.
+        home._session.answers["/api/template"] = FakeResponse("da94|Bedroom")
+        assert home.find_device("nova_home_assistant") is True
+        home._session.answers["/api/template"] = FakeResponse({}, status=status)
+        home.describe_lights()
+        home.describe_lights()
+    assert sum("administrator" in message for message in caplog.messages) == 2
+
+
 def test_a_light_is_switched_and_dimmed_by_its_own_id(make_home):
     home = make_home({"/api/services/light/turn_on": [], "/api/services/light/turn_off": []})
     assert home.set_light("light.kitchen", on=False)["success"]

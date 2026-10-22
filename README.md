@@ -106,7 +106,7 @@ venv/bin/python -m voice_assistant.spotify_controller
 
 Nova asks Home Assistant for things in plain words, through its own Assist, so it can only reach the devices you've exposed to Assist - nothing else in Home Assistant. Whatever's exposed, it never locks, unlocks or opens anything by voice.
 
-1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in, **not** an administrator.
+1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in. Knowing Nova's room, and Claude working the lights, need it to be an administrator, as Home Assistant only lets administrators ask what's in which room. As an ordinary user, Nova still works through Assist, without rooms.
 2. Log in as that user, and under its profile > Security, make a long-lived access token.
 3. On the Pi, add it to `~/.config/nova/.env` yourself - it's a password, so don't paste it anywhere else:
 
@@ -141,7 +141,7 @@ Nova can also be a device of its own in Home Assistant, through its MQTT broker 
      host: "192.168.1.20"
      username: "nova"
    ```
-4. Restart Nova, and the device appears in Home Assistant. Put it in an area (its page > the pencil > Area): that's how Nova knows what room it's in, so "lights on" means that room's lights. It looks every half a minute until Home Assistant has the device, then every five minutes, so giving it an area or moving it takes a few minutes to be noticed.
+4. Restart Nova, and the device appears in Home Assistant. Put it in an area (its page > the pencil > Area): with an administrator's `HA_TOKEN`, that's how Nova knows what room it's in, so "lights on" means that room's lights. It looks every half a minute until Home Assistant has the device, then every five minutes, so giving it an area or moving it takes a few minutes to be noticed.
 
 The microphone switch works from Home Assistant or the settings page, and stays as it was through a restart. While it's muted, Nova doesn't hear "Hey Nova", but what you send it with Speak is still said.
 

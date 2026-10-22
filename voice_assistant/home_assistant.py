@@ -19,6 +19,11 @@ The settings page names devices itself, as there's nothing to mishear: it lists 
 lights, to switch and dim, and the scripts and scenes, to run - but nothing else,
 and still no script or scene whose name says it locks or opens anything.
 
+Knowing what's in which room - the room Nova's in, and the lights' - takes an
+administrator's token, as Home Assistant only answers templates for one. With an
+ordinary user's, Nova goes through Assist alone, and the settings page has the
+lights without their rooms.
+
 The calendar is whichever calendars Home Assistant has, such as a Google Calendar
 added through its Google Calendar integration.
 """
@@ -159,6 +164,8 @@ class HomeAssistant:
         # Whether looking for it last failed, or found no such device - see find_device.
         self._lookup_failing = False
         self._device_missing = False
+        # Whether Home Assistant last turned a template down - see _template.
+        self._templates_refused = False
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -195,6 +202,40 @@ class HomeAssistant:
         response = self._session.request(method, self.url + path, timeout=timeout, **kwargs)
         response.raise_for_status()
         return response
+
+    def _template(self, template: str, timeout: Optional[float] = None) -> str:
+        """
+        Has Home Assistant render a template - the only way to ask it what's in which
+        room, for Nova's own and the lights'.
+
+        Args:
+            template: The template, in Home Assistant's Jinja.
+            timeout: Seconds to wait for Home Assistant, or None for REQUEST_TIMEOUT.
+
+        Returns:
+            What it rendered, as plain text.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down, as it does for a token which isn't an administrator's.
+        """
+        # Nova's user needn't be an administrator, and templates are asked for every
+        # half a minute while Nova's device is looked for, and with every request to
+        # Claude - so being turned down is said once, until a template's rendered again.
+        try:
+            text = self._request("POST", "/api/template", timeout=timeout, json={"template": template}).text
+        except requests.HTTPError as e:
+            if _refused(e):
+                if not self._templates_refused:
+                    logger.warning(f"Home Assistant won't tell Nova what's in which room ({e.response.status_code}) "
+                                   f"- HA_TOKEN needs to be an administrator's for Nova's room and Claude's lights, "
+                                   f"so until then Nova goes through Assist alone")
+                self._templates_refused = True
+            raise
+        if self._templates_refused:
+            logger.info("Home Assistant tells Nova what's in which room now")
+        self._templates_refused = False
+        return text
 
     @staticmethod
     def _failure_message(error: Exception) -> str:
@@ -266,8 +307,12 @@ class HomeAssistant:
         # every time: Home Assistant being down, or it not having Nova's device.
         template = FIND_DEVICE_TEMPLATE.replace("IDENTIFIER", identifier)
         try:
-            text = self._request("POST", "/api/template", json={"template": template}).text
+            text = self._template(template)
         except requests.RequestException as e:
+            # Turned down for want of an administrator's token, which _template has
+            # said already - Home Assistant's there, so the lookup isn't failing.
+            if _refused(e):
+                return False
             if not self._lookup_failing:
                 logger.error(f"Couldn't ask Home Assistant which device Nova is, so trying again: {e}")
             self._lookup_failing = True
@@ -299,12 +344,20 @@ class HomeAssistant:
 
         Returns:
             Dict with 'success', and 'lights' and 'routines', or a 'message'. Each light
-            is as lights() has it, and 'dimmable' as well: whether it does more than
+            is as lights() has it - in no area if Home Assistant won't say, without an
+            administrator's token - and 'dimmable' as well: whether it does more than
             switch on and off.
         """
         try:
             states = self._request("GET", "/api/states").json()
-            lights = self.lights()
+            try:
+                lights = self.lights()
+            except requests.HTTPError as e:
+                if not _refused(e):
+                    raise
+                # The lights are among the states too, just without their rooms - so the
+                # page still has them, as it did before Nova knew about rooms.
+                lights = [_light(state) for state in states if LIGHT.fullmatch(state.get("entity_id") or "")]
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
@@ -336,10 +389,11 @@ class HomeAssistant:
             to a white. Whichever it isn't set to is None.
 
         Raises:
-            requests.RequestException: If Home Assistant couldn't be asked.
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down - see _template.
             ValueError: If it didn't answer with the lights.
         """
-        found = self._request("POST", "/api/template", timeout=timeout, json={"template": LIGHTS_TEMPLATE}).text
+        found = self._template(LIGHTS_TEMPLATE, timeout=timeout)
         return [_light(state) for state in json.loads(found)]
 
     def _in_order(self, lights: List[Dict]) -> List[Dict]:
@@ -372,7 +426,10 @@ class HomeAssistant:
         try:
             lights = self._in_order(self.lights(timeout=timeout))
         except (requests.RequestException, ValueError) as e:
-            logger.error(f"Couldn't read the lights: {e}")
+            # Being turned down for want of an administrator's token is said once, by
+            # _template, rather than with every request.
+            if not _refused(e):
+                logger.error(f"Couldn't read the lights: {e}")
             return ""
         room = f"Nova is in the {self.area}." if self.area else "Nova's room isn't known."
         if not lights:
@@ -492,12 +549,13 @@ class HomeAssistant:
             Its id, or None if there's no such area.
 
         Raises:
-            requests.RequestException: If Home Assistant couldn't be asked.
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down - see _template.
         """
         # The name is put into the template as a quoted string, so that however it was
         # made up it can't be taken for more of the template.
         template = "{{ area_id(" + json.dumps(name) + ") }}"
-        found = self._request("POST", "/api/template", json={"template": template}).text.strip()
+        found = self._template(template).strip()
         return None if found in ("", "None") else found
 
     def run(self, entity_id: str) -> Dict:
@@ -642,9 +700,16 @@ def _sensitive(entity_id: str, name: str) -> bool:
     return bool(SENSITIVE.search(name.lower()) or SENSITIVE.search(entity_id.replace("_", " ")))
 
 
+def _refused(error: Exception) -> bool:
+    """Whether Home Assistant turned a template down, as it does for a token which isn't an administrator's."""
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    return isinstance(error, requests.HTTPError) and status in (401, 403)
+
+
 def _light(state: Dict) -> Dict:
     """
-    A light as lights() has it, from its state as LIGHTS_TEMPLATE renders it.
+    A light as lights() has it, from its state as LIGHTS_TEMPLATE renders it - or as
+    /api/states has it, which has no area.
 
     Its colour is only what it's set to now - the hue and saturation in colour mode,
     the kelvin in colour temperature mode. For a light which can do both, Home
