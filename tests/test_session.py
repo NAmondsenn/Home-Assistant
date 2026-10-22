@@ -807,6 +807,22 @@ def test_the_device_is_looked_up_until_found_then_now_and_then(make_session):
     assert waited == [30, 30, 300, 300]
 
 
+def test_a_session_closed_before_it_runs_never_starts_its_device(connect, make_session):
+    # Replaced by its satellite connecting again before it ran - the brain closes it
+    # first. Its device started regardless, and stayed connected for good, with the
+    # same MQTT client id as the new session's.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    happened = []
+    session.device = Device(happened)
+    session.home = SimpleNamespace(find_device=lambda identifier: True)
+    session.close()
+    session.run()
+
+    assert happened == ["stopped"]
+    assert not any(thread.name.startswith("ha-device-lookup") for thread in threading.enumerate())
+
+
 def test_the_satellite_is_in_home_assistant_only_while_its_session_runs(connect, make_session):
     # And the device is looked up from the start, until the satellite goes.
     satellite, pi = connect()

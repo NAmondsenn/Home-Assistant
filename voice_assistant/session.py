@@ -236,11 +236,18 @@ class Session:
         Answers each wake word the satellite hears, one at a time, until it goes or the
         session is closed - and then closes the session.
         """
-        if self.device:
-            self.device.start()
-            if self.home:
-                threading.Thread(target=self._look_up_device, daemon=True,
-                                 name=f"ha-device-lookup-{self.satellite.name}").start()
+        # Checked and started together, with what close() checks it by: a session the
+        # brain closed before it ran - replaced by its satellite connecting again, say
+        # - never starts its device, which would otherwise stay connected for good, with
+        # the same MQTT client id as the new session's. One closed after is stopped.
+        with self._closing:
+            if self._closed.is_set():
+                return
+            if self.device:
+                self.device.start()
+                if self.home:
+                    threading.Thread(target=self._look_up_device, daemon=True,
+                                     name=f"ha-device-lookup-{self.satellite.name}").start()
         try:
             while self.satellite.connected and not self._closed.is_set():
                 try:

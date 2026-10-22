@@ -425,6 +425,47 @@ def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect
     assert brain.tts.said[-1].startswith("It's ")
 
 
+class FakeDevice:
+    """Stands in for a session's device in Home Assistant, connected to the broker from start until stop."""
+
+    def __init__(self):
+        self.connected = False
+
+    def start(self):
+        self.connected = True
+
+    def stop(self):
+        self.connected = False
+
+
+def test_a_satellite_replaced_while_catching_up_leaves_no_device_behind(brain, connect, monkeypatch):
+    # The first connection was still waiting to hear what happened while it was away
+    # when the second replaced it. Its device was started once it stopped waiting, and
+    # stayed connected for good - with the same MQTT client id as the second's, so the
+    # two knocked each other off Home Assistant.
+    devices = []
+
+    def make_device(*args, **kwargs):
+        devices.append(FakeDevice())
+        return devices[-1]
+
+    monkeypatch.setattr(brain_module, "Session", session_module.Session)
+    monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: None)
+    monkeypatch.setattr(session_module, "NovaDevice", SimpleNamespace(from_config=make_device))
+    monkeypatch.setattr(brain_module, "AWAY_WAIT", 0.5)
+    serving(brain)
+    first = connect(brain, away=None)
+    assert wait_for(lambda: brain.session_for("bedroom") is not None)
+    replaced = brain.session_for("bedroom")
+    connect(brain)
+    assert connected(brain) is not replaced
+
+    assert first.gone.wait(5)
+    assert len(devices) == 2
+    assert not devices[0].connected and devices[1].connected
+
+
 def test_alerts_go_to_the_default_satellite(brain, connect):
     serving(brain)
     connect(brain, "kitchen", KITCHEN)
