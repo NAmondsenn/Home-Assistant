@@ -497,12 +497,14 @@ class Session:
         if listen:
             # Woken again while the reply was being worked out - or over a chime - so the
             # satellite is already sending what the user says next. That's answered
-            # instead, rather than this being said over them, and it isn't talking over
-            # the reply, which never started.
+            # instead, rather than this being said over them. It counts as talking over
+            # the reply, though it never started: "Hey Nova, stop" here means don't say
+            # it, and taken as a command it would pause the music for good, when it
+            # was only paused while Nova answered - see Conversation.handle.
             try:
                 waiting = self.satellite.wakes.get_nowait()
                 logger.info("Woken again before the reply was said, so it isn't")
-                return dict(waiting, talked_over=False)
+                return dict(waiting, talked_over=True)
             except queue.Empty:
                 pass
 

@@ -522,15 +522,15 @@ def test_a_reply_nobody_talks_over_plays_to_the_end(connect, make_session):
 
 def test_a_wake_word_heard_while_the_reply_was_worked_out_is_answered_instead(brain, connect, make_session):
     # The satellite is already sending what the user says next, so the reply mustn't
-    # be said over them - and with it never started, it wasn't talked over, even if a
-    # chime was.
+    # be said over them - and it counts as talking over it, so "Hey Nova, stop" means
+    # don't say it, rather than pausing the music for good.
     satellite, pi = connect()
     session = make_session(satellite)
-    pi.wake(said(), talked_over=True)
+    pi.wake(said(), talked_over=False)
     assert wait_for(lambda: not satellite.wakes.empty())
 
     heard_over = session._say("It's sunny.", listen=True)
-    assert heard_over["talked_over"] is False and isinstance(heard_over["feed"], AudioFeed)
+    assert heard_over["talked_over"] is True and isinstance(heard_over["feed"], AudioFeed)
     assert brain.tts.said == [] and pi.messages("play_stream") == []
 
 
