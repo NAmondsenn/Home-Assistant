@@ -141,7 +141,7 @@ Nova can also be a device of its own in Home Assistant, through its MQTT broker 
      host: "192.168.1.20"
      username: "nova"
    ```
-4. Restart Nova, and the device appears in Home Assistant. Put it in an area (its page > the pencil > Area): that's how Nova knows what room it's in, so "lights on" means that room's lights. It looks every half a minute until it finds one, then every five minutes, so moving it takes a few minutes to be noticed.
+4. Restart Nova, and the device appears in Home Assistant. Put it in an area (its page > the pencil > Area): that's how Nova knows what room it's in, so "lights on" means that room's lights. It looks every half a minute until Home Assistant has the device, then every five minutes, so giving it an area or moving it takes a few minutes to be noticed.
 
 The microphone switch works from Home Assistant or the settings page, and stays as it was through a restart. While it's muted, Nova doesn't hear "Hey Nova", but what you send it with Speak is still said.
 
