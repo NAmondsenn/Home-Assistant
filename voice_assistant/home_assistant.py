@@ -7,13 +7,14 @@ Nova signs in as a Home Assistant user of its own, with a long-lived access toke
 and asks for things in plain words through Home Assistant's own Assist - "turn off
 the kitchen lights" - rather than naming devices itself. Assist only knows about
 the devices exposed to it (Settings > Voice assistants > Expose), so that list is
-what Nova can reach, enforced by Home Assistant rather than by anything Claude is
+what Assist can reach, enforced by Home Assistant rather than by anything Claude is
 told. Nothing which unlocks or opens anything is passed on at all - see SENSITIVE.
 
 What Assist doesn't understand - "dim the lights" - goes to Claude, which works the
 lights through Home Assistant's own services instead, by light or by room, with a
 brightness, colour or warmth. Those services are only ever given lights, by entity
-id or by area.
+id or by area - but any light, exposed to Assist or not, as exposing only limits
+what Assist does.
 
 The settings page names devices itself, as there's nothing to mishear: it lists the
 lights, to switch and dim, and the scripts and scenes, to run - but nothing else,

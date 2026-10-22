@@ -104,7 +104,7 @@ venv/bin/python -m voice_assistant.spotify_controller
 
 ### Home Assistant, for the lights and the calendar
 
-Nova asks Home Assistant for things in plain words, through its own Assist, so it can only reach the devices you've exposed to Assist - nothing else in Home Assistant. Whatever's exposed, it never locks, unlocks or opens anything by voice.
+Nova asks Home Assistant for things in plain words, through its own Assist, which can only reach the devices you've exposed to it. What Assist doesn't understand - "dim the lights" - goes to Claude, which can switch and set any light, exposed or not, but nothing else. Whatever's exposed, Nova never locks, unlocks or opens anything by voice.
 
 1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in. Knowing Nova's room, and Claude working the lights, need it to be an administrator, as Home Assistant only lets administrators ask what's in which room. As an ordinary user, Nova still works through Assist, without rooms.
 2. Log in as that user, and under its profile > Security, make a long-lived access token.
@@ -119,7 +119,7 @@ Nova asks Home Assistant for things in plain words, through its own Assist, so i
    home_assistant:
      url: "http://homeassistant.local:8123"
    ```
-5. In Settings > Voice assistants > Expose, choose which lights Nova may control. Their names and areas are what you'll call them.
+5. In Settings > Voice assistants > Expose, choose which lights Assist may control. Their names and areas are what you'll call them. Claude isn't limited to these - it can work any light.
 6. For your calendar, add Google Calendar (or any other) to Home Assistant through its integration. Every calendar it has is read, unless you list the ones you want in `home_assistant.calendars`.
 
 Then restart Nova. The log says `Home Assistant at ...` once it's on.
@@ -128,7 +128,7 @@ Then restart Nova. The log says `Home Assistant at ...` once it's on.
 
 Nova can also be a device of its own in Home Assistant, through its MQTT broker (the Mosquitto add-on), so you can see and change things from Home Assistant's dashboards and automations. It has eleven controls: Status, Volume, Alarm volume, Music volume, Next alarm, Timers, Stop, Restart, Speak, Backend and Microphone muted. Nothing said to Nova, and none of its answers, is sent there - timers show only when they end. Without this, Nova works as it always did, and it carries on if the broker goes down.
 
-1. In Home Assistant, make another user for Nova - Settings > People > Users > Add user, called `nova`, **not** an administrator, and with "Can only log in from the local network" on. The broker accepts Home Assistant's users.
+1. In Home Assistant, make another user for Nova - Settings > People > Users > Add user, called `nova`, **not** an administrator, and with "Can only log in from the local network" on. The Users tab is only there with Advanced mode on in your profile. The broker accepts Home Assistant's users.
 2. On the Pi, add its password to `~/.config/nova/.env` yourself:
 
    ```
