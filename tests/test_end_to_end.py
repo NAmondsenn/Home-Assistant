@@ -467,3 +467,41 @@ def test_an_alarm_rung_while_the_brain_restarted_rings_on_from_it(world):
     assert wait_for(lambda: any(message["type"] == "play_sound" and message["name"] == "alarm_sound.wav"
                                 for message in satellite.from_brain))
     assert restarted.clock._missed == []
+
+
+def test_an_alarm_ringing_on_the_brain_when_it_restarts_rings_on_from_the_restarted_one(world):
+    # The brain is ringing the alarm as it goes - the watchdog, say. The restarted brain
+    # knows only from its files, and from the satellite, which went on ringing it from
+    # its copy: it used to find nothing to ring and stop the satellite for good.
+    first = world.make_brain(clock=True)
+    satellite = world.make_satellite(first)
+    assert wait_for(lambda: caught_up(first))
+    first.clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    due = time.time() + 0.5
+    with first.clock._changing():
+        first.clock._alarms[1]["due_at"] = due
+        first.clock._save_alarms()
+    alarm = f"alarm-1@{int(due)}"
+    assert wait_for(lambda: first.clock.is_ringing("bedroom"))
+    # The copy it was sent holds the alarm as ringing, due from when it began.
+    assert wait_for(lambda: alarm in [entry["id"] for entry in satellite.alarms.due(time.time())])
+
+    # Gone while it rings, and its port free again.
+    first.clock.stop()
+    first.stop()
+    first.serving.join(5)
+    assert not first.serving.is_alive()
+    assert wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
+    heard = len(satellite.from_brain)
+
+    restarted = world.make_brain(port=first.port, clock=True)
+    assert wait_for(lambda: caught_up(restarted))
+
+    assert wait_for(lambda: restarted.clock.is_ringing("bedroom"))
+    assert wait_for(lambda: not satellite.ringer.ringing)
+    # Rung now by the brain, through the satellite's speaker.
+    assert wait_for(lambda: any(message["type"] == "play_sound" and message["name"] == "alarm_sound.wav"
+                                for message in satellite.from_brain[heard:]))
+    assert restarted.clock._missed == []
+    # Still set for the next day, the once.
+    assert restarted.clock.list_alarms()["message"] == "One alarm: 7:00 AM alarm, every day."

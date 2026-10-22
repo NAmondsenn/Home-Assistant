@@ -1109,3 +1109,92 @@ def test_whats_ringing_or_missed_is_given_to_the_default_too(make_clock, tmp_pat
     assert restarted.assign_unowned("pi") == 1
     restarted._tick(time.time())
     assert restarted.announced[0]["satellite"] == "pi"
+
+
+def _ring_alarm_then_restart(make_clock, repeat):
+    """
+    An alarm for the bedroom satellite, ringing on the brain's clock as it restarts.
+
+    Returns:
+        The restarted clock, and the id the satellite knows the ringing occurrence by.
+    """
+    clock = make_clock()
+    # One round only, so it's still ringing when the tick returns.
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, repeat, satellite="bedroom")
+    _make_due(clock)
+    occurrence = clock.copy_for("bedroom")[0]["id"]
+    clock._tick(time.time())
+    assert clock.is_ringing("bedroom")
+    return make_clock(), occurrence
+
+
+@pytest.mark.parametrize("repeat", [None, "daily"])
+def test_an_alarm_ringing_when_the_brain_restarts_rings_again_if_still_ringing_there(make_clock, repeat):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, repeat)
+    restarted.alarm_ring_duration = 0
+
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[], ringing=[occurrence])
+
+    assert restarted._missed == []
+    assert restarted.is_ringing("bedroom")
+    assert restarted.announced[0]["satellite"] == "bedroom"
+    assert restarted.announced[0]["message"].endswith("Time to get up.")
+    # Nothing said of it as missed afterwards.
+    restarted._tick(time.time())
+    assert len(restarted.announced) == 1
+
+
+@pytest.mark.parametrize("repeat", [None, "daily"])
+def test_an_alarm_ringing_when_the_brain_restarts_stays_quiet_if_dismissed_there(make_clock, repeat):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, repeat)
+
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[occurrence], ringing=[])
+    restarted._tick(time.time())
+
+    assert restarted._missed == []
+    assert not restarted.is_ringing()
+    assert restarted.announced == []
+
+
+@pytest.mark.parametrize("repeat", [None, "daily"])
+def test_an_alarm_ringing_when_the_brain_restarts_is_mentioned_if_the_satellite_says_nothing(make_clock, repeat):
+    # As a timer is, when the satellite restarted too.
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, repeat)
+
+    restarted._tick(time.time())
+
+    assert len(restarted.announced) == 1
+    assert restarted.announced[0]["message"].startswith("While I was off: your 7:00 AM alarm")
+    assert restarted.announced[0]["satellite"] == "bedroom"
+
+
+def test_a_repeating_alarm_ringing_when_the_brain_restarts_is_still_set_once(make_clock):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, "daily")
+    restarted.alarm_ring_duration = 0
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[], ringing=[occurrence])
+
+    assert restarted.list_alarms()["message"] == "One alarm: 7:00 AM alarm, every day."
+    tomorrow = [entry["id"] for entry in restarted.copy_for("bedroom") if entry["due"] > time.time()]
+    assert len(tomorrow) == len(set(tomorrow)) and len(tomorrow) >= 1
+    assert occurrence not in tomorrow
+
+
+def test_a_one_off_alarm_ringing_when_the_brain_restarts_isnt_set_again(make_clock):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, None)
+    restarted.alarm_ring_duration = 0
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[], ringing=[occurrence])
+
+    assert restarted.list_alarms()["message"] == "You don't have any alarms set."
+
+
+def test_dismissing_a_ringing_alarm_means_a_restart_doesnt_report_it(make_clock):
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, None)
+    _make_due(clock)
+    clock._tick(time.time())
+    assert clock.is_ringing()
+    clock.dismiss()
+
+    assert make_clock()._missed == []

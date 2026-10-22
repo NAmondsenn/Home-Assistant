@@ -383,8 +383,11 @@ class Clock:
 
     def _save(self):
         """
-        Writes the pending timers to the disk, along with any going off right now -
-        so a restart while one is ringing reports it as missed rather than losing it.
+        Writes the pending timers to the disk, along with any timer or alarm going off
+        right now - so a restart while one is ringing reports it as missed (or, if the
+        satellite is still ringing it, rings it again) rather than losing it. An
+        alarm's store has already moved on without it, so this is the only place it's
+        kept.
 
         Saved atomically (see storage.py), so losing power mid-write leaves the
         previous file intact. The caller is expected to already hold the lock.
@@ -394,7 +397,7 @@ class Clock:
             storage.save_json(TIMERS_FILE, {
                 "next_id": self._next_id,
                 "timers": list(self._timers.values()),
-                "ringing": [entry["timer"] for entry in self._ringing if entry["kind"] == "clock"],
+                "ringing": [entry["timer"] for entry in self._ringing],
             })
         except Exception as e:
             # Saving is best-effort: a failure here shouldn't stop a timer working
@@ -441,7 +444,9 @@ class Clock:
             satellite = timer.get("satellite")
             timer["satellite"] = str(satellite) if satellite else None
 
-            if timer["due_at"] > now:
+            # An alarm which was ringing, already past its time - see _save. It joins the
+            # missed ones below and never the timers, even if the clock has moved back.
+            if timer["due_at"] > now and "hour" not in timer:
                 if timer["id"]:
                     self._timers[timer["id"]] = timer
                 else:
@@ -770,9 +775,9 @@ class Clock:
                         del self._alarms[alarm_id]
 
             self._ringing.extend(started)
-            # The timers file holds what's ringing too, so a restart while a timer
-            # rings reports it as missed rather than losing it.
-            if any(entry["kind"] == "clock" for entry in started):
+            # The timers file holds what's ringing too, alarms included, so a restart
+            # while one rings reports it as missed rather than losing it.
+            if started:
                 self._save()
             if any(entry["kind"] == "alarm" for entry in started):
                 self._save_alarms()
