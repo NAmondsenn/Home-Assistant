@@ -78,8 +78,8 @@ class FakeBrain:
 
 
 def wait_for(condition, seconds=5):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
+    # Counted in loops, not read from a clock, as a test may patch the link's clock.
+    for _ in range(int(seconds / 0.01)):
         if condition():
             return True
         time.sleep(0.01)
@@ -120,8 +120,8 @@ def brain():
 def test_the_link_connects_and_reports_it(brain, make):
     link, events, messages = make(brain.address)
     link.start()
-    assert wait_for(lambda: link.connected)
-    assert events == [True]
+    assert wait_for(lambda: events == [True] and len(brain.hellos) == 1)
+    assert link.connected
     assert brain.hellos == [{"name": "bedroom", "hostname": "pi", "sample_rate": 48000, "unclean": True}]
 
     brain.say("listen")
@@ -142,6 +142,7 @@ def test_the_link_reconnects_after_the_brain_goes(brain, make):
     assert wait_for(lambda: link.connected)
     brain.drop_everyone()
     assert wait_for(lambda: events == [True, False, True])
+    assert wait_for(lambda: len(brain.hellos) == 2)
     assert link.connected
     # The brain has heard the first hello's word on it already.
     assert [h["unclean"] for h in brain.hellos] == [True, False]
@@ -195,7 +196,7 @@ def test_an_unreachable_brain_is_logged_once(make, caplog):
 def test_nothing_heard_for_15_seconds_counts_as_dropped(make, monkeypatch):
     brain = FakeBrain(answer_pings=False)
     now = [1000.0]
-    monkeypatch.setattr(satellite_link.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(satellite_link, "monotonic", lambda: now[0])
     try:
         link, events, messages = make(brain.address)
         link.start()
@@ -217,3 +218,15 @@ def test_send_says_false_while_not_connected(brain, make):
     assert link.send("wake") is True
     link.stop()
     assert link.send("wake") is False
+
+
+def test_pings_go_out_while_the_brain_keeps_talking(brain, make, monkeypatch):
+    monkeypatch.setattr(satellite_link, "PING_EVERY", 0.1)
+    link, events, messages = make(brain.address)
+    link.start()
+    assert wait_for(lambda: link.connected)
+    # Pieces arriving faster than the socket timeout, so no read ever times out.
+    for _ in range(40):
+        brain.say("stream_audio", id="a")
+        time.sleep(0.01)
+    assert brain.received.count("ping") >= 2

@@ -10,7 +10,7 @@ rather than on every try.
 import logging
 import socket
 import threading
-import time
+from time import monotonic
 from typing import Callable, Dict, Optional
 
 from voice_assistant.protocol import ProtocolError, Refused, greet, receive, send
@@ -44,6 +44,8 @@ class _Stream:
         self._buffer = bytearray()
         # Called whenever waiting for the brain times out. Raises if the wait is to end.
         self.when_idle: Callable[[], None] = self._give_up
+        # Called as bytes arrive, so a big message coming slowly isn't mistaken for silence.
+        self.when_heard: Callable[[], None] = lambda: None
 
     @staticmethod
     def _give_up():
@@ -65,6 +67,7 @@ class _Stream:
             if not data:
                 raise ConnectionError("The connection was closed")
             self._buffer += data
+            self.when_heard()
             return
 
     def readline(self, limit: int = -1) -> bytes:
@@ -225,6 +228,9 @@ class SatelliteLink:
             last_failure = None
             delay = RETRY_FIRST
             logger.info(f"Connected to the brain at {self.address[0]}")
+            # Together, so connected is never True without on_connected having been told.
+            with self._lock:
+                self._connected = True
             self._set_connected(True)
             try:
                 self._serve()
@@ -252,9 +258,9 @@ class SatelliteLink:
                 raise ConnectionError("Stopped")
             self._socket = sock
             self._stream = stream
-            self._connected = True
-        self._last_heard = self._last_ping = time.monotonic()
+        self._last_heard = self._last_ping = monotonic()
         stream.when_idle = self._check_in
+        stream.when_heard = self._heard
 
     def _set_connected(self, connected: bool):
         if connected != self._announced:
@@ -264,9 +270,12 @@ class SatelliteLink:
             except Exception:
                 logger.exception("on_connected failed")
 
+    def _heard(self):
+        self._last_heard = monotonic()
+
     def _check_in(self):
         """Run whenever the brain has been quiet for a moment: pings, or gives up on it."""
-        now = time.monotonic()
+        now = monotonic()
         if now - self._last_heard >= SILENT_FOR:
             raise ConnectionError(f"Nothing heard from the brain for {SILENT_FOR:.0f} seconds")
         if now - self._last_ping >= PING_EVERY:
@@ -276,8 +285,10 @@ class SatelliteLink:
     def _serve(self):
         """Reads what the brain sends until the connection ends."""
         while not self._stopping.is_set():
+            # Every pass, as well as when the brain is quiet: while it streams music in
+            # small pieces, reads never time out, but it still wants its pings.
+            self._check_in()
             message, payload = receive(self._stream)
-            self._last_heard = time.monotonic()
             if message["type"] == "pong":
                 continue
             try:
