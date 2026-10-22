@@ -607,6 +607,24 @@ class Clock:
 
         return candidate.timestamp()
 
+    def _following(self, alarm: Dict, due: float) -> float:
+        """
+        When a repeating alarm next rings after the occurrence due at due.
+
+        Everything which moves an alarm on comes through here - ringing it,
+        skipping it, a satellite dismissing it, and spelling out a satellite's copy
+        - since an occurrence's id (see _occurrence) only means the same to the
+        brain and the satellite while they all agree on when the next one is.
+
+        Args:
+            alarm: The alarm.
+            due: The occurrence to move on from, as an epoch time.
+
+        Returns:
+            The next occurrence, as an epoch time.
+        """
+        return self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"], after=due + 60)
+
     def _alarm_days_overlap(self, repeat, due_at: float, existing: Dict) -> bool:
         """
         Whether a new alarm would ever ring on the same day as an existing one at the
@@ -708,35 +726,38 @@ class Clock:
                 self._announce(f"While I was off: {base}. That was {late} ago.", sound,
                                satellite=item["satellite"])
 
-        due = []
+        # Whatever comes due is registered as ringing under the same lock that takes
+        # it out of the store, so the copy a satellite is sent when on_change hears
+        # of it still holds it (see copy_for) - sent in between, it held neither,
+        # and a satellite which lost the brain part way through went quiet.
+        started = []
         with self._changing():
             for timer_id, timer in list(self._timers.items()):
                 if timer["due_at"] <= now:
-                    due.append(self._timers.pop(timer_id))
-            if due:
-                self._save()
+                    started.append(self._ringing_entry(self._timers.pop(timer_id), "clock", now))
 
-        # What rings is a copy of the alarm as it was when it came due. A repeating
-        # alarm stays in the store and is moved on to its next occurrence straight
-        # away, rather than once it stops ringing - otherwise a restart while it was
-        # ringing (up to a quarter of an hour) would lose it from the file for good.
-        due_alarms = []
-        with self._changing():
+            # What rings is a copy of the alarm as it was when it came due. A repeating
+            # alarm stays in the store and is moved on to its next occurrence straight
+            # away, rather than once it stops ringing - otherwise a restart while it was
+            # ringing (up to a quarter of an hour) would lose it from the file for good.
             for alarm_id, alarm in list(self._alarms.items()):
                 if alarm["due_at"] <= now:
-                    due_alarms.append({**alarm, "kind": "alarm"})
+                    started.append(self._ringing_entry({**alarm, "kind": "alarm"}, "alarm", now))
                     if alarm.get("repeat"):
-                        alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"],
-                                                                alarm["repeat"], after=alarm["due_at"] + 60)
+                        alarm["due_at"] = self._following(alarm, alarm["due_at"])
                     else:
                         del self._alarms[alarm_id]
-            if due_alarms:
+
+            self._ringing.extend(started)
+            # The timers file holds what's ringing too, so a restart while a timer
+            # rings reports it as missed rather than losing it.
+            if any(entry["kind"] == "clock" for entry in started):
+                self._save()
+            if any(entry["kind"] == "alarm" for entry in started):
                 self._save_alarms()
 
-        for timer in due:
-            self._start_ringing(timer, "clock", now)
-        for alarm in due_alarms:
-            self._start_ringing(alarm, "alarm", now)
+        for entry in started:
+            self._run_round(self._first_round, entry)
 
         # Repeats anything which went off and hasn't been dismissed yet - unless its
         # last round is still going.
@@ -770,17 +791,20 @@ class Clock:
         else:
             round_function(entry)
 
-    def _start_ringing(self, item: Dict, kind: str, now: float):
+    def _ringing_entry(self, item: Dict, kind: str, now: float) -> Dict:
         """
-        Begins ringing something which has just come due - a timer, reminder, or
-        alarm. Registered as ringing before it speaks, so dismissing it part way
-        through stops it immediately.
+        The ringing entry for something which has just come due - a timer,
+        reminder, or alarm. _tick registers it as ringing before it speaks, so
+        dismissing it part way through stops it immediately.
 
         Args:
             item: The timer or alarm which finished.
             kind: "clock" for a timer/reminder, "alarm" for an alarm - decides
                   which rules and which sound apply.
             now: The moment it came due.
+
+        Returns:
+            The entry, ready to go on _ringing.
         """
         rounds, gap, give_up_after = self._repeat_settings(item, kind)
         entry = {"timer": item, "kind": kind, "left": None if rounds is None else rounds - 1,
@@ -798,17 +822,12 @@ class Clock:
                 # True while one of its rounds is playing, so _tick doesn't start
                 # another on top of it - see _run_round.
                 "busy": True}
-        with self._lock:
-            self._ringing.append(entry)
-            if kind == "clock":
-                self._save()
-
-        self._run_round(self._first_round, entry)
+        return entry
 
     def _first_round(self, entry: Dict):
         """
         Rings the first round for something which has just come due - see
-        _start_ringing.
+        _ringing_entry.
         """
         still_ringing = self._ring_once(entry)
 
@@ -916,7 +935,7 @@ class Clock:
         hasn't heard it yet, or they'd have dismissed it.
 
         Args:
-            entry: The ringing entry (see _start_ringing).
+            entry: The ringing entry (see _ringing_entry).
 
         Returns:
             True if it's still ringing (not dismissed) by the end of the round.
@@ -1878,36 +1897,50 @@ class Clock:
     def assign_unowned(self, satellite: str) -> int:
         """
         Gives every timer and alarm which rings on no satellite to this one - those
-        set before there were satellites, when the Pi was all of Nova.
+        set before there were satellites, when the Pi was all of Nova. That takes
+        in whatever's ringing, or waiting to be announced as missed, so it has
+        somewhere to ring or be said.
 
         Args:
             satellite: The satellite they should ring on.
 
         Returns:
-            How many it gave.
+            How many it gave, counting what's ringing or missed.
         """
         with self._changing():
             timers = [timer for timer in self._timers.values() if not timer["satellite"]]
             alarms = [alarm for alarm in self._alarms.values() if not alarm["satellite"]]
-            for item in timers + alarms:
+            ringing = [entry["timer"] for entry in self._ringing if not entry["timer"]["satellite"]]
+            missed = [item for item in self._missed if not item["satellite"]]
+            given = timers + alarms + ringing + missed
+            for item in given:
                 item["satellite"] = satellite
-            if timers:
+            # What's ringing is saved with the timers, and is in each copy too.
+            if timers or ringing:
                 self._save()
             if alarms:
                 self._save_alarms()
 
-        if timers or alarms:
-            logger.info(f"Gave {len(timers)} timer(s) and {len(alarms)} alarm(s) to {satellite}")
-        return len(timers) + len(alarms)
+        if given:
+            logger.info(f"Gave {len(given)} timer(s) and alarm(s) to {satellite}")
+        return len(given)
 
     @staticmethod
-    def _occurrence(item: Dict, due: float) -> str:
+    def _occurrence(item: Dict, due: Optional[float] = None) -> str:
         """
         The id of one occurrence of a timer or alarm, as a satellite knows it - see
-        copy_for. A repeating alarm has one for each day it rings, so dismissing
-        Monday's while away can't also dismiss Tuesday's.
+        copy_for - e.g. "alarm-3@1792998000". A repeating alarm has one for each
+        day it rings, so dismissing Monday's while away can't also dismiss
+        Tuesday's. The kind is in it because timers and alarms are numbered
+        separately, so timer 3 and alarm 3 are different things.
+
+        Args:
+            item: The timer or alarm, whether set, ringing or missed. Only an alarm
+                  has a time of day, which is how the two are told apart.
+            due: When the occurrence is due, if it isn't the item's own due_at.
         """
-        return f"{item['id']}@{int(due)}"
+        kind = "alarm" if "hour" in item else "timer"
+        return f"{kind}-{item['id']}@{int(item['due_at'] if due is None else due)}"
 
     def copy_for(self, satellite: str, within: float = 7 * 86400) -> List[Dict]:
         """
@@ -1915,6 +1948,10 @@ class Clock:
         reach the brain: each occurrence due within a while, with a repeating
         alarm's days spelt out, so all the satellite has to do is ring each one
         when it's due.
+
+        Whatever's ringing on it now is in it too, due from when it began. The
+        satellite only rings from its copy once it's lost the brain, so that's
+        what lets it carry on ringing something it lost the brain part way through.
 
         Args:
             satellite: The satellite they ring on.
@@ -1927,10 +1964,14 @@ class Clock:
         """
         with self._lock:
             until = time.time() + within
-            copy = [{"id": self._occurrence(timer, timer["due_at"]), "due": timer["due_at"], "kind": "timer",
-                     "sound": self._timer_sound(timer)}
-                    for timer in self._timers.values()
-                    if timer["satellite"] == satellite and timer["due_at"] <= until]
+            copy = [{"id": self._occurrence(entry["timer"]), "due": entry["first_rung_at"],
+                     "kind": "alarm" if entry["kind"] == "alarm" else "timer",
+                     "sound": ALARM_SOUND if entry["kind"] == "alarm" else self._timer_sound(entry["timer"])}
+                    for entry in self._ringing if entry["timer"]["satellite"] == satellite]
+            copy += [{"id": self._occurrence(timer), "due": timer["due_at"], "kind": "timer",
+                      "sound": self._timer_sound(timer)}
+                     for timer in self._timers.values()
+                     if timer["satellite"] == satellite and timer["due_at"] <= until]
             for alarm in self._alarms.values():
                 if alarm["satellite"] != satellite:
                     continue
@@ -1940,8 +1981,7 @@ class Clock:
                                  "sound": ALARM_SOUND})
                     if not alarm["repeat"]:
                         break
-                    # Moved on the way _tick moves it on once it's rung.
-                    due = self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"], after=due + 60)
+                    due = self._following(alarm, due)
         return sorted(copy, key=lambda entry: entry["due"])
 
     def apply_away(self, satellite: str, rang: List[str], dismissed: List[str]):
@@ -1951,41 +1991,49 @@ class Clock:
 
         What was dismissed there is dealt with as if it had been dismissed here: a
         timer goes, an alarm moves on to its next occurrence (or goes, if it doesn't
-        repeat), and one which the brain is ringing as well stops. What only rang is
-        left as it is, to ring here - nobody answered it, and the satellite can be
-        reached again.
+        repeat), and one which the brain is ringing as well is dismissed, as
+        dismiss() would. What only rang is left as it is, to ring here - nobody
+        answered it, and the satellite can be reached again. Neither is said to
+        have been missed afterwards, since it rang where it was meant to.
 
         Args:
             satellite: The satellite reporting.
             rang: The occurrences which rang there.
             dismissed: The occurrences dismissed there.
         """
-        dismissed = set(dismissed)
+        rang, dismissed = set(rang), set(dismissed)
 
-        def was_dismissed(item):
-            return item["satellite"] == satellite and self._occurrence(item, item["due_at"]) in dismissed
+        def reported(item, among):
+            return item["satellite"] == satellite and self._occurrence(item) in among
 
         with self._changing():
-            timers = [timer for timer in self._timers.values() if was_dismissed(timer)]
+            timers = [timer for timer in self._timers.values() if reported(timer, dismissed)]
             for timer in timers:
                 del self._timers[timer["id"]]
 
             moved = 0
             for alarm in list(self._alarms.values()):
                 # Once for each occurrence dismissed in a row - two mornings away, say.
-                while was_dismissed(alarm):
+                while reported(alarm, dismissed):
                     moved += 1
                     if not alarm["repeat"]:
                         del self._alarms[alarm["id"]]
                         break
-                    alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"],
-                                                            after=alarm["due_at"] + 60)
+                    alarm["due_at"] = self._following(alarm, alarm["due_at"])
 
-            keep = [entry for entry in self._ringing if not was_dismissed(entry["timer"])]
-            stopped = len(self._ringing) - len(keep)
-            self._ringing = keep
+            # Stopped before it rings out, so no reminder of it goes to the phone
+            # either (see _end_ringing).
+            ringing = [entry for entry in self._ringing if not reported(entry["timer"], dismissed)]
+            # Nor is "While I was off" said, once the brain's back, for something
+            # which rang on the satellite meanwhile - or "You missed" for one which
+            # rang out here but was dismissed there.
+            missed = [item for item in self._missed if not reported(item, rang | dismissed)]
+            unacknowledged = [item for item in self._unacknowledged if not reported(item, dismissed)]
+            forgotten = (len(self._ringing) - len(ringing) + len(self._missed) - len(missed)
+                         + len(self._unacknowledged) - len(unacknowledged))
+            self._ringing, self._missed, self._unacknowledged = ringing, missed, unacknowledged
 
-            if timers or stopped:
+            if timers or forgotten:
                 self._save()
             if moved:
                 self._save_alarms()
@@ -2108,8 +2156,7 @@ class Clock:
                                    f"skip it just for today, or stop it repeating altogether?"}
 
             if alarm["repeat"] and scope == "today":
-                alarm["due_at"] = self._next_occurrence(alarm["hour"], alarm["minute"], alarm["repeat"],
-                                                         after=alarm["due_at"] + 60)
+                alarm["due_at"] = self._following(alarm, alarm["due_at"])
                 self._save_alarms()
                 return {"success": True, "message": f"Skipped today's {self._describe_alarm(alarm)}."}
 
