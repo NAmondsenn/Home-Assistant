@@ -133,13 +133,33 @@ def test_an_explicit_pause_keeps_the_music_paused_afterwards(make_executor):
 ])
 def test_an_alarms_repeat_is_passed_to_the_clock(params, repeat):
     class FakeClock:
-        def set_alarm(self, hour, minute, repeat):
+        def set_alarm(self, hour, minute, repeat, satellite=None):
             self.set = (hour, minute, repeat)
             return {"success": True, "message": "Alarm set."}
 
     clock = FakeClock()
     ActionExecutor(clock=clock).execute(Action("set_alarm", params))
     assert clock.set == (7, 0, repeat)
+
+
+def test_timers_and_alarms_ring_on_the_satellite_they_were_set_from():
+    class FakeClock:
+        def __init__(self):
+            self.set = []
+
+        def set_timer(self, duration_seconds, label, is_reminder, at=None, satellite=None):
+            self.set.append(("timer", satellite))
+            return {"success": True, "message": "Timer set."}
+
+        def set_alarm(self, hour, minute, repeat, satellite=None):
+            self.set.append(("alarm", satellite))
+            return {"success": True, "message": "Alarm set."}
+
+    clock = FakeClock()
+    actions = ActionExecutor(clock=clock, satellite="bedroom")
+    actions.execute(Action("set_timer", {"duration_seconds": 600}))
+    actions.execute(Action("set_alarm", {"hour": 7, "minute": 0}))
+    assert clock.set == [("timer", "bedroom"), ("alarm", "bedroom")]
 
 
 # Confirming what was done

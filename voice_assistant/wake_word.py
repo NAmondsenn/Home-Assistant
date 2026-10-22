@@ -204,7 +204,7 @@ class WakeWordDetector:
             # Muted, the wake word is ignored here, rather than the audio going
             # unread, so the model keeps up with the microphone and hears it again
             # the moment it's unmuted. The same goes for the wake word said over a
-            # reply - see _say in main.py.
+            # reply - see satellite.py.
             if score >= self.sensitivity and not self._muted:
                 self.heard_at = reader.position
                 logger.info(f"Wake word detected! (confidence: {score:.2f})")

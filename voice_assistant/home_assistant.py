@@ -304,7 +304,7 @@ class HomeAssistant:
             known before is kept.
         """
         # Asked again and again while Nova runs - every half a minute until it's found,
-        # see main.py - so each problem is logged once, when it starts, rather than
+        # see session.py - so each problem is logged once, when it starts, rather than
         # every time: Home Assistant being down, or it not having Nova's device.
         template = FIND_DEVICE_TEMPLATE.replace("IDENTIFIER", identifier)
         try:

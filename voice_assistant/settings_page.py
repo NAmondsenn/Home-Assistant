@@ -252,7 +252,7 @@ class SettingsPage:
             home: The HomeAssistant, or None, for the lights and the scripts and scenes.
             routines: The user's Routines, or None.
             wake: The WakeWordDetector, which keeps whether the microphone's muted.
-            run_routine: Runs a routine by itself, as at its time - SmartAssistant.run_routine.
+            run_routine: Runs a routine by itself, as at its time - Session.run_routine.
             boop: Plays the volume beep at a level from 0 to 1 on Nova's speaker, so a
                 change made on the page is heard at its new level.
             activity: What Nova is doing - "idle", "listening", "thinking" or "speaking".
@@ -614,7 +614,7 @@ class SettingsPage:
     def start_routine(self, routine_id: str, who: str) -> Dict:
         """
         Runs one of the user's routines now, on a thread of its own, as it waits for
-        any conversation to finish first - see SmartAssistant.run_routine.
+        any conversation to finish first - see Session.run_routine.
         """
         routine = self.routines.get(str(routine_id)) if self.routines is not None else None
         if routine is None or self._run_routine is None:

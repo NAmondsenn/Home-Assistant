@@ -300,3 +300,96 @@ def test_without_moonshine_whisper_is_used(monkeypatch, make_config):
     monkeypatch.setattr(speech_to_text, "WhisperModel", FakeWhisper)
     stt = speech_to_text.make_speech_to_text(make_config(speech_to_text={"engine": "moonshine"}))
     assert isinstance(stt, speech_to_text.SpeechToText)
+
+
+# Nemotron, on the brain - it hears every satellite's recordings, as the backend did.
+
+class FakeNemotron:
+    """
+    Stands in for Nemotron, hearing whatever the test sets. Each recording's stream is
+    the list of pieces it was given, and every stream is kept.
+    """
+
+    def __init__(self, heard="Set a timer for ten minutes."):
+        self.heard = heard
+        self.streams = []
+        self.finished = []
+        # Set to an Event to keep it busy with each piece until the test lets it go,
+        # or to an exception for the next piece to raise.
+        self.busy = None
+        self.fail = None
+
+    def start(self):
+        self.streams.append([])
+        return self.streams[-1]
+
+    def add(self, stream, audio):
+        if self.busy is not None:
+            self.busy.wait(2)
+        if self.fail is not None:
+            failure, self.fail = self.fail, None
+            raise failure
+        stream.append(audio)
+
+    def finish(self, stream):
+        self.finished.append(stream)
+        return self.heard
+
+
+def test_nemotron_hears_the_recording_as_its_made():
+    nemotron = FakeNemotron()
+    stt = speech_to_text.NemotronSpeechToText(nemotron)
+    transcription = stt.listen()
+    pieces = _pieces(0.1, 0.2, 0.3)
+    for piece in pieces:
+        transcription.add(piece)
+
+    assert transcription.finish(np.concatenate(pieces))["text"] == "Set a timer for ten minutes."
+    # In order, through the one stream - and not all over again once it was over.
+    assert len(nemotron.streams) == 1
+    assert np.array_equal(np.concatenate(nemotron.streams[0]), np.concatenate(pieces))
+    assert stt.loaded
+
+
+def test_the_recording_never_waits_for_nemotron():
+    import threading
+
+    nemotron = FakeNemotron()
+    nemotron.busy = threading.Event()
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+    transcription.add(_pieces(0.1)[0])
+    transcription.add(_pieces(0.2)[0])
+
+    # Nemotron is still busy with the first piece, and yet the recording has carried on.
+    assert all(stream == [] for stream in nemotron.streams)
+    nemotron.busy.set()
+    assert transcription.finish(np.concatenate(_pieces(0.1, 0.2)))["text"] == "Set a timer for ten minutes."
+    assert len(nemotron.streams[0]) == 2
+
+
+def test_if_nemotron_fails_while_listening_the_whole_recording_is_heard_again():
+    nemotron = FakeNemotron()
+    nemotron.fail = RuntimeError("Failed to decode")
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+    pieces = _pieces(0.1, 0.2)
+    for piece in pieces:
+        transcription.add(piece)
+
+    assert transcription.finish(np.concatenate(pieces))["text"] == "Set a timer for ten minutes."
+    # Afresh, through a stream of its own, so nothing said is lost.
+    assert np.array_equal(np.concatenate(nemotron.finished[-1]), np.concatenate(pieces))
+
+
+def test_a_recording_which_came_to_nothing_isnt_finished():
+    # Finishing costs Nemotron the second of quiet it's given after every recording.
+    nemotron = FakeNemotron()
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+    transcription.add(_pieces(0.1)[0])
+    transcription.cancel()
+    assert nemotron.finished == []
+
+
+def test_nemotron_imagining_thank_you_is_thrown_away():
+    transcription = speech_to_text.NemotronSpeechToText(FakeNemotron(heard="Thank you.")).listen()
+    transcription.add(_pieces(0.1)[0])
+    assert transcription.finish(_pieces(0.1)[0])["text"] == ""

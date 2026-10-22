@@ -1186,7 +1186,7 @@ class Clock:
         Used when the user has said something to the assistant while one is ringing:
         talking at all means they've heard it, whatever they actually asked for. A
         reminder is deliberately not included - it has to be acknowledged in its own
-        right (see main.py) - and the missed list is left alone too, since this
+        right (see session.py) - and the missed list is left alone too, since this
         isn't the user saying they've caught up on what they missed.
 
         Args:
@@ -1227,7 +1227,7 @@ class Clock:
         real content in it ("lights", "music", "Spotify") to the model.
 
         Note this being False doesn't mean the timer keeps ringing: talking to the
-        assistant at all counts as having heard it (see main.py). It only decides
+        assistant at all counts as having heard it (see session.py). It only decides
         whether the request needs the model at all.
 
         Args:

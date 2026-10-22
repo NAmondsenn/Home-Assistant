@@ -218,7 +218,7 @@ def test_history_records_what_was_actually_said(llm):
     llm.process_query("remind me in 20 minutes")
     assert llm.history[-1]["assistant"] == "Okay."
 
-    # What main.py does once the action has asked its question.
+    # What the conversation does once the action has asked its question.
     llm.record_reply("remind me in 20 minutes", "What would you like to name this reminder?")
     assert (llm.history[-1]["user"], llm.history[-1]["assistant"]) == \
         ("remind me in 20 minutes", "What would you like to name this reminder?")

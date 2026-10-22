@@ -203,7 +203,8 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
 class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
-    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None):
+    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
+                 satellite: Optional[str] = None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -215,6 +216,8 @@ class ActionExecutor:
             memory: Memory instance, for what the assistant knows about the user.
             ntfy: Ntfy instance, for the user's notifications, or None if it isn't
                 set up.
+            satellite: The satellite the user is talking to, whose timers and alarms
+                ring where they were set - or None for none in particular.
         """
         self.music = music
         self.clock = clock
@@ -223,6 +226,7 @@ class ActionExecutor:
         self.home = home
         self.memory = memory
         self.ntfy = ntfy
+        self.satellite = satellite
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -444,7 +448,7 @@ class ActionExecutor:
     )
     def set_timer(self, duration_seconds: Optional[int] = None, at: Optional[str] = None,
                   label: Optional[str] = None, is_reminder: bool = False):
-        return self.clock.set_timer(duration_seconds, label or None, bool(is_reminder), at=at)
+        return self.clock.set_timer(duration_seconds, label or None, bool(is_reminder), at=at, satellite=self.satellite)
 
     @tool(
         "Give a name to the reminder which was just asked about, right after the "
@@ -542,7 +546,7 @@ class ActionExecutor:
             # The days themselves. Left as "custom" if none were given, which the
             # clock can't read, so it asks which days rather than guessing.
             repeat = days or "custom"
-        return self.clock.set_alarm(hour, minute, repeat or None)
+        return self.clock.set_alarm(hour, minute, repeat or None, satellite=self.satellite)
 
     @tool("Report which alarms are set, for 'what alarms do I have' or 'list my alarms'.", needs="clock")
     def list_alarms(self):
