@@ -16,7 +16,7 @@ word, leaving the default quietly in force.
 import difflib
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import yaml
 
@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 BETWEEN_0_AND_1 = {("thresholds", "vad_threshold"), ("thresholds", "wake_word_confidence"),
                    ("thresholds", "silence_threshold"), ("llm", "temperature")}
 CHOICES = {("music", "player"): ("navidrome", "spotify")}
+
+# Sections an install's file may still have from when the Pi heard for itself, before
+# the brain did - see docs/decisions/0006. Nothing reads them now, but a Pi's own
+# settings often have them, and refusing them stopped the satellite and the brain both
+# starting, so they're let through with a warning instead. Any other section config.yaml
+# doesn't have is still a mistake.
+RETIRED = ("speech_to_text", "moonshine", "whisper")
 
 
 class ConfigError(ValueError):
@@ -67,7 +74,7 @@ def _guess(name: str, options) -> str:
     return f" Did you mean '{close[0]}'?" if close else ""
 
 
-def check(settings: Dict, defaults: Dict, path: str):
+def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
     """
     Checks an install's settings against config.yaml's.
 
@@ -76,10 +83,17 @@ def check(settings: Dict, defaults: Dict, path: str):
         defaults: config.yaml's.
         path: The install's file, for the message.
 
+    Returns:
+        The sections it has which are no longer used - see RETIRED - and so aren't
+        checked, and are to be left out.
+
     Raises:
         ConfigError: Naming the first setting which is wrong, and how.
     """
+    retired = [section for section in settings if section in RETIRED and section not in defaults]
     for section, values in settings.items():
+        if section in retired:
+            continue
         if section not in defaults:
             raise ConfigError(f"{path}: there's no '{section}' section.{_guess(section, defaults)}")
         if not isinstance(values, dict):
@@ -96,6 +110,7 @@ def check(settings: Dict, defaults: Dict, path: str):
             choices = CHOICES.get((section, name))
             if choices and str(value).lower() not in choices:
                 raise ConfigError(f"{path}: '{section}.{name}' should be one of {', '.join(choices)}, not {value!r}")
+    return retired
 
 
 class Config:
@@ -127,11 +142,16 @@ class Config:
         # the rest of config.yaml's weather section as it is.
         if os.path.exists(self.path):
             settings = _read(self.path)
-            check(settings, self.data, self.path)
+            retired = check(settings, self.data, self.path)
             for name, values in settings.items():
-                self.data[name] = {**self.data[name], **values}
+                if name not in retired:
+                    self.data[name] = {**self.data[name], **values}
             if not quiet:
                 logger.info(f"Settings loaded from {self.path}")
+                if retired:
+                    logger.warning(f"{self.path} still has the {', '.join(retired)} section"
+                                   f"{'s' if len(retired) > 1 else ''}, which Nova no longer uses - "
+                                   f"{'they' if len(retired) > 1 else 'it'} can be deleted")
 
     def section(self, name):
         """

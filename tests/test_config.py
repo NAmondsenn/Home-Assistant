@@ -4,9 +4,11 @@ Checks settings are read from config.yaml, with the install's own on top, and th
 mistake in the install's file is caught rather than ignored.
 """
 
+import logging
+
 import pytest
 
-from voice_assistant.config import Config, ConfigError
+from voice_assistant.config import Config, ConfigError, check
 
 DEFAULTS = """
 weather:
@@ -66,6 +68,43 @@ def test_a_mistake_stops_it_starting_and_says_where(config_with, own, said):
     with pytest.raises(ConfigError) as caught:
         config_with(own)
     assert said in str(caught.value) and "config.yaml" in str(caught.value)
+
+
+RETIRED = """speech_to_text:
+  engine: moonshine
+moonshine:
+  keyterms: [Nova]
+whisper:
+  model: base.en
+weather:
+  location: Leeds
+"""
+
+
+def test_the_sections_nova_no_longer_uses_are_let_through_with_a_warning(config_with, caplog):
+    # A Pi's own settings from before the brain heard for it, which stopped both the
+    # satellite and the brain starting.
+    with caplog.at_level(logging.WARNING):
+        config = config_with(RETIRED)
+    assert config.section("weather")["location"] == "Leeds"
+    assert config.section("moonshine") == {}
+    (warning,) = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert all(name in warning for name in ("speech_to_text", "moonshine", "whisper")) and "deleted" in warning
+
+
+def test_the_settings_page_lets_them_through_too_and_says_nothing(config_with, tmp_path, caplog):
+    # It checks the file before saving to it, and reads it every time it looks.
+    (tmp_path / "config.yaml").write_text(RETIRED)
+    with caplog.at_level(logging.WARNING):
+        Config(path=str(tmp_path / "config.yaml"), defaults=str(tmp_path / "defaults.yaml"), quiet=True)
+    assert caplog.records == []
+    assert check({"moonshine": {"keyterms": []}}, {"weather": {}}, "config.yaml") == ["moonshine"]
+
+
+def test_any_other_section_it_doesnt_know_still_stops_it(config_with):
+    with pytest.raises(ConfigError) as caught:
+        config_with("moonshine:\n  keyterms: [Nova]\nwether:\n  location: Leeds\n")
+    assert "there's no 'wether' section" in str(caught.value)
 
 
 def test_a_setting_can_be_left_to_the_model_with_null(config_with, tmp_path):
