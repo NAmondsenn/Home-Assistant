@@ -221,10 +221,10 @@ Then restart the brain. What it sends is tagged `nova`, so it never reads its ow
 Nova serves a page for looking after it from a phone or a laptop - how it's doing, its volumes, timers and alarms, what it remembers, its keys (which it only ever saves, never shows back) and its main settings. The star by Nova's name shows whether it's waiting, listening, thinking or speaking, and as a volume's dragged, Nova beeps on its speaker at each new level, so you can hear how loud it is. With music set up, it shows what's playing, and plays something else; with Home Assistant, it switches and dims your lights, sets their colour and warmth, groups them by room, and runs your scripts and scenes - never one whose name says it locks or opens anything. It's on the brain, not the satellites - one page for the whole house - and listens there alone, and only your own Tailscale login gets in:
 
 1. In Tailscale's admin page, turn on HTTPS certificates - under DNS.
-2. On the brain, have Tailscale pass the tailnet's requests on to the page, with a certificate for the brain's name:
+2. On the brain, have Tailscale pass the tailnet's requests on to the page, with a certificate for the brain's name (as root, which the brain's setup is run as; anyone else puts `sudo` in front):
 
    ```bash
-   sudo tailscale serve --bg --https=443 http://127.0.0.1:8765
+   tailscale serve --bg --https=443 http://127.0.0.1:8765
    ```
 3. Say who's let in, in the brain's `~/.config/nova/config.yaml`:
 

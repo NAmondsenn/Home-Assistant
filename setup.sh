@@ -302,9 +302,10 @@ write_secrets() {
     if [ "$ROLE" = "satellite" ]; then
         local password=""
         if [ "$ASSUME_YES" = false ]; then
-            echo "  This satellite's password comes from the brain: run"
-            echo "  'venv/bin/python backend.py add-satellite NAME' there. Leave it blank to add it"
-            echo "  to ${SECRETS_FILE} by hand later."
+            echo "  This satellite's password comes from the brain: on the brain, in its clone, run"
+            echo "  'venv/bin/python backend.py add-satellite NAME' as the brain's user - from root,"
+            echo "  with 'runuser -u nova -- ' in front (nova being the user the brain runs as)."
+            echo "  Leave it blank to add it to ${SECRETS_FILE} by hand later."
             read -rp "  Password: " password
         fi
         mkdir -p -m 700 "$CONFIG_DIRECTORY"
