@@ -128,6 +128,7 @@ raspotify plays on regardless when Spotify is used from a phone. There's no Moon
 
 - Claude stays behind `llm.py`, so the user's own model can take its place later without the satellites knowing.
 - The user is getting a machine of its own for AI, with a graphics card. Hearing (`speech_to_text.py`), Nova's voice (`text_to_speech.py`) and the model (`llm.py`) each stay behind their own module, so any of them can move onto that machine later, with PVE2 still the brain. Nothing for it is built now.
+- The user may move the whole brain to that machine - PVE3 - later. So everything the brain is lives in container 107, and the satellites find it by its tailnet name, which lives inside the container and moves with it. Moving it is then a backup and restore, or a migrate if PVE2 and PVE3 are joined as a cluster. Only the `library` mount is tied to PVE2, and its files go on PVE3's own storage. If PVE3 is often restarted to experiment, the brain can stay on PVE2 and use PVE3's model over the network, for about a millisecond more.
 - The connection is Wyoming's message shape, so a converter for ready-made satellites could be added later.
 
 **Order.** This comes before the rest of Phase 5:
