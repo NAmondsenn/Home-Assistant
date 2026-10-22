@@ -63,8 +63,11 @@ class Pi:
         self.stream = sock.makefile("rwb")
         self.received = []
         self.lock = threading.Lock()
-        # Which of the brain's streams, counted from 1, play on until they're stopped.
+        # Which of the brain's streams, counted from 1, play on until they're stopped -
+        # or, with finishes_nothing, every sound and stream, as a satellite which has
+        # lost track of them would.
         self.held = set()
+        self.finishes_nothing = False
         self._held_ids = set()
         self._streams = 0
         # What the user says each time the brain asks to hear their answer.
@@ -82,6 +85,8 @@ class Pi:
 
     def _play(self, message):
         kind = message["type"]
+        if self.finishes_nothing and kind in ("play_sound", "stream_end"):
+            return
         if kind == "play_sound":
             self.say("played", id=message["id"])
         elif kind == "play_stream":
@@ -527,6 +532,78 @@ def test_a_wake_word_heard_just_as_the_reply_ends_starts_the_next_request(connec
     heard_over = session._heard_over(finished)
     assert heard_over is not None and isinstance(heard_over["feed"], AudioFeed)
     assert satellite.wakes.empty()
+
+
+def test_what_the_satellite_never_says_has_finished_is_given_up_on(brain, connect, make_session, monkeypatch):
+    # The session waited for good - stuck, with its satellite still connected and
+    # pinging, so every wake word there got silence.
+    monkeypatch.setattr(session_module, "PLAYBACK_SLACK", 0.2)
+    satellite, pi = connect()
+    pi.finishes_nothing = True
+    session = make_session(satellite)
+    done = []
+
+    def wait_on_each():
+        session._play_sound("listening.wav")
+        done.append(session._say("It's sunny.", listen=True))
+        session._say("Sorry, something went wrong there.")
+        session._play_announcement(session.speaker.play_file(str(brain.sounds_folder / "announcement_sound.wav"),
+                                                             kind="announcement"))
+        done.append("all")
+
+    waiting = threading.Thread(target=wait_on_each, daemon=True)
+    waiting.start()
+    waiting.join(10)
+    assert done == [None, "all"]
+    # Each is stopped, rather than left playing on the satellite.
+    started = {message["id"] for message in pi.messages("play_sound") + pi.messages("play_stream")}
+    assert len(started) == 4
+    assert wait_for(lambda: started <= {message.get("id") for message in pi.messages("stop")})
+
+
+def test_a_session_between_wakes_or_playing_a_long_reply_is_moving(brain, connect, make_session):
+    # The brain stops telling systemd it's working once a session stops moving - see
+    # Brain.last_moved - so one waiting for the next wake word, or saying three and a
+    # half minutes of the calendar, mustn't look stuck.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation(Reply(say="Today, you've got..."))
+    brain.stt.texts = ["What's on today?"]
+    pi.held = {1}
+    made_at = session.moved_at
+    running(session)
+    assert wait_for(lambda: session.moved_at > made_at)
+
+    pi.wake(said())
+    assert wait_for(lambda: pi.messages("play_stream"))
+    playing = session.moved_at
+    assert wait_for(lambda: session.moved_at > playing)
+    pi.say("played", id=pi.messages("play_stream")[0]["id"])
+    assert wait_for(lambda: pi.messages("allow"))
+
+
+def test_a_session_stuck_in_a_turn_stops_moving(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    stuck, let_go = threading.Event(), threading.Event()
+
+    class Stuck(ScriptedConversation):
+        def handle(self, text, follow_up=False, timeline=None):
+            stuck.set()
+            let_go.wait(5)
+            return Reply()
+
+    session.conversation = Stuck()
+    brain.stt.texts = ["What's on today?"]
+    running(session)
+    pi.wake(said())
+    try:
+        assert stuck.wait(5)
+        moved_at = session.moved_at
+        time.sleep(2 * session_module.WAKE_CHECK)
+        assert session.moved_at == moved_at
+    finally:
+        let_go.set()
 
 
 def test_a_reply_nobody_talks_over_plays_to_the_end(connect, make_session):

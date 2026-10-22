@@ -114,6 +114,13 @@ class NemotronSpeechToText:
 # What a NemotronTranscription is told once the recording is over.
 _FINISHED, _CANCELLED = "finished", "cancelled"
 
+# How long to wait for Nemotron to finish a recording, and to stop on one which came
+# to nothing, in seconds. It has the words about 0.3 seconds after the user stops (see
+# nemotron.py), so these only run out on one which has hung - which the session then
+# says went wrong, rather than waiting for good while its satellite gets silence.
+FINISH_LIMIT = 20.0
+CANCEL_LIMIT = 5.0
+
 
 class NemotronTranscription:
     """
@@ -157,10 +164,16 @@ class NemotronTranscription:
         Returns:
             What NemotronSpeechToText.transcribe() returns - its 'duration' only how
             long was left to do once the recording stopped.
+
+        Raises:
+            TimeoutError: Nemotron hasn't finished within FINISH_LIMIT, so has hung -
+                and hearing the whole recording again would only hang too.
         """
         started = time.time()
         self._waiting.put(_FINISHED)
-        self._thread.join()
+        self._thread.join(FINISH_LIMIT)
+        if self._thread.is_alive():
+            raise TimeoutError(f"Nemotron hadn't finished the recording after {FINISH_LIMIT:.0f}s")
         if self._failed is not None:
             logger.warning(f"Couldn't transcribe the recording as it was made, so starting again "
                            f"on the whole of it: {self._failed}")
@@ -168,9 +181,14 @@ class NemotronTranscription:
         return _heard(str(self._text).strip(), time.time() - started, after_recording=True)
 
     def cancel(self):
-        """The recording came to nothing, so Nemotron stops without finishing it."""
+        """
+        The recording came to nothing, so Nemotron stops without finishing it - or is
+        left to, if it hasn't within CANCEL_LIMIT, as one which has hung never would.
+        """
         self._waiting.put(_CANCELLED)
-        self._thread.join()
+        self._thread.join(CANCEL_LIMIT)
+        if self._thread.is_alive():
+            logger.warning(f"Nemotron hadn't stopped after {CANCEL_LIMIT:.0f}s, so it's left to")
 
     def _hear(self):
         """Gives Nemotron the recording as it arrives, until it's over - on a thread of its own."""

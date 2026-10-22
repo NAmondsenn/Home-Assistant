@@ -51,6 +51,16 @@ WAKE_CHECK = 0.5
 # user is waiting for it to stop.
 TALKED_OVER_CHECK = 0.05
 
+# How much longer than the audio sent for it a sound may go on before the satellite is
+# taken never to say it has finished, in seconds - when it's stopped, rather than the
+# session waiting for it for good. None of Nova's own sounds is longer than the alarm's
+# 34 seconds, and Piper gives up on a sentence after 10 (see text_to_speech.py), so
+# one which goes on a minute past the last of its audio has been lost track of.
+PLAYBACK_SLACK = 60.0
+
+# How often waiting for a sound checks whether it's been lost track of, in seconds.
+PLAYBACK_CHECK = 0.1
+
 # How often Home Assistant is asked which device is this satellite's, and which room
 # it's in, in seconds: every half a minute until it's found - it isn't until Home
 # Assistant has taken in the device's MQTT announcement - then every five minutes,
@@ -121,6 +131,12 @@ class Session:
         # Set once the session is closed, which ends run() - see close.
         self._closed = threading.Event()
         self._closing = threading.Lock()
+        # When the session's own thread was last seen getting on, by time.monotonic():
+        # between wake words, and as a reply plays, however long it is. The brain stops
+        # telling systemd it's working once a session has been still too long - stuck
+        # part way through a turn, with its satellite still connected and pinging, so
+        # that nothing else would notice. See Brain.last_moved.
+        self.moved_at = time.monotonic()
 
         logger.info(f"Starting the {satellite.name} satellite's session...")
 
@@ -251,6 +267,8 @@ class Session:
                                      name=f"ha-device-lookup-{self.satellite.name}").start()
         try:
             while self.satellite.connected and not self._closed.is_set():
+                # Waiting for the wake word is never being stuck.
+                self._moved()
                 try:
                     wake = self.satellite.wakes.get(timeout=WAKE_CHECK)
                 except queue.Empty:
@@ -530,7 +548,7 @@ class Session:
         playback = self.speaker.play_stream(tts.stream(message, on_start=started), tts.sample_rate,
                                             volume=self.volume.get("general"))
         if not listen:
-            playback.wait()
+            self._wait_for(playback)
             heard_over = None
         else:
             heard_over = self._heard_over(playback)
@@ -559,7 +577,13 @@ class Session:
             The wake word, as the satellite's wakes have it - or None once the reply
             has finished, as it does when the satellite goes.
         """
+        started = time.monotonic()
         while not playback.done:
+            # A reply can rightly play for minutes, so this is getting on - for as long
+            # as it could still be playing, after which it's stopped.
+            self._moved()
+            if self._overdue(playback, started):
+                break
             try:
                 return self.satellite.wakes.get(timeout=TALKED_OVER_CHECK)
             except queue.Empty:
@@ -591,7 +615,35 @@ class Session:
         """
         if volume is None:
             volume = self.volume.get("general")
-        self.speaker.play_file(str(self.brain.sounds_folder / name), volume=volume).wait()
+        self._wait_for(self.speaker.play_file(str(self.brain.sounds_folder / name), volume=volume))
+
+    def _wait_for(self, playback):
+        """Waits for a sound to finish - or stops it, once it's plainly never going to say it has."""
+        started = time.monotonic()
+        while not playback.wait(timeout=PLAYBACK_CHECK):
+            if self._overdue(playback, started):
+                return
+
+    def _overdue(self, playback, started: float) -> bool:
+        """
+        Whether a sound has gone on so much longer than the audio sent for it that its
+        satellite will never say it has finished - see PLAYBACK_SLACK - in which case
+        it's stopped, so nothing is left waiting for it.
+
+        Args:
+            playback: The sound, playing on the satellite.
+            started: When it was started, by time.monotonic().
+        """
+        if time.monotonic() - started <= playback.duration + PLAYBACK_SLACK:
+            return False
+        logger.warning(f"The {self.satellite.name} satellite never said a {playback.kind} sound had finished, "
+                       f"so it's stopped")
+        playback.stop()
+        return True
+
+    def _moved(self):
+        """Notes that the session's own thread is getting on - see moved_at."""
+        self.moved_at = time.monotonic()
 
     def _not_heard(self):
         """
@@ -726,10 +778,15 @@ class Session:
             playback: The sound, already started.
             still_wanted: Checked while it plays - False once it's been dismissed.
         """
-        while not playback.wait(timeout=0.1):
+        # Not counted as the session getting on (see moved_at), as this is never on
+        # its own thread - so it can't hide a turn which is stuck.
+        started = time.monotonic()
+        while not playback.wait(timeout=PLAYBACK_CHECK):
             if still_wanted is not None and not still_wanted():
                 logger.info("Dismissed part way through, so it's stopped")
                 playback.stop()
+                return
+            if self._overdue(playback, started):
                 return
 
     def alert(self, alert):

@@ -138,3 +138,29 @@ def test_nemotron_imagining_thank_you_is_thrown_away():
     transcription = speech_to_text.NemotronSpeechToText(FakeNemotron(heard="Thank you.")).listen()
     transcription.add(_pieces(0.1)[0])
     assert transcription.finish(_pieces(0.1)[0])["text"] == ""
+
+
+def test_a_nemotron_which_hangs_is_given_up_on(monkeypatch):
+    # The session waited for it for good - stuck, with its satellite still connected,
+    # so every wake word there got silence.
+    import threading
+    import time
+
+    monkeypatch.setattr(speech_to_text, "FINISH_LIMIT", 0.1)
+    monkeypatch.setattr(speech_to_text, "CANCEL_LIMIT", 0.1)
+    nemotron = FakeNemotron()
+    nemotron.busy = threading.Event()
+    stt = speech_to_text.NemotronSpeechToText(nemotron)
+    try:
+        finishing = stt.listen()
+        finishing.add(_pieces(0.1)[0])
+        with pytest.raises(TimeoutError):
+            finishing.finish(_pieces(0.1)[0])
+
+        cancelling = stt.listen()
+        cancelling.add(_pieces(0.1)[0])
+        started = time.monotonic()
+        cancelling.cancel()
+        assert time.monotonic() - started < 1
+    finally:
+        nemotron.busy.set()

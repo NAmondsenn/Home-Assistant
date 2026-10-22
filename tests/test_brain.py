@@ -113,6 +113,8 @@ class FakeSession:
         self.announced, self.alerts, self.routines = [], [], []
         self.volume, self.music_player, self.actions, self.home = (object() for _ in range(4))
         self.closed = threading.Event()
+        # Never stuck, unless a test says it is.
+        self.moved_at = float("inf")
 
     def send_state(self):
         return self.satellite.set_state({"general": 0.5, "alarm": 0.8, "music": 0.4}, False)
@@ -596,9 +598,26 @@ def test_each_satellites_copy_is_sent_again_now_and_then(brain, connect, monkeyp
 
 def test_listening_for_satellites_tells_the_watchdog_the_brain_is_working(brain, monkeypatch):
     beats = []
-    monkeypatch.setattr(brain_module.watchdog, "beat", lambda: beats.append(True))
+    monkeypatch.setattr(brain_module.watchdog, "beat", lambda at=None: beats.append(at))
     serving(brain)
     assert wait_for(lambda: len(beats) >= 2)
+    # With no session to be stuck, it's working now.
+    assert time.monotonic() - beats[-1] < 1
+
+
+def test_a_session_stuck_part_way_through_a_turn_stops_the_watchdog(brain, connect, monkeypatch):
+    # Its satellite stayed connected and pinging, so the brain looked healthy while
+    # every wake word there got silence. Listening for satellites goes on regardless,
+    # so it tells the watchdog when the stillest session last moved - see Session.moved_at.
+    beats = []
+    monkeypatch.setattr(brain_module.watchdog, "beat", lambda at=None: beats.append(at))
+    serving(brain)
+    connect(brain)
+    session = connected(brain)
+    session.moved_at = time.monotonic() - 1000
+    told = len(beats)
+    assert wait_for(lambda: len(beats) > told + 1)
+    assert beats[-1] == session.moved_at
 
 
 def test_the_settings_page_is_given_the_brain_to_look_after_every_satellite_by(make_brain, make_config):

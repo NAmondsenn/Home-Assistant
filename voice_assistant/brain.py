@@ -78,6 +78,18 @@ AWAY_WAIT = 2.0
 
 # How often listening for satellites checks whether it's been stopped, in seconds - and
 # so how often it tells the watchdog the brain is still working.
+#
+# That's said to be when the stillest session last moved (see Brain.last_moved), so a
+# session stuck part way through a turn - its satellite still connected and pinging,
+# and every wake word there getting silence - is caught by the watchdog's allowance:
+# watchdog.ALLOWANCE, 150 seconds, the same as main.py had on the Pi, whose watchdog
+# went quiet as soon as a turn hung, as the microphone was no longer read. That's more
+# than a turn legitimately goes between steps which count as moving - a web search
+# retried once (two lots of llm.search_timeout) after a recording of up to 10 seconds
+# - while a session between wake words, or playing a reply of any length, moves
+# several times a second. nova-backend.service's WatchdogSec=60 then restarts the brain
+# within a minute of the watchdog going quiet: three and a half minutes from a session
+# sticking, at most, which its satellite rides out, ringing from its copy.
 STOP_CHECK = 0.5
 
 # What a satellite says when it can't reach the brain, in the brain's own voice - see
@@ -120,8 +132,9 @@ class _Server(socketserver.ThreadingTCPServer):
             self.brain._shut_out_removed()
         except Exception:
             logger.exception("Couldn't check for satellites which have been removed")
-        # The brain's main loop is still going - see watchdog.py.
-        watchdog.beat()
+        # The brain's main loop is still going, and so is every session, but for one
+        # which is stuck - see STOP_CHECK.
+        watchdog.beat(self.brain.last_moved())
 
 
 class _Connection(socketserver.BaseRequestHandler):
@@ -231,6 +244,19 @@ class Brain:
         """
         names = self.passwords.names()
         return names[0] if names else None
+
+    def last_moved(self) -> float:
+        """
+        When the brain was last known to be getting on with everything, by
+        time.monotonic(): now, unless a session has been still since longer ago -
+        stuck in a turn, which nothing else would notice. See STOP_CHECK.
+
+        Returns:
+            The earliest of now and each session's moved_at.
+        """
+        with self._lock:
+            sessions = list(self.sessions.values())
+        return min([time.monotonic()] + [session.moved_at for session in sessions])
 
     def session_for(self, satellite: Optional[str]) -> Optional[Session]:
         """
