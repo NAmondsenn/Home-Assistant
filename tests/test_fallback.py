@@ -16,6 +16,8 @@ class FakePlayback:
     def __init__(self):
         self.stopped = False
 
+    # A property, as the speaker's own Playback has it.
+    @property
     def done(self):
         return self.stopped
 
@@ -87,6 +89,19 @@ def test_an_alarm_due_while_away_rings_until_dismissed(tmp_path):
     count = len(speaker.calls)
     time.sleep(0.05)
     assert len(speaker.calls) == count
+
+
+def test_quietening_stops_the_ringing_without_dismissing_it(tmp_path):
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry()])
+    ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls)
+
+    ringer.quiet()
+    assert not ringer.ringing
+    assert all(p.stopped for p in speaker.playbacks)
+    # The brain is told it rang but wasn't dismissed, so it takes the ringing over.
+    assert copy.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": []}
 
 
 def test_an_alarm_long_missed_isnt_rung(tmp_path):

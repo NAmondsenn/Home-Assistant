@@ -96,6 +96,9 @@ backend:
   # empty, this Pi does it all itself, as above. Both need the same password, as
   # NOVA_BACKEND_TOKEN in ~/.config/nova/.env.
   address: ""
+  # This satellite's name, which the brain knows its password by - see add-satellite
+  # in backend.py. Left empty, it's this machine's own name.
+  satellite: ""
   # Only used on the backend itself: the port it listens on, on its own machine -
   # Tailscale passes the tailnet's connections on to it - and the streaming model it
   # hears with, inside the project.

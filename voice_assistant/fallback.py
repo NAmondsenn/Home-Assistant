@@ -236,23 +236,33 @@ class FallbackRinger:
                 # A missing file mustn't spin the thread.
                 self._stop.wait(1.0)
                 continue
-            while not self._stop.is_set() and not playback.done() and time.monotonic() < deadline:
+            while not self._stop.is_set() and not playback.done and time.monotonic() < deadline:
                 playback.wait(0.2)
         with self._lock:
             playback = self._playbacks.pop(entry["id"], None)
-        if playback is not None and not playback.done():
+        if playback is not None and not playback.done:
             playback.stop()
 
     def dismiss(self):
         """Stops everything which is ringing, and records it as dismissed."""
+        for id in self.quiet():
+            self.copy.dismissed(id)
+
+    def quiet(self) -> List[str]:
+        """
+        Stops everything which is ringing without recording it as dismissed - for
+        when the brain is back, and takes the ringing over.
+
+        Returns:
+            The ids which were ringing.
+        """
         with self._lock:
             threads = list(self._threads)
         ids = [thread.name[len("ring-"):] for thread in threads if thread.is_alive()]
         self._stop.set()
         for thread in threads:
             thread.join(timeout=2.0)
-        for id in ids:
-            self.copy.dismissed(id)
+        return ids
 
 
 class Phrase:
