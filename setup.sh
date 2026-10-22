@@ -27,18 +27,19 @@ SERVICE_TEMPLATE="${PROJECT_DIRECTORY}/${SERVICE_NAME}.service"
 SERVICE_FILE="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
 
 PIPER_VERSION="2023.11.14-2"
-VOICE_MODEL="en_GB-alan-medium"
-VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium"
+VOICE_MODEL="en_GB-cori-medium"
+VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/cori/medium"
 
 # The SHA-256 of everything downloaded and then run or trusted, so a tampered
 # release or mirror stops setup rather than being run on the Pi. Taken from the
-# files themselves on 20 October 2026: the voice's match Hugging Face's own, and
-# the Piper binary inside the aarch64 archive matched the one Nova had been using.
-# Changing PIPER_VERSION or VOICE_MODEL means updating these too.
+# files themselves - Piper's on 20 October 2026, when the binary inside the aarch64
+# archive matched the one Nova had been using, and the voice's on 22 October 2026,
+# when the model's matched Hugging Face's own. Changing PIPER_VERSION or
+# VOICE_MODEL means updating these too.
 PIPER_SHA256_AARCH64="fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb"
 PIPER_SHA256_X86_64="a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
-VOICE_SHA256_MODEL="0a309668932205e762801f1efc2736cd4b0120329622adf62be09e56339d3330"
-VOICE_SHA256_CONFIG="c0f0d124e5895c00e7c03b35dcc8287f319a6998a365b182deb5c8e752ee8c1e"
+VOICE_SHA256_MODEL="1899f98e5fb8310154f3c2973f4b8a929ba7245e722b3d3a85680b833d95f10d"
+VOICE_SHA256_CONFIG="e262c16d7f192f69d4edd6b4ef8a5915379e67495fcc402f1ab15eeb33da3d36"
 RASPOTIFY_KEY_SHA256="36dd5aadd073950d55c404f0e0c6c2e0555259bf38bd8b6448c35591a3cc9cfd"
 
 ASSUME_YES=false
