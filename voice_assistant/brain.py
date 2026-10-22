@@ -333,8 +333,11 @@ class Brain:
                 return None
             # A satellite hangs up as soon as the brain can't prove it knows its
             # password - so this, rather than a refusal, is what a wrong one looks like.
+            # It also hangs up on a brain which takes longer than SOCKET_TIMEOUT to
+            # answer it, though, so it's only most likely.
             self._turned_away(named[0], f"The {named[0]} satellite hung up part way through the handshake, "
-                                        f"so its password isn't the one the brain has for it")
+                                        f"so most likely its password isn't the one the brain has for it "
+                                        f"- or the brain was too slow to answer it")
             return None
         except (ProtocolError, OSError) as e:
             logger.warning(f"Dropped {address}, which didn't finish the handshake: {e}")

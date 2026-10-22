@@ -540,7 +540,9 @@ def test_a_satellite_with_the_wrong_password_is_logged_once_by_name(brain, conne
         with pytest.raises(protocol.Refused):
             connect(brain, password="not-the-bedrooms-password")
     time.sleep(0.5)
-    assert len([line for line in caplog.messages if "bedroom" in line and "password" in line]) == 1
+    # Most likely - it also hangs up on a brain too slow to answer it.
+    assert len([line for line in caplog.messages
+                if "bedroom" in line and "password" in line and "most likely" in line]) == 1
 
 
 def test_whats_unowned_goes_to_the_default_before_the_clock_starts(brain):
