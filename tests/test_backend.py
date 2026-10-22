@@ -258,3 +258,39 @@ def test_the_backend_is_used_once_config_says_where_it_is(serve, make_config, mo
         assert isinstance(stt, BackendSpeechToText) and stt.reachable
     finally:
         stt.close()
+
+
+@pytest.fixture
+def passwords(tmp_path, monkeypatch):
+    """The satellites' passwords, kept in the test's own folder."""
+    from voice_assistant.satellite_passwords import SatellitePasswords
+
+    kept = SatellitePasswords(str(tmp_path / "satellites.json"))
+    monkeypatch.setattr(backend, "SatellitePasswords", lambda: kept)
+    return kept
+
+
+def test_add_satellite_prints_the_password_once(passwords, capsys):
+    backend.main(["add-satellite", "bedroom"])
+
+    assert passwords.get("bedroom") in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        backend.main(["add-satellite", "bedroom"])
+    assert passwords.get("bedroom") not in capsys.readouterr().out
+
+
+def test_add_satellite_can_take_an_existing_password_from_stdin(passwords, capsys, monkeypatch):
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("an-existing-password-here\n"))
+    backend.main(["add-satellite", "bedroom", "--password-stdin"])
+
+    assert passwords.get("bedroom") == "an-existing-password-here"
+    assert "an-existing-password-here" not in capsys.readouterr().out
+
+
+def test_remove_satellite_stops_admitting_it(passwords):
+    passwords.add("bedroom")
+    backend.main(["remove-satellite", "bedroom"])
+
+    assert passwords.names() == []
