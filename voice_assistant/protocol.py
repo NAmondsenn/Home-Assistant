@@ -1,7 +1,7 @@
 """
 Protocol Module.
 
-How a Pi and Nova's backend talk - see docs/decisions/0004. One connection, kept
+How a satellite and Nova's brain talk - see docs/decisions/0006. One connection, kept
 open, carrying messages which are each a line of JSON, followed by the audio it says
 comes with it, if any: Wyoming's message shape, without needing its library.
 

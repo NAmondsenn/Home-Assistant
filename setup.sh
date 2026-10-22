@@ -615,8 +615,9 @@ install_raspotify() {
 install_service() {
     step "Starting at boot"
     if [ "$ROLE" = "brain" ]; then
-        # Root's: a system service, which runs as this user. It's passed the home folder
-        # too, as the only places it may write besides its own are its settings and data.
+        # Root's: a system service, which runs as the service user - the clone's owner,
+        # never root. It's passed their home folder too, as the only places it may write
+        # besides its own are its settings and data.
         sed -e "s|__PROJECT_DIRECTORY__|${PROJECT_DIRECTORY}|g" -e "s|__USER__|${SERVICE_USER}|g" \
             -e "s|__HOME__|${SERVICE_HOME}|g" "$BRAIN_SERVICE_TEMPLATE" | root_do tee "$BRAIN_SERVICE_FILE" > /dev/null
         # Both folders must be there for the service's sandbox to start.

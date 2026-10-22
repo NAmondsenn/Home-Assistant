@@ -45,7 +45,7 @@ Nova is installed in two roles, from the same clone of the repository. Set the b
 
 ### The brain
 
-The brain is a container (or any machine) running Debian, with Python 3.13 and about 2GB of memory, on your tailnet. It needs an [Anthropic API key](https://console.anthropic.com/) and, for Spotify, Spotify Premium and a [Spotify app](https://developer.spotify.com/dashboard) for its client ID and secret, with `http://127.0.0.1:8888/callback` as its redirect URI. It has no microphone or speaker, and nothing outside your tailnet can reach it.
+The brain is a container (or any machine) running Debian, with Python 3.13 and about 4GB of memory, on your tailnet. It needs an [Anthropic API key](https://console.anthropic.com/) and, for Spotify, Spotify Premium and a [Spotify app](https://developer.spotify.com/dashboard) for its client ID and secret, with `http://127.0.0.1:8888/callback` as its redirect URI. It has no microphone or speaker, and nothing outside your tailnet can reach it.
 
 The brain never runs as root. Make it a user of its own (here `nova`, with no sudo), clone the repository as that user, and run the setup as root, from outside or inside the container - root does only the system steps (packages, the service), and everything else, including the packages in `venv/`, the models, and the settings and keys in that user's `~/.config/nova`, is done as the user who owns the clone. It refuses a clone owned by root.
 
@@ -65,16 +65,22 @@ In order, it:
 6. Downloads Piper, the voice (`en_US-hfc_female-medium`), the Nemotron speech-to-text model and openWakeWord's own models into `models/`. They're checked against pinned SHA-256 hashes, so a tampered download stops setup rather than being run. Nemotron needs about 1.5GB free: `models/` can be a link to a folder somewhere with more room, and everything follows it.
 7. Installs the brain as the `nova-backend` system service, which runs as that user and starts at boot, and starts it.
 
-Then let each satellite in, which prints a password for it - once, so keep it for the satellite's setup. Run it as the brain's user, not root: the passwords are kept in that user's `~/.local/share/nova`, which is where the service reads them.
+Then let each satellite in, by its machine's name, which prints a password for it - once, so keep it for the satellite's setup. Run it as the brain's user, not root: the passwords are kept in that user's `~/.config/nova/satellites.json`, which is where the service reads them.
 
 ```bash
 cd /home/nova/Home-Assistant
 runuser -u nova -- venv/bin/python backend.py add-satellite kitchen
 ```
 
-`remove-satellite NAME` stops letting one in, run the same way.
+`remove-satellite NAME` stops letting one in, run the same way, and lets it go straight away if it's connected.
 
-From here on, anything this README has you run on the brain which reads or writes its settings, keys or data - a `venv/bin/...` command, or a file in `~/.config/nova` or `~/.local/share/nova` - is for the brain's user, not root, whose own folders the service never looks in. Run commands with `runuser -u nova -- `, as above, and edit its files as that user, e.g. `runuser -u nova -- nano /home/nova/.config/nova/.env`. Only `systemctl` and the setup and update scripts are for root. Put the brain on your tailnet with `tailscale serve`, and it's reached by its name and port 10400, as `nova:10400`. The brain's own settings and keys, and everything it saves, are in `~/.config/nova` and `~/.local/share/nova` on its machine, and are where the rest of this README says "the brain".
+From here on, anything this README has you run on the brain which reads or writes its settings, keys or data - a `venv/bin/...` command, or a file in `~/.config/nova` or `~/.local/share/nova` - is for the brain's user, not root, whose own folders the service never looks in. Run commands with `runuser -u nova -- `, as above, and edit its files as that user, e.g. `runuser -u nova -- nano /home/nova/.config/nova/.env`. Only `systemctl`, `journalctl`, `tailscale` and the setup and update scripts are for root. Put the brain on your tailnet, where it's reached by its name and port 10400, as `nova:10400` - as root:
+
+```bash
+tailscale serve --bg --tcp 10400 tcp://localhost:10400
+```
+
+The brain itself only listens on its own machine, so that's the one way in. The brain's own settings and keys, and everything it saves, are in `~/.config/nova` and `~/.local/share/nova` on its machine, and are where the rest of this README says "the brain".
 
 The brain's log is `journalctl -u nova-backend -f`, and `systemctl restart nova-backend` (as root) restarts it. To update it, run `bash update.sh` there, as root, from its clone.
 
@@ -302,11 +308,13 @@ Or by hand, to watch what it's doing - `satellite.py` on a satellite, and `backe
 venv/bin/python satellite.py
 ```
 
-Logs are in `~/.local/share/nova/logs/` - `smart_assistant.log` on a satellite and `backend.log` on the brain - trimmed at 5 MB. How long each stage of every interaction takes is kept in `latency.jsonl` beside it, and summarised by (on the brain, as its user, with `runuser -u nova -- ` in front):
+Logs are in `~/.local/share/nova/logs/` - `smart_assistant.log` on a satellite and `backend.log` on the brain - trimmed at 5 MB, each with a `latency.jsonl` beside it. The brain's has how long each stage of every interaction takes, summarised by (on the brain, as its user, with `runuser -u nova -- ` in front):
 
 ```bash
 venv/bin/python scripts/latency_report.py
 ```
+
+A satellite's has, for each wake word, how long until the first of the reply reached it - the whole wait, as the user hears it - a line of JSON each, which the report doesn't summarise.
 
 If something isn't working, [docs/troubleshooting.md](docs/troubleshooting.md) goes through it by symptom.
 

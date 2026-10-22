@@ -1,6 +1,7 @@
 #!/bin/bash
 # Updates Nova to the latest code on the branch it's on, and restarts it - from inside
-# the clone, as the user it runs as:
+# the clone: on a satellite, as the user it runs as, and on the brain, as root, which
+# does all but the system's own steps as the brain's user (see run_steps in setup.sh):
 #
 #   bash update.sh              fetches the latest code first
 #   bash update.sh --no-pull    uses the code as it is, e.g. after switching branch
