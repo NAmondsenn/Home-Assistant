@@ -103,7 +103,7 @@ On the brain, which talks to Home Assistant for every satellite:
 ## A timer or alarm didn't go off
 
 - The brain keeps them, in `timers.json` and `alarms.json` in its `~/.local/share/nova`, and rings each on the satellite it was set from. Anything which came due while the brain was off is announced late, as "While I was off: ...", once its satellite is back - unless the satellite rang it itself meanwhile.
-- **While the brain can't be reached**, the satellite rings them from its copy (`alarm_copy.json` in its own `~/.local/share/nova`), which the brain sends it whenever anything changes, and every hour. One still ringing when the brain is back carries on ringing from the brain. The satellite's log says `Ringing ... from the satellite's copy`.
+- **While the brain can't be reached**, the satellite rings them from its copy (`alarm_copy.json` in its own `~/.local/share/nova`), which the brain sends it whenever anything changes, and every hour. A timer or alarm still ringing on the satellite when the brain is back carries on ringing from the brain, even if the brain went while it rang; one dismissed on the satellite meanwhile isn't rung again. The satellite's log says `Ringing ... from the satellite's copy`.
 - Nothing goes off on the brain until its clock has been set from the internet, so a brain with no network at boot holds them until it has - its log says `System clock not set yet, holding timers`.
 
 ## Claude's replies fail
@@ -122,7 +122,7 @@ The log of whichever it was - the brain or the satellite - ends with what's wron
 
 Both have a watchdog: if one stops getting on for two and a half minutes - stuck on something which should have timed out - systemd restarts it, rather than leaving it deaf. The log says `The main loop hasn't moved for ...s` just before, and systemd `Watchdog timeout` - or only the second, if the whole of it froze. Whatever it was doing then is the thing to look at.
 
-- **On the brain**, that's most often one satellite's request, stuck part way - the lines before show how far it got. Most waits there give up by themselves instead, and are said as "Sorry, something went wrong there": `Nemotron hadn't finished the recording ...`, or a satellite which `never said a ... sound had finished`. While the brain restarts, which takes about 20 seconds, its satellites ring from their copies, and say they can't reach it.
+- **On the brain**, that's most often one satellite's request, stuck part way - the lines before show how far it got. Most waits there give up by themselves instead: a recording Nemotron `hadn't finished` is said as "Sorry, something went wrong there", and a satellite which `never said a ... sound had finished` has that sound stopped and logged, with nothing said. While the brain restarts, which takes about 20 seconds, its satellites ring from their copies, and say they can't reach it.
 - **On the satellite**, it's the microphone's loop.
 
 ## It's slow
