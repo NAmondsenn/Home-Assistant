@@ -196,6 +196,17 @@ def test_a_wake_brings_a_feed_of_the_recording(pair):
     assert ends_at_once(wake["feed"])
 
 
+def test_a_wake_says_how_much_of_its_recording_is_from_before_it(pair):
+    # In samples - or nothing, from a satellite which doesn't say, when the session
+    # goes by its own setting.
+    satellite, fake, serving = pair
+    fake.say("wake", talked_over=False, pre_roll=4800)
+    fake.say("wake", talked_over=False)
+    fake.say("wake", talked_over=False, pre_roll=-1)
+    fake.say("wake", talked_over=False, pre_roll=True)
+    assert [satellite.wakes.get(timeout=2)["pre_roll"] for _ in range(4)] == [4800, None, None, None]
+
+
 def test_a_follow_up_is_heard_until_the_brain_stops_listening(pair):
     satellite, fake, serving = pair
     answer = np.arange(1600, dtype=np.int16)

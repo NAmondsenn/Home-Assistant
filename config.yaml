@@ -37,7 +37,8 @@ audio:
   # program, so isn't taken out.
   echo_cancellation: true
   # Seconds of audio from just before the wake word was detected which are kept,
-  # so "Hey Nova what time is it", said in one breath, isn't cut short.
+  # so "Hey Nova what time is it", said in one breath, isn't cut short. Set on the
+  # satellite, which tells the brain how much it sent with each wake.
   pre_roll: 0.3
 
 music:

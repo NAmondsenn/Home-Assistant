@@ -111,7 +111,8 @@ class Satellite:
         self.name = backend_config.get("satellite") or self.hostname
         self.sample_rate = audio_config.get("sample_rate", 48000)
         # Seconds of audio from just before the wake word was detected which are sent
-        # first, so "Hey Nova what time is it", said in one breath, isn't cut short.
+        # first, so "Hey Nova what time is it", said in one breath, isn't cut short. The
+        # brain is told how much with each wake, so this is the only setting for it.
         self.pre_roll = audio_config.get("pre_roll", 0.3)
         self.sounds_folder = paths.SOUNDS_DIR
         self.latency_file = os.path.join(paths.LOGS_DIR, "latency.jsonl")
@@ -253,6 +254,8 @@ class Satellite:
         has - then tells the brain, and sends it what the user says.
         """
         heard_at = self.wake.heard_at
+        # The recording starts a moment before the wake word was heard - see pre_roll.
+        start = max(0, heard_at - round(self.pre_roll * RATE))
         recording = None
         with self._lock:
             talked_over = any(playing.kind == "reply" and not playing.playback.done
@@ -273,12 +276,13 @@ class Satellite:
                 # stop_listening straight away.
                 recording = self._recording = threading.Event()
                 self._turn_open = False
-                if not self.link.send("wake", talked_over=talked_over):
+                # Saying how much of the recording is from before the wake word, so the
+                # brain knows without a setting of its own, which could differ.
+                if not self.link.send("wake", talked_over=talked_over, pre_roll=heard_at - start):
                     recording = self._recording = None
         if dismissing:
             self.speaker.allow("announcement")
             return
-        start = max(0, heard_at - round(self.pre_roll * RATE))
         ended = "dropped" if recording is None else self._send_recording(start, heard_at - start, recording)
         with self._lock:
             # The brain asked to hear an answer while this was being sent, having

@@ -130,7 +130,8 @@ class Session:
         # session, since it carries what it last heard from one frame to the next.
         self.speech_detector = make_detector(config)
         # Seconds from before the wake word was detected which the satellite sends
-        # first, by the same setting - see _handle_interaction.
+        # first, for a satellite which doesn't say how many with each wake - see
+        # _handle_interaction.
         self.pre_roll = config.section("audio").get("pre_roll", 0.3)
 
         # Whether the satellite's microphone is muted - from Home Assistant or the
@@ -345,7 +346,7 @@ class Session:
         try:
             with self._conversation_lock:
                 self.conversation.start(ringing, talked_over=talked_over)
-            return self._handle_interaction(wake["feed"], timeline=timeline)
+            return self._handle_interaction(wake["feed"], timeline=timeline, pre_roll=wake.get("pre_roll"))
         except Exception as e:
             # Said out loud, rather than only logged, so it isn't taken for the
             # assistant not having heard. Only for something which went wrong
@@ -356,7 +357,8 @@ class Session:
         finally:
             timeline.save(self.latency_file)
 
-    def _handle_interaction(self, feed, follow_up: bool = False, timeline: Optional[Timeline] = None) -> Optional[Dict]:
+    def _handle_interaction(self, feed, follow_up: bool = False, timeline: Optional[Timeline] = None,
+                            pre_roll: Optional[int] = None) -> Optional[Dict]:
         """
         Handles one full interaction after the wake word: records the query from what
         the satellite sends, transcribes it, has the conversation work out the reply
@@ -368,6 +370,9 @@ class Session:
                        and is listening for the answer, which allows a little
                        longer to start speaking than a fresh request does.
             timeline: The Timeline to mark each stage on. The caller saves it.
+            pre_roll: How many samples at the start of the feed are from before the
+                wake word, as the satellite said - or None, when audio.pre_roll's
+                worth are taken to be. Never any for a follow-up.
 
         Returns:
             The wake word heard over the reply, which the next request starts from - see
@@ -401,10 +406,15 @@ class Session:
         # then. That's kept, but not listened to: it often holds the end of "Nova" too,
         # which would otherwise start the recording, and the pause for the listening
         # sound then end it. An answer comes with nothing from before.
-        pre_roll = 0.0 if follow_up else self.pre_roll
+        if follow_up:
+            before = 0
+        elif pre_roll is None:
+            before = round(self.pre_roll * RATE)
+        else:
+            before = pre_roll
         try:
             audio_data = record_until_silence(
-                feed, self.speech_detector, listen_from=round(pre_roll * RATE), keep_before=pre_roll,
+                feed, self.speech_detector, listen_from=before, keep_before=before / RATE,
                 silence_duration=self.thresholds.get("silence_duration", 0.6),
                 speech_timeout=speech_timeout,
                 timeout=self.thresholds.get("recording_timeout", 10.0),

@@ -327,7 +327,8 @@ def test_the_wake_word_sends_the_pre_roll_then_the_recording(brain, make, tmp_pa
     assert wait_for(lambda: len(brain.recordings()) >= 3)
     brain.say("stop_listening")
 
-    assert brain.messages("wake") == [{"type": "wake", "talked_over": False}]
+    # Saying how much of the recording is from before the wake word - see audio.pre_roll.
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": False, "pre_roll": 4800}]
     assert brain.kinds().index("wake") < brain.kinds().index("audio")
     pre_roll, first, second = brain.recordings()[:3]
     assert np.array_equal(pre_roll, samples(heard_at - 4800, heard_at))
@@ -463,7 +464,7 @@ def test_the_wake_word_over_a_reply_stops_it_and_says_so(brain, make):
     assert reply.stopped
     assert music.paused and not music.done
     assert "announcement" in made.speaker.silenced
-    assert brain.messages("wake") == [{"type": "wake", "talked_over": True}]
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": True, "pre_roll": 4800}]
     # The brain hears of the wake before the end of the reply it stopped.
     assert brain.kinds().index("wake") < brain.kinds().index("played")
     assert brain.messages("played") == [{"type": "played", "id": "reply-1", "stopped": True, "position": 3}]

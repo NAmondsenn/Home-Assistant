@@ -8,7 +8,8 @@ comes with it, if any: Wyoming's message shape, without needing its library.
 After the handshake, what a satellite sends the brain:
 
     ping
-    wake  {"talked_over": ...}
+    wake  {"talked_over": ..., "pre_roll": ...}  (pre_roll: how many of the samples
+        sent next are from before the wake word - optional)
     audio  (payload: 16-bit samples at 16kHz)
     audio_end  {"reason": "limit"|"cancelled"}
     played  {"id": ..., "stopped": ..., "position": ...}

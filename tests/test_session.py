@@ -442,6 +442,22 @@ def test_a_request_run_on_from_the_wake_word_is_heard_whole(brain, make_session)
     assert np.count_nonzero(brain.stt.made[0].finished_with) == round(0.8 * RATE)
 
 
+def test_the_satellite_says_how_much_was_from_before_the_wake_word(brain, connect, make_session):
+    # Each end had its own setting, which could drift apart - and a push-to-talk client
+    # sends nothing from before. Going by the brain's 0.3 seconds, a quick "Yes" at the
+    # very start wasn't listened to at all.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation(Reply())
+    brain.stt.texts = ["Yes."]
+    running(session)
+
+    pi.say("wake", talked_over=False, pre_roll=0)
+    pi.send_audio(said(seconds=0.25, before=0))
+    assert wait_for(lambda: pi.messages("allow"))
+    assert session.conversation.heard == [("Yes.", False)]
+
+
 def test_an_answer_begun_over_the_listening_sound_is_heard(brain, make_session):
     # The satellite sends an answer from the moment the brain asks for it, with nothing
     # from before - so there's nothing to skip.
@@ -540,7 +556,7 @@ def test_talking_over_a_reply_starts_the_next_request_with_the_music_still_held(
     session.music = SimpleNamespace(hold=lambda: held.append("hold"), release=lambda: held.append("release"))
     session.conversation = ScriptedConversation()
     heard_over = [{"talked_over": True, "feed": AudioFeed()}, None]
-    session._handle_interaction = lambda feed, timeline: heard_over.pop(0)
+    session._handle_interaction = lambda feed, timeline, pre_roll=None: heard_over.pop(0)
 
     # Woken over a chime, which isn't talking over a reply.
     session._converse({"talked_over": True, "feed": AudioFeed()})
