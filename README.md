@@ -72,7 +72,9 @@ cd /home/nova/Home-Assistant
 runuser -u nova -- venv/bin/python backend.py add-satellite kitchen
 ```
 
-`remove-satellite NAME` stops letting one in, run the same way. Put the brain on your tailnet with `tailscale serve`, and it's reached by its name and port 10400, as `nova:10400`. The brain's own settings and keys, and everything it saves, are in `~/.config/nova` and `~/.local/share/nova` on its machine, and are where the rest of this README says "the brain".
+`remove-satellite NAME` stops letting one in, run the same way.
+
+From here on, anything this README has you run on the brain which reads or writes its settings, keys or data - a `venv/bin/...` command, or a file in `~/.config/nova` or `~/.local/share/nova` - is for the brain's user, not root, whose own folders the service never looks in. Run commands with `runuser -u nova -- `, as above, and edit its files as that user, e.g. `runuser -u nova -- nano /home/nova/.config/nova/.env`. Only `systemctl` and the setup and update scripts are for root. Put the brain on your tailnet with `tailscale serve`, and it's reached by its name and port 10400, as `nova:10400`. The brain's own settings and keys, and everything it saves, are in `~/.config/nova` and `~/.local/share/nova` on its machine, and are where the rest of this README says "the brain".
 
 The brain's log is `journalctl -u nova-backend -f`, and `systemctl restart nova-backend` (as root) restarts it. To update it, run `bash update.sh` there, as root, from its clone.
 
@@ -136,10 +138,10 @@ navidrome:
 
 Songs are fetched as MP3 - Navidrome converts anything else as it sends it - and decoded with ffmpeg on the brain, which `setup.sh --brain` installs. Your liked songs are the ones starred in Navidrome. Nova never sends the password itself, only a salted hash of it, as Navidrome's API has it.
 
-**Spotify.** Spotify Premium is needed. Sign in once, on the brain - it prints a link to open in a browser:
+**Spotify.** Spotify Premium is needed. Sign in once, on the brain, as its user - it prints a link to open in a browser:
 
 ```bash
-venv/bin/python -m voice_assistant.spotify_controller
+runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller
 ```
 
 ### Home Assistant, for the lights and the calendar
@@ -243,7 +245,7 @@ Then restart the brain, and open `https://` and its name on your tailnet - `tail
 
 ```bash
 venv/bin/pip install --no-deps -r requirements.lock           # a satellite
-venv/bin/pip install --no-deps -r requirements-backend.txt    # the brain
+runuser -u nova -- venv/bin/pip install --no-deps -r requirements-backend.txt    # the brain, from root
 ```
 
 ## Configuring
@@ -294,13 +296,13 @@ systemctl restart nova-backend
 journalctl -u nova-backend -f
 ```
 
-Or by hand, to watch what it's doing - `satellite.py` on a satellite, `backend.py` on the brain:
+Or by hand, to watch what it's doing - `satellite.py` on a satellite, and `backend.py` on the brain (as its user, with `runuser -u nova -- ` in front, with the service stopped):
 
 ```bash
 venv/bin/python satellite.py
 ```
 
-Logs are in `~/.local/share/nova/logs/` - `smart_assistant.log` on a satellite and `backend.log` on the brain - trimmed at 5 MB. How long each stage of every interaction takes is kept in `latency.jsonl` beside it, and summarised by:
+Logs are in `~/.local/share/nova/logs/` - `smart_assistant.log` on a satellite and `backend.log` on the brain - trimmed at 5 MB. How long each stage of every interaction takes is kept in `latency.jsonl` beside it, and summarised by (on the brain, as its user, with `runuser -u nova -- ` in front):
 
 ```bash
 venv/bin/python scripts/latency_report.py

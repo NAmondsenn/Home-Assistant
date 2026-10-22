@@ -658,14 +658,20 @@ main() {
         fi
     else
         step "Starting at boot"
-        skipped "Left out (--no-service) - run it by hand with: ${PYTHON} ${PROJECT_DIRECTORY}/$([ "$ROLE" = "brain" ] && echo backend.py || echo satellite.py)"
+        skipped "Left out (--no-service) - run it by hand with: $([ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ] && echo "runuser -u ${SERVICE_USER} -- ")${PYTHON} ${PROJECT_DIRECTORY}/$([ "$ROLE" = "brain" ] && echo backend.py || echo satellite.py)"
     fi
 
+    # Whoever reads these may be root, whose commands would otherwise write the brain's
+    # passwords and tokens under /root, where its service never looks.
+    local as_user_hint=""
+    if [ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ]; then
+        as_user_hint="runuser -u ${SERVICE_USER} -- "
+    fi
     echo ""
     echo "Done. Settings: ${SETTINGS_FILE} · keys: ${SECRETS_FILE}"
     if [ "$ROLE" = "brain" ]; then
-        echo "Let a satellite in:         cd ${PROJECT_DIRECTORY} && venv/bin/python backend.py add-satellite NAME"
-        echo "For Spotify, sign in once:  cd ${PROJECT_DIRECTORY} && venv/bin/python -m voice_assistant.spotify_controller"
+        echo "Let a satellite in:         cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python backend.py add-satellite NAME"
+        echo "For Spotify, sign in once:  cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python -m voice_assistant.spotify_controller"
         echo "Watch it working:           journalctl -u ${BRAIN_SERVICE_NAME} -f"
     else
         echo "Watch it working:           journalctl --user-unit ${SERVICE_NAME} -f"
