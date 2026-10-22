@@ -265,7 +265,16 @@ class NovaDevice:
         # Kept before connecting, since a broker close by can answer before
         # loop_start() has even returned, and the announcement goes through it.
         self._client = client
-        client.connect_async(self.host, self.port)
+        try:
+            client.connect_async(self.host, self.port)
+        except (ValueError, OSError) as e:
+            # paho checks the address before it tries in the background - a port of 0
+            # or below, say - so trying again wouldn't help, and Nova carries on without
+            # its device rather than stopping as it starts.
+            logger.error(f"Nova can't be in Home Assistant with its broker at {self.host}:{self.port} ({e}) - "
+                         f"mqtt in config.yaml needs checking")
+            self._client = None
+            return
         # paho's own thread, which connects - and connects again whenever the
         # connection's lost.
         client.loop_start()

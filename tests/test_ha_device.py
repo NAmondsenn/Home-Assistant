@@ -353,6 +353,27 @@ def test_without_paho_nova_starts_all_the_same(monkeypatch, nova, caplog):
     assert "paho-mqtt" in _complaints(caplog)[0].getMessage()
 
 
+@pytest.mark.parametrize("error", [ValueError("Invalid port number."), OSError("Name or service not known")])
+def test_a_broker_which_cant_be_tried_at_all_doesnt_stop_nova(nova, caplog, error):
+    # paho checks the port before it tries in the background, and a port of 0 or below
+    # in config.yaml stopped Nova as it started - again and again, as systemd restarted it.
+    client = FakeClient("nova_test")
+
+    def connect_async(host, port=1883, keepalive=60):
+        raise error
+
+    client.connect_async = connect_async
+    device = NovaDevice("broker.local", -1, "nova", "secret", nova.controls(), node_id="nova_test",
+                        client_factory=lambda client_id: client)
+    device.start()
+    device.publish_state()
+    device.stop()
+
+    assert not client.looping and client.published == []
+    complaints = _complaints(caplog)
+    assert len(complaints) == 1 and "broker.local:-1" in complaints[0].getMessage()
+
+
 def test_its_off_without_a_broker(make_config, nova):
     settings = {"host": "", "port": 1883, "username": "", "name": "Nova"}
     assert NovaDevice.from_config(make_config(mqtt=settings), "pw", nova.controls()) is None
