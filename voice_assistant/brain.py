@@ -395,13 +395,14 @@ class Brain:
         if self.phrase is not None:
             satellite.send_phrase(*self.phrase)
         # What rang and what was dismissed on it while it couldn't reach the brain, so
-        # nothing dismissed there rings again here, nor is said to have been missed.
+        # nothing dismissed there rings again here, nor is said to have been missed -
+        # and what it was still ringing, which rings on here.
         try:
             away = satellite.away_reports.get(timeout=AWAY_WAIT)
         except queue.Empty:
             away = None
         if away is not None:
-            self.clock.apply_away(satellite.name, away["rang"], away["dismissed"])
+            self.clock.apply_away(satellite.name, away["rang"], away["dismissed"], away["ringing"])
         with self._lock:
             if self.sessions.get(satellite.name) is session:
                 self._caught_up.add(satellite.name)

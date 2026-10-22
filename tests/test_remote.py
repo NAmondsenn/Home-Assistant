@@ -310,9 +310,14 @@ def test_audio_too_long_for_the_satellite_isnt_sent(pair):
 
 def test_what_rang_while_away_is_passed_on(pair):
     satellite, fake, serving = pair
-    fake.say("away", rang=["kitchen@1700000000"], dismissed=["wake-up@1700003600"])
-    assert satellite.away_reports.get(timeout=2) == {"rang": ["kitchen@1700000000"],
-                                                     "dismissed": ["wake-up@1700003600"]}
+    fake.say("away", rang=["kitchen@1700000000", "wake-up@1700003600"], dismissed=["wake-up@1700003600"],
+             ringing=["kitchen@1700000000"])
+    # Or without what's still ringing, from a satellite which doesn't say.
+    fake.say("away", rang=["kitchen@1700000000"], dismissed=[])
+    assert satellite.away_reports.get(timeout=2) == {"rang": ["kitchen@1700000000", "wake-up@1700003600"],
+                                                     "dismissed": ["wake-up@1700003600"],
+                                                     "ringing": ["kitchen@1700000000"]}
+    assert satellite.away_reports.get(timeout=2) == {"rang": ["kitchen@1700000000"], "dismissed": [], "ringing": []}
 
 
 def test_pings_are_answered(pair):

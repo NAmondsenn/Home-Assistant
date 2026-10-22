@@ -937,7 +937,8 @@ def test_a_dismissal_reported_late_stops_the_ringing_and_the_reminder(make_clock
 
 def test_what_rang_while_away_isnt_announced_as_missed(make_clock, tmp_path):
     # The brain was off while all three came due. The satellite rang two of them
-    # from its copy, so only the third is worth a "While I was off".
+    # from its copy - which had stopped by the time it was back, unanswered - so only
+    # the third is worth a "While I was off".
     now = time.time()
     (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
         {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
@@ -947,10 +948,46 @@ def test_what_rang_while_away_isnt_announced_as_missed(make_clock, tmp_path):
     clock = make_clock()
     assert len(clock._missed) == 3
 
-    clock.apply_away("bedroom", rang=[f"timer-1@{int(now - 60)}", f"alarm-1@{int(now - 120)}"], dismissed=[])
+    clock.apply_away("bedroom", rang=[f"timer-1@{int(now - 60)}", f"alarm-1@{int(now - 120)}"], dismissed=[],
+                     ringing=[])
     clock._tick(time.time())
     assert len(clock.announced) == 1
     assert clock.announced[0]["message"].startswith("While I was off: your 15 minutes timer.")
+    assert not clock.is_ringing()
+
+
+def test_what_was_still_ringing_while_away_rings_on_here(make_clock, tmp_path):
+    # The brain restarted as they came due, so missed them, while the satellite rang
+    # them from its copy - and they were still ringing as it reached the brain again.
+    # It stops ringing them then, for the brain to take over, which only rang what it
+    # was ringing itself: nothing, so the alarm went quiet half a minute in.
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 30, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 40, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    timer, dismissed, alarm = f"timer-1@{int(now - 30)}", f"timer-2@{int(now - 40)}", f"alarm-1@{int(now - 30)}"
+
+    # Another satellite's report has nothing to do with them.
+    clock.apply_away("kitchen", rang=[timer], dismissed=[], ringing=[timer])
+    assert not clock.is_ringing()
+    # One dismissed there isn't rung here, whatever else is said of it.
+    clock.apply_away("bedroom", rang=[timer, dismissed, alarm], dismissed=[dismissed],
+                     ringing=[timer, dismissed, alarm])
+
+    assert clock._missed == []
+    assert sorted(entry["timer"]["id"] for entry in clock._ringing) == [1, 1]
+    messages = [announcement["message"] for announcement in clock.announced]
+    assert messages[0] == "Timer for 10 minutes." and messages[1].endswith("Time to get up.")
+    assert len(messages) == 2 and {announcement["satellite"] for announcement in clock.announced} == {"bedroom"}
+    # Nor is either said to have been missed.
+    clock._tick(time.time())
+    assert len(clock.announced) == 2
+    # Both are in the satellite's copy, for if it loses the brain again.
+    assert {timer, alarm} <= {entry["id"] for entry in clock.copy_for("bedroom")}
 
 
 def test_whats_missed_waits_until_its_satellite_can_hear_it(make_clock, tmp_path):

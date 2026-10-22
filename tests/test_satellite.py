@@ -615,9 +615,11 @@ def test_the_away_report_is_sent_on_connecting(brain, make, tmp_path):
 
     brain.up = True
     assert wait_for(lambda: brain.messages("away"))
-    # Not dismissed, but rung - so the brain takes the ringing over.
-    assert brain.messages("away") == [{"type": "away", "rang": ["alarm-1@1729587600"], "dismissed": []}]
-    assert not made.ringer.ringing
+    # Not dismissed, and still ringing - so the brain takes the ringing over.
+    assert brain.messages("away") == [{"type": "away", "rang": ["alarm-1@1729587600"], "dismissed": [],
+                                       "ringing": ["alarm-1@1729587600"]}]
+    # Quietened once the brain has been told.
+    assert wait_for(lambda: not made.ringer.ringing)
     assert made.alarms.away_report() == {"rang": [], "dismissed": []}
     assert brain.hellos == [{"name": "bedroom", "hostname": socket.gethostname(), "sample_rate": 48000,
                              "unclean": True}]

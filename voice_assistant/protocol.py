@@ -14,7 +14,7 @@ After the handshake, what a satellite sends the brain:
     audio_end  {"reason": "limit"|"cancelled"}
     played  {"id": ..., "stopped": ..., "position": ...}
     progress  {"id": ..., "position": ...}
-    away  {"rang": [ids], "dismissed": [ids]}
+    away  {"rang": [ids], "dismissed": [ids], "ringing": [ids]}
 
 and what the brain sends a satellite:
 

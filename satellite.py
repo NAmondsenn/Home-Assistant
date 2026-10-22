@@ -504,11 +504,14 @@ class Satellite:
             self._forget_the_brain()
             return
         with self._lock:
-            # The brain takes over whatever was ringing: it hears that it rang, but not
-            # that it was dismissed, so it rings it itself.
-            self.ringer.quiet()
-            if self.link.send("away", **self.alarms.away_report()):
+            # The brain takes over whatever is still ringing, which it hears is - having
+            # been off as it came due, it wouldn't know to ring it otherwise. Quietened
+            # here only once the brain has been told, so one lost again straight away
+            # leaves it ringing. Nothing the brain sends is acted on until this returns,
+            # as this is the link's own thread, so the two never ring it together.
+            if self.link.send("away", ringing=self.ringer.ringing_ids(), **self.alarms.away_report()):
                 self.alarms.clear_report()
+                self.ringer.quiet()
 
     def _forget_the_brain(self):
         """

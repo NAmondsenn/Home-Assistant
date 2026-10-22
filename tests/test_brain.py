@@ -399,6 +399,28 @@ def test_what_came_due_while_the_brain_was_off_waits_for_its_satellite(make_brai
     assert len(bedroom.announced) == 1 and bedroom.announced[0].startswith("While I was off: your 10 minutes timer.")
 
 
+def test_what_a_satellite_was_still_ringing_as_the_brain_came_back_rings_on(make_brain, connect, tmp_path):
+    # The brain restarted as the alarm came due - a crash, the watchdog or an update -
+    # so the satellite rang it from its copy, and was still ringing it as it reached the
+    # brain again. It stops then, for the brain to take over - which only rang what it
+    # was ringing itself, so the alarm went quiet half a minute in, and was never said.
+    now = time.time()
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    brain = make_brain()
+    brain.clock.alarm_ring_duration = 0
+    serving(brain)
+    alarm = f"alarm-1@{int(now - 30)}"
+
+    connect(brain, away={"rang": [alarm], "dismissed": [], "ringing": [alarm]})
+    session = connected(brain)
+    assert brain.clock.is_ringing()
+    assert len(session.announced) == 1 and session.announced[0].endswith("Time to get up.")
+    # And not said to have been missed as well.
+    brain.clock._tick(time.time())
+    assert len(session.announced) == 1
+
+
 def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect, monkeypatch):
     # The real session this time, with speech told apart by how loud it is.
     monkeypatch.setattr(brain_module, "Session", session_module.Session)

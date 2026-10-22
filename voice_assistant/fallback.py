@@ -201,9 +201,16 @@ class FallbackRinger:
     @property
     def ringing(self) -> bool:
         """Whether anything is still ringing."""
+        return bool(self.ringing_ids())
+
+    def ringing_ids(self) -> List[str]:
+        """
+        Returns:
+            The ids of what's still ringing - for the brain, to take the ringing over.
+        """
         with self._lock:
             self._threads = [thread for thread in self._threads if thread.is_alive()]
-            return bool(self._threads)
+            return [thread.name[len("ring-"):] for thread in self._threads]
 
     def check(self, now: float):
         """

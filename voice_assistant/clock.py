@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from voice_assistant import paths, storage
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -2006,7 +2006,7 @@ class Clock:
                     due = self._following(alarm, due)
         return sorted(copy, key=lambda entry: entry["due"])
 
-    def apply_away(self, satellite: str, rang: List[str], dismissed: List[str]):
+    def apply_away(self, satellite: str, rang: List[str], dismissed: List[str], ringing: Iterable[str] = ()):
         """
         Catches up on what a satellite did while it couldn't reach the brain, which
         it reports by the ids copy_for gave it.
@@ -2014,20 +2014,26 @@ class Clock:
         What was dismissed there is dealt with as if it had been dismissed here: a
         timer goes, an alarm moves on to its next occurrence (or goes, if it doesn't
         repeat), and one which the brain is ringing as well is dismissed, as
-        dismiss() would. What only rang is left as it is, to ring here - nobody
-        answered it, and the satellite can be reached again. Neither is said to
-        have been missed afterwards, since it rang where it was meant to.
+        dismiss() would. What only rang is left to ring here, if the brain is ringing
+        it too - nobody answered it, and the satellite can be reached again. One the
+        brain missed, being off as it came due, isn't rung again if it had stopped
+        ringing there - but one still ringing there, which the satellite stops as it
+        reaches the brain, starts ringing here. None of them is said to have been
+        missed afterwards, since each rang where it was meant to.
 
         Args:
             satellite: The satellite reporting.
             rang: The occurrences which rang there.
             dismissed: The occurrences dismissed there.
+            ringing: The occurrences still ringing there when it reached the brain.
         """
         rang, dismissed = set(rang), set(dismissed)
+        ringing = set(ringing) - dismissed
 
         def reported(item, among):
             return item["satellite"] == satellite and self._occurrence(item) in among
 
+        started = []
         with self._changing():
             timers = [timer for timer in self._timers.values() if reported(timer, dismissed)]
             for timer in timers:
@@ -2045,23 +2051,35 @@ class Clock:
 
             # Stopped before it rings out, so no reminder of it goes to the phone
             # either (see _end_ringing).
-            ringing = [entry for entry in self._ringing if not reported(entry["timer"], dismissed)]
+            still_ringing = [entry for entry in self._ringing if not reported(entry["timer"], dismissed)]
+            # What the brain missed while it was off, but the satellite was still
+            # ringing, carries on ringing here - the brain restarted just as an alarm
+            # came due, say. Left to be missed, it rang for the half a minute the
+            # satellite took to reach the brain again, and was never even mentioned.
+            now = time.time()
+            for item in self._missed:
+                if reported(item, ringing):
+                    started.append(self._ringing_entry(item, "alarm" if item.get("kind") == "alarm" else "clock", now))
+            still_ringing += started
             # Nor is "While I was off" said, once the brain's back, for something
             # which rang on the satellite meanwhile - or "You missed" for one which
             # rang out here but was dismissed there.
-            missed = [item for item in self._missed if not reported(item, rang | dismissed)]
+            missed = [item for item in self._missed if not reported(item, rang | dismissed | ringing)]
             unacknowledged = [item for item in self._unacknowledged if not reported(item, dismissed)]
-            forgotten = (len(self._ringing) - len(ringing) + len(self._missed) - len(missed)
+            forgotten = (len(self._ringing) - len(still_ringing) + len(started) + len(self._missed) - len(missed)
                          + len(self._unacknowledged) - len(unacknowledged))
-            self._ringing, self._missed, self._unacknowledged = ringing, missed, unacknowledged
+            self._ringing, self._missed, self._unacknowledged = still_ringing, missed, unacknowledged
 
             if timers or forgotten:
                 self._save()
             if moved:
                 self._save_alarms()
 
-        if rang or dismissed:
-            logger.info(f"While {satellite} was away, {len(rang)} rang and {len(dismissed)} were dismissed")
+        for entry in started:
+            self._run_round(self._first_round, entry)
+        if rang or dismissed or ringing:
+            logger.info(f"While {satellite} was away, {len(rang)} rang and {len(dismissed)} were dismissed; "
+                        f"{len(started)} still ringing there ring on here")
 
     def next_alarm(self) -> Dict:
         """

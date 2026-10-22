@@ -96,9 +96,11 @@ def test_quietening_stops_the_ringing_without_dismissing_it(tmp_path):
     copy.replace([entry()])
     ringer.check(NOW)
     assert wait_for(lambda: speaker.calls)
+    # What the brain is told is still ringing, to take over.
+    assert ringer.ringing_ids() == ["alarm-1@1729587600"]
 
     ringer.quiet()
-    assert not ringer.ringing
+    assert not ringer.ringing and ringer.ringing_ids() == []
     assert all(p.stopped for p in speaker.playbacks)
     # The brain is told it rang but wasn't dismissed, so it takes the ringing over.
     assert copy.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": []}

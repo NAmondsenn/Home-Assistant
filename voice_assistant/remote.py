@@ -439,7 +439,8 @@ class RemoteSatellite:
         # the user says next}.
         self.wakes: "queue.Queue[Dict]" = queue.Queue()
         # What rang and what was dismissed on the satellite while it couldn't reach
-        # the brain, as {"rang": [ids], "dismissed": [ids]} - which it says as it connects.
+        # the brain, and what was still ringing as it did, as {"rang": [ids],
+        # "dismissed": [ids], "ringing": [ids]} - which it says as it connects.
         self.away_reports: "queue.Queue[Dict]" = queue.Queue()
         self._stream = stream
         # Guards writing to the stream, so messages sent from several threads at once
@@ -643,7 +644,8 @@ class RemoteSatellite:
 
     def _away(self, message: Dict, payload: bytes):
         self.away_reports.put({"rang": list(message.get("rang") or []),
-                               "dismissed": list(message.get("dismissed") or [])})
+                               "dismissed": list(message.get("dismissed") or []),
+                               "ringing": list(message.get("ringing") or [])})
 
     def _new_feed(self) -> AudioFeed:
         """Starts a feed for the recording the satellite is about to send, ending any before it."""
