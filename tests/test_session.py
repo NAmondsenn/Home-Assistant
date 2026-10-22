@@ -238,7 +238,7 @@ def connect():
         # Short, so the brain's reading wakes often to check on the satellite.
         ours.settimeout(0.05)
         hello = {"name": name, "hostname": hostname, "sample_rate": 48000, "unclean": False}
-        satellite = RemoteSatellite(satellite_link._Stream(ours), hello)
+        satellite = RemoteSatellite(satellite_link.Stream(ours), hello)
         pi = Pi(theirs)
         threading.Thread(target=satellite.serve, daemon=True).start()
         made.append((satellite, pi))

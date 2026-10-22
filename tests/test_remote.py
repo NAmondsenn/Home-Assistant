@@ -75,7 +75,7 @@ def connect():
     ours, theirs = socket.socketpair()
     # Short, so the brain's reading wakes often to check on the satellite.
     ours.settimeout(0.05)
-    satellite = RemoteSatellite(satellite_link._Stream(ours), dict(HELLO))
+    satellite = RemoteSatellite(satellite_link.Stream(ours), dict(HELLO))
     fake = FakeSatellite(theirs)
     serving = threading.Thread(target=satellite.serve, daemon=True)
     serving.start()

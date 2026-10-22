@@ -424,7 +424,7 @@ class RemoteSatellite:
         """
         Args:
             stream: The connection, once protocol.admit has let the satellite in - as
-                satellite_link's _Stream makes of a socket with a timeout. Its reads
+                satellite_link's Stream makes of a socket with a timeout. Its reads
                 wake at each timeout, for serve() to notice a satellite gone quiet, and
                 no send blocks for longer.
             hello: What admit returned - the satellite's name, hostname and sample_rate.

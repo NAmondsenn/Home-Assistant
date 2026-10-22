@@ -30,26 +30,30 @@ PING_EVERY = 5.0
 SILENT_FOR = 15.0
 
 
-class _Stream:
+class Stream:
     """
-    A socket as the file protocol.send and receive expect.
+    A socket as the file protocol.send and receive expect - the satellite's link to
+    its brain, and the brain's to each satellite (see brain.py).
 
     socket.makefile won't do: a read which times out leaves it unusable and may drop
     the half of a message it had, whereas here the half stays buffered and reading
-    carries on once the link has had a look at the clock.
+    carries on once whoever is reading has had a look at the clock.
+
+    The socket's timeout is left to whoever makes it - SOCKET_TIMEOUT at both ends. It
+    is the longest a send can block, and how often a quiet read wakes for when_idle.
     """
 
     def __init__(self, sock: socket.socket):
         self._socket = sock
         self._buffer = bytearray()
-        # Called whenever waiting for the brain times out. Raises if the wait is to end.
+        # Called whenever waiting for the other end times out. Raises if the wait is to end.
         self.when_idle: Callable[[], None] = self._give_up
         # Called as bytes arrive, so a big message coming slowly isn't mistaken for silence.
         self.when_heard: Callable[[], None] = lambda: None
 
     @staticmethod
     def _give_up():
-        raise TimeoutError("The brain didn't answer in time")
+        raise TimeoutError("The other end didn't answer in time")
 
     def write(self, data: bytes):
         self._socket.sendall(data)
@@ -144,7 +148,7 @@ class SatelliteLink:
         # Guards the socket and what's written to it, so messages can't be interleaved.
         self._lock = threading.Lock()
         self._socket: Optional[socket.socket] = None
-        self._stream: Optional[_Stream] = None
+        self._stream: Optional[Stream] = None
         self._last_heard = 0.0
         self._last_ping = 0.0
 
@@ -246,7 +250,7 @@ class SatelliteLink:
     def _connect(self):
         """Connects and proves the password, leaving the socket and stream ready."""
         sock = socket.create_connection(self.address, timeout=SOCKET_TIMEOUT)
-        stream = _Stream(sock)
+        stream = Stream(sock)
         try:
             greet(stream, self.name, self.hostname, self.password, self.sample_rate, self._unclean)
         except BaseException:
