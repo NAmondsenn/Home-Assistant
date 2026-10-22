@@ -175,7 +175,7 @@
 
 **Files:**
 - Create: `voice_assistant/fallback.py`
-- Create: `sounds/cant_reach_server.wav`. Cori's voice saying "Sorry, I can't reach my server right now.", made with the Pi's Piper (`TextToSpeech.synthesise`) at 22,050Hz, mono, 16-bit.
+- Create: `sounds/cant_reach_server.wav`. Nova's voice saying "Sorry, I can't reach my server right now.", made with the Pi's Piper (`TextToSpeech.synthesise`) at 22,050Hz, mono, 16-bit.
 - Test: `tests/test_fallback.py`
 
 **Interfaces:**
@@ -571,7 +571,7 @@ Done by the controller, not an implementer. Ask the user before changing the con
 3. **Live checks:**
    - The Pi connects, and the brain's log names it.
    - The Home Assistant device is still "Nova", in the Bedroom, with eleven controls.
-   - A question gets an answer in Cori's voice, and talking over a reply stops it.
+   - A question gets an answer in Nova's voice, and talking over a reply stops it.
    - "Lights on", a timer, an alarm and music (Navidrome) all work.
    - With the brain service stopped: a due timer rings, the wake word stops it, and asking anything gets the phrase. The brain is told once it's back.
    - The settings page from the user's phone, at 1440 and 390 wide.

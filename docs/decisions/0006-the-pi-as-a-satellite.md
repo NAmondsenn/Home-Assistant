@@ -64,7 +64,7 @@ PVE2, looked at today:
 | The microphone, its pre-roll, echo cancelling | Speech-to-text - Nemotron, as now |
 | The wake word | Deciding when the user has stopped talking |
 | The speaker: the one owner of what plays - speech, chimes, music - with ducking and volume | The conversation: everyday commands, Claude, Home Assistant, the calendar, weather, memory, routines |
-| Stopping what's playing, at once | Nova's voice - Piper, with Cori's voice |
+| Stopping what's playing, at once | Nova's voice - Piper, in Nova's voice |
 | Ringing timers and alarms, from its own copy | Timers and alarms - the one list |
 | raspotify, the speaker Spotify plays to | Music: choosing it; Navidrome's decoded and sent to the satellite; Spotify driven through its Web API |
 | Mute | The settings page, ntfy both ways, Nova's devices in Home Assistant |
@@ -99,7 +99,7 @@ Those figures choose the smaller Pi.
 - rings timers and alarms from its copy, which is updated whenever the list changes;
 - stops anything ringing or playing when it hears the wake word;
 - keeps volume and mute working;
-- answers anything else with the recorded "I can't reach the server", which the brain makes in Cori's voice and the satellite keeps;
+- answers anything else with the recorded "I can't reach the server", which the brain makes in Nova's voice and the satellite keeps;
 - keeps trying to reconnect.
 
 raspotify plays on regardless when Spotify is used from a phone. There's no Moonshine, Piper, Claude or everyday commands on the Pi: 0004's standalone mode is removed.
@@ -157,7 +157,7 @@ Each of these is a call made in writing this, not by the user.
 6. **The network.** Container 107 is on the home network and reaches Home Assistant's broker and web address directly, as the Pi does now (checked on 22 October). Nothing new is opened.
 7. **Passwords.** The brain makes a satellite's password when the satellite is added, and keeps it with its other keys. The brain holds every secret anyway, so keeping these as they are, which HMAC needs, is accepted. The Pi gets its own at install, and removing it on the brain shuts that satellite out. A second connection from the same satellite replaces the first.
 8. **The move.** The Pi's data is copied to PVE2, not moved, and the brain is checked. Only then does the Pi become a satellite. Nova's old version and data stay on the Pi for a week, as the way back - switching branch again - and are then deleted. A short gap while it switches over is fine.
-9. **The fallback phrase.** A default recording in Cori's voice ships with the code, so a new Pi has it before it has ever connected. The brain's replaces it.
+9. **The fallback phrase.** A default recording in Nova's voice ships with the code, so a new Pi has it before it has ever connected. The brain's replaces it.
 10. **Timing.** Measured on the Pi, which sees both the wake word and the first sound of the reply, so there are no clocks to keep in step. The brain logs its own steps alongside.
 11. **Routines at a set time** play on the satellite chosen when the routine was made - for now, the only one.
 
