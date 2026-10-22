@@ -27,21 +27,21 @@ decide_role
 echo "Updating Nova's ${ROLE} in ${PROJECT_DIRECTORY}"
 step "Code"
 if [ "$PULL" = true ]; then
-    before=$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)
-    git -C "$PROJECT_DIRECTORY" pull --ff-only
+    # As the service user, so the files it brings are theirs, and git doesn't object to
+    # a clone it doesn't think root should touch.
+    before=$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)
+    as_user git -C "$PROJECT_DIRECTORY" pull --ff-only
     # This script and setup.sh's steps were read before the pull, so any new steps
     # the update brings - a new model to fetch, say - would be missed. So once there's
     # new code, it starts again on that.
-    if [ "$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" != "$before" ]; then
+    if [ "$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" != "$before" ]; then
         exec bash "${PROJECT_DIRECTORY}/update.sh" --no-pull
     fi
 fi
-done_ "On $(git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(git -C "$PROJECT_DIRECTORY" log -1 --format='%h %s')"
+done_ "On $(as_user git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(as_user git -C "$PROJECT_DIRECTORY" log -1 --format='%h %s')"
 
 # An install from before roles has none saved yet, so what decide_role worked out is.
-save_role
-install_python_packages
-download_models
+run_steps save_role install_python_packages download_models
 
 # /etc/asound.conf is only ever written by setup.sh, so one written before the
 # shorter audio bursts is pointed out rather than changed behind the user's back. Only
@@ -66,7 +66,7 @@ fi
 
 step "Restarting"
 stop_service
-move_old_files
+run_steps move_old_files
 install_service
 start_service
 # It says it's ready once its models are loaded (see voice_assistant/watchdog.py), so

@@ -25,14 +25,27 @@ PROJECT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODELS_DIRECTORY="${PROJECT_DIRECTORY}/models"
 VENV_DIRECTORY="${PROJECT_DIRECTORY}/venv"
 PYTHON="${VENV_DIRECTORY}/bin/python"
-CONFIG_DIRECTORY="${NOVA_CONFIG:-${HOME}/.config/nova}"
+
+# Who Nova runs as, and where their home is. Run by a normal user (the Pi), that's them.
+# Run as root (the brain's container, which is set up from outside as root), it's the
+# user who owns the clone, so everything Nova keeps - the venv, models, settings, keys
+# and the role - is theirs, where an existing install's already are, rather than root's.
+# Root itself does only the system steps: packages, the service and systemctl.
+if [ "$(id -u)" = 0 ]; then
+    SERVICE_USER="$(stat -c %U "$PROJECT_DIRECTORY")"
+    SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+else
+    SERVICE_USER="$(id -un)"
+    SERVICE_HOME="$HOME"
+fi
+CONFIG_DIRECTORY="${NOVA_CONFIG:-${SERVICE_HOME}/.config/nova}"
 SETTINGS_FILE="${CONFIG_DIRECTORY}/config.yaml"
 SECRETS_FILE="${CONFIG_DIRECTORY}/.env"
 
 ROLE_FILE="${CONFIG_DIRECTORY}/role"
 # "satellite" or "brain" - worked out by decide_role, once any --brain or --satellite
 # on the command line has been read.
-ROLE=""
+ROLE="${ROLE:-}"
 
 # The satellite is a user service, so it shares the audio devices' session. The brain is
 # a system service, with no audio of its own to share.
@@ -71,9 +84,11 @@ VOICE_SHA256_CONFIG="03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c
 NEMOTRON_SHA256="78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358"
 RASPOTIFY_KEY_SHA256="36dd5aadd073950d55c404f0e0c6c2e0555259bf38bd8b6448c35591a3cc9cfd"
 
-ASSUME_YES=false
-WITH_SPOTIFY=true
-WITH_SERVICE=true
+# These can come from the environment, as steps run as another user (see run_steps) are
+# given what was chosen on the command line that way.
+ASSUME_YES="${ASSUME_YES:-false}"
+WITH_SPOTIFY="${WITH_SPOTIFY:-true}"
+WITH_SERVICE="${WITH_SERVICE:-true}"
 
 # How each step went, said the same way every time.
 done_() { echo "  ✓ $*"; }
@@ -88,6 +103,31 @@ root_do() {
         "$@"
     else
         sudo "$@"
+    fi
+}
+
+# Runs a command as the service user, with their home, when this is root's run and they
+# aren't root; otherwise just runs it.
+as_user() {
+    if [ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ]; then
+        # From the project folder, as root's own may be one the service user can't enter.
+        (cd "$PROJECT_DIRECTORY" && runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" "$@")
+    else
+        "$@"
+    fi
+}
+
+# Runs the named steps of this file, in order, as the service user - in a shell of their
+# own when this is root's run, so every file they make is theirs. Otherwise, in this one.
+run_steps() {
+    if [ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ]; then
+        as_user env ROLE="$ROLE" ASSUME_YES="$ASSUME_YES" WITH_SPOTIFY="$WITH_SPOTIFY" WITH_SERVICE="$WITH_SERVICE" \
+            bash -c 'source "$1"; shift; for step in "$@"; do "$step"; done' _ "${PROJECT_DIRECTORY}/setup.sh" "$@"
+    else
+        local step
+        for step in "$@"; do
+            "$step"
+        done
     fi
 }
 
@@ -108,6 +148,11 @@ decide_role() {
     fi
     if [ "$ROLE" != "satellite" ] && [ "$ROLE" != "brain" ]; then
         problem "${ROLE_FILE} says '${ROLE}', which isn't a role - it should say satellite or brain."
+        exit 1
+    fi
+    # The brain's service never runs as root, so a clone root owns can't be one.
+    if [ "$ROLE" = "brain" ] && [ "$SERVICE_USER" = "root" ] && [ "$(id -u)" = 0 ]; then
+        problem "${PROJECT_DIRECTORY} is owned by root, and the brain never runs as root. Clone it as the user it should run as, and run this as root from there."
         exit 1
     fi
 }
@@ -560,10 +605,10 @@ install_service() {
     if [ "$ROLE" = "brain" ]; then
         # Root's: a system service, which runs as this user. It's passed the home folder
         # too, as the only places it may write besides its own are its settings and data.
-        sed -e "s|__PROJECT_DIRECTORY__|${PROJECT_DIRECTORY}|g" -e "s|__USER__|$(id -un)|g" \
-            -e "s|__HOME__|${HOME}|g" "$BRAIN_SERVICE_TEMPLATE" | root_do tee "$BRAIN_SERVICE_FILE" > /dev/null
+        sed -e "s|__PROJECT_DIRECTORY__|${PROJECT_DIRECTORY}|g" -e "s|__USER__|${SERVICE_USER}|g" \
+            -e "s|__HOME__|${SERVICE_HOME}|g" "$BRAIN_SERVICE_TEMPLATE" | root_do tee "$BRAIN_SERVICE_FILE" > /dev/null
         # Both folders must be there for the service's sandbox to start.
-        mkdir -p -m 700 "$CONFIG_DIRECTORY" "${NOVA_DATA:-${HOME}/.local/share/nova}"
+        as_user mkdir -p -m 700 "$CONFIG_DIRECTORY" "${NOVA_DATA:-${SERVICE_HOME}/.local/share/nova}"
         root_do systemctl daemon-reload
         root_do systemctl enable -q "$BRAIN_SERVICE_NAME"
         done_ "Installed as the ${BRAIN_SERVICE_NAME} service"
@@ -598,12 +643,7 @@ main() {
     echo "Installing Nova's ${ROLE} in ${PROJECT_DIRECTORY}"
     check_system
     install_system_packages
-    install_python_packages
-    save_role
-    move_old_files
-    write_settings
-    write_secrets
-    download_models
+    run_steps install_python_packages save_role move_old_files write_settings write_secrets download_models
     if [ "$ROLE" = "satellite" ]; then
         find_wake_word_model
         write_asound_conf

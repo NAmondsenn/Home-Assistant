@@ -45,12 +45,14 @@ Nova is installed in two roles, from the same clone of the repository. Set the b
 
 ### The brain
 
-The brain is a container (or any machine) running Debian, with Python 3.13 and about 2GB of memory, on your tailnet - Nova's is container 107, `nova`, on PVE2. It needs an [Anthropic API key](https://console.anthropic.com/) and, for Spotify, Spotify Premium and a [Spotify app](https://developer.spotify.com/dashboard) for its client ID and secret, with `http://127.0.0.1:8888/callback` as its redirect URI. It has no microphone or speaker, and nothing outside your tailnet can reach it.
+The brain is a container (or any machine) running Debian, with Python 3.13 and about 2GB of memory, on your tailnet. It needs an [Anthropic API key](https://console.anthropic.com/) and, for Spotify, Spotify Premium and a [Spotify app](https://developer.spotify.com/dashboard) for its client ID and secret, with `http://127.0.0.1:8888/callback` as its redirect URI. It has no microphone or speaker, and nothing outside your tailnet can reach it.
+
+The brain never runs as root. Make it a user of its own (here `nova`, with no sudo), clone the repository as that user, and run the setup as root, from outside or inside the container - root does only the system steps (packages, the service), and everything else, including the packages in `venv/`, the models, and the settings and keys in that user's `~/.config/nova`, is done as the user who owns the clone. It refuses a clone owned by root.
 
 ```bash
-git clone https://github.com/NAmondsenn/Home-Assistant.git
-cd Home-Assistant
-bash setup.sh --brain
+runuser -u nova -- git clone https://github.com/NAmondsenn/Home-Assistant.git /home/nova/Home-Assistant
+cd /home/nova/Home-Assistant
+bash setup.sh --brain          # as root
 ```
 
 In order, it:
@@ -61,17 +63,18 @@ In order, it:
 4. Asks for the assistant's name, wake word and Spotify speaker name, saving any you change to `~/.config/nova/config.yaml`.
 5. Asks for your API keys and writes them to `~/.config/nova/.env`, readable only by you. An existing one is left as it is.
 6. Downloads Piper, the voice (`en_US-hfc_female-medium`), the Nemotron speech-to-text model and openWakeWord's own models into `models/`. They're checked against pinned SHA-256 hashes, so a tampered download stops setup rather than being run. Nemotron needs about 1.5GB free: `models/` can be a link to a folder somewhere with more room, and everything follows it.
-7. Installs the brain as the `nova-backend` service, which runs as your user and starts at boot, and starts it.
+7. Installs the brain as the `nova-backend` system service, which runs as that user and starts at boot, and starts it.
 
-Then let each satellite in, which prints a password for it - once, so keep it for the satellite's setup:
+Then let each satellite in, which prints a password for it - once, so keep it for the satellite's setup. Run it as the brain's user, not root: the passwords are kept in that user's `~/.local/share/nova`, which is where the service reads them.
 
 ```bash
-venv/bin/python backend.py add-satellite kitchen
+cd /home/nova/Home-Assistant
+runuser -u nova -- venv/bin/python backend.py add-satellite kitchen
 ```
 
-`remove-satellite NAME` stops letting one in. Put the brain on your tailnet with `tailscale serve`, and it's reached by its name and port 10400, as `nova:10400`. The brain's own settings and keys, and everything it saves, are in `~/.config/nova` and `~/.local/share/nova` on its machine, and are where the rest of this README says "the brain".
+`remove-satellite NAME` stops letting one in, run the same way. Put the brain on your tailnet with `tailscale serve`, and it's reached by its name and port 10400, as `nova:10400`. The brain's own settings and keys, and everything it saves, are in `~/.config/nova` and `~/.local/share/nova` on its machine, and are where the rest of this README says "the brain".
 
-The brain's log is `journalctl -u nova-backend -f`, and `sudo systemctl restart nova-backend` restarts it. To update it, run `bash update.sh` there.
+The brain's log is `journalctl -u nova-backend -f`, and `systemctl restart nova-backend` (as root) restarts it. To update it, run `bash update.sh` there, as root, from its clone.
 
 ### A satellite
 
@@ -99,7 +102,7 @@ Each satellite is named by its own machine's name, which the brain knows its pas
 
 `bash setup.sh --yes` asks nothing, taking what it finds and the defaults; `--no-spotify` leaves Spotify out, and `--no-service` doesn't start Nova at boot. `--brain` and `--satellite` choose the role; without one, an existing install keeps its own.
 
-To update to the latest code later - it never touches your settings, keys or saved data - run this on the brain and on each satellite:
+To update to the latest code later - it never touches your settings, keys or saved data - run this on the brain (as root) and on each satellite (as its user):
 
 ```bash
 bash update.sh
@@ -282,10 +285,10 @@ systemctl --user restart voice-assistant
 journalctl --user-unit voice-assistant -f
 ```
 
-and on the brain:
+and on the brain, as root:
 
 ```bash
-sudo systemctl restart nova-backend
+systemctl restart nova-backend
 ```
 ```bash
 journalctl -u nova-backend -f
