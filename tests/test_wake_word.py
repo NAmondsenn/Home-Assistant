@@ -1,11 +1,13 @@
 """
 Wake Word Test
-Checks the detector listens through the shared microphone stream, and that the wake
-word is taken off the front of what was transcribed, using fakes in place of the
-openWakeWord model and the input stream. Needs numpy and soxr installed (as they
-are on the Pi), and is skipped anywhere they aren't.
+Checks the detector listens through the shared microphone stream, that a muted
+microphone isn't woken, and that the wake word is taken off the front of what was
+transcribed, using fakes in place of the openWakeWord model and the input stream.
+Needs numpy and soxr installed (as they are on the Pi), and is skipped anywhere they
+aren't.
 """
 
+import json
 import threading
 
 import pytest
@@ -54,10 +56,11 @@ class FakeModel:
 
 @pytest.fixture
 def models(tmp_path, monkeypatch):
-    """A project folder of its own, with a hey_nova.onnx model in it."""
+    """A project folder of its own, with a hey_nova.onnx model in it - and a data file of its own for the mute."""
     (tmp_path / "models").mkdir()
     (tmp_path / "models" / "hey_nova.onnx").write_bytes(b"")
     monkeypatch.setattr(wake_word_module.paths, "MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(wake_word_module, "MICROPHONE_FILE", str(tmp_path / "microphone.json"))
     monkeypatch.setattr(wake_word_module, "Model", FakeModel)
     return tmp_path / "models"
 
@@ -146,6 +149,41 @@ def test_the_wake_word_said_over_a_reply_is_heard(monkeypatch, make_config, mode
 
     assert detector.listen_once(until=lambda: False) == 0.9
     assert detector.heard_at == started_at + 2 * CHUNK_SAMPLES
+
+
+def test_a_muted_microphone_isnt_woken(monkeypatch, make_config, models):
+    # The microphone is still read while muted, so where it's got to - which catching
+    # up, and the recording after the wake word, go by - stays right.
+    streams = []
+    monkeypatch.setattr(microphone_module.sd, "InputStream",
+                        lambda **kwargs: streams.append(FakeInputStream(**kwargs)) or streams[-1])
+    microphone = Microphone(sample_rate=RATE)
+    FakeModel.scores = [0.9, 0.95] + [0.9] * 3
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    detector.set_muted(True)
+    assert detector.muted
+
+    checks = []
+    threading.Timer(0.05, streams[0].feed, args=(2 * CHUNK_SAMPLES,)).start()
+    assert detector.listen_once(until=lambda: checks.append(1) or len(checks) > 2) is None
+    assert len(detector.model.chunks) == 2 and detector.heard_at is None
+
+    detector.set_muted(False)
+    assert not detector.muted
+    threading.Timer(0.05, streams[0].feed, args=(CHUNK_SAMPLES,)).start()
+    assert detector.listen_once() == 0.9
+    assert detector.heard_at == microphone.position
+
+
+def test_mute_lasts_through_a_restart(make_config, models):
+    config = make_config(assistant={"wake_word": "Hey Nova"})
+    WakeWordDetector(config=config).set_muted(True)
+    assert json.loads((models.parent / "microphone.json").read_text()) == {"muted": True}
+    restarted = WakeWordDetector(config=config)
+    assert restarted.muted
+
+    restarted.set_muted(False)
+    assert not WakeWordDetector(config=config).muted
 
 
 def test_without_its_model_a_stock_wake_word_stands_in(make_config, models):

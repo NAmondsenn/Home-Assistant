@@ -156,6 +156,9 @@ class HomeAssistant:
         # "Bedroom" - found by find_device, and None until then, or if it isn't there.
         self.device_id: Optional[str] = None
         self.area: Optional[str] = None
+        # Whether looking for it last failed, or found no such device - see find_device.
+        self._lookup_failing = False
+        self._device_missing = False
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -258,15 +261,27 @@ class HomeAssistant:
             Whether the device was found. If Home Assistant couldn't be asked, what was
             known before is kept.
         """
+        # Asked again and again while Nova runs - every half a minute until it's found,
+        # see main.py - so each problem is logged once, when it starts, rather than
+        # every time: Home Assistant being down, or it not having Nova's device.
         template = FIND_DEVICE_TEMPLATE.replace("IDENTIFIER", identifier)
         try:
             text = self._request("POST", "/api/template", json={"template": template}).text
         except requests.RequestException as e:
-            logger.error(f"Home Assistant request failed: {e}")
+            if not self._lookup_failing:
+                logger.error(f"Couldn't ask Home Assistant which device Nova is, so trying again: {e}")
+            self._lookup_failing = True
             return False
+        if self._lookup_failing:
+            logger.info("Home Assistant's answering again")
+        self._lookup_failing = False
 
         # Home Assistant answers with plain text, not JSON.
         device_id, _, area = text.strip().partition("|")
+        if not device_id and not self._device_missing:
+            logger.warning(f"Home Assistant has no device '{identifier}' for Nova yet, so Nova's room isn't "
+                           f"known - it's there once Home Assistant has taken in Nova's MQTT announcement")
+        self._device_missing = not device_id
         self.device_id = device_id or None
         if (area or None) != self.area:
             logger.info(f"Nova is in the {area}, as Home Assistant has it" if area

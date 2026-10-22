@@ -44,6 +44,8 @@ def assistant(tmp_path, monkeypatch):
     made.music_player = Recorder("music", made.closed)
     made.ntfy = None
     made.settings_page = None
+    made.home, made.ha_device = None, None
+    made._stop_looking_up = threading.Event()
     made.name, made.wake_word = "Nova", "Hey Nova"
     made.running = False
     made._stopping = False
@@ -432,3 +434,170 @@ def test_a_routine_runs_by_itself_when_its_due(assistant, monkeypatch):
     while not ran and time.monotonic() < deadline:
         time.sleep(0.01)
     assert ran == ["Good morning"]
+
+
+# Nova's device in Home Assistant
+
+class FakeWake:
+    """Stands in for the wake word detector, which keeps the microphone's mute."""
+
+    def __init__(self, muted=False):
+        self.muted = muted
+
+    def set_muted(self, muted):
+        self.muted = muted
+
+
+def _wired(assistant, **parts):
+    """The controls Nova's device in Home Assistant is given, with stand-ins for the rest of Nova."""
+    from types import SimpleNamespace
+
+    assistant.activity = "idle"
+    assistant.clock = SimpleNamespace(overview=lambda: {"timers": [], "alarms": []}, is_ringing=lambda: False)
+    assistant.wake = FakeWake()
+    assistant.stt = SimpleNamespace()
+    assistant.music_player = None
+    for name, part in parts.items():
+        setattr(assistant, name, part)
+    return assistant._device_controls()
+
+
+def test_home_assistant_sees_and_changes_nova_as_the_settings_page_does(assistant):
+    from types import SimpleNamespace
+
+    changed, played_at = [], []
+
+    class Spotify:
+        # Read every second, so Spotify's servers are never asked - Nova's own note of
+        # the music's volume is used instead, as on the settings page.
+        needs_internet = True
+
+        def get_volume(self):
+            raise AssertionError("Spotify was asked for its volume")
+
+        def set_volume(self, percent):
+            played_at.append(percent)
+            return {"success": True, "message": "Done."}
+
+    levels = {"general": 60, "alarm": 80, "music": 40}
+    volume = SimpleNamespace(CATEGORIES=("general", "alarm", "music"), percent=levels.get,
+                             set=lambda category, percent: changed.append((category, percent)) or {"success": True})
+    controls = _wired(assistant, volume=volume, music_player=Spotify(), stt=SimpleNamespace(reachable=False))
+
+    assistant.activity = "thinking"
+    assert controls.status() == "thinking"
+    assert controls.volumes() == {"general": 60, "alarm": 80, "music": 40}
+    # The music's volume through the player, as the settings page changes it - and
+    # Nova's note of Spotify's follows, so Home Assistant's slider doesn't spring back.
+    controls.set_volume("music", 30)
+    controls.set_volume("alarm", 90)
+    assert played_at == [30] and changed == [("music", 30), ("alarm", 90)]
+
+    assert controls.backend() is False
+    assistant.stt = SimpleNamespace()
+    assert controls.backend() is None
+
+    controls.set_muted(True)
+    assert assistant.wake.muted and controls.muted()
+    assert controls.restart is main.restart_service
+
+
+def test_speak_is_said_in_turn_even_when_muted(assistant):
+    # Mute only stops Nova hearing "Hey Nova", so an automation's "the washing's done"
+    # is still said. It's handed off at once, so a Stop pressed in Home Assistant
+    # meanwhile isn't kept waiting behind it.
+    let_go, said = threading.Event(), []
+
+    def announce(message):
+        let_go.wait(2)
+        said.append(message)
+
+    controls = _wired(assistant, wake=FakeWake(muted=True))
+    assistant._announce = announce
+    controls.speak("The washing's done")
+    assert said == []
+
+    let_go.set()
+    deadline = time.monotonic() + 2
+    while not said and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert said == ["The washing's done"]
+
+
+def test_stop_silences_what_rings_and_what_nova_is_saying(assistant):
+    from types import SimpleNamespace
+
+    happened, ringing = [], [True]
+    controls = _wired(assistant)
+    assistant.clock.is_ringing = lambda: ringing[0]
+    assistant.clock.dismiss = lambda: happened.append("dismissed") or {"success": True, "message": "Okay."}
+    assistant.speaker = SimpleNamespace(stop=lambda kinds: happened.append(("stopped", list(kinds))))
+
+    controls.stop()
+    assert happened == ["dismissed", ("stopped", ["reply", "announcement"])]
+
+    # With nothing ringing, there's nothing to dismiss.
+    ringing[0] = False
+    happened.clear()
+    controls.stop()
+    assert happened == [("stopped", ["reply", "announcement"])]
+
+
+def test_the_device_is_looked_up_until_found_then_now_and_then(assistant):
+    # Often until Home Assistant has taken in Nova's announcement, then now and then,
+    # in case the user has moved it to another room.
+    from types import SimpleNamespace
+
+    found, asked, waited = [False, False, True, True], [], []
+
+    class Stopping:
+        """Stands in for Nova stopping, which comes after the fourth wait."""
+
+        def wait(self, timeout):
+            waited.append(timeout)
+            return len(waited) == 4
+
+    assistant.home = SimpleNamespace(find_device=lambda identifier: asked.append(identifier) or found.pop(0))
+    assistant.ha_device = SimpleNamespace(identifier="nova_home_assistant")
+    assistant._stop_looking_up = Stopping()
+    assistant._look_up_device()
+
+    assert asked == ["nova_home_assistant"] * 4
+    assert waited == [30, 30, 300, 300]
+
+
+def test_nova_is_in_home_assistant_only_while_it_runs(assistant):
+    # And the device is looked up from the start, until Nova stops.
+    from types import SimpleNamespace
+
+    happened, looked_up = [], threading.Event()
+
+    class Device:
+        identifier = "nova_home_assistant"
+
+        def start(self):
+            happened.append("started")
+
+        def stop(self):
+            happened.append("stopped")
+
+    def find_device(identifier):
+        looked_up.set()
+        return True
+
+    def run_until_looked_up():
+        assert looked_up.wait(2)
+        assistant._shutdown()
+
+    assistant.ha_device = Device()
+    assistant.home = SimpleNamespace(find_device=find_device)
+    assistant._listen_forever = run_until_looked_up
+    with pytest.raises(SystemExit):
+        assistant.run()
+
+    assert happened == ["started", "stopped"]
+    # The lookup ends straight away, rather than at its next check minutes later.
+    for thread in threading.enumerate():
+        if thread.name == "ha-device-lookup":
+            thread.join(1)
+            assert not thread.is_alive()

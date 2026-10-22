@@ -155,6 +155,29 @@ def test_when_home_assistant_cant_be_asked_the_device_is_remembered(make_home):
     assert (home.device_id, home.area) == ("da94", "Bedroom")
 
 
+def test_looking_for_the_device_logs_each_problem_once(make_home, caplog):
+    # It's looked for every 30 seconds until it's found, which was a line in the log
+    # every time while Home Assistant was down.
+    home = make_home({"/api/template": requests.ConnectionError("down")})
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        home.find_device("nova_home_assistant")
+        home.find_device("nova_home_assistant")
+        assert len(caplog.records) == 1 and caplog.records[0].levelname == "ERROR"
+
+        # Back, but without Nova's device - not taken in yet, or set up wrongly.
+        home._session.answers["/api/template"] = FakeResponse("|")
+        home.find_device("nova_home_assistant")
+        home.find_device("nova_home_assistant")
+        assert len(caplog.records) == 3
+        assert caplog.records[1].message == "Home Assistant's answering again"
+        assert caplog.records[2].levelname == "WARNING" and "nova_home_assistant" in caplog.records[2].message
+
+        home._session.answers["/api/template"] = FakeResponse("da94|Bedroom")
+        home.find_device("nova_home_assistant")
+        assert caplog.records[3].message == "Nova is in the Bedroom, as Home Assistant has it"
+        assert len(caplog.records) == 4
+
+
 def test_the_room_is_only_logged_when_it_changes(make_home, caplog):
     home = make_home({"/api/template": FakeResponse("da94|Bedroom")})
     with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):

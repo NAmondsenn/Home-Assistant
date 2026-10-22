@@ -148,6 +148,16 @@ class FakeHome:
         return {"success": True, "message": "Set Relax."}
 
 
+class FakeWake:
+    """Stands in for the wake word detector, which keeps the microphone's mute."""
+
+    def __init__(self):
+        self.muted = False
+
+    def set_muted(self, muted):
+        self.muted = muted
+
+
 def _page(running=None, **parts):
     # The login as Tailscale might capitalise it, which mustn't matter.
     made = dict(running=running, volume=FakeVolume(), clock=FakeClock(), memory=FakeMemory(),
@@ -226,6 +236,21 @@ def test_the_music_volume_is_the_players_own_so_a_playing_song_changes_too(files
     page.set_volume("music", 25, LOGIN)
     assert player.level == 25 and booped == [0.25]
     assert page.state()["volumes"]["music"] == 25
+
+
+def test_spotifys_volume_is_shown_as_last_set_without_asking_spotify(files):
+    # Asking Spotify's servers every time the page - or Home Assistant - looks would be
+    # slow, so Nova keeps its own note of the level, which follows each change.
+    class Spotify(FakePlayer):
+        needs_internet = True
+
+        def get_volume(self):
+            raise AssertionError("Spotify was asked for its volume")
+
+    player = Spotify()
+    page = _page(music=player)
+    page.set_volume("music", 25, LOGIN)
+    assert player.level == 25 and page.state()["volumes"]["music"] == 25
 
 
 def test_the_page_can_tell_what_nova_is_doing(files):
@@ -438,6 +463,21 @@ def test_music_and_home_assistant_changes_reach_them(served):
     _ask(served, "/api/run", {"id": "scene.relax"}, X_Nova="page")
     assert served.actions.asked == [("skip", None)]
     assert served.home.changed == [("light.kitchen", None, 70), ("scene.relax", "run", None)]
+
+
+def test_the_settings_page_shows_and_changes_mute(served):
+    def state():
+        return json.loads(_ask(served, "/api/state")[2])
+
+    served.wake = FakeWake()
+    assert state()["muted"] is False
+    status, _, body = _ask(served, "/api/mute", {"muted": True}, X_Nova="page")
+    assert status == 200 and json.loads(body)["success"]
+    assert served.wake.muted and state()["muted"] is True
+
+    # Only a yes or no mutes it.
+    assert not json.loads(_ask(served, "/api/mute", {"muted": "no"}, X_Nova="page")[2])["success"]
+    assert served.wake.muted
 
 
 def test_nonsense_is_answered_rather_than_crashing_on(served):

@@ -20,7 +20,8 @@ from voice_assistant.memory import Memory
 from voice_assistant.routines import Routines
 from voice_assistant.network import online
 from voice_assistant.ntfy import Ntfy
-from voice_assistant.settings_page import SettingsPage
+from voice_assistant.settings_page import SettingsPage, change_volume, restart_service, volume_levels
+from voice_assistant.ha_device import DeviceControls, NovaDevice
 from voice_assistant import storage
 from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.wake_word import WakeWordDetector, strip_wake_word
@@ -49,6 +50,13 @@ RESTART_NOTICE_GAP = 3600
 # How often it's checked whether one of the user's routines is due, in seconds -
 # a few times within each minute.
 ROUTINE_CHECK = 20
+
+# How often Home Assistant is asked which device is Nova, and which room it's in, in
+# seconds: every half a minute until it's found - it isn't until Home Assistant has
+# taken in Nova's MQTT announcement - then every five minutes, since the user can
+# move it to another room whenever they like.
+DEVICE_LOOKUP = 30
+DEVICE_LOOKUP_FOUND = 300
 
 class SmartAssistant:
     def __init__(self):
@@ -165,6 +173,13 @@ class SmartAssistant:
                                       weather=Weather(config=self.config), home=self.home,
                                       memory=self.memory, ntfy=self.ntfy)
 
+        # Sets up the wake word detector with sensitivity settings from config - and
+        # the microphone's mute, which the settings page and Home Assistant change.
+        self.wake = WakeWordDetector(config=self.config, microphone=self.microphone)
+        # What's actually listened for, which is a stand-in until the configured wake
+        # word's model is copied in - see WakeWordDetector.
+        self.wake_word = self.wake.wake_word_phrase
+
         # The page for looking after Nova from a phone or a laptop, or None if it's
         # switched off - see settings_page.py.
         self.settings_page = SettingsPage.from_config(self.config, volume=self.volume, clock=self.clock,
@@ -172,8 +187,14 @@ class SmartAssistant:
                                                       music=self.music_player, actions=self.actions,
                                                       home=self.home, boop=self._boop,
                                                       routines=self.routines, run_routine=self.run_routine,
-                                                      activity=lambda: self.activity,
+                                                      wake=self.wake, activity=lambda: self.activity,
                                                       wake_word=lambda: self.wake_word)
+
+        # Nova as a device of its own in Home Assistant, over MQTT, or None until
+        # mqtt.host is set - see ha_device.py. Which device it is there, and so which
+        # room, is looked up while Nova runs - see _look_up_device.
+        self.ha_device = NovaDevice.from_config(self.config, os.getenv("MQTT_PASSWORD"), self._device_controls())
+        self._stop_looking_up = threading.Event()
 
         # Claude, offered whichever of those tools can actually work here, and told
         # what's known about the user.
@@ -186,12 +207,6 @@ class SmartAssistant:
                                          chime_enabled=self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
                                          routines=self.routines)
-        
-        # Sets up the wake word detector with sensitivity settings from config.
-        self.wake = WakeWordDetector(config=self.config, microphone=self.microphone)
-        # What's actually listened for, which is a stand-in until the configured wake
-        # word's model is copied in - see WakeWordDetector.
-        self.wake_word = self.wake.wake_word_phrase
 
         # Register _shutdown to run on Ctrl + C (SIGINT) or a termination request (SIGTERM).
         # This ensures resources get cleaned up properly instead of the app dying abruptly .
@@ -493,6 +508,53 @@ class SmartAssistant:
                 self._last_boop.stop()
             self._last_boop = self.speaker.play_file(str(self.sounds_folder / "volume_beep.wav"), volume=level)
 
+    def _device_controls(self) -> DeviceControls:
+        """What Home Assistant sees and does of Nova - see ha_device.py."""
+        return DeviceControls(
+            status=lambda: self.activity,
+            volumes=lambda: volume_levels(self.volume, self.music_player),
+            set_volume=lambda category, percent: change_volume(self.volume, self.music_player, category, percent),
+            clock=self.clock.overview,
+            backend=lambda: getattr(self.stt, "reachable", None),
+            muted=lambda: self.wake.muted,
+            set_muted=self.wake.set_muted,
+            stop=self._stop_from_home_assistant,
+            restart=restart_service,
+            speak=self._speak_from_home_assistant)
+
+    def _stop_from_home_assistant(self):
+        """Home Assistant's Stop: silences anything ringing, and stops Nova talking."""
+        if self.clock.is_ringing():
+            self.clock.dismiss()
+        self.speaker.stop(["reply", "announcement"])
+
+    def _speak_from_home_assistant(self, message):
+        """
+        Says a message from Home Assistant - an automation's "the washing's done" -
+        once any conversation has finished, as a timer is, muted or not. Handed to a
+        thread of its own, since Home Assistant's commands are carried out one at a
+        time, and a Stop pressed meanwhile mustn't wait until this has been said.
+
+        Args:
+            message: What to say.
+        """
+        threading.Thread(target=self._announce, args=(message,), daemon=True, name="ha-speak").start()
+
+    def _look_up_device(self):
+        """
+        Keeps up with which device in Home Assistant is Nova, and the room it's in -
+        which Assist goes by for "turn on the lights" - until Nova stops.
+        HomeAssistant.find_device logs anything that goes wrong.
+        """
+        while True:
+            try:
+                found = self.home.find_device(self.ha_device.identifier)
+            except Exception as e:
+                logger.error(f"Couldn't look for Nova's device in Home Assistant: {e}")
+                found = False
+            if self._stop_looking_up.wait(DEVICE_LOOKUP_FOUND if found else DEVICE_LOOKUP):
+                return
+
     def _note_start(self):
         """
         Leaves RUNNING_MARK, which _clean_up takes away - telling the user's phone if
@@ -542,6 +604,9 @@ class SmartAssistant:
         self.clock.stop()
         if self.ntfy:
             self.ntfy.stop()
+        self._stop_looking_up.set()
+        if self.ha_device:
+            self.ha_device.stop()
         if self.settings_page:
             self.settings_page.stop()
         if self.music_player:
@@ -570,6 +635,10 @@ class SmartAssistant:
         # Alerts are only said from now on, once there's everything to say them with.
         if self.ntfy:
             self.ntfy.start()
+        if self.ha_device:
+            self.ha_device.start()
+            if self.home:
+                threading.Thread(target=self._look_up_device, daemon=True, name="ha-device-lookup").start()
         if self.settings_page:
             self.settings_page.start()
         threading.Thread(target=self._run_routines_when_due, daemon=True, name="routines").start()

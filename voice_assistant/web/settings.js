@@ -55,6 +55,8 @@ const DAY = 24 * 60 * 60 * 1000;
 
 let activity = "idle";
 let wakeWord = "Hey Nova";
+// Whether the microphone's muted, as /api/state last said - Home Assistant can change it too.
+let muted = false;
 
 // The timers on the page, ticked down every second, as [where it's shown, when it's due].
 let counting = [];
@@ -246,8 +248,10 @@ async function load() {
     return;
   }
   wakeWord = state.wake_word || wakeWord;
+  muted = Boolean(state.muted);
   showActivity();
   showStatus(state.status);
+  showMuted();
   showVolumes(state.volumes);
   drawIfChanged("clock", state.clock, showClock);
   drawIfChanged("memories", state.memories, showMemories);
@@ -308,7 +312,8 @@ function drawIfChanged(part, data, draw) {
 
 function showActivity() {
   document.getElementById("star").dataset.activity = activity in DOING ? activity : "idle";
-  document.getElementById("doing").textContent = DOING[activity] || `Waiting for “${wakeWord}”`;
+  document.getElementById("doing").textContent =
+    DOING[activity] || (muted ? "Microphone muted" : `Waiting for “${wakeWord}”`);
 }
 
 function tile(about) {
@@ -360,6 +365,14 @@ function showStatus(status) {
     return row;
   });
   document.getElementById("problems").replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
+}
+
+function showMuted() {
+  document.getElementById("mute").checked = muted;
+  document.getElementById("microphone").classList.toggle("muted", muted);
+  document.getElementById("mute-detail").textContent = muted
+    ? `Not listening for “${wakeWord}”. Alarms and timers still ring.`
+    : `Listening for “${wakeWord}”`;
 }
 
 function showVolumes(volumes) {
@@ -1078,6 +1091,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("restart-button").addEventListener("click", () => {
     if (confirm("Restart Nova now? It takes about half a minute.")) change("/api/restart");
+  });
+
+  // Put back as Nova last had it if the change didn't work - even with Nova out of
+  // reach, when the page can't be shown afresh.
+  document.getElementById("mute").addEventListener("change", async (event) => {
+    const result = await change("/api/mute", { muted: event.target.checked });
+    if (!result.success) showMuted();
   });
 
   const cover = document.getElementById("cover");

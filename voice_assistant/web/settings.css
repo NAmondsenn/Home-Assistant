@@ -707,6 +707,20 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 
 /* Each section's own */
 
+/* The microphone's mute, under the status tiles - its icon the colour of a problem
+   while it's muted, since Nova then can't hear its wake word. */
+.microphone { margin-top: 10px; }
+
+.microphone li { padding-right: 14px; }
+
+.microphone li.muted > .icon { color: var(--ember); }
+
+.microphone .detail {
+  display: block;
+  color: var(--dusk);
+  font-size: 13px;
+}
+
 .volume {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
