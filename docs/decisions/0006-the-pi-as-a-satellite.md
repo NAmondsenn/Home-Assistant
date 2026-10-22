@@ -1,6 +1,6 @@
 # 6. The Pi as a light satellite, with PVE2 as the brain
 
-22 October 2026 · Phase 5 · Written, waiting for the user's approval · Replaces 0004's stage 2 and its standalone mode
+22 October 2026 · Phase 5 · Agreed with the user, not yet built · Replaces 0004's stage 2 and its standalone mode
 
 **Context.** 0004 moved speech-to-text to PVE2 and kept everything else on the Pi, with a full standalone mode for when PVE2 is down. The user wants the opposite balance: the Pi is a light satellite, and PVE2 is the brain that "should do all the heavy lifting". Their reasons:
 
