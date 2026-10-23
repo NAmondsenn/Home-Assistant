@@ -1249,9 +1249,6 @@ if __name__ == "__main__":
 
     from voice_assistant.config import Config
 
-    # An older install's sign-in is moved to where it now belongs first, rather
-    # than asking to sign in again.
-    paths.migrate()
     paths.load_secrets()
 
     # Config is passed in for the device name.

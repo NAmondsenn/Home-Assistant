@@ -254,19 +254,6 @@ install_python_packages() {
     fi
 }
 
-# Moves anything an older install kept in the repository folder - its settings, keys
-# and saved timers - to where they now belong, before anything below looks for them.
-move_old_files() {
-    step "Settings and saved data"
-    local moved
-    moved=$(cd "$PROJECT_DIRECTORY" && "$PYTHON" -c 'from voice_assistant import paths; print(", ".join(paths.migrate()))')
-    if [ -n "$moved" ]; then
-        done_ "Moved out of the repository folder: ${moved}"
-    else
-        skipped "Nothing to move"
-    fi
-}
-
 write_settings() {
     if [ -f "$SETTINGS_FILE" ]; then
         skipped "${SETTINGS_FILE} already exists, so it's left as it is"
@@ -662,7 +649,7 @@ main() {
     echo "Installing Nova's ${ROLE} in ${PROJECT_DIRECTORY}"
     check_system
     install_system_packages
-    run_steps install_python_packages save_role move_old_files write_settings write_secrets download_models
+    run_steps install_python_packages save_role write_settings write_secrets download_models
     if [ "$ROLE" = "satellite" ]; then
         find_wake_word_model
         write_asound_conf

@@ -17,19 +17,12 @@ downloaded by setup, not chosen, and large.
 
 Everything used to live in the repository folder, and an install's own settings were
 edited into the tracked config.yaml - so updating meant merging, and a reinstall
-meant copying everything across by hand. migrate() moves what an older install left
-there to its new place, once.
+meant copying everything across by hand.
 """
 
-import logging
 import os
-import shutil
-from typing import List
 
 from dotenv import load_dotenv
-
-# Logger setup
-logger = logging.getLogger(__name__)
 
 PROJECT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -46,66 +39,11 @@ DATA_DIR = os.path.expanduser(os.environ.get("NOVA_DATA") or "~/.local/share/nov
 LOGS_DIR = os.path.join(DATA_DIR, "logs")
 SPOTIFY_TOKEN_FILE = os.path.join(DATA_DIR, "spotify_token.json")
 
-# What an install from before this module kept in the repository folder, and where
-# each now belongs.
-OLD_PLACES = [
-    ("config.local.yaml", CONFIG_FILE),
-    (".env", SECRETS_FILE),
-    ("data/timers.json", os.path.join(DATA_DIR, "timers.json")),
-    ("data/alarms.json", os.path.join(DATA_DIR, "alarms.json")),
-    ("data/volumes.json", os.path.join(DATA_DIR, "volumes.json")),
-    (".spotify_cache", SPOTIFY_TOKEN_FILE),
-    ("logs", LOGS_DIR),
-]
-
 
 def make_folders():
     """Makes the install's own folders, readable by this user only."""
     for folder in (CONFIG_DIR, DATA_DIR, LOGS_DIR):
         os.makedirs(folder, mode=0o700, exist_ok=True)
-
-
-def migrate(repository: str = PROJECT_DIRECTORY) -> List[str]:
-    """
-    Moves anything an older install kept in the repository folder to where it now
-    belongs - each only if there's nothing there already, so it's safe to run every
-    time the assistant starts, and never overwrites anything.
-
-    Args:
-        repository: The repository folder - only given by the tests.
-
-    Returns:
-        What was moved, e.g. ["data/timers.json"].
-    """
-    make_folders()
-    moved = []
-    for old_name, new_path in OLD_PLACES:
-        old_path = os.path.join(repository, old_name)
-        if not os.path.exists(old_path):
-            continue
-        if os.path.isdir(old_path) and os.path.isdir(new_path):
-            # A folder - the logs - goes across file by file, leaving anything
-            # already in the new one alone.
-            names = [name for name in os.listdir(old_path) if not os.path.exists(os.path.join(new_path, name))]
-            for name in names:
-                shutil.move(os.path.join(old_path, name), os.path.join(new_path, name))
-            if not os.listdir(old_path):
-                os.rmdir(old_path)
-            if not names:
-                continue
-        elif not os.path.exists(new_path):
-            shutil.move(old_path, new_path)
-        else:
-            logger.warning(f"{old_path} is still in the repository folder, but {new_path} already exists, "
-                           f"so it's left where it is - it's no longer used")
-            continue
-        os.chmod(new_path, 0o700 if os.path.isdir(new_path) else 0o600)
-        moved.append(old_name)
-    # The folder the saved timers and volumes were in, once it's empty.
-    old_data = os.path.join(repository, "data")
-    if os.path.isdir(old_data) and not os.listdir(old_data):
-        os.rmdir(old_data)
-    return moved
 
 
 def load_secrets():

@@ -67,7 +67,6 @@ fi
 
 step "Restarting"
 stop_service
-run_steps move_old_files
 install_service
 start_service
 # It says it's ready once its models are loaded (see voice_assistant/watchdog.py), so
