@@ -73,7 +73,10 @@ ALARMS_RESENT = 3600
 
 # How long a satellite which has just connected is given to say what rang and what was
 # dismissed on it while it couldn't reach the brain, in seconds. It says so straight
-# away, so this is only ever waited out by one which says nothing.
+# away, so this is only ever waited out on a connection gone bad - which is let go,
+# for the satellite to connect again and say it. Counted as caught up instead, the
+# brain said what it had missed, and let go of it, while the satellite might still be
+# ringing it, so nothing took the ringing over when the report came again.
 AWAY_WAIT = 2.0
 
 # How often listening for satellites checks whether it's been stopped, in seconds - and
@@ -331,8 +334,7 @@ class Brain:
         session = None
         try:
             session = self._start_session(satellite)
-            if session is not None:
-                self._catch_up(session)
+            if session is not None and self._catch_up(session):
                 session.run()
         except Exception:
             logger.exception(f"The {name} satellite's session failed")
@@ -480,11 +482,15 @@ class Brain:
             logger.error(f"Couldn't read the satellites' passwords to see if the {name} satellite is still let in: {e}")
             return False
 
-    def _catch_up(self, session: Session):
+    def _catch_up(self, session: Session) -> bool:
         """
         Brings a satellite which has just connected up to date: what the brain owns,
         for it to mute by and to ring by while it can't reach the brain, and the phrase
         to say then - and what happened on it while it couldn't.
+
+        Returns:
+            Whether it said what happened while it couldn't. One which didn't is let
+            go, to connect again and say - see AWAY_WAIT.
         """
         satellite = session.satellite
         # Sent whatever its last state was, or a satellite muted from Home Assistant
@@ -499,15 +505,17 @@ class Brain:
         try:
             away = satellite.away_reports.get(timeout=AWAY_WAIT)
         except queue.Empty:
-            away = None
-        if away is not None:
-            self.clock.apply_away(satellite.name, away["rang"], away["dismissed"], away["ringing"])
-            # Only now it's saved does the satellite stop ringing what it was, and
-            # forget what it said - lost before then, the next brain hears it all again.
-            satellite.settle_away()
+            logger.warning(f"The {satellite.name} satellite didn't say what happened while it couldn't reach "
+                           f"the brain, so it's let go, to connect again and say")
+            return False
+        self.clock.apply_away(satellite.name, away["rang"], away["dismissed"], away["ringing"])
+        # Only now it's saved does the satellite stop ringing what it was, and forget
+        # what it said - lost before then, the next brain hears it all again.
+        satellite.settle_away()
         with self._lock:
             if self.sessions.get(satellite.name) is session:
                 self._caught_up.add(satellite.name)
+        return True
 
     def _forget(self, session: Session):
         """Takes a session which has ended off the brain - unless another has already taken its place."""

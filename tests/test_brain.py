@@ -519,16 +519,24 @@ def test_a_satellite_isnt_told_its_report_is_settled_when_applying_it_fails(brai
     assert satellite.messages("phrase") and not satellite.messages("away_settled")
 
 
-def test_a_satellite_which_says_nothing_of_while_it_was_away_isnt_told_its_settled(brain, connect, monkeypatch):
+def test_a_satellite_which_says_nothing_of_while_it_was_away_is_let_go_to_say_it_again(make_brain, connect,
+                                                                                     tmp_path, monkeypatch):
+    # Its report was late, so the brain counted it as caught up, and said what it had
+    # missed - letting go of it - while the satellite might still be ringing it. When
+    # the report came again, nothing was left to take the ringing over.
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None, "satellite": "bedroom"}]}))
+    brain = make_brain()
     monkeypatch.setattr(brain_module, "AWAY_WAIT", 0.1)
     serving(brain)
     satellite = connect(brain, away=None)
-    connected(brain)
 
-    # Let go, so it has heard everything the brain sent it.
-    brain.stop()
+    # Let go, to connect again and say it - not told it's settled, nor anything said.
     assert satellite.gone.wait(5)
     assert satellite.messages("phrase") and not satellite.messages("away_settled")
+    brain.clock._tick(time.time())
+    assert "bedroom" not in brain._caught_up
+    assert len(brain.clock._missed) == 1
 
 
 def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect, monkeypatch):
