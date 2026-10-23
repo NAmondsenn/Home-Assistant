@@ -652,12 +652,13 @@ def test_alerts_go_to_the_default_satellite(brain, connect):
     serving(brain)
     connect(brain, "kitchen", KITCHEN)
     kitchen = connected(brain, "kitchen")
-    # The bedroom, the first satellite added, isn't there to say it.
-    brain._alert(Alert("homelab", "Backup failed", "Error 5."))
+    # The bedroom, the first satellite added, isn't there to say it - which ntfy is
+    # told, so it keeps the alert for "any notifications?".
+    assert brain._alert(Alert("homelab", "Backup failed", "Error 5.")) is False
 
     connect(brain)
     bedroom = connected(brain)
-    brain._alert(Alert("homelab", "Disk nearly full", ""))
+    assert brain._alert(Alert("homelab", "Disk nearly full", "")) is True
     assert bedroom.alerts == ["Disk nearly full"] and kitchen.alerts == []
 
 

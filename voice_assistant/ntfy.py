@@ -8,7 +8,8 @@ arrive, pausing the music the way a timer does, and "tell me more" reads out the
 whole of the last one. Between quiet_from and quiet_until only the most urgent are
 said, and the rest wait for "any notifications?" - as do any which arrived while
 Nova couldn't reach the server, rather than all being read out at once when it can
-again.
+again, and any which came while there was no satellite to say them. They're kept in
+the data folder, so a restart doesn't lose them.
 
 And Nova sends things to the user's phone: what it just said, when asked to; a
 reminder nobody answered; and Nova having had to restart itself after a problem.
@@ -20,17 +21,18 @@ NTFY_TOKEN in ~/.config/nova/.env.
 
 import json
 import logging
+import os
 import re
 import socket
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Sequence
 
 import requests
 
-from voice_assistant import network
+from voice_assistant import network, paths, storage
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -58,8 +60,10 @@ DEFAULT_PRIORITY = 3
 # The tag on everything Nova sends.
 OWN_TAG = "nova"
 
-# How many recent alerts are kept, for "any notifications?" and "tell me more".
+# How many recent alerts are kept, for "any notifications?" and "tell me more" - in
+# ALERTS_FILE, so one nobody's heard yet is still there after a restart.
 KEPT = 20
+ALERTS_FILE = os.path.join(paths.DATA_DIR, "alerts.json")
 
 # The longest an alert's headline may be when it's said out loud, in characters.
 HEADLINE_CHARS = 120
@@ -97,9 +101,9 @@ class Ntfy:
 
     def __init__(self, url: str, token: str = "", alerts: Sequence[str] = (), phone: str = "",
                  reminders: str = "", restarts: str = "", quiet_from: str = "23:00",
-                 quiet_until: str = "07:00", on_alert: Optional[Callable[[Alert], None]] = None,
+                 quiet_until: str = "07:00", on_alert: Optional[Callable[[Alert], bool]] = None,
                  session=None, clock: Callable[[], float] = time.time,
-                 now: Callable[[], datetime] = datetime.now):
+                 now: Callable[[], datetime] = datetime.now, path: Optional[str] = None):
         """
         Args:
             url: The server, e.g. "https://ntfy.example.com".
@@ -110,10 +114,14 @@ class Ntfy:
             restarts: Where Nova having to restart itself goes.
             quiet_from: When night starts, as "23:00".
             quiet_until: When it ends, as "07:00".
-            on_alert: Says an alert out loud.
+            on_alert: Says an alert out loud, and returns whether it was - it wasn't
+                with no satellite there to say it. One which wasn't is kept for
+                "any notifications?".
             session: What makes the requests - only replaced by the tests.
             clock: The time now, in seconds - only replaced by the tests.
             now: The date and time now - only replaced by the tests.
+            path: Where the alerts kept are saved, or None for nowhere - from_config
+                gives ALERTS_FILE.
         """
         self.url = url.rstrip("/")
         self.alerts = [topic for topic in alerts if topic]
@@ -126,8 +134,9 @@ class Ntfy:
         self._clock = clock
         self._now = now
 
+        self.path = path
         self._lock = threading.Lock()
-        self._kept: List[Alert] = []
+        self._kept: List[Alert] = self._load()
         self._last_said: Optional[Alert] = None
         self._said_at = 0.0
         # The last message heard, so listening again after a dropped connection
@@ -147,7 +156,7 @@ class Ntfy:
         Args:
             config: Configs loaded from config.yaml.
             token: NTFY_TOKEN.
-            on_alert: Says an alert out loud.
+            on_alert: Says an alert out loud, and returns whether it was.
         """
         settings = config.section("ntfy")
         url = (settings.get("url") or "").strip()
@@ -156,7 +165,28 @@ class Ntfy:
         return cls(url, token or "", alerts=settings.get("alerts") or [], phone=settings.get("phone") or "",
                    reminders=settings.get("reminders") or "", restarts=settings.get("restarts") or "",
                    quiet_from=settings.get("quiet_from", "23:00"), quiet_until=settings.get("quiet_until", "07:00"),
-                   on_alert=on_alert)
+                   on_alert=on_alert, path=ALERTS_FILE)
+
+    def _load(self) -> List[Alert]:
+        """The alerts kept before the last restart - none, if there's nowhere to keep them, or they can't be read."""
+        if not self.path:
+            return []
+        try:
+            kept = storage.load_json(self.path, default=[])
+            return [Alert(**alert) for alert in kept][-KEPT:]
+        except (OSError, ValueError, TypeError) as e:
+            logger.error(f"Couldn't read the alerts kept, so starting without them: {e}")
+            return []
+
+    def _save(self):
+        """Keeps the alerts for the next start. Called with the lock held."""
+        if not self.path:
+            return
+        try:
+            storage.save_json(self.path, [asdict(alert) for alert in self._kept])
+        except (OSError, TypeError) as e:
+            # They're still here until the brain restarts, just not after.
+            logger.error(f"Couldn't save the alerts kept: {e}")
 
     # Sending
 
@@ -287,6 +317,7 @@ class Ntfy:
                       priority=int(event.get("priority") or DEFAULT_PRIORITY))
         with self._lock:
             self._kept = (self._kept + [alert])[-KEPT:]
+            self._save()
 
         if self._clock() - (event.get("time") or self._clock()) > STALE_SECONDS:
             logger.info(f"Kept, but not said - it came while ntfy couldn't be reached: '{alert.headline}'",
@@ -295,13 +326,20 @@ class Ntfy:
         if alert.priority < URGENT and self.quiet():
             logger.info(f"Kept, but not said - it's night: '{alert.headline}'", extra=TRANSCRIPT)
             return
-        self._said(alert)
         logger.info(f"Alert: '{alert.headline}'", extra=TRANSCRIPT)
+        said = False
         if self.on_alert:
             try:
-                self.on_alert(alert)
+                said = bool(self.on_alert(alert))
             except Exception as e:
                 logger.error(f"Couldn't say the alert: {e}")
+        # Only marked as heard once it's been said - with the default satellite away,
+        # it's kept for "any notifications?" instead.
+        if said:
+            self._said(alert)
+        else:
+            logger.info(f"Kept, but not said - there was nobody to say it to: '{alert.headline}'",
+                        extra=TRANSCRIPT)
 
     def _said(self, *alerts: Alert):
         with self._lock:
@@ -309,6 +347,7 @@ class Ntfy:
                 alert.heard = True
             self._last_said = alerts[-1]
             self._said_at = self._clock()
+            self._save()
 
     # Asked about
 

@@ -605,19 +605,25 @@ class Brain:
         if session is not None:
             session.announce(message, sound, boost, still_wanted=still_wanted, **playback)
 
-    def _alert(self, alert):
+    def _alert(self, alert) -> bool:
         """
         Says an alert from ntfy on the default satellite, as it arrives - see
         Session.alert.
 
         Args:
             alert: The ntfy Alert.
+
+        Returns:
+            Whether it was said. One which wasn't, with the default satellite away,
+            is kept for "any notifications?".
         """
         session = self.session_for(None)
         if session is None:
-            logger.warning(f"An alert from {alert.topic} wasn't said, as the default satellite isn't connected")
-            return
+            logger.warning(f"An alert from {alert.topic} wasn't said, as the default satellite isn't connected, "
+                           f"so it's kept for \"any notifications?\"")
+            return False
         session.alert(alert)
+        return True
 
     def _unanswered(self, timer, kind, satellite=None):
         """

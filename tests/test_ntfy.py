@@ -68,10 +68,18 @@ def online(monkeypatch):
     monkeypatch.setattr(ntfy_module.network, "online", lambda: True)
 
 
-def _ntfy(hour=12, minute=0, session=None, clock=lambda: NOW, **settings):
+def _ntfy(hour=12, minute=0, session=None, clock=lambda: NOW, says=True, **settings):
+    """An Ntfy whose alerts are noted in said, and said out loud only if says - or raise it, if it's an error."""
     said = []
+
+    def on_alert(alert):
+        said.append(alert)
+        if isinstance(says, Exception):
+            raise says
+        return says
+
     made = Ntfy("https://ntfy.example.com/", token="tk_secret", alerts=["homelab"], phone="clipboard",
-                reminders="reminders", restarts="homelab", on_alert=said.append, session=session or FakeSession(),
+                reminders="reminders", restarts="homelab", on_alert=on_alert, session=session or FakeSession(),
                 clock=clock, now=lambda: datetime(2026, 10, 20, hour, minute), **settings)
     return made, said
 
@@ -134,6 +142,36 @@ def test_an_alert_sent_while_nova_couldnt_reach_the_server_isnt_said():
     ntfy, said = _ntfy()
     ntfy._received(_message(title="Backup failed", time=NOW - 700))
     assert said == [] and "Backup failed" in ntfy.unheard()["message"]
+
+
+@pytest.mark.parametrize("says", [False, RuntimeError("the satellite went")])
+def test_an_alert_nobody_heard_is_kept_for_any_notifications(says):
+    # With the default satellite away it wasn't said, but it was marked as heard all
+    # the same - so "any notifications?" didn't have it either.
+    ntfy, said = _ntfy(says=says)
+    ntfy._received(_message(title="Backup failed"))
+
+    assert [alert.headline for alert in said] == ["Backup failed"]
+    assert not ntfy.just_said()
+    assert ntfy.unheard()["message"] == "One notification. Backup failed. Something happened."
+
+
+def test_whats_not_been_heard_is_still_there_after_a_restart(tmp_path):
+    path = str(tmp_path / "alerts.json")
+    ntfy, _ = _ntfy(says=False, path=path)
+    ntfy._received(_message(title="Backup failed"))
+
+    restarted, _ = _ntfy(path=path)
+    assert restarted.unheard()["message"] == "One notification. Backup failed. Something happened."
+    # And what's been heard stays heard.
+    assert _ntfy(path=path)[0].unheard()["message"] == "No new notifications."
+
+
+def test_alerts_which_cant_be_read_back_are_started_without(tmp_path, caplog):
+    (tmp_path / "alerts.json").write_text("{not json")
+    ntfy, _ = _ntfy(path=str(tmp_path / "alerts.json"))
+    assert ntfy.unheard()["message"] == "No new notifications."
+    assert any("Couldn't read the alerts kept" in message for message in caplog.messages)
 
 
 def test_novas_own_messages_arent_read_back_out():
@@ -266,3 +304,5 @@ def test_its_only_set_up_once_config_names_a_server(make_config):
                                               "phone": "clipboard"}), "tk_secret")
     assert (made.url, made.alerts, made.phone, made.quiet_from) == ("https://ntfy.example.com", ["homelab"],
                                                                      "clipboard", "23:00")
+    # What's not been heard is kept in the data folder.
+    assert made.path == ntfy_module.ALERTS_FILE
