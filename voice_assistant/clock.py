@@ -301,6 +301,9 @@ class Clock:
         # How many times anything's been saved, which is how _changing knows
         # whether what it guarded actually changed anything.
         self._saves = 0
+        # Whether the last save of each file failed, so the file isn't what's kept
+        # here - which apply_away writes again before it says it has saved anything.
+        self._timers_unsaved = self._alarms_unsaved = False
 
         # An unlabelled reminder waiting to be named. Holds the exact time it was
         # originally due, so naming it later doesn't drift from re-deriving "in 20
@@ -394,6 +397,9 @@ class Clock:
 
         Saved atomically (see storage.py), so losing power mid-write leaves the
         previous file intact. The caller is expected to already hold the lock.
+
+        Returns:
+            Whether it was saved.
         """
         self._saves += 1
         try:
@@ -407,6 +413,10 @@ class Clock:
             # Saving is best-effort: a failure here shouldn't stop a timer working
             # for the rest of this session.
             logger.error(f"Could not save timers: {e}")
+            self._timers_unsaved = True
+            return False
+        self._timers_unsaved = False
+        return True
 
     def _load(self):
         """
@@ -509,10 +519,13 @@ class Clock:
         self._missed.append(item)
         return True
 
-    def _save_alarms(self):
+    def _save_alarms(self) -> bool:
         """
         Writes the alarms to disk, the same atomic way _save writes timers. The
         caller is expected to already hold the lock.
+
+        Returns:
+            Whether it was saved.
         """
         self._saves += 1
         try:
@@ -520,6 +533,10 @@ class Clock:
                                             "alarms": list(self._alarms.values())})
         except Exception as e:
             logger.error(f"Could not save alarms: {e}")
+            self._alarms_unsaved = True
+            return False
+        self._alarms_unsaved = False
+        return True
 
     @contextmanager
     def _changing(self):
@@ -2093,6 +2110,11 @@ class Clock:
             rang: The occurrences which rang there.
             dismissed: The occurrences dismissed there.
             ringing: The occurrences still ringing there when it reached the brain.
+
+        Raises:
+            OSError: What it was told couldn't be saved - so the satellite mustn't be
+                told it has been, and the brain restarted would have lost it. Raised
+                once all else is done, so what it took over still rings here.
         """
         rang, dismissed = set(rang), set(dismissed)
         ringing = set(ringing) - dismissed
@@ -2137,16 +2159,21 @@ class Clock:
                          + len(self._unacknowledged) - len(unacknowledged))
             self._ringing, self._missed, self._unacknowledged = still_ringing, missed, unacknowledged
 
-            if timers or forgotten:
-                self._save()
-            if moved:
-                self._save_alarms()
+            # A file an earlier save failed to write is written again too, or a report
+            # told again once that changed nothing would be taken as saved.
+            saved = True
+            if timers or forgotten or self._timers_unsaved:
+                saved = self._save()
+            if moved or self._alarms_unsaved:
+                saved = self._save_alarms() and saved
 
         for entry in started:
             self._run_round(self._first_round, entry)
         if rang or dismissed or ringing:
             logger.info(f"While {satellite} was away, {len(rang)} rang and {len(dismissed)} were dismissed; "
                         f"{len(started)} still ringing there ring on here")
+        if not saved:
+            raise OSError(f"Couldn't save what {satellite} said happened while it couldn't reach the brain")
 
     def next_alarm(self) -> Dict:
         """

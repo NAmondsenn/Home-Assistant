@@ -519,6 +519,28 @@ def test_a_satellite_isnt_told_its_report_is_settled_when_applying_it_fails(brai
     assert satellite.messages("phrase") and not satellite.messages("away_settled")
 
 
+def test_a_satellite_isnt_told_its_settled_when_what_it_said_cant_be_saved(make_brain, connect, tmp_path,
+                                                                           monkeypatch):
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"}]}))
+    brain = make_brain()
+    save_json = clock_module.storage.save_json
+
+    def full(path, data):
+        if path == clock_module.TIMERS_FILE:
+            raise OSError("No space left on device")
+        save_json(path, data)
+
+    monkeypatch.setattr(clock_module.storage, "save_json", full)
+    serving(brain)
+    satellite = connect(brain, away={"rang": [f"timer-1@{int(now - 60)}"], "dismissed": [], "ringing": []})
+
+    # Let go, to ring on and say it all again.
+    assert satellite.gone.wait(5)
+    assert satellite.messages("phrase") and not satellite.messages("away_settled")
+
+
 def test_a_satellite_which_says_nothing_of_while_it_was_away_is_let_go_to_say_it_again(make_brain, connect,
                                                                                      tmp_path, monkeypatch):
     # Its report was late, so the brain counted it as caught up, and said what it had

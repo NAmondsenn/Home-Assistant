@@ -1188,6 +1188,39 @@ def test_what_rang_while_away_and_is_told_twice_still_isnt_announced_as_missed(m
     assert clock.announced[0]["message"].startswith("While I was off: your 15 minutes timer.")
 
 
+def test_a_report_which_cant_be_saved_isnt_taken_as_settled(make_clock, tmp_path, monkeypatch):
+    # The brain's disk full, say. It went on as if it had saved it, so the satellite was
+    # told it was settled and forgot it - and the brain, restarted, had lost it.
+    now = time.time()
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    alarm = f"alarm-1@{int(now - 30)}"
+    save_json = clock_module.storage.save_json
+
+    def full(path, data):
+        if path == clock_module.TIMERS_FILE:
+            raise OSError("No space left on device")
+        save_json(path, data)
+
+    monkeypatch.setattr(clock_module.storage, "save_json", full)
+    with pytest.raises(OSError):
+        clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+    # Rung here all the same, while the satellite, never told it's settled, rings on.
+    assert clock.is_ringing("bedroom")
+    # Told again, with nothing more to change, it still hasn't been saved.
+    with pytest.raises(OSError):
+        clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+
+    # Once it can be, it is, and it's taken as settled.
+    monkeypatch.setattr(clock_module.storage, "save_json", save_json)
+    clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+    saved = json.loads((tmp_path / "timers.json").read_text())
+    assert [clock._occurrence(item) for item in saved["ringing"]] == [alarm] and saved["missed"] == []
+    assert len(clock._ringing) == 1
+
+
 def _still_ringing_as_the_brain_came_back(make_clock, tmp_path):
     """
     A clock restarted as an alarm came due, which its satellite was still ringing as it
