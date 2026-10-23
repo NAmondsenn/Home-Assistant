@@ -5,7 +5,7 @@ Checks the microphone and speaker on their own: lists the sound devices, records
 until you stop talking, saves it, and plays it back - through the same Microphone
 and Speaker the assistant uses.
 
-Unlike check_pipeline.py and check_integration.py, this doesn't use Whisper, the
+Unlike check_integration.py, this doesn't use speech-to-text, the
 LLM, or TTS. It's a quick hardware check, useful for confirming the mic and speaker
 setup works before running the full pipeline.
 """

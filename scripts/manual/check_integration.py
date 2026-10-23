@@ -4,7 +4,7 @@ Integration Test
 Tests how the LLMHandler, ActionExecutor, and TextToSpeech work together
 using a fixed set of sample queries.
 
-Unlike check_pipeline.py, this doesn't use the microphone / wake word
+This doesn't use the microphone / wake word
 detector. It feeds text straight in, allowing users to test the home assistant
 without a microphone connected.
 """
