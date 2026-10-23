@@ -354,7 +354,8 @@ def test_a_second_connection_replaces_the_first(brain, connect):
     assert old.happened == [("made", "bedroom", 1), ("closed", "bedroom", 1), ("made", "bedroom", 2)]
     # Going, it leaves the second's session be.
     assert brain.session_for("bedroom") is new and not new.closed.is_set()
-    assert second.messages("phrase") and not second.gone.is_set()
+    assert wait_for(lambda: second.messages("phrase"))
+    assert not second.gone.is_set()
 
 
 def test_a_satellite_removed_while_connected_is_let_go(brain, connect, passwords):
@@ -589,8 +590,7 @@ def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect
     satellite.send_audio(np.full(RATE, 8000, np.int16))
     assert wait_for(lambda: brain.stt.made)
     satellite.go()
-    assert wait_for(lambda: brain.session_for("bedroom") is None)
-    assert brain.stt.made[0].cancelled and "bedroom" not in brain.sessions
+    assert wait_for(lambda: "bedroom" not in brain.sessions and brain.stt.made[0].cancelled)
 
     # Back again, and answered as ever.
     back = connect(brain)
@@ -640,7 +640,9 @@ def test_a_satellite_replaced_while_catching_up_leaves_no_device_behind(brain, c
 
     assert first.gone.wait(5)
     assert len(devices) == 2
-    assert not devices[0].connected and devices[1].connected
+    # The second's device starts as its session runs, once it has caught up.
+    assert wait_for(lambda: devices[1].connected)
+    assert not devices[0].connected
 
 
 def test_alerts_go_to_the_default_satellite(brain, connect):
