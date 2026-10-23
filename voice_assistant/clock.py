@@ -386,7 +386,7 @@ class Clock:
         self._thread.start()
         logger.info("Clock started")
 
-    def _save(self):
+    def _save(self) -> bool:
         """
         Writes the pending timers to the disk, along with any timer or alarm going off
         right now - so a restart while one is ringing reports it as missed (or, if the
@@ -2160,11 +2160,15 @@ class Clock:
             self._ringing, self._missed, self._unacknowledged = still_ringing, missed, unacknowledged
 
             # A file an earlier save failed to write is written again too, or a report
-            # told again once that changed nothing would be taken as saved.
+            # told again once that changed nothing would be taken as saved. Only for a
+            # report with something in it, though - one with nothing leaves the satellite
+            # nothing to forget once it's settled, and with the disk still full, every
+            # satellite reaching the brain would otherwise be hung up on.
+            needed = bool(rang or dismissed or ringing)
             saved = True
-            if timers or forgotten or self._timers_unsaved:
+            if timers or forgotten or (needed and self._timers_unsaved):
                 saved = self._save()
-            if moved or self._alarms_unsaved:
+            if moved or (needed and self._alarms_unsaved):
                 saved = self._save_alarms() and saved
 
         for entry in started:

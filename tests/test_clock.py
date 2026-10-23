@@ -1221,6 +1221,24 @@ def test_a_report_which_cant_be_saved_isnt_taken_as_settled(make_clock, tmp_path
     assert len(clock._ringing) == 1
 
 
+def test_a_report_of_nothing_is_settled_though_an_earlier_save_failed(make_clock, monkeypatch):
+    # A kitchen timer and alarm set while the brain's disk was full, say. Every satellite
+    # reaching the brain after that was hung up on, though one which reported nothing
+    # has nothing to forget once it's settled - so Nova was unusable until the disk was
+    # freed.
+    clock = make_clock()
+
+    def full(path, data):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(clock_module.storage, "save_json", full)
+    clock.set_timer(600, satellite="kitchen")
+    clock.set_alarm(7, 0, satellite="kitchen")
+    assert clock._timers_unsaved and clock._alarms_unsaved
+
+    clock.apply_away("bedroom", rang=[], dismissed=[], ringing=[])
+
+
 def _still_ringing_as_the_brain_came_back(make_clock, tmp_path):
     """
     A clock restarted as an alarm came due, which its satellite was still ringing as it
