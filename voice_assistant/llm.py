@@ -1,3 +1,16 @@
+"""
+LLM Module.
+
+Claude, for whatever the local commands don't cover: each request is sent with what's
+on the clock, the lights and the room Nova's in, what's known about the user and the
+last few exchanges, and Claude answers in words, or by calling the tools it's offered
+(see actions.py) - or both. Each tool call comes back as an Action, marked as the
+model's, so it can only run what it was offered.
+
+With Claude out of reach - no key, or no internet - a few keywords are matched instead
+(see _parse_action), so the music and the lights can still be worked.
+"""
+
 import os
 import re
 import time
@@ -19,9 +32,26 @@ logger = logging.getLogger(__name__)
 
 
 class LLMHandler:
+    """Claude, with the conversation so far, for one satellite's session."""
+
     def __init__(self, config=None, api_key=None, model=None, max_tokens=None,
                  temperature=None, history_length=None, assistant_name=None, tools=None, memory=None):
+        """
+        Each argument left out comes from config.yaml.
 
+        Args:
+            config: Configs loaded from config.yaml - its llm, conversation, assistant
+                and web_search sections.
+            api_key: Claude's key, or None for ANTHROPIC_API_KEY.
+            model: The model, e.g. "claude-haiku-5-5".
+            max_tokens: The longest an ordinary reply may be.
+            temperature: How varied replies are, or None to leave it to the model.
+            history_length: How many exchanges are kept and sent with each request.
+            assistant_name: What the assistant's called, e.g. "Nova".
+            tools: The tools to offer, in the API's format - see
+                ActionExecutor.tool_schemas.
+            memory: The Memory, whose facts go with every request, or None.
+        """
         # Pulls llm, conversation, assistant and web_search sections from config.yaml
         llm_config = config.section("llm") if config else {}
         conversation_config = config.section("conversation") if config else {}

@@ -1,3 +1,11 @@
+"""
+Wake Word Module.
+
+Listens on the satellite for the wake word - "Hey Nova", unless config.yaml names
+another - with openWakeWord, through the microphone, which is opened once and never
+closed (see microphone.py).
+"""
+
 import os
 import re
 import logging

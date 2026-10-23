@@ -1,3 +1,12 @@
+"""
+Speech-to-Text Module.
+
+Speech-to-text on the brain, with Nemotron (see nemotron.py) for every satellite's
+recordings. Each recording is heard as it's made, through a stream of its own, so the
+words are mostly worked out by the time the user stops - and words it imagines in
+noise, such as a lone "Thank you.", are thrown away.
+"""
+
 import logging
 import queue
 import re
