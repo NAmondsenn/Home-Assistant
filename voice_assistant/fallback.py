@@ -203,7 +203,6 @@ class FallbackRinger:
         self.state = state
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
-        self._playbacks: Dict[str, Optional[Playback]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -230,8 +229,14 @@ class FallbackRinger:
         for entry in self.copy.due(now):
             # Marked first, so the next check a second later doesn't ring it twice.
             self.copy.rang(entry["id"])
-            logger.info(f"Ringing {entry['id']} from the satellite's copy")
             with self._lock:
+                # Still ringing from before. The brain, catching up, sends a copy without
+                # an alarm it only knows it missed, so the copy forgets it rang it - then
+                # one listing it due again, once it has taken it over. Lost before it
+                # said so, it left the alarm to be rung a second time, over the first.
+                if any(thread.is_alive() and thread.name == f"ring-{entry['id']}" for thread in self._threads):
+                    continue
+                logger.info(f"Ringing {entry['id']} from the satellite's copy")
                 if not any(thread.is_alive() for thread in self._threads):
                     self._stop.clear()
                 thread = threading.Thread(target=self._ring, args=(entry,), daemon=True, name=f"ring-{entry['id']}")
@@ -247,19 +252,18 @@ class FallbackRinger:
         """Plays an entry's sound over and over until dismissed or RING_LIMIT."""
         filename = os.path.join(self.sounds_folder, entry["sound"])
         deadline = time.monotonic() + RING_LIMIT
+        # This ring's own, so it stops exactly what it played. Kept by id, a second
+        # ring of the same id took its place, and quietening both left one playing.
+        playback = None
         while not self._stop.is_set() and time.monotonic() < deadline:
             playback = self.speaker.play_file(
                 filename, volume=self.state.volume("alarm"), kind="announcement")
-            with self._lock:
-                self._playbacks[entry["id"]] = playback
             if playback is None:
                 # A missing file mustn't spin the thread.
                 self._stop.wait(1.0)
                 continue
             while not self._stop.is_set() and not playback.done and time.monotonic() < deadline:
                 playback.wait(0.2)
-        with self._lock:
-            playback = self._playbacks.pop(entry["id"], None)
         if playback is not None and not playback.done:
             playback.stop()
 

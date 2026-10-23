@@ -141,6 +141,28 @@ def test_a_ring_is_known_of_by_whatever_asks_as_it_starts(tmp_path, monkeypatch)
     assert all(playback.stopped for playback in speaker.playbacks)
 
 
+def test_an_alarm_already_ringing_isnt_rung_again_when_the_brain_lists_it_anew(tmp_path):
+    # The brain, catching up, sends a copy without an alarm it only knows it missed, so
+    # the copy forgets it rang it - then one listing it due again, once it has taken it
+    # over. Lost before it said so, it left the copy to ring the alarm a second time,
+    # over the first - and quietening them left one playing.
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry()])
+    ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls)
+    copy.replace([])
+    copy.replace([entry(due=NOW + 30)])
+
+    ringer.check(NOW + 31)
+
+    assert ringer.ringing_ids() == ["alarm-1@1729587600"]
+    assert len(speaker.calls) == 1
+    # Marked as rung all the same, so it isn't checked again.
+    assert copy.due(NOW + 31) == []
+    ringer.quiet()
+    assert all(playback.stopped for playback in speaker.playbacks)
+
+
 def test_an_alarm_long_missed_isnt_rung(tmp_path):
     copy, state, speaker, ringer = make(tmp_path)
     copy.replace([entry()])

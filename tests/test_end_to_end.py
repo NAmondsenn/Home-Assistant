@@ -615,3 +615,63 @@ def test_an_alarm_said_to_a_brain_stopped_before_it_has_it_rings_on_from_the_nex
     assert wait_for(lambda: any(message["type"] == "play_sound" and message["name"] == "alarm_sound.wav"
                                 for message in satellite.from_brain))
     assert third.clock._missed == []
+
+
+def ringing_while_the_brain_restarted(world):
+    """
+    The satellite ringing an alarm from its copy, the brain having gone just as it came
+    due - its port free again, for the next brain to take.
+
+    Returns:
+        The brain which went, the satellite, and the id the alarm is known by.
+    """
+    first = world.make_brain()
+    satellite = world.make_satellite(first)
+    assert wait_for(lambda: caught_up(first))
+    first.clock.set_alarm(7, 0, satellite="bedroom")
+    due = time.time() + 0.5
+    with first.clock._changing():
+        first.clock._alarms[1]["due_at"] = due
+        first.clock._save_alarms()
+    alarm = f"alarm-1@{int(due)}"
+    assert wait_for(lambda: [entry["id"] for entry in satellite.alarms.due(due)] == [alarm])
+    first.stop()
+    first.serving.join(5)
+    assert not first.serving.is_alive()
+    assert wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
+    return first, satellite, alarm
+
+
+def test_an_alarm_a_brain_is_lost_with_before_saying_it_has_it_rings_once_meanwhile(world, monkeypatch):
+    # The restarted brain has saved the alarm, and sent the satellite a copy listing it
+    # due anew, when it's lost before it can say it has it. The copy it sent first, as
+    # it caught up, didn't list the alarm, which it then only knew it had missed - so the
+    # satellite forgot it had rung it, and rang it a second time over the first.
+    first, satellite, alarm = ringing_while_the_brain_restarted(world)
+    calls, made = [], []
+    apply_away = clock_module.Clock.apply_away
+
+    def lost_once_its_saved(clock, name, rang, dismissed, ringing=()):
+        calls.append(name)
+        apply_away(clock, name, rang, dismissed, ringing)
+        if len(calls) > 1:
+            return
+        wait_for(lambda: made and alarm in [entry["id"] for entry in satellite.alarms.due(time.time())])
+        made[0].clock.stop()
+        made[0].stop()
+        raise RuntimeError("The brain has gone")
+
+    monkeypatch.setattr(clock_module.Clock, "apply_away", lost_once_its_saved)
+    made.append(world.make_brain(port=first.port, clock=True))
+    made[0].serving.join(5)
+    assert not made[0].serving.is_alive()
+
+    # On its own again, the satellite finds the alarm due in its copy - and rings it the once.
+    assert wait_for(lambda: not satellite.link.connected and not satellite.alarms.due(time.time()))
+    assert satellite.ringer.ringing_ids() == [alarm]
+
+    # The next brain finds it saved as ringing, and takes it over.
+    made.append(world.make_brain(port=first.port, clock=True))
+    assert wait_for(lambda: made[1].clock.is_ringing("bedroom"))
+    assert wait_for(lambda: not satellite.ringer.ringing)
+    assert satellite.alarms.away_report() == {"rang": [], "dismissed": []}
