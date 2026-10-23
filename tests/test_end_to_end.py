@@ -648,7 +648,7 @@ def test_an_alarm_a_brain_is_lost_with_before_saying_it_has_it_rings_once_meanwh
     # it caught up, didn't list the alarm, which it then only knew it had missed - so the
     # satellite forgot it had rung it, and rang it a second time over the first.
     first, satellite, alarm = ringing_while_the_brain_restarted(world)
-    calls, made = [], []
+    calls, made, listed_anew = [], [], []
     apply_away = clock_module.Clock.apply_away
 
     def lost_once_its_saved(clock, name, rang, dismissed, ringing=()):
@@ -656,7 +656,11 @@ def test_an_alarm_a_brain_is_lost_with_before_saying_it_has_it_rings_once_meanwh
         apply_away(clock, name, rang, dismissed, ringing)
         if len(calls) > 1:
             return
-        wait_for(lambda: made and alarm in [entry["id"] for entry in satellite.alarms.due(time.time())])
+        # Kept, to be asserted below - an assert here would be swallowed by
+        # _serve_satellite's except. Without the copy listing the alarm anew, the
+        # guard against ringing it twice isn't tested at all.
+        listed_anew.append(wait_for(
+            lambda: made and alarm in [entry["id"] for entry in satellite.alarms.due(time.time())]))
         made[0].clock.stop()
         made[0].stop()
         raise RuntimeError("The brain has gone")
@@ -664,6 +668,7 @@ def test_an_alarm_a_brain_is_lost_with_before_saying_it_has_it_rings_once_meanwh
     monkeypatch.setattr(clock_module.Clock, "apply_away", lost_once_its_saved)
     made.append(world.make_brain(port=first.port, clock=True))
     made[0].serving.join(5)
+    assert listed_anew == [True]
     assert not made[0].serving.is_alive()
 
     # On its own again, the satellite finds the alarm due in its copy - and rings it the once.
