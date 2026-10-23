@@ -1584,7 +1584,7 @@ class Clock:
             self._save()
 
         spoken_duration = format_duration(duration_seconds)
-        logger.info(f"Timer set for {spoken_duration}" + (f" ({label})" if label else ""))
+        logger.info(f"Timer set for {spoken_duration}" + (f" ({label})" if label else ""), extra=TRANSCRIPT)
 
         if label:
             return {"success": True, "message": f"I'll remind you in {spoken_duration}."}
@@ -2021,7 +2021,7 @@ class Clock:
             else:
                 self._save()
         name = self._describe_alarm(item) if kind == "alarm" else self._describe(item)
-        logger.info(f"Removed on the settings page: {name}")
+        logger.info(f"Removed on the settings page: {name}", extra=TRANSCRIPT)
         return {"success": True, "message": f"Removed the {name}."}
 
     def assign_unowned(self, satellite: str) -> int:

@@ -298,7 +298,7 @@ class HomeAssistant:
         """
         refused = {"success": False, "message": "I don't lock, unlock or open anything by voice."}
         if _sensitive_words(request):
-            logger.warning(f"Refused a sensitive Home Assistant request: '{request}'")
+            logger.warning(f"Refused a sensitive Home Assistant request: '{request}'", extra=TRANSCRIPT)
             return refused
 
         asked = {"text": request, "language": "en", "agent_id": self.agent}
@@ -325,7 +325,7 @@ class HomeAssistant:
         response = reply.get("response") or {}
         said = ((response.get("speech") or {}).get("plain") or {}).get("speech") or ""
         kind = response.get("response_type")
-        logger.info(f"Home Assistant: {kind} - '{said}'")
+        logger.info(f"Home Assistant: {kind} - '{said}'", extra=TRANSCRIPT)
         if kind == "action_done":
             return {"success": True, "message": said or "Done.", "chime": True}
         if kind == "query_answer":
