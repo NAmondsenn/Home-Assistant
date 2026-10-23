@@ -298,6 +298,24 @@ def connected(brain, name="bedroom"):
 
 # Satellites connecting
 
+def test_whatever_sees_the_brain_listening_knows_its_port(brain):
+    # As test_end_to_end's make_brain does, connecting a satellite straight after: the
+    # port was set from the socket only once the brain was seen listening, so could
+    # still be 0, the port it was asked for.
+    seen = []
+
+    class Watched(brain_module.Brain):
+        def __setattr__(self, name, value):
+            if name == "_server" and value is not None:
+                seen.append(self.port)
+            super().__setattr__(name, value)
+
+    brain.__class__ = Watched
+    serving(brain)
+
+    assert seen == [brain.port] and brain.port != 0
+
+
 def test_a_satellite_which_connects_gets_its_state_alarms_and_phrase(brain, connect):
     brain.clock.set_timer(600, satellite="bedroom")
     brain.clock.set_timer(900, satellite="kitchen")

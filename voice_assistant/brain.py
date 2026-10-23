@@ -281,8 +281,9 @@ class Brain:
             if self._stopped.is_set():
                 server.server_close()
                 return
+            # First, so whatever sees the brain listening also knows where.
+            self.port = server.server_address[1]
             self._server = server
-        self.port = server.server_address[1]
         logger.info(f"Listening for satellites on port {self.port}")
         try:
             server.serve_forever(poll_interval=STOP_CHECK)
