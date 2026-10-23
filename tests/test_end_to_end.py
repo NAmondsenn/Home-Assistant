@@ -557,3 +557,61 @@ def test_an_alarm_said_to_a_brain_lost_before_it_has_it_rings_on_until_one_has(w
     assert wait_for(lambda: any(message["type"] == "play_sound" and message["name"] == "alarm_sound.wav"
                                 for message in satellite.from_brain))
     assert satellite.alarms.away_report() == {"rang": [], "dismissed": []}
+
+
+def test_an_alarm_said_to_a_brain_stopped_before_it_has_it_rings_on_from_the_next(world, monkeypatch):
+    # The brain restarts as the alarm comes due, then is stopped altogether as the
+    # satellite tells it the alarm is still ringing, before it has saved that - a crash
+    # loop, say. The brain had forgotten the alarm from its files as soon as it had read
+    # them, so the third brain had nothing to ring, and the alarm stopped early.
+    first = world.make_brain()
+    satellite = world.make_satellite(first)
+    assert wait_for(lambda: caught_up(first))
+    first.clock.set_alarm(7, 0, satellite="bedroom")
+    due = time.time() + 0.5
+    with first.clock._changing():
+        first.clock._alarms[1]["due_at"] = due
+        first.clock._save_alarms()
+    alarm = f"alarm-1@{int(due)}"
+    assert wait_for(lambda: [entry["id"] for entry in satellite.alarms.due(due)] == [alarm])
+    first.stop()
+    first.serving.join(5)
+    assert not first.serving.is_alive()
+    assert wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
+
+    # The second brain is stopped from inside its first catch-up. The third's waits
+    # until the test has looked.
+    told, made, again, looked = [], [], threading.Event(), threading.Event()
+    apply_away = clock_module.Clock.apply_away
+
+    def stopped_then_held(clock, name, rang, dismissed, ringing=()):
+        told.append(list(ringing))
+        if len(told) == 1:
+            wait_for(lambda: made)
+            made[0].clock.stop()
+            made[0].stop()
+            raise RuntimeError("The brain has gone")
+        again.set()
+        looked.wait(5)
+        return apply_away(clock, name, rang, dismissed, ringing)
+
+    monkeypatch.setattr(clock_module.Clock, "apply_away", stopped_then_held)
+    made.append(world.make_brain(port=first.port, clock=True))
+    made[0].serving.join(5)
+    assert not made[0].serving.is_alive()
+    assert told == [[alarm]]
+
+    third = world.make_brain(port=first.port, clock=True)
+    assert again.wait(10)
+    # The satellite rang on throughout, and the third brain found the alarm in its files.
+    assert satellite.ringer.ringing_ids() == [alarm]
+    assert satellite.alarms.away_report()["rang"] == [alarm]
+    assert [clock_module.Clock._occurrence(item) for item in third.clock._missed] == [alarm]
+    assert told == [[alarm], [alarm]]
+    looked.set()
+
+    assert wait_for(lambda: third.clock.is_ringing("bedroom"))
+    assert wait_for(lambda: not satellite.ringer.ringing)
+    assert wait_for(lambda: any(message["type"] == "play_sound" and message["name"] == "alarm_sound.wav"
+                                for message in satellite.from_brain))
+    assert third.clock._missed == []

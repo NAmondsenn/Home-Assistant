@@ -359,8 +359,10 @@ class Clock:
         # Timers which were never acknowledged, so the user can ask what they missed.
         self._unacknowledged: List[Dict] = []
 
-        # Restores timers saved before the last shutdown, so they survive restarts.
+        # What came due while the brain was off, until it's announced once its satellite
+        # can hear it - kept in the timers file meanwhile, see _save.
         self._missed: List[Dict] = []
+        # Restores timers saved before the last shutdown, so they survive restarts.
         self._load()
         self._load_alarms()
 
@@ -385,9 +387,10 @@ class Clock:
         """
         Writes the pending timers to the disk, along with any timer or alarm going off
         right now - so a restart while one is ringing reports it as missed (or, if the
-        satellite is still ringing it, rings it again) rather than losing it. An
-        alarm's store has already moved on without it, so this is the only place it's
-        kept.
+        satellite is still ringing it, rings it again) rather than losing it - and
+        whatever was missed and hasn't been dealt with yet, so a restart doesn't lose
+        that either. An alarm's store has already moved on without them, so this is
+        the only place they're kept.
 
         Saved atomically (see storage.py), so losing power mid-write leaves the
         previous file intact. The caller is expected to already hold the lock.
@@ -398,6 +401,7 @@ class Clock:
                 "next_id": self._next_id,
                 "timers": list(self._timers.values()),
                 "ringing": [entry["timer"] for entry in self._ringing],
+                "missed": self._missed,
             })
         except Exception as e:
             # Saving is best-effort: a failure here shouldn't stop a timer working
@@ -409,7 +413,8 @@ class Clock:
         Restores timers from disk.
 
         Timers which came due while the assistant was off are kept aside to be
-        announced late, as long as they aren't older than the grace period.
+        announced late, as long as they aren't older than the grace period - as is
+        whatever was already missed, and not yet dealt with, before the last restart.
         """
         try:
             data = storage.load_json(TIMERS_FILE)
@@ -426,7 +431,9 @@ class Clock:
 
         # Anything which was going off when the assistant stopped is past its due
         # time, so it's treated the same as one which came due while it was off.
-        for timer in data.get("timers", []) + data.get("ringing", []):
+        saved = [(timer, False) for timer in data.get("timers", []) + data.get("ringing", [])]
+        saved += [(timer, True) for timer in data.get("missed", [])]
+        for timer, was_missed in saved:
             # Skips anything malformed rather than trusting the file's contents.
             if not isinstance(timer, dict) or "due_at" not in timer:
                 continue
@@ -445,8 +452,9 @@ class Clock:
             timer["satellite"] = str(satellite) if satellite else None
 
             # An alarm which was ringing, already past its time - see _save. It joins the
-            # missed ones below and never the timers, even if the clock has moved back.
-            if timer["due_at"] > now and "hour" not in timer:
+            # missed ones below and never the timers, even if the clock has moved back,
+            # as does anything which had already been missed.
+            if timer["due_at"] > now and "hour" not in timer and not was_missed:
                 if timer["id"]:
                     self._timers[timer["id"]] = timer
                 else:
@@ -454,8 +462,8 @@ class Clock:
                 restored += 1
             elif now - timer["due_at"] <= MISSED_TIMER_GRACE_SECONDS:
                 # Recently missed, so it's still worth mentioning once started.
-                self._missed.append(timer)
-                missed += 1
+                if self._note_missed(timer):
+                    missed += 1
             else:
                 dropped += 1
 
@@ -474,11 +482,32 @@ class Clock:
         if restored or missed or dropped:
             logger.info(f"Restored {restored} timer(s), {missed} missed, {dropped} too old")
 
-        # Saved straight away without the missed ones, which are now only in memory
-        # waiting to be announced. Otherwise a crash loop announced the same "while
-        # I was off" on every start, since the file still had them.
+        # Saved straight away, with what came due while it was off kept as missed rather
+        # than as timers, and whatever's too old gone. What's missed stays in the file
+        # until it's dealt with - said (see _tick, which lets go of it before it's said)
+        # or settled by its satellite (see apply_away) - so a crash loop neither loses
+        # it before it's said nor says the same "while I was off" again after.
         if missed or dropped or unnumbered:
             self._save()
+
+    def _note_missed(self, item: Dict) -> bool:
+        """
+        Keeps something which came due while the brain was off, to be announced once
+        its satellite can hear it - unless it's kept already. A brain lost as it
+        started may have noted an alarm as missed in the timers file without yet
+        moving it on in the alarms file, so the next finds it in both.
+
+        Args:
+            item: The timer or alarm, as it was when it came due.
+
+        Returns:
+            Whether it wasn't kept already.
+        """
+        occurrence = self._occurrence(item)
+        if any(self._occurrence(other) == occurrence for other in self._missed):
+            return False
+        self._missed.append(item)
+        return True
 
     def _save_alarms(self):
         """
@@ -531,7 +560,7 @@ class Clock:
             return
 
         now = time.time()
-        restored = missed = 0
+        restored = missed = overdue = 0
         unnumbered = []
         for alarm in data.get("alarms", []):
             if not isinstance(alarm, dict):
@@ -565,9 +594,9 @@ class Clock:
                      "satellite": str(satellite) if satellite else None}
 
             if due_at <= now:
+                overdue += 1
                 # Recently missed, so it's still worth mentioning once started.
-                if now - due_at <= MISSED_TIMER_GRACE_SECONDS:
-                    self._missed.append({**alarm, "kind": "alarm"})
+                if now - due_at <= MISSED_TIMER_GRACE_SECONDS and self._note_missed({**alarm, "kind": "alarm"}):
                     missed += 1
                 if not repeat:
                     continue
@@ -588,9 +617,15 @@ class Clock:
             self._next_alarm_id += 1
             self._alarms[alarm["id"]] = alarm
 
-        # Saved straight away if anything was missed, so a second restart soon after
-        # doesn't mention the same missed alarm all over again.
-        if missed or unnumbered:
+        # What was missed goes into the timers file before this one lets go of it - so a
+        # brain lost in between finds it in both, and notes it once (see _note_missed),
+        # rather than in neither.
+        if missed:
+            self._save()
+        # Then every overdue alarm is moved on, or gone if it doesn't repeat, so the
+        # next start doesn't find the same occurrence due, and note it again after it
+        # has been said.
+        if overdue or unnumbered:
             self._save_alarms()
 
         if restored or missed:
@@ -742,6 +777,10 @@ class Clock:
                     ready = self.can_hear is None or self.can_hear(item["satellite"])
                     (missed if ready else waiting).append(item)
                 self._missed = waiting
+                # Let go of in the file before it's said, so a brain lost as it says it
+                # never says it again.
+                if missed:
+                    self._save()
             for item in missed:
                 late = format_duration(now - item["due_at"])
                 if item.get("kind") == "alarm":
@@ -1964,8 +2003,9 @@ class Clock:
             given = timers + alarms + ringing + missed
             for item in given:
                 item["satellite"] = satellite
-            # What's ringing is saved with the timers, and is in each copy too.
-            if timers or ringing:
+            # What's ringing, and what's missed, is saved with the timers - and what's
+            # ringing is in each copy too.
+            if timers or ringing or missed:
                 self._save()
             if alarms:
                 self._save_alarms()

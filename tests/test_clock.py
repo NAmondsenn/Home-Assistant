@@ -315,13 +315,98 @@ def test_talking_only_silences_what_was_ringing_at_the_wake_word(make_clock):
 
 def test_a_missed_timer_is_only_announced_once_however_often_it_restarts(make_clock, tmp_path):
     # The file kept missed timers until something else changed, so a crash loop
-    # announced the same "while I was off" on every start.
+    # announced the same "while I was off" on every start. Then they were forgotten as
+    # soon as they'd been read, so a crash loop lost them before they were said at all.
     due = time.time() - 60
     (tmp_path / "timers.json").write_text(json.dumps(
         {"next_id": 2, "timers": [{"id": 1, "due_at": due, "duration": 600, "label": None}]}))
 
+    # Kept through restarts until it's said...
     assert len(make_clock()._missed) == 1
-    assert make_clock()._missed == []
+    clock = make_clock()
+    assert len(clock._missed) == 1
+    clock._tick(time.time())
+    assert len(clock.announced) == 1
+
+    # ...and never said again.
+    again = make_clock()
+    again._tick(time.time())
+    assert again._missed == [] and again.announced == []
+
+
+def test_a_brain_lost_while_saying_what_it_missed_doesnt_say_it_again(make_clock, tmp_path):
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None}]}))
+    restarted = []
+    # Restarted the moment it's said - so it must have been let go of before.
+    clock = make_clock(on_announce=lambda clock, announcement: restarted.append(make_clock()))
+
+    clock._tick(time.time())
+
+    assert len(clock.announced) == 1
+    assert restarted[0]._missed == []
+
+
+def test_whats_missed_and_then_settled_by_its_satellite_doesnt_come_back(make_clock, tmp_path):
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 90, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    clock = make_clock()
+
+    clock.apply_away("bedroom", rang=[f"timer-1@{int(now - 60)}"], dismissed=[f"timer-2@{int(now - 90)}"])
+
+    restarted = make_clock()
+    restarted._tick(time.time())
+    assert restarted._missed == [] and restarted.announced == []
+
+
+def test_three_restarts_in_a_row_note_whatever_was_missed_once(make_clock, tmp_path):
+    # A timer and two alarms came due while the brain was off, and another timer was
+    # ringing as it went - and it restarts three times before any satellite is back.
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"}], "ringing": [
+        {"id": 2, "due_at": now - 30, "duration": 300, "label": None, "satellite": "bedroom"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": now - 120, "satellite": "bedroom"},
+        {"id": 2, "hour": 8, "minute": 0, "repeat": None, "due_at": now - 180, "satellite": "bedroom"}]}))
+
+    for _ in range(3):
+        clock = make_clock()
+
+    assert sorted(clock._occurrence(item) for item in clock._missed) == sorted([
+        f"timer-1@{int(now - 60)}", f"timer-2@{int(now - 30)}", f"alarm-1@{int(now - 120)}",
+        f"alarm-2@{int(now - 180)}"])
+    # The repeating alarm is set for its next occurrence, the once, and the one-off is gone.
+    assert list(clock._alarms) == [1] and now < clock._alarms[1]["due_at"] <= now + 25 * 3600
+    assert clock._timers == {}
+    clock._tick(time.time())
+    assert len(clock.announced) == 4
+
+
+def test_a_repeating_alarm_missed_by_a_brain_lost_as_it_started_is_noted_and_moved_on_once(make_clock,
+                                                                                         tmp_path):
+    # Lost having noted the alarm as missed in the timers file, but before it moved it
+    # on in the alarms file - so the next brain finds it in both.
+    now = time.time()
+    alarms = json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": now - 120, "satellite": "bedroom"}]})
+    (tmp_path / "alarms.json").write_text(alarms)
+    make_clock()
+    (tmp_path / "alarms.json").write_text(alarms)
+
+    for _ in range(2):
+        clock = make_clock()
+
+    assert [clock._occurrence(item) for item in clock._missed] == [f"alarm-1@{int(now - 120)}"]
+    assert now < clock._alarms[1]["due_at"] <= now + 25 * 3600
+    clock._tick(time.time())
+    assert len(clock.announced) == 1
+    # Said, and moved on in the alarms file too, so it's never noted again.
+    again = make_clock()
+    again._tick(time.time())
+    assert again._missed == [] and again.announced == []
 
 
 def test_a_timer_ringing_when_the_assistant_stops_is_reported_as_missed(make_clock, tmp_path):
@@ -1201,8 +1286,10 @@ def test_whats_ringing_or_missed_is_given_to_the_default_too(make_clock, tmp_pat
         {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None}]}))
     restarted = make_clock()
     assert restarted.assign_unowned("pi") == 1
-    restarted._tick(time.time())
-    assert restarted.announced[0]["satellite"] == "pi"
+    # Still given, through a restart before it's said.
+    again = make_clock()
+    again._tick(time.time())
+    assert again.announced[0]["satellite"] == "pi"
 
 
 def _ring_alarm_then_restart(make_clock, repeat):
