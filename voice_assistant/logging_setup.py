@@ -10,6 +10,7 @@ in it for good, as well as in the system journal.
 
 import logging
 import os
+import threading
 from logging.handlers import RotatingFileHandler
 from typing import List
 
@@ -36,10 +37,29 @@ class _TranscriptFilter(logging.Filter):
 _transcripts = _TranscriptFilter()
 
 
+def _log_thread_error(args):
+    """
+    Logs an error which ended a thread, with its traceback - set as threading.excepthook.
+    Python's own hook only prints it to stderr, so a thread which died - the clock's,
+    say - never reached the log file, nor the settings page's list of problems.
+
+    Args:
+        args: What threading gives its excepthook: the error's type, value and
+            traceback, and the thread.
+    """
+    # A thread ending itself with sys.exit() is quiet, as it is with Python's own hook.
+    if issubclass(args.exc_type, SystemExit):
+        return
+    name = args.thread.name if args.thread is not None else "unknown"
+    logging.getLogger(__name__).error(f"The {name} thread stopped with an error",
+                                      exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
 def setup_logging(log_file: str) -> List[logging.Handler]:
     """
     Sends log lines to a file which is trimmed as it grows, and to the console - the
-    system journal, when running as a service.
+    system journal, when running as a service - and an error which ends any thread
+    there too.
 
     Args:
         log_file: Path to the log file. Its folder is created if need be.
@@ -58,6 +78,7 @@ def setup_logging(log_file: str) -> List[logging.Handler]:
         handler.setFormatter(formatter)
         handler.addFilter(_transcripts)
         root.addHandler(handler)
+    threading.excepthook = _log_thread_error
     return handlers
 
 
