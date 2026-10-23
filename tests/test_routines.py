@@ -97,6 +97,21 @@ def test_a_routine_runs_by_itself_once_on_its_days(routines):
     assert len(routines.due(datetime(2026, 10, 21, 7, 0))) == 1
 
 
+def test_a_routine_missed_while_its_satellite_was_away_is_kept_until_its_back(routines, tmp_path):
+    routine = routines.save({**MORNING, "satellite": "bedroom"})["routine"]
+    routines.missed(routine, "bedroom", 1_800_000_000.0)
+    # Missed again the next day, it's the later which counts.
+    routines.missed(routine, "bedroom", 1_800_086_400.0)
+
+    # Kept through a restart.
+    restarted = Routines(path=str(tmp_path / "routines.json"))
+    assert restarted.take_missed("kitchen") == []
+    assert restarted.take_missed("bedroom") == [{"id": routine["id"], "name": "Good morning", "at": "07:00",
+                                                 "satellite": "bedroom", "due_at": 1_800_086_400.0}]
+    assert restarted.take_missed("bedroom") == []
+    assert Routines(path=str(tmp_path / "routines.json")).take_missed("bedroom") == []
+
+
 def test_a_routine_is_deleted(routines):
     routine = routines.save(MORNING)["routine"]
     assert routines.remove(routine["id"]) == {"success": True, "message": "Deleted Good morning."}

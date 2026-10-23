@@ -28,7 +28,8 @@ from typing import Dict, List, Optional, Set, Tuple
 import numpy as np
 
 from voice_assistant import paths, protocol, storage, watchdog
-from voice_assistant.clock import Clock
+from voice_assistant.clock import Clock, spoken_clock_time
+from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
 from voice_assistant.ntfy import Ntfy
 from voice_assistant.protocol import ProtocolError, Refused, admit
@@ -65,6 +66,11 @@ RESTART_NOTICE_GAP = 3600
 # How often it's checked whether one of the user's routines is due, in seconds - a few
 # times within each minute.
 ROUTINE_CHECK = 20
+
+# A routine which came due while its satellite was away runs once it's back if it's
+# less late than this, in seconds. Later than that, it's skipped, and Nova says so
+# instead - the user's call.
+MISSED_ROUTINE_GRACE = 3600
 
 # How often each satellite is sent its copy of the timers and alarms even when nothing
 # has changed, in seconds. The copy holds a week, so a repeating alarm's next week only
@@ -116,6 +122,25 @@ def _speech_to_text(config):
 
     logger.info("Loading Nemotron...")
     return NemotronSpeechToText(Nemotron(os.path.join(paths.PROJECT_DIRECTORY, config.section("backend").get("model"))))
+
+
+def _skipped_message(skipped: List[Dict]) -> str:
+    """
+    What's said for routines which didn't run while their satellite was away, e.g.
+    "Your 7 o'clock routine didn't run - I couldn't reach the speaker."
+
+    Args:
+        skipped: Each as Routines.take_missed has it.
+    """
+    times = []
+    for entry in skipped:
+        hour, minute = (int(part) for part in entry["at"].split(":"))
+        said = f"{hour % 12 or 12} o'clock" if minute == 0 else spoken_clock_time(hour, minute)
+        if said not in times:
+            times.append(said)
+    if len(times) == 1:
+        return f"Your {times[0]} routine didn't run - I couldn't reach the speaker."
+    return f"Your {', '.join(times[:-1])} and {times[-1]} routines didn't run - I couldn't reach the speaker."
 
 
 class _Server(socketserver.ThreadingTCPServer):
@@ -640,7 +665,7 @@ class Brain:
             label = timer["label"]
             self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")
 
-    def run_routine(self, routine):
+    def run_routine(self, routine) -> bool:
         """
         Runs one of the user's routines by itself - at its time, or from the settings
         page - on its satellite, as Session.run_routine.
@@ -648,20 +673,73 @@ class Brain:
         Args:
             routine: The routine, as Routines has it - with the satellite it runs on,
                 or None for the default.
+
+        Returns:
+            Whether it ran - it didn't with its satellite away.
         """
         session = self.session_for(routine.get("satellite"))
         if session is None:
-            logger.warning(f"The {routine['name']} routine didn't run, as its satellite isn't connected")
-            return
+            logger.warning(f"The {routine['name']} routine didn't run, as its satellite isn't connected",
+                           extra=TRANSCRIPT)
+            return False
         session.run_routine(routine)
+        return True
+
+    def _run_timed(self, routine, due_at: float):
+        """
+        Runs a routine which has come due - or, with its satellite away, keeps it until
+        it's back (see _catch_up_routines), as Routines has already marked it as run
+        for the day.
+
+        Args:
+            routine: The routine, as Routines has it.
+            due_at: When it came due, as an epoch timestamp.
+        """
+        if self.run_routine(routine):
+            return
+        satellite = routine.get("satellite") or self.default_satellite()
+        if satellite:
+            self.routines.missed(routine, satellite, due_at)
+
+    def _catch_up_routines(self):
+        """
+        Runs, on each satellite which is back, the routines which came due while it
+        was away - or, for any more than MISSED_ROUTINE_GRACE late, says they didn't.
+        """
+        with self._lock:
+            back = list(self._caught_up)
+        now = time.time()
+        for satellite in back:
+            session = self.session_for(satellite)
+            if session is None:
+                continue
+            # Only those still there - one deleted meanwhile is let go.
+            missed = [(entry, self.routines.get(entry["id"])) for entry in self.routines.take_missed(satellite)]
+            missed = [(entry, routine) for entry, routine in missed if routine is not None]
+            skipped = [entry for entry, _ in missed if now - entry["due_at"] >= MISSED_ROUTINE_GRACE]
+            for entry, routine in missed:
+                if entry not in skipped:
+                    logger.info(f"Running the {routine['name']} routine, which came due while the {satellite} "
+                                f"satellite was away", extra=TRANSCRIPT)
+                    threading.Thread(target=self._run_timed, args=(routine, entry["due_at"]), daemon=True,
+                                     name="routine").start()
+            if skipped:
+                logger.info(f"Telling the {satellite} satellite {len(skipped)} routines didn't run while it was away")
+                threading.Thread(target=session.announce, args=(_skipped_message(skipped),), daemon=True,
+                                 name="routine").start()
 
     def _run_routines_when_due(self):
-        """Runs each routine at its time, for as long as the brain runs - see Routines.due."""
+        """
+        Runs each routine at its time, for as long as the brain runs - see Routines.due
+        - and those which came due while their satellite was away, once it's back.
+        """
         while self.running:
             # One check going wrong mustn't stop the rest for good.
             try:
                 for routine in self.routines.due():
-                    threading.Thread(target=self.run_routine, args=(routine,), daemon=True, name="routine").start()
+                    threading.Thread(target=self._run_timed, args=(routine, time.time()), daemon=True,
+                                     name="routine").start()
+                self._catch_up_routines()
             except Exception as e:
                 logger.error(f"Couldn't check the routines: {e}")
             time.sleep(ROUTINE_CHECK)

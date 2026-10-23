@@ -914,9 +914,77 @@ def test_a_routine_runs_by_itself_when_its_due(brain, monkeypatch):
         return due.pop(0)
 
     brain.running = True
-    brain.routines = SimpleNamespace(due=next_due)
-    brain.run_routine = lambda routine: ran.append(routine["name"])
+    brain.routines = SimpleNamespace(due=next_due, take_missed=lambda satellite: [])
+    brain.run_routine = lambda routine: ran.append(routine["name"]) or True
     brain._run_routines_when_due()
 
     assert wait_for(lambda: ran)
     assert ran == ["Good morning"]
+
+
+MORNING = {"name": "Good morning", "at": "7:00", "steps": ["what's the weather"]}
+
+
+def test_a_routine_due_while_its_satellite_is_away_runs_once_its_back(make_brain, connect):
+    # It gave up, and Routines had already marked it as run for the day.
+    brain = make_brain()
+    routine = brain.routines.save(MORNING)["routine"]
+    brain._run_timed(routine, time.time() - 1800)
+
+    # Through a restart of the brain, too.
+    brain = make_brain()
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    brain._catch_up_routines()
+    assert wait_for(lambda: bedroom.routines == ["Good morning"])
+    assert bedroom.announced == []
+    brain._catch_up_routines()
+    time.sleep(0.05)
+    assert bedroom.routines == ["Good morning"]
+
+
+def test_a_routine_more_than_an_hour_late_is_said_to_have_been_skipped(brain, connect):
+    routine = brain.routines.save(MORNING)["routine"]
+    brain._run_timed(routine, time.time() - brain_module.MISSED_ROUTINE_GRACE - 1)
+
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    brain._catch_up_routines()
+    assert wait_for(lambda: bedroom.announced)
+    assert bedroom.announced == ["Your 7 o'clock routine didn't run - I couldn't reach the speaker."]
+    assert bedroom.routines == []
+
+
+def test_several_routines_skipped_are_said_together(brain, connect):
+    for routine in (MORNING, {"name": "Bins", "at": "21:30", "steps": ["remind me about the bins"]}):
+        brain._run_timed(brain.routines.save(routine)["routine"], time.time() - 2 * brain_module.MISSED_ROUTINE_GRACE)
+
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    brain._catch_up_routines()
+    assert wait_for(lambda: bedroom.announced)
+    assert bedroom.announced == ["Your 7 o'clock and 9:30 PM routines didn't run - I couldn't reach the speaker."]
+
+
+def test_a_routine_deleted_while_its_satellite_was_away_is_let_go(brain, connect):
+    routine = brain.routines.save(MORNING)["routine"]
+    brain._run_timed(routine, time.time())
+    brain.routines.remove(routine["id"])
+
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    brain._catch_up_routines()
+    time.sleep(0.05)
+    assert bedroom.routines == [] and bedroom.announced == []
+
+
+def test_run_routine_says_whether_it_ran(brain, connect):
+    assert brain.run_routine({"name": "Good morning", "satellite": None}) is False
+    serving(brain)
+    connect(brain)
+    connected(brain)
+    assert brain.run_routine({"name": "Good morning", "satellite": None}) is True
