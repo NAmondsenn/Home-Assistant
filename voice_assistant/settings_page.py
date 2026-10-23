@@ -89,6 +89,11 @@ OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}
 # The most a request may send, in bytes.
 MOST_BODY = 64 * 1024
 
+# What setup.sh starts this install's own settings file with, written back at every
+# save, as yaml leaves comments out.
+SETTINGS_HEADER = ("# This install's own settings, on top of the defaults in the repository's\n"
+                   "# config.yaml - see there for every setting and what it's for.\n")
+
 # How many of the latest problems in the log are shown, and how much of the end of
 # it is read to find them.
 PROBLEMS_SHOWN = 8
@@ -243,6 +248,10 @@ class SettingsPage:
         with open(paths.DEFAULTS_FILE) as file:
             self.defaults = yaml.safe_load(file)
         self._keys_changed = False
+        # Held while the settings file or the keys are read, changed and written back,
+        # as each request has a thread of its own - two saves at once, from two tabs or
+        # two keys pasted quickly, could otherwise each write over the other.
+        self._saving = threading.Lock()
         self._server: Optional[ThreadingHTTPServer] = None
 
     @classmethod
@@ -511,14 +520,15 @@ class SettingsPage:
         if "${" in value:
             return {"success": False, "message": "A key can't have ${ in it - Nova would read it as something else."}
         path = paths.SECRETS_FILE
-        try:
-            with open(path) as file:
-                lines = file.read().splitlines()
-        except FileNotFoundError:
-            lines = []
         quoted = value.replace("\\", "\\\\").replace('"', '\\"')
-        kept = [line for line in lines if not re.match(rf"\s*(?:export\s+)?{re.escape(name)}\s*=", line)]
-        storage.save_text(path, "\n".join(kept + [f'{name}="{quoted}"']) + "\n")
+        with self._saving:
+            try:
+                with open(path) as file:
+                    lines = file.read().splitlines()
+            except FileNotFoundError:
+                lines = []
+            kept = [line for line in lines if not re.match(rf"\s*(?:export\s+)?{re.escape(name)}\s*=", line)]
+            storage.save_text(path, "\n".join(kept + [f'{name}="{quoted}"']) + "\n")
         self._keys_changed = True
         logger.info(f"Settings page: {who} set {name}")
         return {"success": True, "message": "Saved. It's used once Nova restarts."}
@@ -534,35 +544,36 @@ class SettingsPage:
         if unknown:
             return {"success": False, "message": f"The page can't change {', '.join(unknown)}."}
         path = paths.CONFIG_FILE
-        try:
-            with open(path) as file:
-                settings = yaml.safe_load(file) or {}
-        except FileNotFoundError:
-            settings = {}
-        except (OSError, yaml.YAMLError) as e:
-            return {"success": False, "message": f"Couldn't read {path}: {e}"}
-
-        for key, given in changes.items():
-            section, name = editable[key]
-            default = self.defaults[section][name]
+        with self._saving:
             try:
-                value = _from_page(given, default)
-            except (TypeError, ValueError):
-                return {"success": False, "message": f"{key} should be {_kind(default)}."}
-            if value == default:
-                settings.get(section, {}).pop(name, None)
-            else:
-                settings.setdefault(section, {})[name] = value
-        settings = {section: values for section, values in settings.items() if values}
-        try:
-            check(settings, self.defaults, path)
-        except ConfigError as e:
-            return {"success": False, "message": str(e)}
+                with open(path) as file:
+                    settings = yaml.safe_load(file) or {}
+            except FileNotFoundError:
+                settings = {}
+            except (OSError, yaml.YAMLError) as e:
+                return {"success": False, "message": f"Couldn't read {path}: {e}"}
 
-        if os.path.exists(path):
-            shutil.copyfile(path, path + ".bak")
-            os.chmod(path + ".bak", 0o600)
-        storage.save_text(path, yaml.safe_dump(settings, sort_keys=False, allow_unicode=True))
+            for key, given in changes.items():
+                section, name = editable[key]
+                default = self.defaults[section][name]
+                try:
+                    value = _from_page(given, default)
+                except (TypeError, ValueError):
+                    return {"success": False, "message": f"{key} should be {_kind(default)}."}
+                if value == default:
+                    settings.get(section, {}).pop(name, None)
+                else:
+                    settings.setdefault(section, {})[name] = value
+            settings = {section: values for section, values in settings.items() if values}
+            try:
+                check(settings, self.defaults, path)
+            except ConfigError as e:
+                return {"success": False, "message": str(e)}
+
+            if os.path.exists(path):
+                shutil.copyfile(path, path + ".bak")
+                os.chmod(path + ".bak", 0o600)
+            storage.save_text(path, SETTINGS_HEADER + yaml.safe_dump(settings, sort_keys=False, allow_unicode=True))
         logger.info(f"Settings page: {who} changed {', '.join(changes)}")
         return {"success": True, "message": "Saved. It takes effect once Nova restarts."}
 
@@ -731,15 +742,23 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._let_in(page) or not self._from_the_page():
             return
         action = ACTIONS.get(self.path)
-        length = int(self.headers.get("Content-Length") or 0)
-        if action is None or length > MOST_BODY:
+        if action is None:
             self._send_json({"success": False, "message": "That isn't something the page does."}, 400)
             return
+        # A negative length would be read to the end of the connection, which never comes.
+        length = self.headers.get("Content-Length") or "0"
+        if not length.isdigit() or int(length) > MOST_BODY:
+            self._send_json({"success": False, "message": "That didn't make sense."}, 400)
+            return
         try:
-            body = json.loads(self.rfile.read(length) or b"{}")
+            body = json.loads(self.rfile.read(int(length)) or b"{}")
             result = action(page, body, self.login)
-        except (KeyError, TypeError, ValueError):
+        # OverflowError is int() of JSON's Infinity.
+        except (KeyError, TypeError, ValueError, OverflowError):
             result = {"success": False, "message": "That didn't make sense."}
+        except OSError as e:
+            logger.error(f"Settings page: couldn't save a change: {e}")
+            result = {"success": False, "message": "Couldn't save that."}
         self._send_json(result)
 
     def _let_in(self, page: SettingsPage) -> bool:

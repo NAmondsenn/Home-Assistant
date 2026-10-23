@@ -56,6 +56,20 @@ def test_forgetting_everything_keeps_one_copy_in_case_it_was_misheard(memory, tm
     assert json.loads((tmp_path / "nova" / "memory.json.old").read_text()) == {"facts": ["You work at Tesco."]}
 
 
+def test_forgetting_which_cant_be_saved_says_so_and_forgets_nothing(memory, monkeypatch):
+    # A full disk raised out of forget, as it never did out of remember - and the settings
+    # page's request got no answer at all.
+    memory.remember("You work at Tesco.")
+
+    def full(facts, path=None):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(memory, "_save", full)
+    assert memory.forget("that I work at tesco") == {"success": False, "message": "Sorry, I couldn't forget that."}
+    assert memory.forget_everything() == {"success": False, "message": "Sorry, I couldn't forget that."}
+    assert memory.facts() == ["You work at Tesco."]
+
+
 def test_what_is_known_is_read_out(memory):
     assert "don't know anything about you yet" in memory.describe()["message"]
     memory.remember("You work at Tesco.")

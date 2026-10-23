@@ -122,7 +122,11 @@ class Memory:
                 return {"success": False, "message": "I don't remember anything like that."}
             forgotten = self._facts[best]
             facts = self._facts[:best] + self._facts[best + 1:]
-            self._save(facts)
+            try:
+                self._save(facts)
+            except OSError as e:
+                logger.error(f"Couldn't save what I remember: {e}")
+                return {"success": False, "message": "Sorry, I couldn't forget that."}
             self._facts = facts
         logger.info(f"Forgot: {forgotten}", extra=TRANSCRIPT)
         return {"success": True, "message": f"Okay, I've forgotten that {forgotten[0].lower()}{forgotten[1:]}"}
@@ -135,8 +139,12 @@ class Memory:
         with self._lock:
             if not self._facts:
                 return {"success": True, "message": "I don't remember anything about you yet."}
-            self._save(self._facts, path=self.path + ".old")
-            self._save([])
+            try:
+                self._save(self._facts, path=self.path + ".old")
+                self._save([])
+            except OSError as e:
+                logger.error(f"Couldn't save what I remember: {e}")
+                return {"success": False, "message": "Sorry, I couldn't forget that."}
             count, self._facts = len(self._facts), []
         logger.info(f"Forgot all {count} facts (a copy is in {self.path}.old)")
         return {"success": True, "message": "Okay, I've forgotten everything I knew about you."}

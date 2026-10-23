@@ -6,10 +6,12 @@ from the page itself: over a real server on this machine, with stand-ins for the
 rest of Nova, and its files in a folder of the test's own.
 """
 
+import http.client
 import json
 import logging
 import os
 import stat
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -415,6 +417,49 @@ def test_settings_are_saved_as_only_whats_different_with_a_copy_of_the_old_file(
     assert (files / "config.yaml.bak").read_text().startswith("# My own settings")
 
 
+def test_saving_settings_keeps_the_header_setup_wrote(files):
+    # yaml drops comments, so the first save from the page lost it.
+    _page().save_settings({"weather.location": "Bristol"}, LOGIN)
+    assert (files / "config.yaml").read_text().startswith(page_module.SETTINGS_HEADER)
+
+
+@pytest.mark.parametrize("save, first, second, kept", [
+    ("save_settings", {"weather.location": "Bristol"}, {"ntfy.quiet_from": "22:00"},
+     lambda files: yaml.safe_load((files / "config.yaml").read_text())),
+    ("set_key", ("HA_TOKEN", "first-token"), ("NTFY_TOKEN", "second-token"),
+     lambda files: (files / ".env").read_text()),
+])
+def test_two_quick_saves_dont_lose_either(files, monkeypatch, save, first, second, kept):
+    # From two tabs, or two keys pasted quickly: each read the file, changed it and
+    # wrote it back, so the second could write over the first.
+    page = _page()
+    written = page_module.storage.save_text
+    others = []
+
+    def save_slowly(path, text):
+        if not others:
+            # The second save starts while the first is still writing.
+            others.append(threading.Thread(target=_save, args=(page, save, second)))
+            others[0].start()
+            others[0].join(0.3)
+        written(path, text)
+
+    monkeypatch.setattr(page_module.storage, "save_text", save_slowly)
+    _save(page, save, first)
+    others[0].join(5)
+
+    saved = str(kept(files))
+    for change in (first, second):
+        assert str(list(change.values())[0] if isinstance(change, dict) else change[1]) in saved
+
+
+def _save(page, save, change):
+    if save == "save_settings":
+        assert page.save_settings(change, LOGIN)["success"]
+    else:
+        assert page.set_key(*change, LOGIN)["success"]
+
+
 @pytest.mark.parametrize("changes, said", [({"music.player": "winamp"}, "navidrome, spotify"),
                                            ({"thresholds.silence_duration": "soon"}, "number"),
                                            ({"llm.model": "claude-opus-5-5"}, "can't change")])
@@ -545,6 +590,35 @@ def test_nonsense_is_answered_rather_than_crashing_on(served):
         "success": False, "message": "That didn't make sense."}
     assert _ask(served, "/api/nothing", {}, X_Nova="page")[0] == 400
     assert _ask(served, "/nothing")[0] == 404
+    # JSON's Infinity, which int() can't take.
+    for path, body in (("/api/volume", {"category": "general", "percent": float("inf")}),
+                       ("/api/remove", {"kind": "timer", "id": float("inf")})):
+        assert json.loads(_ask(served, path, body, X_Nova="page")[2]) == {
+            "success": False, "message": "That didn't make sense."}
+
+
+@pytest.mark.parametrize("length", ["-1", "lots"])
+def test_a_length_which_isnt_one_is_answered(served, length):
+    # A negative one read to the end of the connection, which never came; one which
+    # wasn't a number dropped the connection.
+    connection = http.client.HTTPConnection("127.0.0.1", served.port, timeout=2)
+    connection.request("POST", "/api/volume", body=b'{"category": "general", "percent": 30}',
+                       headers={"Tailscale-User-Login": LOGIN, "X-Nova": "page", "Content-Length": length})
+    response = connection.getresponse()
+    assert (response.status, json.loads(response.read())) == (400, {"success": False,
+                                                                    "message": "That didn't make sense."})
+    connection.close()
+
+
+def test_a_change_which_cant_be_saved_is_answered(served, monkeypatch):
+    def full(path, text):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(page_module.storage, "save_text", full)
+    for path, body in (("/api/keys", {"name": "HA_TOKEN", "value": "a-token"}),
+                       ("/api/settings", {"changes": {"weather.location": "Bristol"}})):
+        assert json.loads(_ask(served, path, body, X_Nova="page")[2]) == {
+            "success": False, "message": "Couldn't save that."}
 
 
 def test_a_lights_colour_and_warmth_reach_home_assistant(files):
