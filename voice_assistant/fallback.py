@@ -138,6 +138,21 @@ class AlarmCopy:
                             for key, ids in self._report.items()}
             self._save()
 
+    def taken_over(self, ids: List[str]):
+        """
+        Lets entries ring from the copy again once the brain has taken their ringing
+        over, so a brain lost while it rings one leaves the copy to ring it again. The
+        brain lists each as due from when it began ringing it, so the copy rings it
+        within GRACE of that. Left marked as rung - as one the brain was ringing too,
+        and so still listed, was - a brain lost then left it silent on both sides.
+
+        Args:
+            ids: What the satellite was ringing, which the brain now rings.
+        """
+        with self._lock:
+            self._rung = [id for id in self._rung if id not in ids]
+            self._save()
+
 
 class StateCopy:
     """The volumes and mute the brain last sent for this satellite."""

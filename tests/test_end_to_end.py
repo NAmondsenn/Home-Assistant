@@ -675,3 +675,48 @@ def test_an_alarm_a_brain_is_lost_with_before_saying_it_has_it_rings_once_meanwh
     assert wait_for(lambda: made[1].clock.is_ringing("bedroom"))
     assert wait_for(lambda: not satellite.ringer.ringing)
     assert satellite.alarms.away_report() == {"rang": [], "dismissed": []}
+
+
+def test_an_alarm_handed_back_to_the_brain_ringing_it_rings_from_the_copy_if_that_brain_goes(world,
+                                                                                         monkeypatch):
+    # The brain is ringing the alarm when the link drops - the Wi-Fi, say - so the
+    # satellite rings it from its copy, and hands it back as it reaches the brain again.
+    # Then the brain goes while it rings it. The copy still had the alarm as rung, so
+    # nothing rang it, and the next brain only said it had been missed.
+    first = world.make_brain(clock=True)
+    satellite = world.make_satellite(first)
+    assert wait_for(lambda: caught_up(first))
+    first.clock.set_alarm(7, 0, satellite="bedroom")
+    due = time.time() + 0.5
+    with first.clock._changing():
+        first.clock._alarms[1]["due_at"] = due
+        first.clock._save_alarms()
+    alarm = f"alarm-1@{int(due)}"
+    assert wait_for(lambda: first.clock.is_ringing("bedroom"))
+    assert wait_for(lambda: alarm in [entry["id"] for entry in satellite.alarms.due(time.time())])
+
+    # The link drops, and is only made again once the satellite rings the alarm itself.
+    connect = satellite.link._connect
+
+    def once_ringing():
+        wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
+        connect()
+
+    monkeypatch.setattr(satellite.link, "_connect", once_ringing)
+    satellite.link._close()
+    assert wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
+    assert wait_for(lambda: caught_up(first) and not satellite.ringer.ringing)
+    assert first.clock.is_ringing("bedroom")
+
+    # The brain goes while it rings it, so the satellite rings it again.
+    first.clock.stop()
+    first.stop()
+    first.serving.join(5)
+    assert not first.serving.is_alive()
+    assert wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
+
+    # And the next brain takes it over.
+    restarted = world.make_brain(port=first.port, clock=True)
+    assert wait_for(lambda: restarted.clock.is_ringing("bedroom"))
+    assert wait_for(lambda: not satellite.ringer.ringing)
+    assert restarted.clock._missed == []

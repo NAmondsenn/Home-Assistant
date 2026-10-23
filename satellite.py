@@ -167,8 +167,9 @@ class Satellite:
         self._turn_open = False
         # The last wake's timing, until its reply starts to play.
         self._timeline: Optional[Timeline] = None
-        # The report of what happened while the brain was away, as it was sent on
-        # connecting - until the brain says it has it, or is lost. See _on_connected.
+        # The report of what happened while the brain was away, and what was still
+        # ringing, as they were sent on connecting - until the brain says it has them,
+        # or is lost. See _on_connected.
         self._handing_over: Optional[Dict[str, List[str]]] = None
 
         # What to exit with, once the main loop has been asked to stop - see stop().
@@ -498,13 +499,15 @@ class Satellite:
 
     def _away_settled(self, message: Dict, payload: bytes):
         # The brain has saved what it was told as the satellite connected, and rings on
-        # whatever was still ringing here - so the satellite forgets it, and stops.
+        # whatever was still ringing here - so the satellite forgets it, and stops. What
+        # it stops may ring from the copy again, if the brain is lost while ringing it.
         with self._lock:
             sent, self._handing_over = self._handing_over, None
             if sent is None:
                 return
             self.alarms.clear_report(sent)
             self.ringer.quiet()
+            self.alarms.taken_over(sent["ringing"])
 
     def _restart(self, message: Dict, payload: bytes):
         logger.info("Restarting, as the brain asked")
@@ -541,8 +544,8 @@ class Satellite:
             # them (see _away_settled): a brain lost before then may never have, and the
             # next would never hear of them, so an alarm would stop early. The brain
             # starts ringing it before it says so, so for that moment both ring it.
-            report = self.alarms.away_report()
-            if self.link.send("away", ringing=self.ringer.ringing_ids(), **report):
+            report = {**self.alarms.away_report(), "ringing": self.ringer.ringing_ids()}
+            if self.link.send("away", **report):
                 self._handing_over = report
                 self.link.expect("away_settled", SETTLE_WAIT)
 

@@ -692,6 +692,18 @@ def test_a_brain_which_never_says_it_has_it_is_given_up_on(brain, make, tmp_path
     assert brain.messages("away")[1] == told
 
 
+def test_what_the_brain_took_over_rings_from_the_copy_again_if_the_brain_goes(brain, make, tmp_path):
+    # The brain was ringing it too, so its copy still lists it - which kept it marked as
+    # rung, and a brain lost while it rang it left it silent on both sides.
+    made = ringing_as_the_brain_comes_back(brain, make, tmp_path)
+    brain.say("alarms", entries=[entry(time.time() - 1)])
+    brain.say("away_settled")
+    assert wait_for(lambda: not made.ringer.ringing)
+
+    brain.drop()
+    assert wait_for(lambda: made.ringer.ringing_ids() == ["alarm-1@1729587600"])
+
+
 def test_mute_from_the_brain_stops_the_wake_word(brain, make, tmp_path):
     StateCopy(str(tmp_path / "state.json")).update({"volumes": {}, "muted": True})
     made = make(start=False)
