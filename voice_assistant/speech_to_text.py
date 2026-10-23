@@ -10,37 +10,11 @@ from voice_assistant.logging_setup import TRANSCRIPT
 # Logger setup
 logger = logging.getLogger(__name__)
 
-# Things Whisper is known to "hear" in noise, breathing or silence - it was trained
-# on a lot of subtitled video. Only thrown away when they're the whole transcript,
-# so a real "set a timer, thank you" is kept.
+# Things speech-to-text is known to "hear" in noise, breathing or silence - Whisper,
+# trained on a lot of subtitled video, did it most, and Nemotron does too. Only thrown
+# away when they're the whole transcript, so a real "set a timer, thank you" is kept.
 HALLUCINATIONS = {"you", "thank you", "thanks", "bye", "bye bye",
                   "thanks for watching", "thank you for watching"}
-
-# A segment counts as Whisper guessing when it's both fairly sure there was no
-# speech, and unsure of the words it came up with anyway.
-NO_SPEECH_PROBABILITY = 0.6
-LOW_AVERAGE_LOGPROB = -1.0
-
-
-def looks_like_hallucination(text: str, segments) -> bool:
-    """
-    Whether a transcription is most likely Whisper finding words in noise.
-
-    Any text at all used to be treated as a request, so a false wake word followed
-    by a cough could come back as "Thank you." and be answered.
-
-    Args:
-        text: The whole transcription.
-        segments: Whisper's segments for it, with their no_speech_prob and avg_logprob.
-
-    Returns:
-        True if it should be thrown away.
-    """
-    if re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS:
-        return True
-    return bool(segments) and all(segment.no_speech_prob > NO_SPEECH_PROBABILITY
-                                  and segment.avg_logprob < LOW_AVERAGE_LOGPROB
-                                  for segment in segments)
 
 
 def _heard(text: str, duration: float, after_recording: bool = False) -> Dict[str, Any]:
