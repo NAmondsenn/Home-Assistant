@@ -106,12 +106,16 @@ class SpotifyController:
                  "user-library-read")
 
         self.cache_path = paths.SPOTIFY_TOKEN_FILE
+        # Every call refreshes an expired token through this, with spotipy's own
+        # request, which otherwise waits for ever - the client's time limit below
+        # doesn't cover it.
         self.sp_oauth = SpotifyOAuth(
             client_id=self.client_id,
             client_secret=self.client_secret,
             redirect_uri=self.redirect_uri,
             scope=scope,
-            cache_path=self.cache_path
+            cache_path=self.cache_path,
+            requests_timeout=REQUEST_TIMEOUT
         )
 
         self.sp = None
