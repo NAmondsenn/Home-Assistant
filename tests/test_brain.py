@@ -11,6 +11,7 @@ numpy and soxr installed (as they are on the Pi), and is skipped anywhere they a
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -517,6 +518,19 @@ def test_a_satellite_isnt_told_its_report_is_settled_when_applying_it_fails(brai
     # Its session ends there, and it's let go.
     assert satellite.gone.wait(5)
     assert satellite.messages("phrase") and not satellite.messages("away_settled")
+
+
+def test_how_long_a_satellite_took_to_be_caught_up_is_logged(brain, connect, caplog):
+    # From its hello, as all of it counts against the satellite's SETTLE_WAIT.
+    serving(brain)
+    with caplog.at_level(logging.INFO, logger="voice_assistant.brain"):
+        satellite = connect(brain)
+        assert wait_for(lambda: satellite.messages("away_settled"))
+        assert wait_for(lambda: any("caught up" in record.message for record in caplog.records))
+
+    logged = [record for record in caplog.records if "caught up" in record.message]
+    assert logged[0].levelno == logging.INFO
+    assert re.fullmatch(r"The bedroom satellite was caught up \d+\.\d\d seconds after its hello", logged[0].message)
 
 
 def test_a_satellite_isnt_told_its_settled_when_what_it_said_cant_be_saved(make_brain, connect, tmp_path,

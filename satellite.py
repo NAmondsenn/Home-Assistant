@@ -30,7 +30,7 @@ from voice_assistant.echo import make_echo_canceller
 from voice_assistant.fallback import AlarmCopy, FallbackRinger, Phrase, StateCopy
 from voice_assistant.logging_setup import setup_logging
 from voice_assistant.microphone import RATE, Microphone
-from voice_assistant.satellite_link import SatelliteLink
+from voice_assistant.satellite_link import SILENT_FOR, SatelliteLink
 from voice_assistant.speaker import Playback, Speaker
 from voice_assistant.timeline import Timeline
 from voice_assistant.wake_word import WakeWordDetector
@@ -61,16 +61,17 @@ PROGRESS_EVERY = 1.0
 # connected, so the wake word only dismisses what rings - and the brain only hears of
 # that once the satellite next connects.
 #
-# A healthy brain says so within milliseconds. Even with every wait in its catch-up
-# run to its limit, it's 12 seconds: brain.AWAY_WAIT, 2 seconds, for the report, and
-# just under satellite_link.SOCKET_TIMEOUT, 2 seconds, for each message around it -
-# the state, the copy and the phrase, the copy again once apply_away has changed it,
-# and away_settled itself. A brain which hasn't said so by then never will: its
-# AWAY_WAIT ran out before the report arrived, or it's stuck part way through - while
-# still answering pings, so SILENT_FOR never notices. So it's SILENT_FOR, 15 seconds:
-# clear of the 12, and no longer than the satellite already waits on a brain which
-# says nothing at all.
-SETTLE_WAIT = 15.0
+# A healthy brain says so within milliseconds of starting the satellite's session.
+# Even with every wait in its catch-up run to its limit, it's 12 seconds: brain.AWAY_WAIT,
+# 2 seconds, for the report, and just under satellite_link.SOCKET_TIMEOUT, 2 seconds,
+# for each message around it - the state, the copy and the phrase, the copy again
+# once apply_away has changed it, and away_settled itself. Starting the session comes
+# first, and isn't in that, so the brain logs how long it all took from the
+# satellite's hello. A brain which hasn't said so by then is stuck part way through -
+# while still answering pings, so SILENT_FOR never notices. (One whose AWAY_WAIT ran
+# out hangs up by itself.) So it's SILENT_FOR: clear of the 12, and no longer than the
+# satellite already waits on a brain which says nothing at all.
+SETTLE_WAIT = SILENT_FOR
 
 
 class _FromBrain:

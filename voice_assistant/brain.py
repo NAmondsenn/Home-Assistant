@@ -319,6 +319,8 @@ class Brain:
         # how soon one let go - see RemoteSatellite.close - is noticed.
         sock.settimeout(SOCKET_TIMEOUT)
         stream = Stream(sock)
+        # The satellite says hello as it connects - see _catch_up.
+        hello_at = time.monotonic()
         hello = self._admit(stream, address)
         if hello is None:
             return
@@ -334,7 +336,7 @@ class Brain:
         session = None
         try:
             session = self._start_session(satellite)
-            if session is not None and self._catch_up(session):
+            if session is not None and self._catch_up(session, hello_at):
                 session.run()
         except Exception:
             logger.exception(f"The {name} satellite's session failed")
@@ -482,11 +484,15 @@ class Brain:
             logger.error(f"Couldn't read the satellites' passwords to see if the {name} satellite is still let in: {e}")
             return False
 
-    def _catch_up(self, session: Session) -> bool:
+    def _catch_up(self, session: Session, hello_at: float) -> bool:
         """
         Brings a satellite which has just connected up to date: what the brain owns,
         for it to mute by and to ring by while it can't reach the brain, and the phrase
         to say then - and what happened on it while it couldn't.
+
+        Args:
+            session: The satellite's session, just made.
+            hello_at: When it said hello, by time.monotonic().
 
         Returns:
             Whether it said what happened while it couldn't. One which didn't is let
@@ -512,6 +518,10 @@ class Brain:
         # Only now it's saved does the satellite stop ringing what it was, and forget
         # what it said - lost before then, the next brain hears it all again.
         satellite.settle_away()
+        # All of it, from the hello, counts against the satellite's SETTLE_WAIT - even
+        # starting its session, which that leaves out - so it's logged, to be watched.
+        logger.info(f"The {satellite.name} satellite was caught up {time.monotonic() - hello_at:.2f} seconds "
+                    f"after its hello")
         with self._lock:
             if self.sessions.get(satellite.name) is session:
                 self._caught_up.add(satellite.name)
