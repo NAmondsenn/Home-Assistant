@@ -586,6 +586,17 @@ class RemoteSatellite:
         """
         return self.send("phrase", audio, rate=rate)
 
+    def settle_away(self) -> bool:
+        """
+        Tells the satellite the brain has saved what it said happened while it was
+        away, and rings on whatever it was still ringing - so it can stop, and forget
+        what it said.
+
+        Returns:
+            Whether it was told.
+        """
+        return self.send("away_settled")
+
     def restart(self) -> bool:
         """
         Has the satellite restart - Home Assistant's Restart button.

@@ -124,10 +124,18 @@ class AlarmCopy:
         with self._lock:
             return {"rang": list(self._report["rang"]), "dismissed": list(self._report["dismissed"])}
 
-    def clear_report(self):
-        """Forgets the report, once the brain has been told it."""
+    def clear_report(self, sent: Dict[str, List[str]]):
+        """
+        Forgets what the brain has said it has.
+
+        Args:
+            sent: The report as it was sent, from away_report. Anything added since,
+                such as a dismissal while the brain was taking it, is kept for the
+                brain to hear next time.
+        """
         with self._lock:
-            self._report = {"rang": [], "dismissed": []}
+            self._report = {key: [id for id in ids if id not in sent.get(key, [])]
+                            for key, ids in self._report.items()}
             self._save()
 
 

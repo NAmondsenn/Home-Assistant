@@ -11,7 +11,7 @@ import logging
 import socket
 import threading
 from time import monotonic
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 from voice_assistant.protocol import ProtocolError, Refused, greet, receive, send
 
@@ -151,6 +151,8 @@ class SatelliteLink:
         self._stream: Optional[Stream] = None
         self._last_heard = 0.0
         self._last_ping = 0.0
+        # What the brain has to send on this connection, and by when - see expect.
+        self._expected: Optional[Tuple[str, float]] = None
 
     @property
     def connected(self) -> bool:
@@ -194,6 +196,19 @@ class SatelliteLink:
                 logger.warning(f"Couldn't send '{kind}' to the brain ({e})")
                 self._close_locked()
                 return False
+
+    def expect(self, kind: str, within: float):
+        """
+        Gives up on this connection, as on a brain which has gone silent, unless the
+        brain sends a message of a kind in time. For an answer the satellite can't go
+        on without, which a brain stuck part way through never sends - while it still
+        answers pings, so is never silent. A new connection expects nothing.
+
+        Args:
+            kind: The message, e.g. "away_settled".
+            within: How long the brain has, in seconds.
+        """
+        self._expected = (kind, monotonic() + within)
 
     def _close(self):
         with self._lock:
@@ -264,6 +279,7 @@ class SatelliteLink:
             self._socket = sock
             self._stream = stream
         self._last_heard = self._last_ping = monotonic()
+        self._expected = None
         stream.when_idle = self._check_in
         stream.when_heard = self._heard
 
@@ -283,6 +299,11 @@ class SatelliteLink:
         now = monotonic()
         if now - self._last_heard >= SILENT_FOR:
             raise ConnectionError(f"Nothing heard from the brain for {SILENT_FOR:.0f} seconds")
+        expected = self._expected
+        if expected is not None and now >= expected[1]:
+            # Not a ConnectionError, which the stream takes for the socket closing, and
+            # says so instead.
+            raise TimeoutError(f"The brain didn't send '{expected[0]}' in time")
         if now - self._last_ping >= PING_EVERY:
             self._last_ping = now
             self.send("ping")
@@ -294,6 +315,8 @@ class SatelliteLink:
             # small pieces, reads never time out, but it still wants its pings.
             self._check_in()
             message, payload = receive(self._stream)
+            if self._expected is not None and message["type"] == self._expected[0]:
+                self._expected = None
             if message["type"] == "pong":
                 continue
             try:

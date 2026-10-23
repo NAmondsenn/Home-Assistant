@@ -1050,6 +1050,100 @@ def test_whats_missed_waits_until_its_satellite_can_hear_it(make_clock, tmp_path
     assert len(clock.announced) == 1
 
 
+# A satellite's report, applied twice - as one is when the brain has saved it, but the
+# connection drops before the satellite hears so, and it says it all again.
+
+def test_a_timer_dismissed_while_away_and_told_twice_is_just_gone(make_clock):
+    clock = make_clock()
+    clock.set_timer(60, label="pizza", satellite="bedroom")
+    clock.set_timer(120, label="bins", satellite="bedroom")
+    pizza = clock.copy_for("bedroom")[0]["id"]
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[pizza], dismissed=[pizza])
+
+    assert [timer["label"] for timer in clock._timers.values()] == ["bins"]
+
+
+def test_a_one_off_alarm_dismissed_while_away_and_told_twice_is_just_gone(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, satellite="bedroom")
+    clock.set_alarm(8, 0, satellite="bedroom")
+    seven = next(entry["id"] for entry in clock.copy_for("bedroom") if entry["id"].startswith("alarm-1@"))
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[seven], dismissed=[seven])
+
+    assert [alarm["hour"] for alarm in clock._alarms.values()] == [8]
+
+
+def test_a_repeating_alarm_dismissed_while_away_and_told_twice_moves_on_once(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    first, second = [entry["id"] for entry in clock.copy_for("bedroom")][:2]
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[first], dismissed=[first])
+
+    assert clock.copy_for("bedroom")[0]["id"] == second
+
+
+def test_what_rang_while_away_and_is_told_twice_still_isnt_announced_as_missed(make_clock, tmp_path):
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 90, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    clock = make_clock()
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[f"timer-1@{int(now - 60)}"], dismissed=[], ringing=[])
+    clock._tick(time.time())
+
+    assert len(clock.announced) == 1
+    assert clock.announced[0]["message"].startswith("While I was off: your 15 minutes timer.")
+
+
+def _still_ringing_as_the_brain_came_back(make_clock, tmp_path):
+    """
+    A clock restarted as an alarm came due, which its satellite was still ringing as it
+    reached the brain again.
+
+    Returns:
+        The clock, and the id the satellite knows the alarm by.
+    """
+    now = time.time()
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    return clock, f"alarm-1@{int(now - 30)}"
+
+
+def test_what_was_still_ringing_while_away_and_is_told_twice_rings_once(make_clock, tmp_path):
+    clock, alarm = _still_ringing_as_the_brain_came_back(make_clock, tmp_path)
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+
+    assert len(clock._ringing) == 1
+    assert len(clock.announced) == 1 and clock.announced[0]["message"].endswith("Time to get up.")
+
+
+def test_what_was_still_ringing_while_away_rings_once_on_a_brain_restarted_before_saying_it_has_it(
+        make_clock, tmp_path):
+    # Saved as ringing by the first, so the restarted brain rings it - once.
+    clock, alarm = _still_ringing_as_the_brain_came_back(make_clock, tmp_path)
+    clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+
+    restarted = make_clock()
+    restarted.alarm_ring_duration = 0
+    restarted.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+    restarted._tick(time.time())
+
+    assert len(restarted._ringing) == 1
+    assert len(restarted.announced) == 1 and restarted.announced[0]["message"].endswith("Time to get up.")
+
+
 def test_a_clock_made_without_its_thread_can_be_started_later(make_clock):
     # The brain makes its clock without, so it can give what rings on no satellite to
     # the default before anything rings.

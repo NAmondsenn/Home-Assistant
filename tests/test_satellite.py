@@ -618,11 +618,78 @@ def test_the_away_report_is_sent_on_connecting(brain, make, tmp_path):
     # Not dismissed, and still ringing - so the brain takes the ringing over.
     assert brain.messages("away") == [{"type": "away", "rang": ["alarm-1@1729587600"], "dismissed": [],
                                        "ringing": ["alarm-1@1729587600"]}]
-    # Quietened once the brain has been told.
-    assert wait_for(lambda: not made.ringer.ringing)
-    assert made.alarms.away_report() == {"rang": [], "dismissed": []}
     assert brain.hellos == [{"name": "bedroom", "hostname": socket.gethostname(), "sample_rate": 48000,
                              "unclean": True}]
+
+
+def ringing_as_the_brain_comes_back(brain, make, tmp_path):
+    """
+    A satellite ringing an alarm from its copy as it reaches the brain again, once it
+    has told the brain so and done all it does on connecting.
+    """
+    brain.up = False
+    AlarmCopy(str(tmp_path / "alarm_copy.json")).replace([entry(time.time() - 1)])
+    made = make()
+    assert wait_for(lambda: made.ringer.ringing)
+    brain.up = True
+    assert wait_for(lambda: brain.messages("away"))
+    # It tells the brain under the lock, so has finished connecting once it's free.
+    with made._lock:
+        pass
+    return made
+
+
+def test_whats_ringing_is_only_handed_over_once_the_brain_says_it_has_it(brain, make, tmp_path):
+    # Quietened and forgotten as soon as the brain had been told, an alarm stopped early
+    # if the brain was lost before it had saved what it was told - as the next brain
+    # never heard it was still ringing.
+    made = ringing_as_the_brain_comes_back(brain, make, tmp_path)
+    assert made.ringer.ringing
+    assert made.alarms.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": []}
+
+    brain.say("away_settled")
+    assert wait_for(lambda: not made.ringer.ringing)
+    assert made.alarms.away_report() == {"rang": [], "dismissed": []}
+
+
+def test_only_what_the_brain_was_told_is_forgotten_once_it_has_it(brain, make, tmp_path):
+    made = ringing_as_the_brain_comes_back(brain, make, tmp_path)
+    # Dismissed before the brain says it has it, so after the brain was told.
+    assert wait_for(lambda: made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: made.alarms.away_report()["dismissed"])
+
+    brain.say("away_settled")
+    assert wait_for(lambda: not made.alarms.away_report()["rang"])
+    assert made.alarms.away_report() == {"rang": [], "dismissed": ["alarm-1@1729587600"]}
+
+
+def test_a_brain_lost_before_it_says_it_has_it_leaves_the_satellite_ringing(brain, make, tmp_path):
+    made = ringing_as_the_brain_comes_back(brain, make, tmp_path)
+    told = brain.messages("away")[0]
+    brain.drop()
+    assert wait_for(lambda: not made.link.connected)
+
+    # As while the brain is away - so the next brain is told it all again.
+    assert made.ringer.ringing
+    assert made.alarms.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": []}
+    brain.up = True
+    assert wait_for(lambda: len(brain.messages("away")) == 2)
+    assert brain.messages("away")[1] == told
+
+
+def test_a_brain_which_never_says_it_has_it_is_given_up_on(brain, make, tmp_path, monkeypatch):
+    # One whose wait for the report ran out before it arrived never applies it, and
+    # one stuck part way through still answers pings - so neither is noticed otherwise.
+    monkeypatch.setattr(satellite, "SETTLE_WAIT", 0.2)
+    made = ringing_as_the_brain_comes_back(brain, make, tmp_path)
+    told = brain.messages("away")[0]
+
+    # Dropped, and connected again, ringing on meanwhile - and the brain told it all again.
+    assert wait_for(lambda: len(brain.messages("away")) >= 2)
+    assert len(brain.hellos) >= 2
+    assert made.ringer.ringing
+    assert brain.messages("away")[1] == told
 
 
 def test_mute_from_the_brain_stops_the_wake_word(brain, make, tmp_path):

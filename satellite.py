@@ -20,7 +20,7 @@ import signal
 import socket
 import threading
 import time
-from typing import Callable, Dict, Iterator, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 import numpy as np
 
@@ -54,6 +54,23 @@ LIMIT_SECONDS = 10
 # often the brain is told how far the music has got, in seconds.
 FALLBACK_CHECK = 1.0
 PROGRESS_EVERY = 1.0
+
+# How long the brain has to say it has what the satellite told it on connecting
+# (away_settled), in seconds, before the satellite gives up on the connection as it
+# would on a silent brain. Until then the satellite rings on from its copy, though
+# connected, so the wake word only dismisses what rings - and the brain only hears of
+# that once the satellite next connects.
+#
+# A healthy brain says so within milliseconds. Even with every wait in its catch-up
+# run to its limit, it's 12 seconds: brain.AWAY_WAIT, 2 seconds, for the report, and
+# just under satellite_link.SOCKET_TIMEOUT, 2 seconds, for each message around it -
+# the state, the copy and the phrase, the copy again once apply_away has changed it,
+# and away_settled itself. A brain which hasn't said so by then never will: its
+# AWAY_WAIT ran out before the report arrived, or it's stuck part way through - while
+# still answering pings, so SILENT_FOR never notices. So it's SILENT_FOR, 15 seconds:
+# clear of the 12, and no longer than the satellite already waits on a brain which
+# says nothing at all.
+SETTLE_WAIT = 15.0
 
 
 class _FromBrain:
@@ -150,6 +167,9 @@ class Satellite:
         self._turn_open = False
         # The last wake's timing, until its reply starts to play.
         self._timeline: Optional[Timeline] = None
+        # The report of what happened while the brain was away, as it was sent on
+        # connecting - until the brain says it has it, or is lost. See _on_connected.
+        self._handing_over: Optional[Dict[str, List[str]]] = None
 
         # What to exit with, once the main loop has been asked to stop - see stop().
         self._exit_code: Optional[int] = None
@@ -171,6 +191,7 @@ class Satellite:
             "state": self._take_state,
             "alarms": lambda message, payload: self.alarms.replace(message["entries"]),
             "phrase": lambda message, payload: self.phrase.replace(payload, message["rate"]),
+            "away_settled": self._away_settled,
             "restart": self._restart,
         }
 
@@ -475,6 +496,16 @@ class Satellite:
         self.state.update(message)
         self.wake.set_muted(self.state.muted)
 
+    def _away_settled(self, message: Dict, payload: bytes):
+        # The brain has saved what it was told as the satellite connected, and rings on
+        # whatever was still ringing here - so the satellite forgets it, and stops.
+        with self._lock:
+            sent, self._handing_over = self._handing_over, None
+            if sent is None:
+                return
+            self.alarms.clear_report(sent)
+            self.ringer.quiet()
+
     def _restart(self, message: Dict, payload: bytes):
         logger.info("Restarting, as the brain asked")
         self.stop(1)
@@ -505,13 +536,15 @@ class Satellite:
             return
         with self._lock:
             # The brain takes over whatever is still ringing, which it hears is - having
-            # been off as it came due, it wouldn't know to ring it otherwise. Quietened
-            # here only once the brain has been told, so one lost again straight away
-            # leaves it ringing. Nothing the brain sends is acted on until this returns,
-            # as this is the link's own thread, so the two never ring it together.
-            if self.link.send("away", ringing=self.ringer.ringing_ids(), **self.alarms.away_report()):
-                self.alarms.clear_report()
-                self.ringer.quiet()
+            # been off as it came due, it wouldn't know to ring it otherwise. It's only
+            # quietened, and the report forgotten, once the brain says it has saved
+            # them (see _away_settled): a brain lost before then may never have, and the
+            # next would never hear of them, so an alarm would stop early. The brain
+            # starts ringing it before it says so, so for that moment both ring it.
+            report = self.alarms.away_report()
+            if self.link.send("away", ringing=self.ringer.ringing_ids(), **report):
+                self._handing_over = report
+                self.link.expect("away_settled", SETTLE_WAIT)
 
     def _forget_the_brain(self):
         """
@@ -523,6 +556,10 @@ class Satellite:
             playing, self._playing = list(self._playing.values()), {}
             # Nobody is left to hear a follow-up.
             self._listen_from = None
+            # Nor to say it has what it was told on connecting, which it may never have
+            # saved - so what rings from the copy rings on, and the report is kept, for
+            # the next brain.
+            self._handing_over = None
             waiting, self._turn_open = self._turn_open and not self._stopping, False
             if waiting:
                 self._save_timeline(outcome="no_brain")

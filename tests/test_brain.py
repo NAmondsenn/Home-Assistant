@@ -29,6 +29,7 @@ from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
 from voice_assistant.ntfy import Alert
 from voice_assistant.recording import RATE
+from voice_assistant.remote import RemoteSatellite
 from voice_assistant.satellite_passwords import SatellitePasswords
 from voice_assistant.vad import LoudnessDetector
 
@@ -302,9 +303,10 @@ def test_a_satellite_which_connects_gets_its_state_alarms_and_phrase(brain, conn
     brain.clock.set_timer(900, satellite="kitchen")
     serving(brain)
     satellite = connect(brain)
-    assert wait_for(lambda: satellite.messages("phrase"))
+    assert wait_for(lambda: satellite.messages("away_settled"))
 
-    assert [message["type"] for message, _ in satellite.received] == ["state", "alarms", "phrase"]
+    # And, once it has said what happened while it was away, that the brain has it.
+    assert [message["type"] for message, _ in satellite.received] == ["state", "alarms", "phrase", "away_settled"]
     # Its volumes and mute, as its session has them.
     assert satellite.messages("state")[0] == {"type": "state", "volumes": {"general": 0.5, "alarm": 0.8, "music": 0.4},
                                              "muted": False}
@@ -460,6 +462,55 @@ def test_what_a_satellite_was_still_ringing_as_the_brain_came_back_rings_on(make
     # And not said to have been missed as well.
     brain.clock._tick(time.time())
     assert len(session.announced) == 1
+
+
+def test_a_satellite_is_told_once_what_happened_while_it_was_away_is_saved(brain, connect, tmp_path,
+                                                                          monkeypatch):
+    # It rings on what it was still ringing, and keeps its report, until then - so a
+    # brain lost before it has saved them can't lose them.
+    brain.clock.set_timer(60, satellite="bedroom")
+    timer = brain.clock.copy_for("bedroom")[0]["id"]
+    saved = []
+    send = RemoteSatellite.send
+
+    def sending(satellite, kind, payload=b"", /, **fields):
+        if kind == "away_settled":
+            saved.append(json.loads((tmp_path / "timers.json").read_text())["timers"])
+        return send(satellite, kind, payload, **fields)
+
+    monkeypatch.setattr(RemoteSatellite, "send", sending)
+    serving(brain)
+    satellite = connect(brain, away={"rang": [timer], "dismissed": [timer]})
+
+    assert wait_for(lambda: satellite.messages("away_settled"))
+    assert satellite.messages("away_settled") == [{"type": "away_settled"}]
+    # The timer dismissed there was already gone from the brain's file.
+    assert saved == [[]]
+
+
+def test_a_satellite_isnt_told_its_report_is_settled_when_applying_it_fails(brain, connect, monkeypatch):
+    def failing(*args, **kwargs):
+        raise RuntimeError("A fault in catching up")
+
+    monkeypatch.setattr(brain.clock, "apply_away", failing)
+    serving(brain)
+    satellite = connect(brain)
+
+    # Its session ends there, and it's let go.
+    assert satellite.gone.wait(5)
+    assert satellite.messages("phrase") and not satellite.messages("away_settled")
+
+
+def test_a_satellite_which_says_nothing_of_while_it_was_away_isnt_told_its_settled(brain, connect, monkeypatch):
+    monkeypatch.setattr(brain_module, "AWAY_WAIT", 0.1)
+    serving(brain)
+    satellite = connect(brain, away=None)
+    connected(brain)
+
+    # Let go, so it has heard everything the brain sent it.
+    brain.stop()
+    assert satellite.gone.wait(5)
+    assert satellite.messages("phrase") and not satellite.messages("away_settled")
 
 
 def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect, monkeypatch):

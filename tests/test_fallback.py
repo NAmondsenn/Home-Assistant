@@ -159,9 +159,11 @@ def test_the_away_report_says_what_rang_and_what_was_dismissed(tmp_path):
     ringer.check(NOW + 500)
     assert copy.away_report() == {"rang": ["alarm-1@1", "timer-3@1"], "dismissed": ["alarm-1@1"]}
 
+    # Only what was sent is forgotten - not what has happened since.
+    sent = copy.away_report()
     ringer.dismiss()
-    copy.clear_report()
-    assert copy.away_report() == {"rang": [], "dismissed": []}
+    copy.clear_report(sent)
+    assert copy.away_report() == {"rang": [], "dismissed": ["timer-3@1"]}
 
 
 def test_the_copy_lasts_through_a_restart(tmp_path):

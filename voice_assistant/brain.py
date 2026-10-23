@@ -501,6 +501,9 @@ class Brain:
             away = None
         if away is not None:
             self.clock.apply_away(satellite.name, away["rang"], away["dismissed"], away["ringing"])
+            # Only now it's saved does the satellite stop ringing what it was, and
+            # forget what it said - lost before then, the next brain hears it all again.
+            satellite.settle_away()
         with self._lock:
             if self.sessions.get(satellite.name) is session:
                 self._caught_up.add(satellite.name)

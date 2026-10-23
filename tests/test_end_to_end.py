@@ -505,3 +505,55 @@ def test_an_alarm_ringing_on_the_brain_when_it_restarts_rings_on_from_the_restar
     assert restarted.clock._missed == []
     # Still set for the next day, the once.
     assert restarted.clock.list_alarms()["message"] == "One alarm: 7:00 AM alarm, every day."
+
+
+def test_an_alarm_said_to_a_brain_lost_before_it_has_it_rings_on_until_one_has(world, monkeypatch):
+    # The brain restarts as the alarm comes due, and is lost again as the satellite
+    # tells it the alarm is still ringing, before it has saved that - most likely
+    # through a fault in catching up, which runs just then. The satellite used to stop
+    # ringing as soon as it had said so, and forget it had, so the next brain to catch
+    # up never heard of it, and the alarm stopped early.
+    first = world.make_brain()
+    satellite = world.make_satellite(first)
+    assert wait_for(lambda: caught_up(first))
+    first.clock.set_alarm(7, 0, satellite="bedroom")
+    due = time.time() + 0.5
+    with first.clock._changing():
+        first.clock._alarms[1]["due_at"] = due
+        first.clock._save_alarms()
+    alarm = f"alarm-1@{int(due)}"
+    assert wait_for(lambda: [entry["id"] for entry in satellite.alarms.due(due)] == [alarm])
+    first.stop()
+    first.serving.join(5)
+    assert not first.serving.is_alive()
+    assert wait_for(lambda: satellite.ringer.ringing_ids() == [alarm])
+
+    # The restarted brain's first catch-up fails before it has saved anything, which
+    # ends the connection. The second waits until the test has looked.
+    told, again, looked = [], threading.Event(), threading.Event()
+    apply_away = clock_module.Clock.apply_away
+
+    def failing_once(clock, name, rang, dismissed, ringing=()):
+        told.append(list(ringing))
+        if len(told) == 1:
+            raise RuntimeError("A fault in catching up")
+        again.set()
+        looked.wait(5)
+        return apply_away(clock, name, rang, dismissed, ringing)
+
+    monkeypatch.setattr(clock_module.Clock, "apply_away", failing_once)
+    restarted = world.make_brain(port=first.port, clock=True)
+
+    # The satellite rang on, and told the brain again as it connected again.
+    assert again.wait(10)
+    assert satellite.ringer.ringing_ids() == [alarm]
+    assert satellite.alarms.away_report()["rang"] == [alarm]
+    assert told == [[alarm], [alarm]]
+    looked.set()
+
+    # The brain has it this time, and rings it, through the satellite's speaker.
+    assert wait_for(lambda: restarted.clock.is_ringing("bedroom"))
+    assert wait_for(lambda: not satellite.ringer.ringing)
+    assert wait_for(lambda: any(message["type"] == "play_sound" and message["name"] == "alarm_sound.wav"
+                                for message in satellite.from_brain))
+    assert satellite.alarms.away_report() == {"rang": [], "dismissed": []}

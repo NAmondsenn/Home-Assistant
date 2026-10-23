@@ -32,6 +32,7 @@ and what the brain sends a satellite:
     state  {"volumes": {"general": ..., "alarm": ..., "music": ...}, "muted": ...}
     alarms  {"entries": [{"id": ..., "due": ..., "kind": ..., "sound": ...}]}
     phrase  {"rate": ...}  (payload)
+    away_settled  (once the brain has saved what away said)
     restart
 
 The handshake comes first, and proves the satellite's password to the brain and the
