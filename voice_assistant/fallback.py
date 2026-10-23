@@ -227,8 +227,13 @@ class FallbackRinger:
                 if not any(thread.is_alive() for thread in self._threads):
                     self._stop.clear()
                 thread = threading.Thread(target=self._ring, args=(entry,), daemon=True, name=f"ring-{entry['id']}")
+                # Started under the lock, and only then listed, so whatever asks what's
+                # ringing never finds it listed but not yet alive - which ringing_ids
+                # takes for a ring that has ended, and forgets. Forgotten, it rang on
+                # with nothing knowing, so the brain, back, would be told nothing was
+                # ringing and never take it over.
+                thread.start()
                 self._threads.append(thread)
-            thread.start()
 
     def _ring(self, entry: Dict):
         """Plays an entry's sound over and over until dismissed or RING_LIMIT."""

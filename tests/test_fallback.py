@@ -1,6 +1,7 @@
 """Tests for what the satellite does while it can't reach its brain."""
 
 import os
+import threading
 import time
 import wave
 
@@ -104,6 +105,40 @@ def test_quietening_stops_the_ringing_without_dismissing_it(tmp_path):
     assert all(p.stopped for p in speaker.playbacks)
     # The brain is told it rang but wasn't dismissed, so it takes the ringing over.
     assert copy.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": []}
+
+
+def test_a_ring_is_known_of_by_whatever_asks_as_it_starts(tmp_path, monkeypatch):
+    # Anything may ask what's ringing, from any thread - the satellite as the wake word
+    # is heard or the brain comes back to take it over, and the end-to-end tests from
+    # their own. Asked between the ring's thread being made and it starting, the
+    # ringer used to forget it: the alarm rang on with nothing knowing, so the brain
+    # would be told nothing was ringing and never take it over, and quietening it for
+    # the brain would then stop it for good.
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry()])
+    start = threading.Thread.start
+    answers = []
+
+    def asked_as_it_starts(thread):
+        if thread.name.startswith("ring-"):
+            asking = threading.Thread(target=lambda: answers.append(ringer.ringing_ids()))
+            start(asking)
+            # It has until the ring starts to ask. A ringer which lets it in then
+            # answers at once; one which doesn't keeps it waiting its turn until this
+            # runs out.
+            asking.join(timeout=0.5)
+        start(thread)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(threading.Thread, "start", asked_as_it_starts)
+        ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls and answers)
+    # Ringing, and known to be - by whatever asked as well.
+    assert ringer.ringing_ids() == ["alarm-1@1729587600"]
+    assert answers == [["alarm-1@1729587600"]]
+
+    ringer.quiet()
+    assert all(playback.stopped for playback in speaker.playbacks)
 
 
 def test_an_alarm_long_missed_isnt_rung(tmp_path):
