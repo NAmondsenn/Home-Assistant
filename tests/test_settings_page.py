@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -232,6 +233,14 @@ def test_the_page_shows_whats_set_and_never_a_key(files):
     # What can only be one of a few words comes with them, to pick from.
     player = next(setting for setting in state["settings"] if setting["key"] == "music.player")
     assert player["choices"] == ["navidrome", "spotify"]
+
+
+@pytest.mark.parametrize("loaded, said", [(True, "ready"), (False, "missing")])
+def test_speech_to_text_is_nemotron_on_the_brain(files, loaded, said):
+    # It asked for a backend's reachable, which Nemotron hasn't got - so the tile said
+    # "This Pi - No backend set up" since the brain took over.
+    status = _page(stt=SimpleNamespace(loaded=loaded)).state()["status"]
+    assert status["speech_to_text"] == said and "backend" not in status
 
 
 def test_the_latest_problems_in_the_log_are_shown_newest_first(files):

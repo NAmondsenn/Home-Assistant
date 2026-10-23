@@ -428,12 +428,11 @@ class SettingsPage:
             reply = next((row for row in rows if row["stage"] == "End of speech to reply ready"), None)
         except OSError:
             pass
-        backend = None
-        if hasattr(stt, "reachable"):
-            backend = "answering" if stt.reachable else "not answering"
+        # Nemotron, on the brain, as Home Assistant's Backend sensor has it.
+        speech_to_text = "ready" if getattr(stt, "loaded", False) else "missing"
         ntfy = None if ntfy is None else ("listening" if ntfy.listening else "not connected")
         return {"started": self.started, "reply_ms": reply["p50"] if reply else None,
-                "replies": reply["count"] if reply else 0, "backend": backend, "ntfy": ntfy,
+                "replies": reply["count"] if reply else 0, "speech_to_text": speech_to_text, "ntfy": ntfy,
                 "problems": self._problems()}
 
     @staticmethod

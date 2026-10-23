@@ -62,7 +62,6 @@ const GROUPS = [
   ["Weather", ["weather."]],
   ["Music", ["music.", "navidrome.", "spotify."]],
   ["Home", ["home_assistant."]],
-  ["Backend", ["backend."]],
   ["Notifications", ["ntfy."]],
   ["Listening", ["thresholds."]],
   ["Privacy", ["logging."]],
@@ -357,11 +356,11 @@ function tile(about) {
 }
 
 // Where what's said is turned into text.
-function hearing(backend) {
-  const about = { icon: "i-server", label: "Speech to text" };
-  if (backend === null) return { ...about, value: "This Pi", detail: "No backend set up" };
-  if (backend === "answering") return { ...about, value: "Backend", detail: "Answering", mood: "good" };
-  return { ...about, value: "This Pi", detail: "The backend isn't answering", mood: "bad" };
+function hearing(speechToText) {
+  // Nemotron, on the brain, which hears every satellite.
+  const about = { icon: "i-server", label: "Speech to text", value: "Nemotron" };
+  if (speechToText === "ready") return { ...about, detail: "On the brain - ready", mood: "good" };
+  return { ...about, detail: "On the brain - missing", mood: "bad" };
 }
 
 function notifications(ntfy) {
@@ -381,7 +380,7 @@ function showStatus(status) {
     { icon: "i-star", label: "Running", value: duration(Date.now() / 1000 - status.started),
       detail: since(new Date(status.started * 1000)) },
     reply,
-    hearing(status.backend),
+    hearing(status.speech_to_text),
     notifications(status.ntfy),
   ].map(tile));
 
