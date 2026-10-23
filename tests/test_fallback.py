@@ -163,6 +163,66 @@ def test_an_alarm_already_ringing_isnt_rung_again_when_the_brain_lists_it_anew(t
     assert all(playback.stopped for playback in speaker.playbacks)
 
 
+def test_a_ring_going_as_the_satellite_stops_carries_on_once_it_starts_again(tmp_path):
+    # Its watchdog, a crash or the power. Knowing only that the alarm had rung, the
+    # copy rang it no more - and the brain, told just that, neither rang it nor said
+    # it had been missed.
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry()])
+    ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls)
+    # Stopping quietens it, but leaves it going.
+    ringer.quiet()
+
+    again, speaker = AlarmCopy(str(tmp_path / "copy.json")), FakeSpeaker()
+    ringer = FallbackRinger(speaker, "/sounds", again, state)
+    ringer.resume(NOW + 60)
+
+    assert wait_for(lambda: speaker.calls)
+    assert ringer.ringing_ids() == ["alarm-1@1729587600"]
+    # Still rung, so not rung twice.
+    ringer.check(NOW + 61)
+    assert len(speaker.calls) == 1
+    ringer.quiet()
+
+
+def test_a_ring_which_has_stopped_for_good_isnt_carried_on(tmp_path):
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry("alarm-1@1", NOW), entry("alarm-2@1", NOW + 100), entry("alarm-3@1", NOW + 200)])
+    # Dismissed...
+    ringer.check(NOW)
+    assert wait_for(lambda: ringer.ringing)
+    ringer.dismiss()
+    # ...handed to the brain, which says it has it...
+    ringer.check(NOW + 100)
+    assert wait_for(lambda: ringer.ringing)
+    ringer.quiet()
+    copy.taken_over(["alarm-2@1"])
+    # ...and left going as the satellite stopped, but for longer than it would ring.
+    ringer.check(NOW + 200)
+    assert wait_for(lambda: ringer.ringing)
+    ringer.quiet()
+
+    again, speaker = AlarmCopy(str(tmp_path / "copy.json")), FakeSpeaker()
+    ringer = FallbackRinger(speaker, "/sounds", again, state)
+    ringer.resume(NOW + 200 + fallback.RING_LIMIT)
+
+    assert not ringer.ringing and speaker.calls == []
+    assert again.going() == []
+
+
+def test_a_ring_which_rings_out_isnt_carried_on(tmp_path, monkeypatch):
+    monkeypatch.setattr(fallback, "RING_LIMIT", 0.05)
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry()])
+    ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls)
+    assert wait_for(lambda: not ringer.ringing)
+
+    ringer.resume(NOW)
+    assert not ringer.ringing and copy.going() == []
+
+
 def test_an_alarm_long_missed_isnt_rung(tmp_path):
     copy, state, speaker, ringer = make(tmp_path)
     copy.replace([entry()])

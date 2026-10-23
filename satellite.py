@@ -207,6 +207,8 @@ class Satellite:
         watchdog.start()
         # However the loop ends, everything is closed down here, once.
         try:
+            # Before the brain is reached, so it's told what still rings, and takes it over.
+            self.ringer.resume(time.time())
             self.link = SatelliteLink(self.address, self.name, self.hostname, self.password, self.sample_rate,
                                       self._note_start(), self._on_message, self._on_connected)
             self.link.start()

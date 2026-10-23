@@ -19,7 +19,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 import satellite
-from voice_assistant import paths, protocol, satellite_link
+from voice_assistant import fallback, paths, protocol, satellite_link
 from voice_assistant.fallback import AlarmCopy, Phrase, StateCopy
 
 PASSWORD = "the-bedroom-satellites-password"
@@ -702,6 +702,38 @@ def test_what_the_brain_took_over_rings_from_the_copy_again_if_the_brain_goes(br
 
     brain.drop()
     assert wait_for(lambda: made.ringer.ringing_ids() == ["alarm-1@1729587600"])
+
+
+def test_a_satellite_restarted_while_ringing_rings_on_and_says_so(brain, make, tmp_path):
+    # Its watchdog, a crash or the power, with the brain away. It knew only that the
+    # alarm had rung, so rang it no more - and the brain, told just that, neither rang
+    # it nor said it had been missed.
+    brain.up = False
+    AlarmCopy(str(tmp_path / "alarm_copy.json")).replace([entry(time.time() - 1)])
+    made = make()
+    assert wait_for(lambda: made.ringer.ringing)
+    made.stop()
+    assert wait_for(lambda: made.exited)
+
+    again = make()
+    assert wait_for(lambda: again.ringer.ringing_ids() == ["alarm-1@1729587600"])
+    brain.up = True
+    assert wait_for(lambda: brain.messages("away"))
+    assert brain.messages("away")[0]["ringing"] == ["alarm-1@1729587600"]
+
+
+def test_a_satellite_restarted_once_its_ring_would_have_ended_doesnt_ring_again(brain, make, tmp_path):
+    brain.up = False
+    due = time.time() - fallback.RING_LIMIT - 1
+    copy = AlarmCopy(str(tmp_path / "alarm_copy.json"))
+    copy.replace([entry(due)])
+    # Left going as the satellite stopped, that long ago.
+    copy.rang(entry(due), due)
+
+    made = make()
+    brain.up = True
+    assert wait_for(lambda: brain.messages("away"))
+    assert brain.messages("away")[0]["ringing"] == [] and not made.ringer.ringing
 
 
 def test_mute_from_the_brain_stops_the_wake_word(brain, make, tmp_path):

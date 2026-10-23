@@ -46,6 +46,9 @@ class AlarmCopy:
         self._entries: Dict[str, Dict] = {}
         self._rung: List[str] = []
         self._report: Dict[str, List[str]] = {"rang": [], "dismissed": []}
+        # What's still ringing from the copy, by id - each entry, with "since", when
+        # its ring began - so a satellite which restarts carries on ringing it.
+        self._going: Dict[str, Dict] = {}
         self._load()
 
     def _load(self):
@@ -58,7 +61,8 @@ class AlarmCopy:
                 "rang": [str(id) for id in report.get("rang", [])],
                 "dismissed": [str(id) for id in report.get("dismissed", [])],
             }
-            self._entries, self._rung = entries, rung
+            going = {str(entry["id"]): {**entry, "since": float(entry["since"])} for entry in data.get("going", [])}
+            self._entries, self._rung, self._going = entries, rung, going
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
             logger.error(f"Could not read the alarm copy, starting empty: {e}")
 
@@ -68,6 +72,7 @@ class AlarmCopy:
                 "entries": list(self._entries.values()),
                 "rung": self._rung,
                 "report": self._report,
+                "going": list(self._going.values()),
             })
         except (OSError, TypeError) as e:
             # Best-effort - the copy in memory still rings this run.
@@ -99,21 +104,46 @@ class AlarmCopy:
             return [dict(entry) for entry in self._entries.values()
                     if entry["id"] not in self._rung and entry["due"] <= now <= entry["due"] + GRACE]
 
-    def rang(self, id: str):
-        """Records that an entry has started ringing, so it isn't rung again."""
+    def rang(self, entry: Dict, at: float):
+        """
+        Records that an entry has started ringing, so it isn't rung again - and that
+        its ring is going, until it's dismissed, rings out or is taken over.
+
+        Args:
+            entry: The entry, as due gave it.
+            at: When it began ringing, in epoch seconds. One still going keeps the
+                time it first began.
+        """
+        id = entry["id"]
         with self._lock:
             if id not in self._rung:
                 self._rung.append(id)
             if id not in self._report["rang"]:
                 self._report["rang"].append(id)
+            self._going.setdefault(id, {**entry, "since": at})
             self._save()
 
     def dismissed(self, id: str):
-        """Records that the user dismissed an entry which was ringing."""
+        """Records that the user dismissed an entry which was ringing, so its ring is over."""
         with self._lock:
             if id not in self._report["dismissed"]:
                 self._report["dismissed"].append(id)
+            self._going.pop(id, None)
             self._save()
+
+    def ended(self, id: str):
+        """Records that an entry's ring is over by itself - rung for RING_LIMIT."""
+        with self._lock:
+            if self._going.pop(id, None) is not None:
+                self._save()
+
+    def going(self) -> List[Dict]:
+        """
+        Returns:
+            The entries whose rings are going, each with "since", when it began.
+        """
+        with self._lock:
+            return [dict(entry) for entry in self._going.values()]
 
     def away_report(self) -> Dict[str, List[str]]:
         """
@@ -145,12 +175,15 @@ class AlarmCopy:
         brain lists each as due from when it began ringing it, so the copy rings it
         within GRACE of that. Left marked as rung - as one the brain was ringing too,
         and so still listed, was - a brain lost then left it silent on both sides.
+        Their rings here are over, so a satellite which restarts doesn't carry them on.
 
         Args:
             ids: What the satellite was ringing, which the brain now rings.
         """
         with self._lock:
             self._rung = [id for id in self._rung if id not in ids]
+            for id in ids:
+                self._going.pop(id, None)
             self._save()
 
 
@@ -243,7 +276,7 @@ class FallbackRinger:
         """
         for entry in self.copy.due(now):
             # Marked first, so the next check a second later doesn't ring it twice.
-            self.copy.rang(entry["id"])
+            self.copy.rang(entry, now)
             with self._lock:
                 # Still ringing from before. The brain, catching up, sends a copy without
                 # an alarm it only knows it missed, so the copy forgets it rang it - then
@@ -252,21 +285,46 @@ class FallbackRinger:
                 if any(thread.is_alive() and thread.name == f"ring-{entry['id']}" for thread in self._threads):
                     continue
                 logger.info(f"Ringing {entry['id']} from the satellite's copy")
-                if not any(thread.is_alive() for thread in self._threads):
-                    self._stop.clear()
-                thread = threading.Thread(target=self._ring, args=(entry,), daemon=True, name=f"ring-{entry['id']}")
-                # Started under the lock, and only then listed, so whatever asks what's
-                # ringing never finds it listed but not yet alive - which ringing_ids
-                # takes for a ring that has ended, and forgets. Forgotten, it rang on
-                # with nothing knowing, so the brain, back, would be told nothing was
-                # ringing and never take it over.
-                thread.start()
-                self._threads.append(thread)
+                self._start(entry, RING_LIMIT)
 
-    def _ring(self, entry: Dict):
-        """Plays an entry's sound over and over until dismissed or RING_LIMIT."""
+    def resume(self, now: float):
+        """
+        Carries on ringing whatever was still ringing from the copy as the satellite
+        last stopped - its watchdog, a crash or the power - for what's left of its
+        RING_LIMIT. Knowing only that it had rung, the copy used to ring it no more,
+        and the brain, told just that, neither rang it nor said it had been missed.
+        Called as the satellite starts, before it reaches the brain, which it then
+        tells what's ringing, to take over.
+
+        Args:
+            now: The time, in epoch seconds.
+        """
+        for entry in self.copy.going():
+            left = entry["since"] + RING_LIMIT - now
+            if left <= 0:
+                self.copy.ended(entry["id"])
+                continue
+            logger.info(f"Ringing {entry['id']} from the satellite's copy again, as it was when the satellite stopped")
+            with self._lock:
+                self._start(entry, left)
+
+    def _start(self, entry: Dict, limit: float):
+        """Starts ringing an entry for at most limit seconds. Called with the lock held."""
+        if not any(thread.is_alive() for thread in self._threads):
+            self._stop.clear()
+        thread = threading.Thread(target=self._ring, args=(entry, limit), daemon=True, name=f"ring-{entry['id']}")
+        # Started under the lock, and only then listed, so whatever asks what's
+        # ringing never finds it listed but not yet alive - which ringing_ids takes
+        # for a ring that has ended, and forgets. Forgotten, it rang on with nothing
+        # knowing, so the brain, back, would be told nothing was ringing and never take
+        # it over.
+        thread.start()
+        self._threads.append(thread)
+
+    def _ring(self, entry: Dict, limit: float):
+        """Plays an entry's sound over and over until dismissed, quietened or limit seconds have passed."""
         filename = os.path.join(self.sounds_folder, entry["sound"])
-        deadline = time.monotonic() + RING_LIMIT
+        deadline = time.monotonic() + limit
         # This ring's own, so it stops exactly what it played. Kept by id, a second
         # ring of the same id took its place, and quietening both left one playing.
         playback = None
@@ -281,6 +339,10 @@ class FallbackRinger:
                 playback.wait(0.2)
         if playback is not None and not playback.done:
             playback.stop()
+        # Rung out. One quietened is still going - for the brain to take over, or the
+        # satellite to carry on once it starts again - and one dismissed is over already.
+        if not self._stop.is_set():
+            self.copy.ended(entry["id"])
 
     def dismiss(self):
         """Stops everything which is ringing, and records it as dismissed."""
@@ -290,7 +352,9 @@ class FallbackRinger:
     def quiet(self) -> List[str]:
         """
         Stops everything which is ringing without recording it as dismissed - for
-        when the brain is back, and takes the ringing over.
+        when the brain is back, and takes the ringing over, or the satellite stops.
+        Each is still going, until the brain says it has it (see AlarmCopy.taken_over),
+        so a satellite stopped meanwhile carries on ringing it once it starts again.
 
         Returns:
             The ids which were ringing.
