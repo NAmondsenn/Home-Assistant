@@ -81,7 +81,7 @@ EDITABLE = [
 ]
 
 # The keys, and what each is for. Claude's can be under an older name too.
-KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant"), ("MQTT_PASSWORD", "Home Assistant's MQTT"),
+KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant (an administrator's token)"), ("MQTT_PASSWORD", "Home Assistant's MQTT"),
         ("NAVIDROME_PASSWORD", "Navidrome"), ("NTFY_TOKEN", "ntfy"),
         ("SPOTIFY_CLIENT_ID", "Spotify client ID"), ("SPOTIFY_CLIENT_SECRET", "Spotify client secret")]
 OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}

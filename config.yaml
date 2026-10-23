@@ -166,15 +166,20 @@ sounds:
 
 logging:
   # Whether what's said to the assistant, and its replies, are written to the logs
-  # (smart_assistant.log in ~/.local/share/nova/logs, and the system journal). Handy while setting things up;
-  # turn it off to keep conversations out of the logs altogether.
+  # (backend.log on the brain, in ~/.local/share/nova/logs, and the system journal). Handy
+  # while setting things up; turn it off to keep conversations out of the logs altogether.
   log_transcripts: true
 
 home_assistant:
   # Home Assistant's address, e.g. "http://homeassistant.local:8123". Nova signs in
-  # with a long-lived access token, as HA_TOKEN in ~/.config/nova/.env, made by a Home
-  # Assistant user of its own rather than an administrator. It can only reach the
-  # devices exposed to Assist - see the README.
+  # with a long-lived access token, as HA_TOKEN in ~/.config/nova/.env on the brain,
+  # made by a Home Assistant user of its own who is an administrator - Home Assistant
+  # only tells an administrator which room each device is in, which Nova's room and
+  # Claude's lights need. An administrator's token can do anything in Home Assistant,
+  # so it's Nova's own code which keeps it to the lights, the calendar, and scripts and
+  # scenes run from the settings page, and never anything which locks, unlocks or
+  # opens. Assist, for the requests passed on in plain words, only reaches the devices
+  # exposed to it. See the README.
   url: ""
   # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
   # Left empty, every calendar Home Assistant has is read.

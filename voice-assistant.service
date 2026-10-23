@@ -32,8 +32,8 @@ TimeoutStartSec=180
 WorkingDirectory=__PROJECT_DIRECTORY__
 ExecStart=__PYTHON__ __PROJECT_DIRECTORY__/satellite.py
 
-# Anything the assistant writes - the Spotify token cache, saved timers, logs - is
-# readable by this user only, rather than by everyone on the machine.
+# Anything the satellite writes - its copy of the timers, alarms and volumes, and its
+# logs - is readable by this user only, rather than by everyone on the machine.
 UMask=0077
 
 # A little defence in depth, for something which will one day control the house:
@@ -51,8 +51,8 @@ RestartSec=10
 KillSignal=SIGTERM
 TimeoutStopSec=20
 
-# Logs to the assistants journal.
-# The assistant also keeps its own log in the project's logs/ folder.
+# Logs to the user's journal.
+# The satellite also keeps its own log, smart_assistant.log, in ~/.local/share/nova/logs.
 StandardOutput=journal
 StandardError=journal
 

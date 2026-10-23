@@ -24,6 +24,8 @@ and still no script or scene whose name says it locks or opens anything.
 
 Every service Nova calls goes through _call_service, which only calls those in
 SERVICES, so nothing else in Nova can reach a lock, a cover or Home Assistant itself.
+Nova's token is an administrator's, which could do anything in Home Assistant, so
+this is the only guard on what Nova's own calls reach.
 
 Knowing what's in which room - the room Nova's in, and the lights' - takes an
 administrator's token, as Home Assistant only answers templates for one. With an

@@ -15,8 +15,8 @@ And Nova sends things to the user's phone: what it just said, when asked to; a
 reminder nobody answered; and Nova having had to restart itself after a problem.
 What it sends is tagged "nova", so it's never read back out as an alert itself.
 
-It all runs on the Pi, through the server's own API, with an access token from
-NTFY_TOKEN in ~/.config/nova/.env.
+It all runs on the brain, through the server's own API, with an access token from
+NTFY_TOKEN in the brain's ~/.config/nova/.env.
 """
 
 import json
