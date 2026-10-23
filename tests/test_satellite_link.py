@@ -210,6 +210,25 @@ def test_nothing_heard_for_15_seconds_counts_as_dropped(make, monkeypatch):
         brain.close()
 
 
+def test_a_brain_gone_silent_is_logged_as_silent(make, monkeypatch, caplog):
+    # It was logged as "The connection was closed", which it never was.
+    brain = FakeBrain(answer_pings=False)
+    now = [1000.0]
+    monkeypatch.setattr(satellite_link, "monotonic", lambda: now[0])
+    try:
+        link, events, messages = make(brain.address)
+        with caplog.at_level(logging.WARNING):
+            link.start()
+            assert wait_for(lambda: link.connected)
+            now[0] += 15.5
+            assert wait_for(lambda: events[:2] == [True, False])
+    finally:
+        brain.close()
+
+    lost = [record.message for record in caplog.records if record.message.startswith("Lost the brain")]
+    assert lost[0] == "Lost the brain at 127.0.0.1 (Nothing heard from the brain for 15 seconds)"
+
+
 def test_send_says_false_while_not_connected(brain, make):
     link, events, messages = make(brain.address)
     assert link.send("wake") is False

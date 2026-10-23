@@ -297,12 +297,12 @@ class SatelliteLink:
     def _check_in(self):
         """Run whenever the brain has been quiet for a moment: pings, or gives up on it."""
         now = monotonic()
+        # Neither is a ConnectionError, which the stream takes for the socket closing,
+        # and says so instead.
         if now - self._last_heard >= SILENT_FOR:
-            raise ConnectionError(f"Nothing heard from the brain for {SILENT_FOR:.0f} seconds")
+            raise TimeoutError(f"Nothing heard from the brain for {SILENT_FOR:.0f} seconds")
         expected = self._expected
         if expected is not None and now >= expected[1]:
-            # Not a ConnectionError, which the stream takes for the socket closing, and
-            # says so instead.
             raise TimeoutError(f"The brain didn't send '{expected[0]}' in time")
         if now - self._last_ping >= PING_EVERY:
             self._last_ping = now
