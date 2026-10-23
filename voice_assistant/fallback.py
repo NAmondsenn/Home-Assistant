@@ -300,7 +300,9 @@ class FallbackRinger:
             now: The time, in epoch seconds.
         """
         for entry in self.copy.going():
-            left = entry["since"] + RING_LIMIT - now
+            # Never more than a whole ring - after a power cut, the Pi's clock may be
+            # behind until it syncs, so a ring seems to have begun in the future.
+            left = min(RING_LIMIT, entry["since"] + RING_LIMIT - now)
             if left <= 0:
                 self.copy.ended(entry["id"])
                 continue

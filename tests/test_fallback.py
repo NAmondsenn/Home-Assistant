@@ -223,6 +223,22 @@ def test_a_ring_which_rings_out_isnt_carried_on(tmp_path, monkeypatch):
     assert not ringer.ringing and copy.going() == []
 
 
+def test_a_ring_carried_on_after_the_clock_went_back_rings_no_longer_than_it_would(tmp_path, monkeypatch):
+    # A power cut, with the Pi's clock behind until it syncs and the brain out of reach.
+    # The ring seemed to have begun an hour from now, so it carried on for an hour more
+    # than it ever rings.
+    monkeypatch.setattr(fallback, "RING_LIMIT", 0.05)
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry()])
+    copy.rang(entry(), NOW + 3600)
+
+    ringer.resume(NOW)
+
+    assert wait_for(lambda: speaker.calls)
+    assert wait_for(lambda: not ringer.ringing)
+    assert copy.going() == []
+
+
 def test_an_alarm_long_missed_isnt_rung(tmp_path):
     copy, state, speaker, ringer = make(tmp_path)
     copy.replace([entry()])
