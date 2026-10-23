@@ -87,6 +87,9 @@ def test_refreshing_the_sign_in_has_a_time_limit(make_controller):
 
 
 @pytest.mark.skipif(not getattr(spotify_controller.spotipy, "__file__", None), reason="needs spotipy itself")
+# spotipy would rather have a cache_handler than a cache_path now - which isn't what
+# this checks.
+@pytest.mark.filterwarnings("ignore:Specifying cache_path")
 def test_spotipys_own_sign_in_keeps_the_time_limit(monkeypatch, make_config, tmp_path):
     # Against the real SpotifyOAuth where it's installed, which passes it on as each
     # token request's timeout - as 2.26.0, the brain's, does.
