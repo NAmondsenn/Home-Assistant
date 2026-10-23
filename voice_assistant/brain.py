@@ -437,7 +437,8 @@ class Brain:
         went without the brain noticing yet, say.
 
         Returns:
-            The session, or None if the brain is stopping.
+            The session, or None if the brain is stopping or the satellite was removed
+            as it connected.
         """
         name = satellite.name
         with self._connecting:
