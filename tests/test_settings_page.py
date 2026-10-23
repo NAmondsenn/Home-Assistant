@@ -246,6 +246,21 @@ def test_the_latest_problems_in_the_log_are_shown_newest_first(files):
     assert "what's on today" not in json.dumps(problems)
 
 
+def test_how_quickly_nova_replies_is_from_the_last_replies_alone(files, monkeypatch):
+    # Read from the end of latency.jsonl, rather than the whole of it every 20 seconds.
+    (files / "logs").mkdir()
+    lines = [{"marks_ms": {"speech_ended": 0, "tts_done": 9000}}] * 50 + [
+        {"marks_ms": {"speech_ended": 0, "tts_done": 1000}}] * page_module.REPLIES_COUNTED
+    (files / "logs" / "latency.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines))
+    asked = []
+    loaded = page_module.timeline.load
+    monkeypatch.setattr(page_module.timeline, "load", lambda path, most=None: asked.append(most) or loaded(path, most))
+
+    status = _page().state()["status"]
+    assert (status["reply_ms"], status["replies"]) == (1000, page_module.REPLIES_COUNTED)
+    assert asked == [page_module.REPLIES_COUNTED]
+
+
 def test_a_restart_is_asked_for_once_whats_saved_differs_from_whats_running(files):
     running = Config()
     page = _page(running=running)

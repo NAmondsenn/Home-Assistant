@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Latency Report
-Summarises latency.jsonl, in the logs folder (see voice_assistant/paths.py): for each stage of an interaction, how long it
+Summarises latency.jsonl, in the logs folder (see voice_assistant/paths.py), and the older
+latency.jsonl.1 beside it, if there is one: for each stage of an interaction, how long it
 usually takes (p50), how long it takes on a bad day (p95), and the worst seen.
 
 Run on the Pi once the assistant has been used for a while:
@@ -28,7 +29,8 @@ def main():
         print(f"No latency log at {path} yet - use the assistant for a while first.")
         return
 
-    timelines = load(path)
+    # The file is started afresh as it grows, with the last one kept beside it - see timeline.py.
+    timelines = (load(path + ".1") if os.path.exists(path + ".1") else []) + load(path)
     rows = summarise(timelines)
     print(f"\n{len(timelines)} interactions from {path}\n")
     print(f"{'Stage':34} {'count':>6} {'p50 ms':>8} {'p95 ms':>8} {'max ms':>8}")

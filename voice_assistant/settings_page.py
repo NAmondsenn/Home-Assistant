@@ -414,7 +414,8 @@ class SettingsPage:
         stt, ntfy = self.brain.stt, self.brain.ntfy
         reply = None
         try:
-            rows = timeline.summarise(timeline.load(os.path.join(paths.LOGS_DIR, "latency.jsonl"))[-REPLIES_COUNTED:])
+            latest = timeline.load(os.path.join(paths.LOGS_DIR, "latency.jsonl"), most=REPLIES_COUNTED)
+            rows = timeline.summarise(latest)
             reply = next((row for row in rows if row["stage"] == "End of speech to reply ready"), None)
         except OSError:
             pass
