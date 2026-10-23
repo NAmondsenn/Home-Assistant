@@ -54,9 +54,12 @@ class Action:
     Attributes:
         tool: The name of an ActionExecutor tool.
         params: What it was given, by parameter name.
+        from_model: Whether the model asked for it, which can only run what it's
+            offered - as opposed to a local command or the offline keyword fallback.
     """
     tool: str
     params: Dict[str, Any] = field(default_factory=dict)
+    from_model: bool = False
 
 
 @dataclass
@@ -184,9 +187,9 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
         needs: The ActionExecutor attribute it can't work without, e.g. "music". The
             tool isn't offered while that isn't set up.
         required: The parameters it must always be given.
-        for_model: Whether the model is offered it at all. False for one which is
-            still run when a local command or the offline keyword fallback asks for it,
-            but which the model has a better tool for.
+        for_model: Whether the model is offered it at all. False for one which only
+            a local command or the offline keyword fallback may run - the model has a
+            better tool, and execute refuses the model's own call to it.
         parameters: Each parameter's JSON schema, by name - the method's own
             keyword arguments, which it's called with.
 
@@ -268,9 +271,15 @@ class ActionExecutor:
 
         method = self.tools().get(action.tool)
         if method is None:
-            # The model can only call what it's offered, so this would be a bug.
+            # The model can ask for any tool by name, offered or not, so one it made up
+            # is refused here.
             logger.warning(f"Unknown tool: {action.tool}")
             return ActionResult(False, "Sorry, I don't know how to do that yet.")
+        if action.from_model and not method.tool["for_model"]:
+            # Nor can it run one it wasn't offered: control_home passes free text on to
+            # Assist, and only the local commands and the offline fallback may use it.
+            logger.warning(f"Refused {action.tool}, which the model isn't offered")
+            return ActionResult(False, "Sorry, I can't do that.")
         if not self._available(method):
             return ActionResult(False, UNAVAILABLE[method.tool["needs"]])
 

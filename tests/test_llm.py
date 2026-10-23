@@ -66,8 +66,9 @@ def llm():
 
 
 def test_a_tool_call_becomes_an_action_naming_it(llm):
+    # Marked as the model's, so it can only run what it was offered - see ActionExecutor.execute.
     assert llm._action_from_tool_use(_tool("set_timer", at="16:00", label="Call mum")) == \
-        Action("set_timer", {"at": "16:00", "label": "Call mum"})
+        Action("set_timer", {"at": "16:00", "label": "Call mum"}, from_model=True)
 
 
 def test_an_album_is_only_played_when_asked_for_by_name(llm):

@@ -111,9 +111,9 @@ class LLMHandler:
             block: A tool_use content block from the model's response.
 
         Returns:
-            The Action.
+            The Action, marked as the model's, so it can only run what it's offered.
         """
-        return Action(block.name, dict(block.input or {}))
+        return Action(block.name, dict(block.input or {}), from_model=True)
 
     @staticmethod
     def _earlier_messages(number: int, turn: Dict) -> List[Dict]:

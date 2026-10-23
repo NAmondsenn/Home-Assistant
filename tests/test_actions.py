@@ -293,6 +293,21 @@ def test_a_local_light_command_still_reaches_assist():
     assert home.asked == "lamp off" and (result.ok, result.confirm) == (True, "chime")
 
 
+def test_claude_cant_run_what_it_isnt_offered():
+    # It can ask for any tool by name, offered or not - control_home passes free text to
+    # Assist, so a made-up call to it mustn't run.
+    class FakeHome:
+        asked = None
+
+        def command(self, request):
+            self.asked = request
+            return {"success": True, "message": "Unlocked", "chime": True}
+
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(Action("control_home", {"command": "unlock the door"}, from_model=True))
+    assert home.asked is None and result.ok is False
+
+
 def test_claude_works_the_lights_by_light_room_brightness_colour_and_warmth():
     class FakeHome:
         def set_lights(self, on, light=None, area=None, brightness=None, colour=None, warmth=None):
