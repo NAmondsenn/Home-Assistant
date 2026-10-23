@@ -28,6 +28,7 @@ from voice_assistant import session as session_module
 from voice_assistant.actions import Action
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import Reply
+from voice_assistant.navidrome import NavidromePlayer
 from voice_assistant.recording import RATE, AudioFeed
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.routines import Routines
@@ -966,6 +967,27 @@ def test_a_session_closed_before_it_runs_never_starts_its_device(connect, make_s
 
     assert happened == ["stopped"]
     assert not any(thread.name.startswith("ha-device-lookup") for thread in threading.enumerate())
+
+
+def test_closing_a_session_ends_every_thread_it_started(connect, make_session, monkeypatch):
+    # A satellite which connects again gets a new session, and the old one's threads
+    # held the whole of it - Navidrome's waited for something to play for ever.
+    satellite, pi = connect()
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: NavidromePlayer(
+        "http://navidrome.local:4533", "nova", "secret", speaker, volume))
+    before = set(threading.enumerate())
+    session = make_session(satellite)
+    session.device = Device([])
+    session.home = SimpleNamespace(find_device=lambda identifier: True)
+    running(session)
+    assert wait_for(lambda: any(lookup.name.startswith("ha-device-lookup") for lookup in threading.enumerate()))
+    started = [started for started in threading.enumerate() if started not in before]
+    assert "navidrome" in [started.name for started in started]
+
+    session.close()
+    for left in started:
+        left.join(2)
+    assert [left.name for left in started if left.is_alive()] == []
 
 
 def test_the_satellite_is_in_home_assistant_only_while_its_session_runs(connect, make_session):

@@ -178,6 +178,10 @@ class NavidromePlayer:
         # The last cover fetched, by its id, so the settings page only has it fetched
         # once a song - see cover.
         self._cover: Optional[Tuple[str, Tuple[bytes, str]]] = None
+        # Set by close, which ends _play_queue's thread. Without it, the thread waited
+        # for something to play for ever, and held the whole of a satellite's old
+        # session after it connected again.
+        self._closed = False
 
         threading.Thread(target=self._play_queue, daemon=True, name="navidrome").start()
 
@@ -565,8 +569,9 @@ class NavidromePlayer:
         return self._interrupted
 
     def close(self):
-        """Stops the music."""
+        """Stops the music, for good - the player's own thread ends."""
         with self._lock:
+            self._closed = True
             self._queue, self._index = [], 0
             self._jump(0)
 
@@ -596,12 +601,14 @@ class NavidromePlayer:
         self._lock.notify_all()
 
     def _play_queue(self):
-        """Plays the queue, a song at a time, for as long as the assistant runs."""
+        """Plays the queue, a song at a time, until the player's closed."""
         failures = 0
         while True:
             with self._lock:
-                while self._index >= len(self._queue):
+                while self._index >= len(self._queue) and not self._closed:
                     self._lock.wait()
+                if self._closed:
+                    return
                 song, turn = self._queue[self._index], self._turn
                 playback = self.speaker.play_stream(self._decode(song), volume=self.volume.get("music"),
                                                     kind="music", paused=self._paused, most_ahead=DECODE_AHEAD)
