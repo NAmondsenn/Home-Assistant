@@ -4,6 +4,7 @@ Checks the lights and the calendar through Home Assistant, using a fake in place
 its API, so nothing is sent anywhere.
 """
 
+import inspect
 import json
 import time
 from datetime import date, datetime, timedelta
@@ -12,8 +13,9 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from voice_assistant import network
-from voice_assistant.home_assistant import REQUEST_TIMEOUT, HomeAssistant, describe_agenda, describe_found
+from voice_assistant import home_assistant, network
+from voice_assistant.home_assistant import (REQUEST_TIMEOUT, HomeAssistant, NotAllowed, describe_agenda,
+                                            describe_found)
 
 
 @pytest.fixture(autouse=True)
@@ -72,9 +74,22 @@ def _assist(kind, speech):
 def make_home():
     def factory(answers, calendars=None):
         home = HomeAssistant("http://homeassistant.local:8123/", "token", calendars=calendars)
-        home._session = FakeSession(answers)
+        # A house with nothing in it, unless a test says otherwise - which is what's
+        # checked before anything goes to Assist.
+        home._session = FakeSession({"/api/states": [], **answers})
         return home
     return factory
+
+
+def _asked(home):
+    """What was sent to Assist."""
+    return next(sent["json"] for _, path, sent in home._session.requests if path == "/api/conversation/process")
+
+
+def _thing(entity, name, device_class=None):
+    """A state as /api/states has it."""
+    attributes = {"friendly_name": name, **({"device_class": device_class} if device_class else {})}
+    return {"entity_id": entity, "state": "unknown", "attributes": attributes}
 
 
 # The lights
@@ -84,8 +99,7 @@ def test_a_light_command_goes_to_assist_and_is_chimed(make_home):
     result = home.command("turn off the kitchen lights")
 
     assert result == {"success": True, "message": "Turned off the lights", "chime": True}
-    method, path, sent = home._session.requests[0]
-    assert sent["json"] == {"text": "turn off the kitchen lights", "language": "en",
+    assert _asked(home) == {"text": "turn off the kitchen lights", "language": "en",
                             "agent_id": "conversation.home_assistant"}
 
 
@@ -104,13 +118,13 @@ def test_assist_is_told_which_device_is_speaking(make_home):
     home = make_home({"/api/conversation/process": _assist("action_done", "Turned on the lights")})
     home.device_id = "da94"
     home.command("lights on")
-    assert home._session.requests[0][2]["json"]["device_id"] == "da94"
+    assert _asked(home)["device_id"] == "da94"
 
 
 def test_without_a_device_assist_is_asked_as_before(make_home):
     home = make_home({"/api/conversation/process": _assist("action_done", "Done")})
     home.command("lights on")
-    assert "device_id" not in home._session.requests[0][2]["json"]
+    assert "device_id" not in _asked(home)
 
 
 @pytest.mark.parametrize("code", ["no_intent_match", "no_valid_targets"])
@@ -205,6 +219,85 @@ def test_nothing_which_lets_anyone_in_is_done_by_voice(make_home, request_text):
 def test_a_light_named_after_a_door_is_fine(make_home):
     home = make_home({"/api/conversation/process": _assist("action_done", "Turned on the light")})
     assert home.command("turn on the front door light")["success"]
+
+
+# Assist's own "turn off" unlocks a lock, and its "turn on" opens a cover or a valve,
+# so what's refused is decided by what Home Assistant says a thing is - its domain, or
+# a cover's device class - not only by the words.
+@pytest.mark.parametrize("thing, request_text", [
+    (_thing("lock.front_door", "Front door"), "turn off the front door"),
+    (_thing("lock.back", "Back"), "turn off the doors"),
+    (_thing("valve.water_main", "Water main"), "turn on the water main"),
+    (_thing("alarm_control_panel.house", "House"), "turn off the house"),
+    (_thing("cover.patio", "Patio", "door"), "turn on the patio"),
+    (_thing("cover.driveway", "Driveway", "gate"), "turn on the driveway"),
+    (_thing("cover.side", "Side", "garage"), "turn on the side"),
+    (_thing("cover.skylight", "Skylight", "window"), "turn on the skylight"),
+    (_thing("cover.skylight", "Skylight", "window"), "turn on the windows"),
+])
+def test_what_would_let_anyone_in_is_refused_whatever_its_called(make_home, thing, request_text):
+    home = make_home({"/api/states": [thing], "/api/conversation/process": _assist("action_done", "Done")})
+    assert home.command(request_text) == {"success": False, "message": "I don't lock, unlock or open anything by voice."}
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"]
+
+
+@pytest.mark.parametrize("device_class", ["blind", "curtain", "shade", "shutter", "awning", None])
+def test_blinds_curtains_and_the_like_may_open_and_close(make_home, device_class):
+    # The user's call: doors, garages, gates and windows never, anything else may.
+    home = make_home({"/api/states": [_thing("cover.bedroom", "Bedroom cover", device_class)],
+                      "/api/conversation/process": _assist("action_done", "Opened")})
+    assert home.command("turn on the bedroom cover")["success"]
+    assert _asked(home)["text"] == "turn on the bedroom cover"
+
+
+def test_a_light_whose_name_holds_a_locks_is_that_light(make_home):
+    home = make_home({"/api/states": [_thing("lock.front_door", "Front door"),
+                                      _thing("light.front_door_light", "Front door light")],
+                      "/api/conversation/process": _assist("action_done", "Turned on the light")})
+    assert home.command("turn on the front door light")["success"]
+    # Though not when the lock's named as well.
+    assert not home.command("turn on the front door light and the front door")["success"]
+
+
+def test_locking_the_pc_is_the_one_exception(make_home):
+    # HASS.Agent's button.windows_pc_lock is a button, not a lock, and locking the PC
+    # only makes things safer - the user's call. Unlocking anything still isn't done.
+    home = make_home({"/api/states": [_thing("button.windows_pc_lock", "Windows PC lock"),
+                                      _thing("lock.front_door", "Front door")],
+                      "/api/conversation/process": _assist("action_done", "Pressed")})
+    assert home.command("lock my PC")["success"] and _asked(home)["text"] == "lock my PC"
+    for refused in ("unlock my PC", "lock my PC and the front door", "lock my PC and lock the door"):
+        assert not home.command(refused)["success"], refused
+
+
+def test_nothing_goes_to_assist_when_whats_there_cant_be_read(make_home):
+    home = make_home({"/api/states": requests.ConnectionError("refused"),
+                      "/api/conversation/process": _assist("action_done", "Done")})
+    assert home.command("turn on the lamp") == {"success": False, "message": "I can't reach Home Assistant right now."}
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"]
+
+
+@pytest.mark.parametrize("domain, service, data", [
+    ("lock", "unlock", {"entity_id": "lock.front_door"}),
+    ("cover", "open_cover", {"entity_id": "cover.garage"}),
+    ("homeassistant", "turn_on", {"entity_id": "lock.front_door"}),
+    ("light", "turn_on", {"entity_id": "lock.front_door"}),
+    ("light", "turn_on", {"entity_id": ["light.lamp", "lock.front_door"]}),
+    ("light", "turn_on", {"device_id": "da94"}),
+    ("light", "turn_on", {}),
+    ("script", "turn_on", {"area_id": "hall"}),
+    ("button", "press", {"entity_id": "button.bedroom_pve1_shut_down"}),
+])
+def test_only_the_services_nova_calls_are_ever_called(make_home, domain, service, data):
+    home = make_home({f"/api/services/{domain}/{service}": []})
+    with pytest.raises(NotAllowed):
+        home._call_service(domain, service, data)
+    assert home._session.requests == []
+
+
+def test_every_service_call_goes_through_the_one_allowlist():
+    # So nothing calls a service which hasn't been checked.
+    assert inspect.getsource(home_assistant).count("/api/services/") == 1
 
 
 @pytest.mark.parametrize("failure, said", [

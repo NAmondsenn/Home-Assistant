@@ -8,7 +8,9 @@ and asks for things in plain words through Home Assistant's own Assist - "turn o
 the kitchen lights" - rather than naming devices itself. Assist only knows about
 the devices exposed to it (Settings > Voice assistants > Expose), so that list is
 what Assist can reach, enforced by Home Assistant rather than by anything Claude is
-told. Nothing which unlocks or opens anything is passed on at all - see SENSITIVE.
+told. Nothing which unlocks or opens anything is passed on at all: not by its words
+(see SENSITIVE), nor by what Home Assistant says the thing named is (see GUARDED) -
+Assist's own "turn off" unlocks a lock.
 
 What Assist doesn't understand - "dim the lights" - goes to Claude, which works the
 lights through Home Assistant's own services instead, by light or by room, with a
@@ -19,6 +21,9 @@ what Assist does.
 The settings page names devices itself, as there's nothing to mishear: it lists the
 lights, to switch and dim, and the scripts and scenes, to run - but nothing else,
 and still no script or scene whose name says it locks or opens anything.
+
+Every service Nova calls goes through _call_service, which only calls those in
+SERVICES, so nothing else in Nova can reach a lock, a cover or Home Assistant itself.
 
 Knowing what's in which room - the room Nova's in, and the lights' - takes an
 administrator's token, as Home Assistant only answers templates for one. With an
@@ -33,12 +38,13 @@ import json
 import logging
 import re
 from datetime import date, datetime, time as day_time, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import requests
 
 from voice_assistant import network
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -58,6 +64,29 @@ DEFAULT_AGENT = "conversation.home_assistant"
 # light" is still fine; "open the front door" isn't.
 SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\b|\balarm system\b"
                        r"|\b(?:open|close|shut)\b.*\bdoors?\b")
+
+# Locking the PC - HASS.Agent's button.windows_pc_lock - is the one exception to the
+# words above: it only makes things safer (the user's call), and it's a button, not a
+# lock, so only the word would refuse it. "Unlock my PC" is still refused.
+PC_LOCK = re.compile(r"\block (?:my |the )?(?:pc|computer)\b|\b(?:pc|computer) lock\b")
+
+# What's never worked by voice, by what Home Assistant says it is rather than what it's
+# called: every lock, valve and alarm panel, and any cover which is a door, garage door,
+# gate or window - "doors, garages, gates and windows never", the user's call. Blinds,
+# curtains, shades and other covers may open and close. Each comes with the words
+# Assist takes as all of them - "open the windows" opens every window in Nova's room.
+GUARDED = {"lock": ("lock", "locks", "door", "doors"), "valve": ("valve", "valves"),
+           "alarm_control_panel": ("alarm", "alarms", "security")}
+GUARDED_COVERS = {"door": ("door", "doors"), "garage": ("garage", "garages"), "gate": ("gate", "gates"),
+                  "window": ("window", "windows")}
+
+# Every service Nova calls, by domain, and nothing else - no lock, cover, valve, alarm
+# panel, hassio or homeassistant service. Each is only ever given entities in its own
+# domain, and only the lights' an area as well, which light.turn_on and light.turn_off
+# take as just the lights in it. A cover service added here would need each cover
+# checked with _guarded too, as a door's as much a cover as a blind is.
+SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",)}
+BY_AREA = ("light",)
 
 # The error codes Assist gives when it matched nothing at all - no sentence it knows,
 # or none of the devices exposed to it - as opposed to understanding and failing, which
@@ -134,6 +163,10 @@ MOST_OTHERS_IN_OVERVIEW = 5
 # most matches said.
 SEARCH_DAYS = 90
 MOST_FOUND = 3
+
+
+class NotAllowed(ValueError):
+    """A service call SERVICES doesn't allow, which nothing in Nova should ever make."""
 
 
 class HomeAssistant:
@@ -241,6 +274,8 @@ class HomeAssistant:
     @staticmethod
     def _failure_message(error: Exception) -> str:
         """What to say when Home Assistant couldn't be asked, depending on why."""
+        if isinstance(error, NotAllowed):
+            return "I can't do that."
         status = getattr(getattr(error, "response", None), "status_code", None)
         if status == 401:
             return "Home Assistant didn't accept my token. HA_TOKEN in the .env file needs checking."
@@ -261,9 +296,10 @@ class HomeAssistant:
             is set too when Assist matched nothing, as opposed to failing at something
             it did understand.
         """
-        if SENSITIVE.search(request.lower()):
+        refused = {"success": False, "message": "I don't lock, unlock or open anything by voice."}
+        if _sensitive_words(request):
             logger.warning(f"Refused a sensitive Home Assistant request: '{request}'")
-            return {"success": False, "message": "I don't lock, unlock or open anything by voice."}
+            return refused
 
         asked = {"text": request, "language": "en", "agent_id": self.agent}
         if self.device_id:
@@ -272,6 +308,15 @@ class HomeAssistant:
             asked["device_id"] = self.device_id
 
         try:
+            # What's there is read afresh each time, so a lock added a minute ago is
+            # refused too. Nothing goes to Assist if it can't be read.
+            states = self._request("GET", "/api/states").json()
+            if not isinstance(states, list) or not all(isinstance(state, dict) for state in states):
+                raise ValueError("Home Assistant's states aren't a list of states")
+            if _names_guarded(request, states):
+                logger.warning(f"Refused a Home Assistant request naming a lock, door or the like: '{request}'",
+                               extra=TRANSCRIPT)
+                return refused
             reply = self._request("POST", "/api/conversation/process", json=asked).json()
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
@@ -481,8 +526,7 @@ class HomeAssistant:
                     kelvin = max(warmest, min(coolest, kelvin))
                 data["color_temp_kelvin"] = round(kelvin)
             changes = brightness is not None or hue is not None or kelvin is not None
-            service = "turn_on" if on or changes else "turn_off"
-            self._request("POST", f"/api/services/light/{service}", json=data)
+            self._call_service("light", "turn_on" if on or changes else "turn_off", data)
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
@@ -535,11 +579,38 @@ class HomeAssistant:
                     data["color_temp_kelvin"] = int(warmth)
             service = "turn_on" if on else "turn_off"
             logger.info(f"Lights {service}: {data}")
-            self._request("POST", f"/api/services/light/{service}", json=data)
-        except requests.RequestException as e:
+            self._call_service("light", service, data)
+        except (requests.RequestException, NotAllowed) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": "Done.", "chime": True}
+
+    def _call_service(self, domain: str, service: str, data: Dict):
+        """
+        Calls a Home Assistant service - the only place Nova does, so what it may
+        call is decided here alone, by SERVICES.
+
+        Args:
+            domain: The service's domain, e.g. "light".
+            service: The service, e.g. "turn_on".
+            data: What it's given: its targets, by entity_id - or area_id, for the
+                lights - and anything else it takes, e.g. {"brightness_pct": 30}.
+
+        Raises:
+            NotAllowed: If SERVICES doesn't have the service, or it's given anything
+                outside its own domain, or nothing to act on.
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
+        entities = data.get("entity_id")
+        entities = [entities] if isinstance(entities, str) else list(entities or [])
+        targets = {key for key in data if key in ("entity_id", "area_id", "device_id", "floor_id", "label_id")}
+        allowed_targets = {"entity_id", "area_id"} if domain in BY_AREA else {"entity_id"}
+        if (service not in SERVICES.get(domain, ()) or not targets or targets - allowed_targets
+                or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
+                           for entity in entities)):
+            logger.warning(f"Refused to call {domain}.{service} with {data}")
+            raise NotAllowed(f"{domain}.{service}")
+        self._request("POST", f"/api/services/{domain}/{service}", json=data)
 
     def _area_id(self, name: str) -> Optional[str]:
         """
@@ -583,7 +654,7 @@ class HomeAssistant:
             if _sensitive(entity_id, name):
                 logger.warning(f"Refused a sensitive Home Assistant {found[1]} from the settings page: '{name}'")
                 return {"success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."}
-            self._request("POST", f"/api/services/{found[1]}/turn_on", json={"entity_id": entity_id})
+            self._call_service(found[1], "turn_on", {"entity_id": entity_id})
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
@@ -701,7 +772,71 @@ class HomeAssistant:
 
 def _sensitive(entity_id: str, name: str) -> bool:
     """Whether a script or scene's id or name says it locks or opens something, as SENSITIVE has it."""
-    return bool(SENSITIVE.search(name.lower()) or SENSITIVE.search(entity_id.replace("_", " ")))
+    return _sensitive_words(name) or _sensitive_words(entity_id.replace("_", " "))
+
+
+def _sensitive_words(text: str) -> bool:
+    """Whether some words say they'd lock, unlock or open something, as SENSITIVE has it - bar PC_LOCK."""
+    return bool(SENSITIVE.search(PC_LOCK.sub(" ", text.lower())))
+
+
+def _plain(text: str) -> str:
+    """Words alone, in lower case and with a space either side, e.g. " front door " for "Front-door!"."""
+    return " " + " ".join(re.findall(r"[a-z0-9]+", text.lower())) + " "
+
+
+def _guarded(entity_id: str, attributes: Dict) -> Optional[Sequence[str]]:
+    """
+    Whether something is never worked by voice, by what Home Assistant says it is -
+    see GUARDED.
+
+    Args:
+        entity_id: e.g. "cover.garage".
+        attributes: Its attributes, for a cover's device_class.
+
+    Returns:
+        The words Assist takes as all of its kind, e.g. ("window", "windows") - or
+        None for anything which may be worked by voice.
+    """
+    domain = entity_id.partition(".")[0]
+    if domain == "cover":
+        return GUARDED_COVERS.get(attributes.get("device_class"))
+    return GUARDED.get(domain)
+
+
+def _names_guarded(request: str, states: List[Dict]) -> bool:
+    """
+    Whether a request for Assist names anything which is never worked by voice - by
+    its name, or by the words for all of its kind - from what Home Assistant has.
+    That's everything, not only what's exposed to Assist, as only Home Assistant's
+    WebSocket API says what is.
+
+    A name which holds a guarded one - "front door light", with a lock called "front
+    door" - is taken out first, as it's that which is named.
+
+    Args:
+        request: What would go to Assist, e.g. "turn off the front door".
+        states: Every entity's state, as /api/states has them.
+
+    Returns:
+        Whether it's to be refused.
+    """
+    words = _plain(PC_LOCK.sub(" ", request.lower()))
+    guarded, others = set(), set()
+    for state in states:
+        entity = str(state.get("entity_id") or "")
+        attributes = state.get("attributes") or {}
+        names = {_plain(str(attributes.get("friendly_name") or "")), _plain(entity.partition(".")[2].replace("_", " "))}
+        names.discard("  ")
+        kind = _guarded(entity, attributes)
+        if kind is None:
+            others |= names
+        else:
+            guarded |= names | {f" {word} " for word in kind}
+    for name in sorted(others, key=len, reverse=True):
+        if any(term in name and term != name for term in guarded):
+            words = words.replace(name, " | ")
+    return any(term in words for term in guarded)
 
 
 def _refused(error: Exception) -> bool:
