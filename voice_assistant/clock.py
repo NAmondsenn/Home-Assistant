@@ -54,6 +54,9 @@ ALARM_START_LEVEL = 0.3
 ALARM_SOUND = "alarm_sound.wav"
 # Waits until NTP corrects the time, so the clock is accurate on startup.
 PLAUSIBLE_TIME_AFTER = 1735689600
+# A tick which keeps failing the same way is logged again after this many seconds at
+# most - it ticks twice a second, so one bad entry would otherwise flood the log.
+FAILED_TICK_LOG_GAP = 60
 
 
 def format_duration(seconds: int) -> str:
@@ -370,6 +373,9 @@ class Clock:
         self._load_alarms()
 
         self._running = True
+        # The last error a tick raised, and when it was logged - see _tick_safely.
+        self._tick_error: Optional[str] = None
+        self._tick_error_logged = 0.0
         # Each round of ringing runs on a thread of its own when the clock has its
         # background thread - see _run_round. The tests step through without one,
         # so there a round simply runs in whatever called it.
@@ -761,8 +767,27 @@ class Clock:
     def _run(self):
         """Background loop which fires timers, reminders and alarms as they come due."""
         while self._running:
-            self._tick(time.time())
+            self._tick_safely(time.time(), time.monotonic())
             time.sleep(self.check_interval)
+
+    def _tick_safely(self, now: float, moment: float):
+        """
+        One tick, with anything unexpected it raises logged rather than left to end
+        the clock's thread - which would take every timer and alarm with it, and
+        with the satellite connected nothing would ring its copy either. The same
+        error is logged once, then at most once every FAILED_TICK_LOG_GAP seconds.
+
+        Args:
+            now: The current time, as an epoch timestamp.
+            moment: time.monotonic(), which setting the system clock doesn't move.
+        """
+        try:
+            self._tick(now)
+        except Exception as error:
+            said = f"{type(error).__name__}: {error}"
+            if said != self._tick_error or moment - self._tick_error_logged >= FAILED_TICK_LOG_GAP:
+                logger.exception("The clock's tick failed, so trying again at the next one")
+                self._tick_error, self._tick_error_logged = said, moment
 
     def _tick(self, now: float):
         """

@@ -8,6 +8,7 @@ here touches the real data/ folder or waits on a real clock.
 """
 
 import json
+import logging
 import threading
 import time
 from datetime import datetime, timedelta
@@ -1296,6 +1297,58 @@ def test_a_clock_made_without_its_thread_can_be_started_later(make_clock):
         assert clock.announced[0]["message"] == "Timer for 1 minute."
     finally:
         clock.stop()
+
+
+def test_a_tick_which_fails_is_logged_and_the_clock_carries_on(make_clock, monkeypatch, caplog):
+    # Anything unexpected in a tick used to end the clock's thread, and every timer and
+    # alarm with it, with the traceback only on stderr - never in backend.log.
+    clock = make_clock()
+    clock.check_interval = 0.01
+    clock.set_timer(60)
+    for timer in clock._timers.values():
+        timer["due_at"] = time.time() + 0.2
+    ticked, failed = clock._tick, []
+
+    def tick(now):
+        if not failed:
+            failed.append(now)
+            raise KeyError("due_at")
+        ticked(now)
+
+    monkeypatch.setattr(clock, "_tick", tick)
+    with caplog.at_level(logging.ERROR, logger="voice_assistant.clock"):
+        clock.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not clock.announced and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            clock.stop()
+
+    assert failed and clock.announced[0]["message"] == "Timer for 1 minute."
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1 and errors[0].exc_info[0] is KeyError
+
+
+def test_a_tick_which_keeps_failing_is_logged_once_a_minute_at_most(make_clock, monkeypatch, caplog):
+    # It ticks every half a second, so one bad entry would otherwise be 120 tracebacks a minute.
+    clock = make_clock()
+    error = KeyError("due_at")
+
+    def tick(now):
+        raise error
+
+    monkeypatch.setattr(clock, "_tick", tick)
+    with caplog.at_level(logging.ERROR, logger="voice_assistant.clock"):
+        for moment in (0, 0.5, 30, 59.9):
+            clock._tick_safely(time.time(), moment)
+        assert len(caplog.records) == 1
+        clock._tick_safely(time.time(), 60)
+        assert len(caplog.records) == 2
+        # A different error is said straight away.
+        error = ValueError("not a time")
+        clock._tick_safely(time.time(), 61)
+        assert len(caplog.records) == 3
 
 
 def test_an_alarm_saved_without_an_id_gets_one(make_clock, tmp_path):
