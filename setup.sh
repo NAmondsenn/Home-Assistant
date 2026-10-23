@@ -324,10 +324,14 @@ write_secrets() {
     if [ "$ASSUME_YES" = false ]; then
         echo "  They're kept in ${SECRETS_FILE}, readable only by you. Leave any blank to"
         echo "  add it there by hand later."
-        read -rp "  Anthropic API key: " anthropic
+        # The key and the secret aren't shown as they're typed, as the satellite's
+        # password isn't - they'd otherwise be left on the screen, and in its scrollback.
+        read -rsp "  Anthropic API key (not shown as it's typed): " anthropic
+        echo ""
         if [ "$WITH_SPOTIFY" = true ]; then
             read -rp "  Spotify client ID: " spotify_id
-            read -rp "  Spotify client secret: " spotify_secret
+            read -rsp "  Spotify client secret (not shown as it's typed): " spotify_secret
+            echo ""
         fi
     fi
     mkdir -p -m 700 "$CONFIG_DIRECTORY"

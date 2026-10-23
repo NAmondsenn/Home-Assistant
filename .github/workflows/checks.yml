@@ -13,6 +13,10 @@ on:
   schedule:
     - cron: "0 7 * * 1"
 
+# It only reads the code, so its token can do no more than that.
+permissions:
+  contents: read
+
 jobs:
   tests:
     if: github.event_name != 'schedule'
@@ -27,7 +31,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install what the tests need
-        run: pip install pytest ruff==0.17.1 numpy==2.4.6 soxr==1.1.0 soundfile==0.14.0 PyYAML==6.0.3 requests==2.34.2
+        run: pip install pytest==9.1.1 ruff==0.17.1 numpy==2.4.6 soxr==1.1.0 soundfile==0.14.0 PyYAML==6.0.3 requests==2.34.2
       - name: Lint
         run: ruff check .
       - name: Tests
@@ -42,5 +46,5 @@ jobs:
           python-version: "3.13"
       - name: Check the locked packages (the satellite's and the brain's) for known vulnerabilities
         run: |
-          pip install pip-audit
+          pip install pip-audit==2.9.0
           pip-audit -r requirements.lock -r requirements-backend.txt --no-deps --disable-pip
