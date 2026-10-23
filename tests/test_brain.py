@@ -340,19 +340,22 @@ def test_a_satellite_which_connects_gets_its_state_alarms_and_phrase(brain, conn
     assert connected(brain).satellite.hostname == "bedroom-pi"
 
 
-def test_a_second_connection_replaces_the_first(brain, connect):
+def test_a_second_connection_replaces_the_first(brain, connect, caplog):
     serving(brain)
     first = connect(brain)
     old = connected(brain)
-    second = connect(brain)
-    assert wait_for(lambda: brain.session_for("bedroom") not in (None, old))
-    new = brain.session_for("bedroom")
+    with caplog.at_level(logging.INFO, logger="voice_assistant.brain"):
+        second = connect(brain)
+        assert wait_for(lambda: brain.session_for("bedroom") not in (None, old))
+        new = brain.session_for("bedroom")
 
-    # The first is let go, its session closed before the second's was made - both
-    # would be the same device in Home Assistant, with the same MQTT client id.
-    assert first.gone.wait(5)
-    assert old.happened == [("made", "bedroom", 1), ("closed", "bedroom", 1), ("made", "bedroom", 2)]
-    # Going, it leaves the second's session be.
+        # The first is let go, its session closed before the second's was made - both
+        # would be the same device in Home Assistant, with the same MQTT client id.
+        assert first.gone.wait(5)
+        assert old.happened == [("made", "bedroom", 1), ("closed", "bedroom", 1), ("made", "bedroom", 2)]
+        # Going, it leaves the second's session be - checked once it has gone
+        # altogether, which being let go doesn't promise.
+        assert wait_for(lambda: any(record.message == "The bedroom satellite went" for record in caplog.records))
     assert brain.session_for("bedroom") is new and not new.closed.is_set()
     assert wait_for(lambda: second.messages("phrase"))
     assert not second.gone.is_set()
