@@ -1,0 +1,101 @@
+"""Tests for the battery rules - what kind a device is, whether it charges, and its name."""
+
+from voice_assistant.batteries import (
+    Battery,
+    charging_from,
+    find,
+    is_phone,
+    kind_of,
+    said,
+    spoken_name,
+)
+
+HOUR = 3600.0
+NOW = 1_000_000_000.0
+
+
+def _found(name, level, device, maker, model, charging, changed=NOW):
+    return {
+        "id": f"sensor.{name}_battery_level",
+        "name": name,
+        "level": level,
+        "changed": changed,
+        "device": device,
+        "maker": maker,
+        "model": model,
+        "charging": charging,
+    }
+
+
+def _todays_three():
+    return [
+        Battery.from_home(_found("macbook-pro", 72.0, "d1", "Apple", "Mac16,8", "Not Charging")),
+        Battery.from_home(_found("s25-ultra", 40.0, "d2", "samsung", "SM-S938B", "discharging")),
+        Battery.from_home(_found("tab-s11-ultra", 88.0, "d3", "samsung", "SM-X930", "Not Charging")),
+    ]
+
+
+def test_todays_devices_are_sorted_into_kinds():
+    assert kind_of("samsung", "SM-S938B") == "mobile" and is_phone("samsung", "SM-S938B")
+    assert kind_of("samsung", "SM-X930") == "mobile" and not is_phone("samsung", "SM-X930")
+    assert kind_of("Apple", "Mac16,8") == "other"
+    assert kind_of(None, None) == "other"
+    assert kind_of("Apple", "iPhone16,2") == "mobile" and is_phone("Apple", "iPhone16,2")
+    assert kind_of("Apple", "iPad14,1") == "mobile" and not is_phone("Apple", "iPad14,1")
+
+
+def test_charging_is_read_from_each_apps_words():
+    for raw in ("charging", "Charging", "full", "on"):
+        assert charging_from(raw) is True, raw
+    for raw in ("discharging", "not_charging", "Not Charging", "off"):
+        assert charging_from(raw) is False, raw
+    for raw in (None, "unknown", "unavailable"):
+        assert charging_from(raw) is None, raw
+
+
+def test_names_are_said_as_words():
+    assert spoken_name("macbook-pro") == "MacBook Pro"
+    assert spoken_name("s25-ultra") == "S25 Ultra"
+    assert spoken_name("tab-s11-ultra") == "Tab S11 Ultra"
+
+
+def test_asking_finds_the_device_meant():
+    three = _todays_three()
+    mac, phone, tablet = three
+
+    def names(asked):
+        return [b.name for b in find(three, asked)]
+
+    for asked in ("mac", "macbook", "laptop"):
+        assert find(three, asked) == [mac], asked
+    assert find(three, "phone") == [phone]
+    assert find(three, "tablet") == [tablet]
+    assert find(three, "tab") == [tablet]
+    assert find(three, "") == three
+    assert find(three, "all") == three
+    assert find(three, "toaster") == []
+    assert names("computer") == ["MacBook Pro"]
+
+
+def test_a_fresh_level_is_said_with_whether_its_charging():
+    mac = _todays_three()[0]
+    assert said(mac, NOW + 60, HOUR) == "Your MacBook Pro's on 72%, and not charging."
+    charging = Battery.from_home(_found("macbook-pro", 72.0, "d1", "Apple", "Mac16,8", "Charging"))
+    assert said(charging, NOW, HOUR) == "Your MacBook Pro's on 72%, and charging."
+    unknown = Battery.from_home(_found("macbook-pro", 72.0, "d1", "Apple", "Mac16,8", None))
+    assert said(unknown, NOW, HOUR) == "Your MacBook Pro's on 72%."
+
+
+def test_an_old_level_says_how_old():
+    tablet = _todays_three()[2]
+    assert said(tablet, NOW + 3 * 86400, HOUR) == "Your Tab S11 Ultra was on 88%, 3 days ago."
+
+
+def test_a_battery_with_no_device_is_something_else_and_never_charging():
+    found = _found("remote", 61.0, None, None, None, "charging")
+    battery = Battery.from_home(found)
+    assert battery.kind == "other"
+    assert battery.phone is False
+    assert battery.charging is None
+    assert battery.device is None
+
