@@ -15,6 +15,8 @@ import pytest
 import requests
 
 from voice_assistant import home_assistant, network
+from voice_assistant.actions import Action, ActionExecutor
+from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.home_assistant import (REQUEST_TIMEOUT, HomeAssistant, NotAllowed, describe_agenda,
                                             describe_found)
 
@@ -91,6 +93,21 @@ def _thing(entity, name, device_class=None):
     """A state as /api/states has it."""
     attributes = {"friendly_name": name, **({"device_class": device_class} if device_class else {})}
     return {"entity_id": entity, "state": "unknown", "attributes": attributes}
+
+
+# What command() answers when the guard refuses.
+REFUSED = {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
+
+
+def _entry(entity, platform="demo", device=None, original_name=None, aliases=()):
+    """One entity as the registry has it."""
+    return Entry(entity, platform, device, None, entity.partition(".")[2], original_name, tuple(aliases), True)
+
+
+def _registry(*entries, devices=None):
+    """A registry snapshot of these entities, and their devices by id, e.g. {"pc": {"name": ..., "maker": ...}}."""
+    return Snapshot(entries={entry.entity_id: entry for entry in entries}, devices=devices or {}, areas={},
+                    read_at=0.0)
 
 
 # The lights
@@ -238,8 +255,7 @@ def test_a_light_named_after_a_door_is_fine(make_home):
 ])
 def test_what_would_let_anyone_in_is_refused_whatever_its_called(make_home, thing, request_text):
     home = make_home({"/api/states": [thing], "/api/conversation/process": _assist("action_done", "Done")})
-    assert home.command(request_text) == {"success": False,
-                                          "message": "I don't lock, unlock or open anything by voice."}
+    assert home.command(request_text) == REFUSED
     assert [path for _, path, _ in home._session.requests] == ["/api/states"]
 
 
@@ -253,12 +269,20 @@ def test_blinds_curtains_and_the_like_may_open_and_close(make_home, device_class
 
 
 def test_a_light_whose_name_holds_a_locks_is_that_light(make_home):
-    home = make_home({"/api/states": [_thing("lock.front_door", "Front door"),
-                                      _thing("light.front_door_light", "Front door light")],
-                      "/api/conversation/process": _assist("action_done", "Turned on the light")})
-    assert home.command("turn on the front door light")["success"]
-    # Though not when the lock's named as well.
-    assert not home.command("turn on the front door light and the front door")["success"]
+    # Assist isn't asked, as it could take the words for the lock - but Nova's own
+    # lights, which only ever work lights, switch it on.
+    light = _rendered_light("light.front_door_light", "Front door light", "Hall", state="off")
+    home = _house(make_home, light)
+    home._session.answers["/api/states"] = [_thing("lock.front_door", "Front door"),
+                                            _thing("light.front_door_light", "Front door light")]
+    home._session.answers["/api/conversation/process"] = _assist("action_done", "Turned on the light")
+    assert home.command("turn on the front door light") == REFUSED
+    result = ActionExecutor(home=home).execute(Action("control_home", {
+        "command": "turn on the front door light", "on": True, "words": "the front door light"}))
+    assert result.ok and _dimmed(home) == [("turn_on", {"entity_id": ["light.front_door_light"]})]
+    # Though nothing is done when the lock's named as well.
+    assert home.command("turn on the front door light and the front door") == REFUSED
+    assert "/api/conversation/process" not in [path for _, path, _ in home._session.requests]
 
 
 # A doorbell camera or a contact sensor is often called what its lock or window is, and
@@ -296,6 +320,82 @@ def test_locking_the_pc_is_the_one_exception(make_home):
     assert home.command("lock my PC")["success"] and _asked(home)["text"] == "lock my PC"
     for refused in ("unlock my PC", "lock my PC and the front door", "lock my PC and lock the door"):
         assert not home.command(refused)["success"], refused
+
+
+# What the registry knows that /api/states doesn't: the other names, the integration
+# each thing is from, and which of a PC's buttons does what.
+
+def test_a_harmless_thing_holding_a_locks_name_doesnt_hide_it(make_home):
+    # Assist reads a room before a name, so this could be the lock "front door" in the bedroom.
+    home = make_home({"/api/states": [_thing("lock.front_door", "Front door"),
+                                      _thing("switch.bedroom_front_door", "Bedroom front door")],
+                      "/api/conversation/process": _assist("action_done", "Done")})
+    assert home.command("turn off the bedroom front door") == REFUSED
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"]
+
+
+def test_a_lock_called_door_is_refused_beside_a_sensor_called_back_door(make_home):
+    home = make_home({"/api/states": [_thing("lock.door", "Door"),
+                                      _thing("binary_sensor.back_door", "Back door", "door")],
+                      "/api/conversation/process": _assist("action_done", "Done")})
+    assert home.command("turn off the back door") == REFUSED
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"]
+
+
+def test_a_guarded_thing_is_refused_by_its_other_name(make_home):
+    home = make_home({"/api/states": [_thing("valve.water_main", "Water main")],
+                      "/api/conversation/process": _assist("action_done", "Done")})
+    home._snapshot = lambda: _registry(_entry("valve.water_main", aliases=["garden tap"]))
+    assert home.command("turn on the garden tap") == REFUSED
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"]
+    # It's the other name that did it.
+    home._snapshot = lambda: None
+    assert home.command("turn on the garden tap")["success"]
+
+
+def test_proxmox_is_refused_whatever_its_called(make_home):
+    home = make_home({"/api/states": [_thing("button.bedroom_pve1_shut_down", "PVE2 Shut down"),
+                                      _thing("switch.ct_navidrome", "Navidrome")],
+                      "/api/conversation/process": _assist("action_done", "Done")})
+    home._snapshot = lambda: _registry(_entry("button.bedroom_pve1_shut_down", "proxmoxve"),
+                                       _entry("switch.ct_navidrome", "proxmoxve"))
+    for request in ("turn on pve2 shut down", "turn off navidrome"):
+        assert home.command(request) == REFUSED, request
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"] * 2
+    # It's the integration that did it.
+    home._snapshot = lambda: None
+    assert home.command("turn off navidrome")["success"]
+
+
+def _desk_pc(*kinds):
+    """A HASS.Agent device "Desk PC" with a button for each kind, e.g. "Shutdown": its states and registry."""
+    states = [_thing(f"button.desk_pc_{kind.lower()}", f"Desk PC {kind}") for kind in kinds]
+    registry = _registry(*[_entry(f"button.desk_pc_{kind.lower()}", "mqtt", "desk", kind) for kind in kinds],
+                         devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}})
+    return states, registry
+
+
+def test_the_pcs_shutdown_restart_and_web_address_buttons_are_refused(make_home):
+    states, registry = _desk_pc("Shutdown", "Restart", "LaunchUrl", "Sleep")
+    home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Pressed")})
+    home._snapshot = lambda: registry
+    for request in ("turn on desk pc shutdown", "turn on desk pc restart", "turn on desk pc launchurl"):
+        assert home.command(request) == REFUSED, request
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"] * 3
+    assert home.command("turn on desk pc sleep")["success"] and _asked(home)["text"] == "turn on desk pc sleep"
+
+
+def test_locking_the_pc_is_no_way_past_a_guarded_name(make_home):
+    # The PC's lock button is safe by its kind, so "lock my PC" still goes to Assist. But
+    # a shutdown button the user has called "PC lock" is refused by that name, though
+    # the words for locking the PC are let be.
+    states, registry = _desk_pc("Lock", "Shutdown")
+    states[1]["attributes"]["friendly_name"] = "PC lock"
+    home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Pressed")})
+    home._snapshot = lambda: registry
+    assert home.command("turn on the pc lock") == REFUSED
+    states[1]["attributes"]["friendly_name"] = "Desk PC Shutdown"
+    assert home.command("lock my PC")["success"] and _asked(home)["text"] == "lock my PC"
 
 
 def test_nothing_goes_to_assist_when_whats_there_cant_be_read(make_home):
@@ -1251,3 +1351,40 @@ def test_only_the_lights_that_can_be_reached_are_dimmed(make_home):
     home = _house(make_home, gone, bright)
     assert home.dim("down", "lights")["success"]
     assert _dimmed(home) == [("turn_on", {"entity_id": ["light.bedroom_light"], "brightness_pct": 70})]
+
+
+# A light sentence the guard refuses
+
+def test_a_refused_light_sentence_is_done_by_novas_own_lights(make_home):
+    porch = _rendered_light("light.porch", "Porch light", "Outside", state="off")
+    home = _house(make_home, porch)
+    home._session.answers["/api/states"] = [_thing("lock.front_door", "Front door"),
+                                            _thing("light.porch", "Porch light")]
+    home._session.answers["/api/conversation/process"] = _assist("action_done", "Done")
+    home._snapshot = lambda: _registry(_entry("lock.front_door"), _entry("light.porch", aliases=["front door light"]))
+    result = ActionExecutor(home=home).execute(Action("control_home", {
+        "command": "turn on the front door light", "on": True, "words": "the front door light"}))
+    assert (result.ok, result.confirm) == (True, "chime")
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.porch"]})]
+    assert "/api/conversation/process" not in [path for _, path, _ in home._session.requests]
+
+
+def test_a_refused_light_sentence_naming_no_light_goes_to_claude(make_home):
+    home = _house(make_home, LAMP_OFF)
+    home._session.answers["/api/states"] = [_thing("lock.front_door", "Front door")]
+    result = ActionExecutor(home=home).execute(Action("control_home", {
+        "command": "turn on the front door light", "on": True, "words": "the front door light"}))
+    assert (result.ok, result.understood) == (False, False)
+    assert _dimmed(home) == []
+
+
+def test_lights_are_switched_by_what_theyre_called(make_home):
+    home = _house(make_home, LAMP_OFF, BEDROOM_LIGHT_WARM, KITCHEN_LIGHT)
+    assert home.switch_lights(True, "the bedroom lights", 30) == {"success": True, "message": "Done.", "chime": True}
+    home.switch_lights(False, "the lamp", 30)
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.bedroom_light", "light.lamp"], "brightness_pct": 30}),
+                             ("turn_off", {"entity_id": ["light.lamp"]})]
+    assert home.switch_lights(True, "the attic lights") == {
+        "success": False, "message": "I don't know a light called that.", "not_understood": True}
+    home.area = None
+    assert home.switch_lights(True, "the lights") == {"success": False, "message": "Which room?"}

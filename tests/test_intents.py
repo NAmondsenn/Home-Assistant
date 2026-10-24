@@ -104,14 +104,17 @@ def test_the_weather_is_asked_for_without_claude(text, day):
     assert _actions(text) == [Action("get_weather", {"day": day})]
 
 
-@pytest.mark.parametrize("text, command", [
-    ("Turn off the kitchen lights.", "turn off the kitchen lights"),
-    ("Living room lights on.", "living room lights on"),
-    ("Lights off, please.", "lights off"),
-    ("Set the bedroom lamp to 30 percent.", "set the bedroom lamp to 30 percent"),
+@pytest.mark.parametrize("text, command, on, words, brightness", [
+    ("Turn off the kitchen lights.", "turn off the kitchen lights", False, "the kitchen lights", None),
+    ("Switch the lamp on.", "switch the lamp on", True, "the lamp", None),
+    ("Living room lights on.", "living room lights on", True, "living room lights", None),
+    ("Lights off, please.", "lights off", False, "lights", None),
+    ("Set the bedroom lamp to 30 percent.", "set the bedroom lamp to 30 percent", True, "the bedroom lamp", 30),
 ])
-def test_the_lights_go_straight_to_home_assistant(text, command):
-    assert _actions(text) == [Action("control_home", {"command": command})]
+def test_the_lights_go_straight_to_home_assistant(text, command, on, words, brightness):
+    # With what Nova's own lights need, should the guard refuse the sentence.
+    assert _actions(text) == [Action("control_home", {"command": command, "on": on, "words": words,
+                                                      "brightness": brightness})]
 
 
 @pytest.mark.parametrize("text, direction, words", [
@@ -132,7 +135,8 @@ def test_dimming_leaves_what_isnt_a_light_to_claude(text):
 
 
 def test_setting_a_light_to_a_level_still_goes_to_assist():
-    assert _actions("Set the lamp to 30 percent.") == [Action("control_home", {"command": "set the lamp to 30 percent"})]
+    assert _actions("Set the lamp to 30 percent.") == [Action("control_home", {
+        "command": "set the lamp to 30 percent", "on": True, "words": "the lamp", "brightness": 30})]
 
 
 def test_the_lights_with_something_else_are_left_to_claude():

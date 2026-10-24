@@ -152,9 +152,14 @@ class LocalIntents:
             # itself, from the lights' names in Home Assistant.
             (rf"(?P<direction>dim|brighten) (?P<words>{LIGHT})", self._dim),
             # The lights go straight to Home Assistant, which works out which ones
-            # from the words itself - and still works with the internet down.
-            (rf"(?:turn|switch) (?:on|off) {LIGHT}|(?:turn|switch) {LIGHT} (?:on|off)|{LIGHT} (?:on|off)"
-             rf"|set {LIGHT} to \d{{1,3}}(?: percent)?", self._lights),
+            # from the words itself - and still works with the internet down. One rule
+            # for each shape, so each can name its parts for Nova's own lights, which
+            # switch them should the guard refuse the sentence. "Turn the lamp on"
+            # comes before "lamp on", which would take "turn" for part of the name.
+            (rf"(?:turn|switch) (?P<state>on|off) (?P<words>{LIGHT})", self._lights),
+            (rf"(?:turn|switch) (?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
+            (rf"(?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
+            (rf"set (?P<words>{LIGHT}) to (?P<brightness>\d{{1,3}})(?: percent)?", self._lights),
             # The calendar, for a day asked about by name. One rule each, since a
             # pattern can only name the day once.
             (rf"what(?:'s| is) (?:on )?(?:my )?(?:calendar|schedule|diary|agenda)(?:(?: (?:on|for))? {DAY})?",
@@ -259,7 +264,11 @@ class LocalIntents:
         return self._result(f"It's {now.strftime('%A')} the {_ordinal(now.day)} of {now.strftime('%B')}.")
 
     def _lights(self, found) -> Dict:
-        return self._result("Okay.", [Action("control_home", {"command": found.string})])
+        # Setting a brightness switches a light on.
+        brightness = found.groupdict().get("brightness")
+        return self._result("Okay.", [Action("control_home", {
+            "command": found.string, "on": brightness is not None or found["state"] == "on",
+            "words": found["words"], "brightness": int(brightness) if brightness is not None else None})])
 
     def _dim(self, found) -> Dict:
         direction = "down" if found["direction"] == "dim" else "up"

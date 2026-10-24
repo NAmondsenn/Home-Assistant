@@ -328,6 +328,29 @@ def test_a_local_light_command_still_reaches_assist():
     assert home.asked == "lamp off" and (result.ok, result.confirm) == (True, "chime")
 
 
+def test_a_refused_light_sentence_goes_to_novas_own_lights_and_nothing_else_does():
+    class FakeHome:
+        switched = None
+
+        def command(self, request):
+            return {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
+
+        def switch_lights(self, on, words, brightness=None):
+            self.switched = (on, words, brightness)
+            return {"success": True, "message": "Done.", "chime": True}
+
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(Action("control_home", {
+        "command": "set the porch light to 40 percent", "on": True, "words": "the porch light", "brightness": 40}))
+    assert home.switched == (True, "the porch light", 40) and (result.ok, result.confirm) == (True, "chime")
+
+    # The offline fallback's sentence, which says nothing of switching lights, stays refused.
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(Action("control_home", {"command": "turn off the front door"}))
+    assert home.switched is None
+    assert (result.ok, result.say) == (False, "I don't lock, unlock or open anything by voice.")
+
+
 def test_claude_cant_run_what_it_isnt_offered():
     # It can ask for any tool by name, offered or not - control_home passes free text to
     # Assist, so a made-up call to it mustn't run.

@@ -40,7 +40,11 @@ class FakeResponse:
 
 
 class FakeHomeSession:
-    """Stands in for Home Assistant's API: a house with a lamp in it, which Assist turns on."""
+    """
+    Stands in for Home Assistant's API: a house with a lamp in it, which Assist turns
+    on, and the gate lights, which Nova's own lights switch, as the gate's never
+    named to Assist.
+    """
 
     headers = {}
 
@@ -48,7 +52,8 @@ class FakeHomeSession:
         if url.endswith("/api/states"):
             return FakeResponse([{"entity_id": "light.reading_lamp", "attributes": {"friendly_name": "Reading lamp"}}])
         if url.endswith("/api/template"):
-            return FakeResponse([])
+            return FakeResponse([{"entity_id": "light.driveway", "area": "Garden", "state": "on",
+                                  "attributes": {"friendly_name": "Gate lights"}}])
         return FakeResponse({"response": {"response_type": "action_done",
                                           "speech": {"plain": {"speech": "Turned on the reading lamp"}}}})
 

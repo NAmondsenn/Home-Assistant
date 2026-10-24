@@ -770,11 +770,22 @@ class ActionExecutor:
         required=["command"],
         for_model=False,
         command={"type": "string", "description": "The request, in plain English."},
+        on={"type": "boolean", "description": "For a light sentence: on or off."},
+        words={"type": "string", "description": "For a light sentence: the lights, as the user said them."},
+        brightness={"type": "integer", "description": "For a light sentence: how bright, in percent."},
     )
-    def control_home(self, command: Optional[str] = None):
+    def control_home(self, command: Optional[str] = None, on: Optional[bool] = None, words: Optional[str] = None,
+                     brightness: Optional[int] = None):
         if not command:
             return {"success": False, "message": "I didn't catch what to do with the lights."}
-        return self.home.command(command)
+        reply = self.home.command(command)
+        # A light sentence the guard won't give Assist - "turn on the front door light",
+        # with a lock called "front door" - is done by Nova's own lights instead, which
+        # only ever work lights. The offline fallback gives no on or off, so what it
+        # passes on stays refused.
+        if reply.get("refused") and on is not None:
+            return self.home.switch_lights(on, words, brightness)
+        return reply
 
     # Only the local "dim the lights" produces this: Claude steps a brightness itself
     # with set_lights, from the brightness in the list of lights it is given.

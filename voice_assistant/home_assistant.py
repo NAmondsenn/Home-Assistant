@@ -8,9 +8,25 @@ and asks for things in plain words through Home Assistant's own Assist - "turn o
 the kitchen lights" - rather than naming devices itself. Assist only knows about
 the devices exposed to it (Settings > Voice assistants > Expose), so that list is
 what Assist can reach, enforced by Home Assistant rather than by anything Claude is
-told. Nothing which unlocks or opens anything is passed on at all: not by its words
-(see SENSITIVE), nor by what Home Assistant says the thing named is (see GUARDED) -
-Assist's own "turn off" unlocks a lock.
+told.
+
+Some things are never passed on to Assist, by what Home Assistant says they are and
+under any name it knows them by - their name, the words of their entity id, or an
+other name from the registry (see ha_registry.py):
+- every lock, valve and alarm panel, and every cover which is a door, garage door,
+  gate or window (see GUARDED) - Assist's own "turn off" unlocks a lock;
+- everything of the Proxmox integration, so "turn on PVE2 shut down" is refused even
+  if it's been exposed;
+- HASS.Agent's buttons on the PC, bar sleep, monitor sleep and lock - through Assist,
+  shutting the PC down or restarting it would be done with no yes.
+Nor are the words for unlocking or opening anything (see SENSITIVE).
+
+A request naming one of those is refused whole, even when a harmless thing's name
+holds the guarded one's, as Assist reads a room before a name: "turn off the bedroom
+front door" can be a lock called "front door" in the bedroom. So a light sentence can
+be refused for its light's name - "turn on the front door light", with a lock called
+"front door". That's then done by Nova's own lights instead (see switch_lights), which
+only ever work lights, rather than refused for a lock nobody asked about.
 
 What Assist doesn't understand - "dim the lights" - goes to Claude, which works the
 lights through Home Assistant's own services instead, by light or by room, with a
@@ -47,7 +63,7 @@ import requests
 
 from voice_assistant import network
 from voice_assistant.clock import spoken_clock_time
-from voice_assistant.ha_registry import HomeRegistry, HomeSocket, Snapshot
+from voice_assistant.ha_registry import PC_SAFE, HomeRegistry, HomeSocket, Snapshot
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -73,9 +89,14 @@ DEFAULT_AGENT = "conversation.home_assistant"
 SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\b|\balarm system\b"
                        r"|\b(?:open|close|shut)\b.*\bdoors?\b")
 
+# What's said when a request is refused, by its words or by what it names.
+REFUSED = "I don't lock, unlock or open anything by voice."
+
 # Locking the PC - HASS.Agent's button.windows_pc_lock - is the one exception to the
 # words above: it only makes things safer (the user's call), and it's a button, not a
-# lock, so only the word would refuse it. "Unlock my PC" is still refused.
+# lock, so only the word would refuse it. "Unlock my PC" is still refused. It excuses
+# words alone - SENSITIVE's and the lock kind's - never a guarded thing's name, so a
+# shutdown button the user has called "PC lock" is still refused by it.
 PC_LOCK = re.compile(r"\block (?:my |the )?(?:pc|computer)\b|\b(?:pc|computer) lock\b")
 
 # What's never worked by voice, by what Home Assistant says it is rather than what it's
@@ -87,6 +108,9 @@ GUARDED = {"lock": ("lock", "locks", "door", "doors"), "valve": ("valve", "valve
            "alarm_control_panel": ("alarm", "alarms", "security")}
 GUARDED_COVERS = {"door": ("door", "doors"), "garage": ("garage", "garages"), "gate": ("gate", "gates"),
                   "window": ("window", "windows")}
+# The Proxmox integration's platform in the registry. Everything of it is guarded, as
+# its buttons and switches shut down, restart and stop the machines Nova itself runs on.
+PROXMOX = "proxmoxve"
 
 # Every service Nova calls, by domain, and nothing else - no lock, cover, valve, alarm
 # panel, hassio or homeassistant service. Each is only ever given entities in its own
@@ -388,9 +412,10 @@ class HomeAssistant:
             Dict with 'success' and 'message' - Assist's own reply - and 'chime' for
             something done, since the lights changing speaks for itself. 'not_understood'
             is set too when Assist matched nothing, as opposed to failing at something
-            it did understand.
+            it did understand. 'refused' is set when Nova wouldn't ask Assist at all, by
+            the words or by what they name.
         """
-        refused = {"success": False, "message": "I don't lock, unlock or open anything by voice."}
+        refused = {"success": False, "message": REFUSED, "refused": True}
         if _sensitive_words(request):
             logger.warning(f"Refused a sensitive Home Assistant request: '{request}'", extra=TRANSCRIPT)
             return refused
@@ -407,7 +432,7 @@ class HomeAssistant:
             states = self._request("GET", "/api/states").json()
             if not isinstance(states, list) or not all(isinstance(state, dict) for state in states):
                 raise ValueError("Home Assistant's states aren't a list of states")
-            if _names_guarded(request, states):
+            if _names_guarded(request, states, self._snapshot()):
                 logger.warning(f"Refused a Home Assistant request naming a lock, door or the like: '{request}'",
                                extra=TRANSCRIPT)
                 return refused
@@ -740,6 +765,39 @@ class HomeAssistant:
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": "Done.", "chime": True}
 
+    def switch_lights(self, on: bool, words: str, brightness: Optional[int] = None) -> Dict:
+        """
+        Switches lights on or off, or sets how bright they are, by what the user called
+        them - for a light sentence the guard wouldn't give Assist, as "turn on the front
+        door light" is with a lock called "front door". Only ever lights, by entity id.
+
+        Args:
+            on: Whether to switch them on, or off. Off ignores the brightness.
+            words: The lights, as the user called them - see lights_called.
+            brightness: How bright, from 1 to 100 percent, or None to leave it as it is.
+
+        Returns:
+            Dict with 'success' and a 'message', and a 'chime' for success, since the
+            lights changing speaks for itself. A 'not_understood' of True when Nova
+            doesn't know the lights, so that Claude is asked.
+        """
+        try:
+            found = self.lights_called(words, self._in_order(self.lights()))
+            if found is None or (not found and self.area):
+                return {"success": False, "message": "I don't know a light called that.", "not_understood": True}
+            if not found:
+                return {"success": False, "message": "Which room?"}
+            data = {"entity_id": [light["id"] for light in found]}
+            if on and brightness is not None:
+                data["brightness_pct"] = max(1, min(100, int(brightness)))
+            service = "turn_on" if on else "turn_off"
+            logger.info(f"Lights {service}: {data}")
+            self._call_service("light", service, data)
+        except (requests.RequestException, ValueError) as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        return {"success": True, "message": "Done.", "chime": True}
+
     def set_light(self, entity_id: str, on: Optional[bool] = None, brightness: Optional[int] = None,
                   hue: Optional[float] = None, saturation: Optional[float] = None,
                   kelvin: Optional[float] = None) -> Dict:
@@ -1040,82 +1098,75 @@ def _words(text: str) -> Tuple[str, ...]:
     return tuple(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-def _guarded(entity_id: str, attributes: Dict) -> Optional[Sequence[str]]:
+def _guarded(entity_id: str, attributes: Dict, snapshot: Optional[Snapshot]) -> Optional[Sequence[str]]:
     """
     Whether something is never worked by voice, by what Home Assistant says it is -
-    see GUARDED.
+    see GUARDED, PROXMOX and PC_SAFE.
 
     Args:
         entity_id: e.g. "cover.garage".
         attributes: Its attributes, for a cover's device_class.
+        snapshot: The registry, for what the states don't say - which integration a
+            thing is from, and which of the PC's buttons does what - or None if it
+            can't be read, when only the states are gone by.
 
     Returns:
-        The words Assist takes as all of its kind, e.g. ("window", "windows") - or
-        None for anything which may be worked by voice.
+        The words Assist takes as all of its kind, e.g. ("window", "windows"), or ()
+        for something guarded with no such words - or None for anything which may be
+        worked by voice.
     """
     domain = entity_id.partition(".")[0]
-    if domain == "cover":
-        return GUARDED_COVERS.get(attributes.get("device_class"))
-    return GUARDED.get(domain)
+    kind = GUARDED_COVERS.get(attributes.get("device_class")) if domain == "cover" else GUARDED.get(domain)
+    if kind is not None or snapshot is None:
+        return kind
+    if snapshot.platform(entity_id) == PROXMOX:
+        return ()
+    # Only a button can be one of the PC's, so the rest aren't looked for among them.
+    if domain == "button":
+        _, pc_kind = snapshot.hass_agent_buttons().get(entity_id, (None, None))
+        if pc_kind is not None and pc_kind not in PC_SAFE:
+            return ()
+    return None
 
 
-def _names_guarded(request: str, states: List[Dict]) -> bool:
+def _names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot]) -> bool:
     """
     Whether a request for Assist names anything which is never worked by voice - by
-    its name, or by the words for all of its kind - from what Home Assistant has.
-    That's everything, not only what's exposed to Assist, as only Home Assistant's
-    WebSocket API says what is.
+    its name, the words of its entity id or an other name from the registry, or by a
+    word for all of its kind - as whole words. That's everything Home Assistant has,
+    not only what's exposed to Assist.
 
-    A harmless thing's name which holds a guarded one's - "front door light", with a
-    lock called "front door" - is that harmless thing, so what's wholly within it is
-    let be. Not when something guarded has that name too, though - a doorbell camera
-    and its lock both called "front door" - nor when it has a kind's word of its own,
-    as "bedroom window" could be every window in the bedroom to Assist. And only
-    what's wholly within it: "front door light well" is still refused, with a window
-    called "light well".
+    A harmless thing's name which holds a guarded one's doesn't let it by, as Assist
+    reads a room before a name: with a lock called "front door", "turn off the bedroom
+    front door" is refused, whatever else is called "bedroom front door". So is "turn on
+    the front door light" - which, as a light sentence, Nova's own lights then do.
 
     Args:
         request: What would go to Assist, e.g. "turn off the front door".
         states: Every entity's state, as /api/states has them.
+        snapshot: The registry, or None if it can't be read - see _guarded.
 
     Returns:
         Whether it's to be refused.
     """
-    words = _words(PC_LOCK.sub(" ", request.lower()))
-    guarded, kinds, others = set(), set(), set()
+    # PC_LOCK only excuses words, so a guarded thing's name is looked for with and
+    # without them: neither "turn on the PC lock", for a shutdown button called that,
+    # nor a name with "lock my PC" said in the middle of it, gets by.
+    excused = _words(PC_LOCK.sub(" ", request.lower()))
+    said = (_words(request), excused)
+    names, kinds = set(), set()
     for state in states:
         entity = str(state.get("entity_id") or "")
         attributes = state.get("attributes") or {}
-        names = {_words(str(attributes.get("friendly_name") or "")), _words(entity.partition(".")[2].replace("_", " "))}
-        names.discard(())
-        kind = _guarded(entity, attributes)
+        kind = _guarded(entity, attributes, snapshot)
         if kind is None:
-            others |= names
-        else:
-            guarded |= names
-            kinds |= {(word,) for word in kind}
-    harmless = [name for name in others - guarded if not _found_outside(name, kinds, guarded)]
-    return _found_outside(words, guarded | kinds, harmless)
-
-
-def _found_outside(words: Tuple[str, ...], terms: Iterable[Tuple[str, ...]],
-                   within: Iterable[Tuple[str, ...]]) -> bool:
-    """
-    Whether any of some terms is in some words other than wholly within one of some
-    names.
-
-    Args:
-        words: e.g. ("turn", "on", "the", "front", "door", "light").
-        terms: What's looked for, e.g. {("door",)}.
-        within: Where it may be, e.g. [("front", "door", "light")] - which "door"
-            is wholly within here, so it isn't found outside.
-
-    Returns:
-        Whether any is.
-    """
-    spans = [(start, start + len(name)) for name in within for start in _starts(words, name)]
-    return any(not any(first <= start and start + len(term) <= last for first, last in spans)
-               for term in terms for start in _starts(words, term))
+            continue
+        names |= {_words(str(attributes.get("friendly_name") or "")), _words(entity.partition(".")[2].replace("_", " "))}
+        names |= {_words(alias) for alias in (snapshot.aliases(entity) if snapshot else ())}
+        kinds |= {(word,) for word in kind}
+    names.discard(())
+    return (any(_starts(words, name) for words in said for name in names)
+            or any(_starts(excused, kind) for kind in kinds))
 
 
 def _starts(words: Tuple[str, ...], term: Tuple[str, ...]) -> List[int]:
