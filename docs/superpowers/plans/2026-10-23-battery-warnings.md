@@ -70,7 +70,7 @@
   - `test_people_come_with_their_trackers_devices`;
   - `test_a_refused_template_raises_as_for_the_lights`.
 - [ ] **Step 2: Run them** - `bash .superpowers/tools/pi_test.sh tests/test_home_assistant.py -k "batter or people"`. Expected: they fail, with `AttributeError: 'HomeAssistant' object has no attribute 'batteries'`.
-- [ ] **Step 3: Implement** `BATTERIES_TEMPLATE`, `PEOPLE_TEMPLATE`, `batteries()` and `people()`. Each template renders the list as JSON with `to_json`, as `LIGHTS_TEMPLATE` does. The filtering - unit, readable level, the float - is done in Python, where it's tested, not in Jinja.
+- [ ] **Step 3: Implement** `BATTERIES_TEMPLATE`, `PEOPLE_TEMPLATE`, `batteries()` and `people()`. Each template renders the list as JSON with `to_json`, as `LIGHTS_TEMPLATE` does. The filtering - unit, readable level, the float, a level from 0 to 100 - is done in Python, where it's tested, not in Jinja. A level of -1 or 255, which some integrations give for "don't know", is left out.
 - [ ] **Step 4: Run them again** - expected: they pass. Then run the whole file.
 - [ ] **Step 5: Commit** - "Read Home Assistant's batteries and people for battery warnings".
 
@@ -93,7 +93,7 @@
   - `said(battery: Battery, now: float, stale_after: float) -> str`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_todays_devices_are_sorted_into_kinds`: samsung SM-S938B is mobile and a phone; samsung SM-X930 is mobile and not a phone; Apple Mac16,8 is "other"; `(None, None)` is "other". Also iPhone16,2 is a mobile phone, and iPad14,1 is mobile but not a phone;
+  - `test_todays_devices_are_sorted_into_kinds`: samsung SM-S938B is mobile and a phone; samsung SM-X930 is mobile and not a phone; Apple Mac16,8 is "other"; `(None, None, False)` is "other". Also iPhone16,2 is a mobile phone, and iPad14,1 is mobile but not a phone;
   - `test_charging_is_read_from_each_apps_words`: `"charging"`, `"Charging"`, `"full"` and `"on"` → True; `"discharging"`, `"not_charging"`, `"Not Charging"` and `"off"` → False; None, `"unknown"` and `"unavailable"` → None;
   - `test_names_are_said_as_words`: `"macbook-pro"` → `"MacBook Pro"`, `"s25-ultra"` → `"S25 Ultra"`, `"tab-s11-ultra"` → `"Tab S11 Ultra"`;
   - `test_asking_finds_the_device_meant`: against today's three, `"mac"`, `"macbook"` and `"laptop"` give the Mac; `"phone"` gives the S25; `"tablet"` and `"tab"` give the tablet; `""` and `"all"` give all three; `"toaster"` gives `[]`;
@@ -102,7 +102,7 @@
   - `test_a_battery_with_no_device_is_something_else_and_never_charging`.
 - [ ] **Step 2: Run** `bash .superpowers/tools/pi_test.sh tests/test_batteries.py`. Expected: they fail, with `ModuleNotFoundError: voice_assistant.batteries`.
 - [ ] **Step 3: Implement** the functions in `voice_assistant/batteries.py`.
-  - `spoken_name` keeps a word with a digit as it is, upper-cased (`S25`), and capitalises the rest, apart from a short list of known spellings (`MacBook`, `iPhone`, `iPad`).
+  - `spoken_name` keeps a word with a digit as it is, upper-cased (`S25`), and capitalises an all-lower-case word, apart from a short list of known spellings (`MacBook`, `iPhone`, `iPad`). A word with capitals of the user's own is kept as it is (`TV remote` is `TV Remote`, `AirPods` stays).
   - `find` matches the asked words against each name's words, prefixes included. Then it matches against kind words: phone, tablet, and (against `computer` only) laptop, computer and mac. It keeps only the batteries matching the most asked words, at least one.
 - [ ] **Step 4: Run them again** - expected: they pass.
 - [ ] **Step 5: Commit** - "Tell what each battery is, whether it's charging, and its name".
@@ -124,6 +124,7 @@
     - `send_to_phone(battery: Battery) -> bool` - the default is `not battery.phone`;
     - `also_send_when_said: bool`;
     - `default_marks(battery: Battery) -> List[int]` - its kind's default marks, highest first;
+    - `changed(battery: Battery) -> bool` - whether any of its marks, warnings switch or send-to-phone switch differ from the defaults, which the settings page uses to offer "Back to the defaults";
     - `set(battery: Battery, enabled: Optional[bool] = None, marks: Optional[List[int]] = None, send_to_phone: Optional[bool] = None)` - this saves. It takes the Battery, not its id, as checking the number of marks needs the kind; None leaves a choice as it is;
     - `reset(battery_id: str)` - forgets the device's own enabled, marks and send_to_phone, keeps its warned marks, and saves;
     - `set_also_send_when_said(on: bool)` - this saves too;
@@ -166,7 +167,7 @@
     - `say(message)` returns whether it was said, which needs the default satellite to be connected;
     - `send(message, title)` returns whether ntfy took it, and is None without ntfy.
   - `read() -> List[Battery]` - fresh from Home Assistant. It raises like `HomeAssistant.batteries`.
-  - `check(now: float)` - one pass: read, `due`, deliver. It also says any held warning which is still true once quiet hours are over.
+  - `check(now: float)` - one pass: read, `due`, deliver. It also says any held warning which is still true once quiet hours are over. A held warning whose battery Home Assistant isn't listing just now (it leaves out a sensor that's briefly unavailable, as while it restarts) stays held; one that's listed and no longer true, or switched off, is let go with a line in the log.
   - `start()` and `stop()` - a daemon thread named `batteries`, calling `check` every `check_every` seconds. Every pass is wrapped, so one error is logged and the next pass still runs. Home Assistant being down is logged once until it answers again.
   - `home_now(battery: Battery) -> Optional[bool]` - from `people()`: the person whose `devices` include the battery's device, else the first person. `"home"` → True, any other known state → False, no person or an error → None.
   - Held warnings are kept in `batteries.json` too, so a restart in quiet hours keeps them.
@@ -239,7 +240,7 @@
     - "battery levels" and "how are my batteries" → `{}`;
   - `test_get_batteries_says_each_one_found`;
   - `test_get_batteries_with_home_assistant_down_says_so`;
-  - `test_the_batteries_defaults_are_checked` - `Config()` accepts the new section, and refuses `mobile_marks: "five"`.
+  - `test_the_batteries_defaults_are_checked` - `Config()` accepts the new section, and refuses `mobile_marks: "five"`. Marks follow one rule, `config.marks_problem`, which `BatteryChoices` uses too, so the page can save what config.yaml starts it with: `mobile_marks` is one mark and `other_marks` two, distinct, whole numbers from 1 to 99.
 - [ ] **Step 2: Run them** - expected: they fail.
 - [ ] **Step 3: Implement.**
   - The brain makes `self.home`, then `BatteryChoices` at `os.path.join(paths.DATA_DIR, "batteries.json")`, then `BatteryWatcher`, with:

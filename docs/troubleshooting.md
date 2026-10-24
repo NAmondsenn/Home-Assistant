@@ -105,8 +105,11 @@ On the brain, which talks to Home Assistant for every satellite:
 On the brain, which watches the batteries for every satellite:
 
 - **Nothing is watched without Home Assistant** - "Battery levels need Home Assistant" means `home_assistant.url` or `HA_TOKEN` isn't set up on the brain - see "The lights or the calendar don't work" above. Its log says `Home Assistant didn't answer, so batteries aren't being watched` once while it can't be reached, and `Home Assistant answers again` when it can.
+- **Nova says it can't reach Home Assistant, but it's running** - batteries need an administrator's `HA_TOKEN`, as Home Assistant only answers templates for one. The brain's log says `Home Assistant won't tell Nova what's in which room`. Make Nova's user an administrator.
 - **The device isn't there** - ask "battery levels". A device is only found if Home Assistant has a battery sensor for it which reads in percent, and it isn't unavailable.
 - **It's only on the phone, or only said out loud** - a warning is said out loud only while you're home (Home Assistant's person) and outside `ntfy.quiet_from` to `ntfy.quiet_until`; otherwise it goes to `ntfy.phone`. The phone's own warning isn't sent to itself. With no ntfy, or a failed send, it's said instead - and held until the quiet hours end if it came in them, then said only if it's still true.
+- **The device's warnings are off** - on the settings page's Batteries section, each device has a "Warn me" switch. Turned off, it warns about nothing, though "battery levels" still tells its level.
+- **It wasn't sent to the phone** - each device also has "Send to my phone". It's off for the phone itself, which warns you on its own, and on for everything else. The settings page also has one switch for whether a warning that was said out loud is sent as well.
 - **A mark already warned** - each mark warns once as the level falls. It starts again once the device has charged, or its level is 10 points above its highest mark. What has warned is kept in `batteries.json` in the brain's `~/.local/share/nova`.
 - **Nothing is said out loud** - the default satellite (the first added) has to be connected. The brain's log says `A battery warning wasn't said, as the default satellite isn't connected`.
 
