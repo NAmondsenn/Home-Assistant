@@ -29,6 +29,7 @@ from voice_assistant import paths, protocol
 from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
 from voice_assistant.batteries import BatteryWatcher
+from voice_assistant.ha_registry import HomeRegistry
 from voice_assistant.ntfy import Alert
 from voice_assistant.recording import RATE
 from voice_assistant.remote import RemoteSatellite
@@ -1025,6 +1026,18 @@ def test_the_brain_has_no_battery_watcher_without_home_assistant(make_brain, mon
     assert make_brain().batteries is None
 
 
+def test_the_brain_reads_the_registry_when_home_assistant_is_set_up(make_brain, home_assistant_token, monkeypatch):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    assert isinstance(brain.registry, HomeRegistry)
+    assert brain.registry._socket is brain.home.socket and brain.home.registry is brain.registry
+    # Not running until run() starts it.
+    assert brain.registry._thread is None
+
+    monkeypatch.delenv("HA_TOKEN")
+    assert make_brain(home_assistant=HOME_ASSISTANT).registry is None
+    assert make_brain().registry is None
+
+
 def test_a_battery_warning_is_said_on_the_default_satellite(brain, connect):
     # With the bedroom, the first satellite added, away, there's nothing to say it.
     assert brain._say_battery("Your phone's battery is down to 5%.") is False
@@ -1079,6 +1092,7 @@ def test_the_battery_watcher_runs_while_the_brain_does_and_stops_with_it(brain, 
     # Nothing here may reach a real Home Assistant.
     brain.home.batteries = lambda timeout=None: []
     brain.home.people = lambda: []
+    brain.registry.refresh = lambda: True
     running = []
 
     def serve():
@@ -1088,6 +1102,23 @@ def test_the_battery_watcher_runs_while_the_brain_does_and_stops_with_it(brain, 
     brain.run()
     assert running == [True]
     assert not any(thread.name == "batteries" for thread in threading.enumerate())
+
+
+def test_the_registry_is_read_while_the_brain_runs_and_stops_with_it(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    # Nothing here may reach a real Home Assistant.
+    brain.home.batteries = lambda timeout=None: []
+    brain.home.people = lambda: []
+    brain.registry.refresh = lambda: True
+    running = []
+
+    def serve():
+        running.append(any(thread.name == "ha-registry" and thread.is_alive() for thread in threading.enumerate()))
+
+    brain.serve = serve
+    brain.run()
+    assert running == [True]
+    assert not any(thread.name == "ha-registry" for thread in threading.enumerate())
 
 
 def test_a_warning_or_alert_not_said_to_the_end_counts_as_not_said(brain, connect):

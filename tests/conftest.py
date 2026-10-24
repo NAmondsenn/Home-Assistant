@@ -140,6 +140,16 @@ if _module_missing("openwakeword"):
     sys.modules["openwakeword.vad"] = openwakeword_vad
 
 
+# websocket-client: the connection function and the two errors ha_registry.py catches.
+# Tests replace create_connection with their own fake, so nothing ever connects.
+if _module_missing("websocket"):
+    websocket = types.ModuleType("websocket")
+    websocket.create_connection = None
+    websocket.WebSocketException = type("WebSocketException", (Exception,), {})
+    websocket.WebSocketTimeoutException = type("WebSocketTimeoutException", (websocket.WebSocketException,), {})
+    sys.modules["websocket"] = websocket
+
+
 class FakeConfig:
     """Stands in for Config, returning sections from a plain dict instead of config.yaml."""
 

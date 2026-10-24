@@ -47,6 +47,7 @@ import requests
 
 from voice_assistant import network
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.ha_registry import HomeRegistry, HomeSocket, Snapshot
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -245,7 +246,7 @@ class HomeAssistant:
     """One Home Assistant, reached over its REST API."""
 
     def __init__(self, url: str, token: str, agent: str = DEFAULT_AGENT, calendars: Optional[List[str]] = None,
-                 activities: Optional[Dict[str, List[str]]] = None):
+                 activities: Optional[Dict[str, List[str]]] = None, registry: Optional[HomeRegistry] = None):
         """
         Args:
             url: Its address, e.g. "http://homeassistant.local:8123".
@@ -257,8 +258,13 @@ class HomeAssistant:
                 on the calendar - {"work": ["Shift"], "uni": ["CSC"]} - for "what time
                 do I have work?". An event with a word in its name starting with one of
                 them is that activity. Just work, called "work", if not given.
+            registry: Where to look up what Home Assistant's entities are, or None -
+                see ha_registry.py.
         """
         self.url = url.rstrip("/")
+        # Its WebSocket, for what the REST API can't say - see ha_registry.py.
+        self.socket = HomeSocket(self.url, token)
+        self.registry = registry
         self.agent = agent
         self.calendars = list(calendars or [])
         self.activities = {name.lower(): [called.lower() for called in calls]
@@ -276,13 +282,15 @@ class HomeAssistant:
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
     @classmethod
-    def from_config(cls, config, token: Optional[str]) -> Optional["HomeAssistant"]:
+    def from_config(cls, config, token: Optional[str],
+                    registry: Optional[HomeRegistry] = None) -> Optional["HomeAssistant"]:
         """
         The Home Assistant config.yaml points at, or None if it isn't set up.
 
         Args:
             config: Configs loaded from config.yaml - home_assistant.url and friends.
             token: HA_TOKEN from .env.
+            registry: The brain's HomeRegistry, shared by every HomeAssistant.
 
         Returns:
             A HomeAssistant, or None without both an address and a token.
@@ -295,7 +303,12 @@ class HomeAssistant:
             logger.warning("home_assistant.url is set but HA_TOKEN isn't in .env, so Home Assistant is off")
             return None
         logger.info(f"Home Assistant at {url}")
-        return cls(url, token, calendars=settings.get("calendars"), activities=settings.get("activities"))
+        return cls(url, token, calendars=settings.get("calendars"), activities=settings.get("activities"),
+                   registry=registry)
+
+    def _snapshot(self) -> Optional[Snapshot]:
+        """The latest read of Home Assistant's registry, or None if there's none to go by."""
+        return self.registry.snapshot() if self.registry else None
 
     def _request(self, method: str, path: str, timeout: Optional[float] = None, **kwargs) -> requests.Response:
         # Home Assistant is on the local network, so it's still asked with only the

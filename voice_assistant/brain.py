@@ -30,6 +30,7 @@ import numpy as np
 from voice_assistant import paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.clock import Clock, spoken_clock_time
+from voice_assistant.ha_registry import HomeRegistry
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
@@ -243,6 +244,11 @@ class Brain:
         # the satellites' sessions ask of it besides is theirs - or None until it's set
         # up. See batteries.py.
         self.home = HomeAssistant.from_config(config, os.getenv("HA_TOKEN"))
+        # What Home Assistant's entities are, read every few minutes and shared with every
+        # session's own HomeAssistant - see ha_registry.py.
+        self.registry = HomeRegistry(self.home.socket) if self.home else None
+        if self.home:
+            self.home.registry = self.registry
         self.batteries = self._make_battery_watcher() if self.home else None
 
         # Every satellite's timers and alarms, rung on the satellite each was set from.
@@ -863,6 +869,8 @@ class Brain:
         threading.Thread(target=self._send_alarms_hourly, daemon=True, name="alarm-copies").start()
         if self.batteries:
             self.batteries.start()
+        if self.registry:
+            self.registry.start()
         logger.info(f"{self.name}'s brain is ready")
 
         # However listening ends - a stop signal, stop() or something unexpected -
@@ -916,6 +924,8 @@ class Brain:
         self.clock.stop()
         if self.batteries:
             self.batteries.stop()
+        if self.registry:
+            self.registry.stop()
         if self.ntfy:
             self.ntfy.stop()
         if self.settings_page:

@@ -169,7 +169,7 @@ class Session:
 
         # Home Assistant, for the lights and the calendar - None until it's set up. One
         # for each session, since it keeps the room its satellite is in.
-        self.home = HomeAssistant.from_config(config, os.getenv("HA_TOKEN"))
+        self.home = HomeAssistant.from_config(config, os.getenv("HA_TOKEN"), registry=brain.registry)
 
         # Everything the assistant can do for the user - see actions.py. The lights and
         # the calendar are only there once Home Assistant is set up, and timers and
