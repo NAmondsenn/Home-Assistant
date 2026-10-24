@@ -974,3 +974,63 @@ def test_being_there_now_says_so():
 def test_nothing_coming_up_says_so():
     from voice_assistant.home_assistant import describe_next
     assert describe_next("uni", [], 1, date(2026, 10, 20), NOW) == "You haven't got uni in the next two weeks."
+
+
+# The batteries and the people
+
+def _rendered_battery(entity="sensor.s25_ultra_battery_level", state="46", unit="%", **shown):
+    """One battery sensor as BATTERIES_TEMPLATE renders it - the S25's, unless a test says otherwise."""
+    return {"entity_id": entity, "state": state, "unit": unit, "changed": 1761200000.0,
+            "friendly_name": "S25 Ultra Battery level", "device": "dev25", "device_name": "SM-S938B",
+            "device_name_by_user": "s25-ultra", "maker": "samsung", "model": "SM-S938B",
+            "charging": "discharging", **shown}
+
+
+def test_batteries_are_read_with_their_device_and_charging_state(make_home):
+    home = make_home({"/api/template": FakeResponse(json.dumps([_rendered_battery()]))})
+    assert home.batteries() == [{"id": "sensor.s25_ultra_battery_level", "name": "s25-ultra", "level": 46.0,
+                                 "changed": 1761200000.0, "device": "dev25", "maker": "samsung",
+                                 "model": "SM-S938B", "charging": "discharging"}]
+    (method, path, sent), = home._session.requests
+    assert (method, path) == ("POST", "/api/template")
+    assert "battery_charging" in sent["json"]["template"] and "battery_state" in sent["json"]["template"]
+
+
+def test_an_unreadable_battery_is_left_out(make_home):
+    rows = [_rendered_battery(f"sensor.b{n}", state) for n, state in enumerate(["unavailable", "unknown", "", "nan"])]
+    rows.append(_rendered_battery("sensor.fine", "80"))
+    assert [b["id"] for b in make_home({"/api/template": FakeResponse(json.dumps(rows))}).batteries()] == ["sensor.fine"]
+
+
+def test_a_decimal_level_is_read_and_other_units_are_left_out(make_home):
+    rows = [_rendered_battery("sensor.mac", "15.0"), _rendered_battery("sensor.cell", "3.1", unit="V"),
+            _rendered_battery("sensor.bare", "50", unit=None)]
+    found = make_home({"/api/template": FakeResponse(json.dumps(rows))}).batteries()
+    assert [(b["id"], b["level"]) for b in found] == [("sensor.mac", 15.0)]
+
+
+def test_a_battery_with_no_device_is_named_by_its_friendly_name(make_home):
+    row = _rendered_battery("sensor.spare", "70", friendly_name="Spare", device=None, device_name=None,
+                            device_name_by_user=None, maker=None, model=None, charging=None)
+    battery, = make_home({"/api/template": FakeResponse(json.dumps([row]))}).batteries()
+    assert (battery["name"], battery["device"], battery["maker"], battery["model"], battery["charging"]) == \
+        ("Spare", None, None, None, None)
+    unnamed = _rendered_battery(device_name_by_user=None)
+    assert make_home({"/api/template": FakeResponse(json.dumps([unnamed]))}).batteries()[0]["name"] == "SM-S938B"
+
+
+def test_people_come_with_their_trackers_devices(make_home):
+    rows = [{"entity_id": "person.nathaniel", "state": "not_home", "devices": ["dev25", "devwatch"]},
+            {"entity_id": "person.guest", "state": "home", "devices": []}]
+    home = make_home({"/api/template": FakeResponse(json.dumps(rows))})
+    assert home.people() == [{"id": "person.nathaniel", "state": "not_home", "devices": ["dev25", "devwatch"]},
+                             {"id": "person.guest", "state": "home", "devices": []}]
+    assert "states.person" in home._session.requests[0][2]["json"]["template"]
+
+
+@pytest.mark.parametrize("ask", ["batteries", "people"])
+@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("", status=403),
+                                    FakeResponse("<html>not JSON</html>")])
+def test_a_refused_template_raises_as_for_the_lights(make_home, ask, answer):
+    with pytest.raises((requests.RequestException, ValueError)):
+        getattr(make_home({"/api/template": answer}), ask)()

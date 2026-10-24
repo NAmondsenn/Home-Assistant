@@ -38,6 +38,7 @@ added through its Google Calendar integration.
 
 import json
 import logging
+import math
 import re
 from datetime import date, datetime, time as day_time, timedelta
 from typing import Dict, List, Optional, Sequence
@@ -139,6 +140,68 @@ LIGHTS_TEMPLATE = """
   }] -%}
 {%- endfor -%}
 {{ found.lights | tojson }}
+"""
+
+# Renders every battery sensor as JSON, with what its device says of it - e.g.
+# [{"entity_id": "sensor.s25_ultra_battery_level", "state": "46", "unit": "%", "changed":
+# 1761200000.0, "friendly_name": "S25 Ultra Battery level", "device": "abc123", "device_name":
+# "SM-S938B", "device_name_by_user": "s25-ultra", "maker": "samsung", "model": "SM-S938B",
+# "charging": "discharging"}]. Only what Home Assistant has is rendered: whether the state is
+# a level, and in percent, is left to batteries(). A sensor made by a template has no device,
+# so those come out as null. The charging entity is the device's binary_sensor of device class
+# battery_charging if it has one, else its sensor whose id ends in battery_state - the phone has
+# the second, saying "charging", "discharging" or "full".
+BATTERIES_TEMPLATE = """
+{%- set found = namespace(batteries=[]) -%}
+{%- for battery in states.sensor | selectattr('attributes.device_class', 'eq', 'battery') -%}
+  {%- set device = device_id(battery.entity_id) -%}
+  {%- set charging = namespace(state=none, fallback=none) -%}
+  {%- if device -%}
+    {%- for entity in device_entities(device) -%}
+      {%- if is_state_attr(entity, 'device_class', 'battery_charging') and entity.startswith('binary_sensor.') -%}
+        {%- set charging.state = states(entity) -%}
+      {%- elif entity.startswith('sensor.') and entity.endswith('battery_state') -%}
+        {%- set charging.fallback = states(entity) -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {%- set found.batteries = found.batteries + [{
+    'entity_id': battery.entity_id,
+    'state': battery.state,
+    'unit': battery.attributes.get('unit_of_measurement'),
+    'changed': battery.last_changed | as_timestamp,
+    'friendly_name': battery.attributes.get('friendly_name'),
+    'device': device,
+    'device_name': device_attr(device, 'name') if device else none,
+    'device_name_by_user': device_attr(device, 'name_by_user') if device else none,
+    'maker': device_attr(device, 'manufacturer') if device else none,
+    'model': device_attr(device, 'model') if device else none,
+    'charging': charging.state if charging.state is not none else charging.fallback
+  }] -%}
+{%- endfor -%}
+{{ found.batteries | tojson }}
+"""
+
+# Renders every person as JSON - e.g. [{"entity_id": "person.nathaniel", "state": "home",
+# "devices": ["abc123"]}] - with the device ids of the trackers which say where they are.
+# A tracker with no device, such as one made in YAML, has none to name and is left out.
+PEOPLE_TEMPLATE = """
+{%- set found = namespace(people=[]) -%}
+{%- for person in states.person -%}
+  {%- set devices = namespace(ids=[]) -%}
+  {%- for tracker in person.attributes.get('device_trackers') or [] -%}
+    {%- set device = device_id(tracker) -%}
+    {%- if device -%}
+      {%- set devices.ids = devices.ids + [device] -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- set found.people = found.people + [{
+    'entity_id': person.entity_id,
+    'state': person.state,
+    'devices': devices.ids
+  }] -%}
+{%- endfor -%}
+{{ found.people | tojson }}
 """
 
 # What the settings page may switch, and run, by entity id. A light can't let anyone
@@ -443,6 +506,68 @@ class HomeAssistant:
         """
         found = self._template(LIGHTS_TEMPLATE, timeout=timeout)
         return [_light(state) for state in json.loads(found)]
+
+    def batteries(self, timeout: Optional[float] = None) -> List[Dict]:
+        """
+        Every battery there is that Home Assistant can give a level for, with what its
+        device is and whether it's charging.
+
+        Args:
+            timeout: Seconds to wait for Home Assistant, or None for REQUEST_TIMEOUT.
+
+        Returns:
+            One dict for each sensor of device class battery that reads in percent and
+            has a level, with "id" (e.g. "sensor.s25_ultra_battery_level"), "name" (the
+            device's own name for it, else its name, else the sensor's friendly name),
+            "level" (a float), "changed" (when the level last changed, in epoch
+            seconds), "device" (its id, or None), "maker" and "model" (or None) and
+            "charging" (its device's charging state as Home Assistant has it, e.g.
+            "discharging", or None). A sensor which is unavailable, unknown, not a number
+            or not in percent is left out - never taken as 0%, which would be a warning
+            for nothing.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down - see _template.
+            ValueError: If it didn't answer with the batteries.
+        """
+        found = []
+        for state in json.loads(self._template(BATTERIES_TEMPLATE, timeout=timeout)):
+            if state["unit"] != "%":
+                continue
+            try:
+                level = float(state["state"])
+            except ValueError:
+                continue
+            # float() reads "nan" and "inf", which no battery means.
+            if not math.isfinite(level):
+                continue
+            found.append({"id": state["entity_id"],
+                          "name": state["device_name_by_user"] or state["device_name"] or state["friendly_name"]
+                                  or state["entity_id"],
+                          "level": level, "changed": state["changed"], "device": state["device"],
+                          "maker": state["maker"], "model": state["model"], "charging": state["charging"]})
+        return found
+
+    def people(self, timeout: Optional[float] = None) -> List[Dict]:
+        """
+        Everyone Home Assistant has as a person, and where they are.
+
+        Args:
+            timeout: Seconds to wait for Home Assistant, or None for REQUEST_TIMEOUT.
+
+        Returns:
+            One dict for each, with "id" (e.g. "person.nathaniel"), "state" (e.g.
+            "home", "not_home" or the name of a zone) and "devices" (the ids of the
+            devices of the trackers which tell where they are).
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down - see _template.
+            ValueError: If it didn't answer with the people.
+        """
+        return [{"id": person["entity_id"], "state": person["state"], "devices": person["devices"]}
+                for person in json.loads(self._template(PEOPLE_TEMPLATE, timeout=timeout))]
 
     def _in_order(self, lights: List[Dict]) -> List[Dict]:
         """
