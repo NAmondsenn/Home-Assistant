@@ -338,7 +338,7 @@ class Ntfy:
         if said:
             self._said(alert)
         else:
-            logger.info(f"Kept, but not said - there was nobody to say it to: '{alert.headline}'",
+            logger.info(f"Kept, as it wasn't said: '{alert.headline}'",
                         extra=TRANSCRIPT)
 
     def _said(self, *alerts: Alert):

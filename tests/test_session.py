@@ -1066,3 +1066,37 @@ def test_an_announcement_cut_off_by_the_satellite_going_says_it_wasnt_said(conne
     saying.join(10)
     assert results == [(False,)]
     assert _the_brain_says(session, "Again.") == (False, False)
+
+
+def test_an_overdue_chime_doesnt_lose_the_words_and_an_overdue_speech_counts_as_said(
+        connect, make_session, monkeypatch):
+    # A satellite which never says it has finished: each sound is given up on after the slack, and
+    # the words after the chime are still said - once. Said once, a battery warning isn't held and retried.
+    monkeypatch.setattr(session_module, "PLAYBACK_SLACK", 0.1)
+    satellite, pi = connect()
+    pi.finishes_nothing = True
+    session = make_session(satellite)
+    assert session.announce("Your reminder: take the bins out.") is True
+    assert len(pi.messages("play_sound")) == 1 and len(pi.messages("play_stream")) == 1
+    from voice_assistant.brain import Brain
+    brain = SimpleNamespace(session_for=lambda satellite: session)
+    assert Brain._say_battery(brain, "Your phone's battery is down to 5%.") is True
+    assert len(pi.messages("play_stream")) == 2
+
+
+def test_a_stop_during_a_battery_warning_still_counts_as_said(connect, make_session):
+    # Home Assistant's Stop, like the wake word, is the user hearing it and silencing it - saying it
+    # again would only nag.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    pi.held = {1}
+    from voice_assistant.brain import Brain
+    brain = SimpleNamespace(session_for=lambda satellite: session)
+    results = []
+    saying = threading.Thread(target=lambda: results.append(
+        Brain._say_battery(brain, "Your phone's battery is down to 5%.")), daemon=True)
+    saying.start()
+    assert wait_for(lambda: pi.messages("stream_end"))
+    session._stop_from_home_assistant()
+    saying.join(10)
+    assert results == [True]

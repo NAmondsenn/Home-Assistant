@@ -690,9 +690,12 @@ class Session:
                    builds up from quiet. The message itself is always at full volume.
 
         Returns:
-            Whether it was said to the end - not if it was dismissed, or failed, or the
-            satellite went before it had finished. A caller which must not lose it, like
-            a battery warning, sends or holds it instead.
+            Whether it was said - not if still_wanted turned False first, or it failed, or
+            the satellite went before it had finished. One the user silenced themselves,
+            with the wake word or Home Assistant's Stop, was heard, so it counts as said, as
+            does one given up on because its satellite never said it had finished. A
+            caller which must not lose it, like a battery warning, sends or holds it
+            instead when it wasn't.
         """
         # The music is held from now, before waiting for any conversation to finish,
         # so it doesn't come back in the gap between the two.
@@ -724,13 +727,14 @@ class Session:
 
             # A sound first, so the user knows the assistant is about to speak.
             if sound and self.reminder_sound_enabled:
-                if not self._play_announcement(self.speaker.play_file(
-                        str(self.brain.sounds_folder / sound), volume=volume * level, kind="announcement",
-                        start=start, length=length), still_wanted):
-                    return False
+                chimed = self._play_announcement(self.speaker.play_file(
+                    str(self.brain.sounds_folder / sound), volume=volume * level, kind="announcement",
+                    start=start, length=length), still_wanted)
+            else:
+                chimed = True
 
             if not message:
-                return True
+                return chimed
 
             # The sound lasts a few seconds, long enough for the user to start talking
             # to the assistant - or to dismiss this - before it's finished, so the
@@ -789,8 +793,9 @@ class Session:
             still_wanted: Checked while it plays - False once it's been dismissed.
 
         Returns:
-            True if it played to the end, False if it was stopped - dismissed, or given
-            up on as the satellite never said it had finished.
+            False if it was dismissed - still_wanted turned False - and True otherwise,
+            even if it was stopped by the wake word or Home Assistant's Stop, or given up
+            on as the satellite never said it had finished: the user heard what there was.
         """
         # Not counted as the session getting on (see moved_at), as this is never on
         # its own thread - so it can't hide a turn which is stuck.
@@ -801,7 +806,7 @@ class Session:
                 playback.stop()
                 return False
             if self._overdue(playback, started):
-                return False
+                break
         return True
 
     def alert(self, alert):
@@ -813,7 +818,7 @@ class Session:
             alert: The ntfy Alert.
 
         Returns:
-            Whether it was said to the end, as announce has it.
+            Whether it was said, as announce has it.
         """
         # "Send that to my phone" straight afterwards sends the whole of it.
         self.actions.last_answer = (alert.title or f"From {alert.topic}", alert.details)
