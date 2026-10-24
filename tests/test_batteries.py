@@ -1,14 +1,18 @@
 """Tests for the battery rules - what kind a device is, whether it charges, and its name."""
 
+import logging
 import threading
+import time
 
 import pytest
+import requests
 
 from voice_assistant import storage
 
 from voice_assistant.batteries import (
     Battery,
     BatteryChoices,
+    BatteryWatcher,
     charging_from,
     find,
     is_phone,
@@ -398,3 +402,246 @@ def test_a_mark_near_the_top_still_starts_over_at_full(tmp_path):
     assert _marks(choices, tablet(99)) == []
     assert _marks(choices, tablet(100)) == []
     assert _marks(choices, tablet(90)) == [("Tab S11 Ultra", 95)]
+
+
+class FakeHome:
+    """Answers batteries() and people() as Home Assistant does, from what a test sets."""
+
+    def __init__(self, found, people):
+        self.found = found
+        self.people_now = people
+        self.fails = None
+
+    def batteries(self):
+        if self.fails:
+            raise self.fails
+        return list(self.found)
+
+    def people(self):
+        return self.people_now
+
+
+def _as_found(battery, charging=None):
+    """The dict HomeAssistant.batteries() would give for a Battery made by the helpers above."""
+    return {
+        "id": battery.id, "name": battery.name, "level": battery.level, "changed": battery.changed,
+        "device": battery.device, "maker": "Apple" if battery.computer else "samsung",
+        "model": "Mac16,8" if battery.computer else "SM-S938B" if battery.phone else "SM-X930",
+        "charging": charging or ("Charging" if battery.charging else "Not Charging"), "app": True,
+    }
+
+
+class Rig:
+    """A watcher with recording fakes for saying, sending and quiet hours."""
+
+    def __init__(self, tmp_path, battery, state="home", sends=True, ntfy=True, can_say=True, quiet=False):
+        self.said, self.sent = [], []
+        self.quiet = quiet
+        self.can_say, self.sends = can_say, sends
+        people = [] if state is None else [{"id": "person.n", "state": state, "devices": ["d1", "d2", "d3"]}]
+        self.home = FakeHome([_as_found(battery)], people)
+        self.choices = _choices(tmp_path)
+        self.watcher = BatteryWatcher(
+            self.home, self.choices, self._say, self._send if ntfy else None,
+            lambda: self.quiet, check_every=0.01, stale_after=HOUR,
+        )
+
+    def _say(self, message):
+        if self.can_say:
+            self.said.append(message)
+        return self.can_say
+
+    def _send(self, message, title):
+        if self.sends:
+            self.sent.append((message, title))
+        return self.sends
+
+    def fall_to(self, battery):
+        self.home.found = [_as_found(battery)]
+        self.watcher.check(NOW)
+
+
+MAC_MESSAGE = "Your MacBook Pro's battery is down to 14%."
+
+
+def _fallen(tmp_path, battery=None, **kwargs):
+    """A rig whose battery was fine, and has now fallen under its mark."""
+    rig = Rig(tmp_path, _mac(40), **kwargs)
+    rig.watcher.check(NOW)
+    rig.fall_to(battery or _mac(14))
+    return rig
+
+
+def test_at_home_by_day_its_said_and_sent(tmp_path):
+    rig = _fallen(tmp_path)
+    assert rig.said == [MAC_MESSAGE]
+    assert rig.sent == [(MAC_MESSAGE, "Battery low")]
+
+
+def test_at_home_with_also_send_off_its_only_said(tmp_path):
+    rig = Rig(tmp_path, _mac(40))
+    rig.choices.set_also_send_when_said(False)
+    rig.watcher.check(NOW)
+    rig.fall_to(_mac(14))
+    assert rig.said == [MAC_MESSAGE]
+    assert rig.sent == []
+
+
+def test_away_its_sent(tmp_path):
+    rig = _fallen(tmp_path, state="not_home")
+    assert rig.said == []
+    assert rig.sent == [(MAC_MESSAGE, "Battery low")]
+
+
+def test_at_night_its_sent_never_said(tmp_path):
+    rig = _fallen(tmp_path, quiet=True)
+    assert rig.said == []
+    assert rig.sent == [(MAC_MESSAGE, "Battery low")]
+
+
+def test_unsure_where_the_user_is_its_sent(tmp_path):
+    rig = _fallen(tmp_path, state=None)
+    assert rig.said == []
+    assert rig.sent == [(MAC_MESSAGE, "Battery low")]
+
+
+def test_a_failed_send_by_day_is_said(tmp_path):
+    rig = _fallen(tmp_path, state="not_home", sends=False)
+    assert rig.said == [MAC_MESSAGE]
+    assert rig.choices.held() == {}
+
+
+def test_a_failed_send_at_night_is_held_then_said_if_still_true(tmp_path):
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    assert rig.said == [] and rig.choices.held() == {_mac(14).id: 15}
+    rig.watcher.check(NOW)
+    assert rig.said == [], "still quiet"
+    rig.quiet = False
+    rig.watcher.check(NOW)
+    assert rig.said == [MAC_MESSAGE]
+    assert rig.choices.held() == {}
+    rig.watcher.check(NOW)
+    assert rig.said == [MAC_MESSAGE], "said once"
+
+
+def test_a_held_warning_no_longer_true_is_dropped(tmp_path):
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    rig.quiet = False
+    rig.fall_to(_mac(60, charging=True))
+    assert rig.said == [] and rig.sent == []
+    assert rig.choices.held() == {}
+
+
+def test_a_held_warning_which_couldnt_be_said_stays_held(tmp_path):
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True, can_say=False)
+    rig.quiet = False
+    rig.watcher.check(NOW)
+    assert rig.choices.held() == {_mac(14).id: 15}
+    rig.can_say = True
+    rig.watcher.check(NOW)
+    assert rig.said == [MAC_MESSAGE] and rig.choices.held() == {}
+
+
+def test_a_held_warning_survives_a_restart(tmp_path):
+    _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    assert _choices(tmp_path).held() == {_mac(14).id: 15}
+
+
+def test_the_phones_own_warning_is_only_said(tmp_path):
+    rig = Rig(tmp_path, _phone(40))
+    rig.watcher.check(NOW)
+    rig.fall_to(_phone(4))
+    assert rig.said == ["Your S25 Ultra's battery is down to 4%."]
+    assert rig.sent == []
+
+
+def test_the_phones_own_warning_away_is_left_to_the_phone(tmp_path):
+    rig = Rig(tmp_path, _phone(40), state="not_home")
+    rig.watcher.check(NOW)
+    rig.fall_to(_phone(4))
+    assert rig.said == [] and rig.sent == []
+    assert rig.choices.held() == {}
+
+
+def test_with_no_satellite_its_sent(tmp_path):
+    rig = _fallen(tmp_path, can_say=False)
+    assert rig.sent == [(MAC_MESSAGE, "Battery low")]
+    assert rig.choices.held() == {}
+
+
+def test_with_no_ntfy_its_said_by_day_and_held_at_night(tmp_path):
+    rig = _fallen(tmp_path, ntfy=False)
+    assert rig.said == [MAC_MESSAGE]
+    (tmp_path / "night").mkdir()
+    night = _fallen(tmp_path / "night", ntfy=False, quiet=True)
+    assert night.said == [] and night.choices.held() == {_mac(14).id: 15}
+
+
+def test_the_person_with_the_low_device_decides_home(tmp_path):
+    rig = Rig(tmp_path, _mac(40))
+    rig.home.people_now = [
+        {"id": "person.other", "state": "home", "devices": ["d9"]},
+        {"id": "person.n", "state": "not_home", "devices": ["d1"]},
+    ]
+    assert rig.watcher.home_now(_mac(14)) is False
+    rig.home.people_now[0]["devices"] = ["d1"]
+    rig.home.people_now[1]["devices"] = ["d9"]
+    assert rig.watcher.home_now(_mac(14)) is True
+    # A device nobody owns is taken to be the first person's.
+    assert rig.watcher.home_now(_bare(14)) is True
+
+
+def test_home_now_is_unsure_with_no_person_or_an_error(tmp_path):
+    rig = Rig(tmp_path, _mac(40), state=None)
+    assert rig.watcher.home_now(_mac(14)) is None
+    rig.home.people = lambda: (_ for _ in ()).throw(requests.ConnectionError("down"))
+    assert rig.watcher.home_now(_mac(14)) is None
+
+
+def test_a_check_which_fails_doesnt_stop_the_next(tmp_path, caplog):
+    rig = Rig(tmp_path, _mac(14))
+    calls = []
+    real = rig.watcher.check
+
+    def flaky(now):
+        calls.append(now)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        real(now)
+
+    rig.watcher.check = flaky
+    with caplog.at_level(logging.WARNING):
+        rig.watcher.start()
+        deadline = time.time() + 5
+        while len(calls) < 3 and time.time() < deadline:
+            time.sleep(0.01)
+        rig.watcher.stop()
+    assert len(calls) >= 3
+    assert rig.said == [MAC_MESSAGE]
+    assert "boom" in caplog.text
+    assert not [t for t in threading.enumerate() if t.name == "batteries"]
+
+
+def test_home_assistant_down_is_logged_once(tmp_path, caplog):
+    rig = Rig(tmp_path, _mac(40))
+    with caplog.at_level(logging.INFO):
+        for error in (requests.ConnectionError("down"), ValueError("not json"), KeyError("x"), TypeError("y")):
+            rig.home.fails = error
+            rig.watcher._pass()
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+        rig.home.fails = None
+        rig.watcher._pass()
+        assert "answers again" in caplog.text
+        rig.home.fails = requests.ConnectionError("down again")
+        rig.watcher._pass()
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
+
+def test_stopping_is_prompt_and_leaves_no_thread(tmp_path):
+    rig = Rig(tmp_path, _mac(40))
+    rig.watcher._check_every = 3600
+    rig.watcher.start()
+    started = time.time()
+    rig.watcher.stop()
+    assert time.time() - started < 2
+    assert not [t for t in threading.enumerate() if t.name == "batteries"]

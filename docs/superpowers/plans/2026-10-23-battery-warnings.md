@@ -128,11 +128,12 @@
     - `reset(battery_id: str)` - forgets the device's own enabled, marks and send_to_phone, keeps its warned marks, and saves;
     - `set_also_send_when_said(on: bool)` - this saves too;
     - `due(batteries: List[Battery]) -> List[BatteryWarning]` - which warnings to give now. It updates and saves the warned marks.
+    - Task 4 adds the held warnings, kept in the same file: `hold(battery_id: str, mark: int)` (saves; one held warning for each device), `held() -> Dict[str, int]` (sensor id to mark) and `release(battery_id: str)` (saves).
     - One lock inside `BatteryChoices` guards its state and every save, as the watcher thread (`due`) and the settings page's thread (`set`, `reset`, `set_also_send_when_said`) share it.
-  - The rule `due` follows, for each enabled battery:
-    - if it's charging, its warned marks are cleared;
-    - if its level is at or above its highest mark + 10, they're cleared too, whatever its charging state;
-    - otherwise, take the marks it's under (level < mark) which haven't warned. If there are any, there's one `BatteryWarning` for the lowest of them, and all the marks it's under are marked as warned.
+  - The rule `due` follows, for each battery:
+    - if it's charging, its warned marks are cleared, enabled or not (a charge while it was switched off isn't missed);
+    - if its level is at or above its start-over level, `min(highest mark + 10, 100)`, they're cleared too, whatever its charging state;
+    - otherwise, only an enabled battery warns: take the marks it's under (level < mark) which haven't warned. If there are any, there's one `BatteryWarning` for the lowest of them, and all the marks it's under are marked as warned. A switched-off battery's warned marks are left as they are.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_falling_past_a_mark_warns_once`: Mac at 16 then 15 → nothing, then one warning at 15. A third check at 15 gives nothing;
