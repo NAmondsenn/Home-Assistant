@@ -688,23 +688,28 @@ class Session:
             length: Seconds of the sound to play, or None for all of it.
             level: How loud the sound plays, as a share of the volume - an alarm
                    builds up from quiet. The message itself is always at full volume.
+
+        Returns:
+            Whether it was said to the end - not if it was dismissed, or failed, or the
+            satellite went before it had finished. A caller which must not lose it, like
+            a battery warning, sends or holds it instead.
         """
         # The music is held from now, before waiting for any conversation to finish,
         # so it doesn't come back in the gap between the two.
         self.music.hold()
         try:
             with self._announcing:
-                self._announce_in_turn(message, sound, boost, still_wanted, start, length, level)
+                return self._announce_in_turn(message, sound, boost, still_wanted, start, length, level)
         finally:
             # Let back a few seconds later rather than straight away, since a timer's
             # next round comes three seconds after this one.
             self.music.release(after=5)
 
     def _announce_in_turn(self, message, sound, boost, still_wanted, start, length, level):
-        """The body of announce, run once any other announcement has finished."""
+        """The body of announce, run once any other announcement has finished. Returns what it does."""
         # Waits for any conversation to finish before making any announcements.
         if not self._wait_for_turn(still_wanted):
-            return
+            return False
 
         # Anything which goes off by itself uses the alarm volume, so it can stay
         # loud even when the assistant's voice is turned down - and once boosted,
@@ -719,31 +724,36 @@ class Session:
 
             # A sound first, so the user knows the assistant is about to speak.
             if sound and self.reminder_sound_enabled:
-                self._play_announcement(self.speaker.play_file(
-                    str(self.brain.sounds_folder / sound), volume=volume * level, kind="announcement",
-                    start=start, length=length), still_wanted)
+                if not self._play_announcement(self.speaker.play_file(
+                        str(self.brain.sounds_folder / sound), volume=volume * level, kind="announcement",
+                        start=start, length=length), still_wanted):
+                    return False
 
             if not message:
-                return
+                return True
 
             # The sound lasts a few seconds, long enough for the user to start talking
             # to the assistant - or to dismiss this - before it's finished, so the
             # message waits its turn again rather than talking over them.
             if not self._wait_for_turn(still_wanted):
-                return
+                return False
 
             # Shown as speaking only between conversations - in one, the conversation
             # itself says what the assistant's doing.
             if self._idle.is_set():
                 self.activity = "speaking"
             tts = self.brain.tts
-            self._play_announcement(self.speaker.play_stream(
+            said = self._play_announcement(self.speaker.play_stream(
                 tts.stream(message), tts.sample_rate, volume=volume, kind="announcement"),
                 still_wanted)
             if self._idle.is_set():
                 self.activity = "idle"
+            # A satellite which went part way through ends its playbacks too, so they
+            # look finished - it isn't said unless it's still there at the end.
+            return said and self.satellite.connected
         except Exception as e:
             logger.error(f"Announcement failed: {e}")
+            return False
 
     def _wait_for_turn(self, still_wanted=None):
         """
@@ -777,6 +787,10 @@ class Session:
         Args:
             playback: The sound, already started.
             still_wanted: Checked while it plays - False once it's been dismissed.
+
+        Returns:
+            True if it played to the end, False if it was stopped - dismissed, or given
+            up on as the satellite never said it had finished.
         """
         # Not counted as the session getting on (see moved_at), as this is never on
         # its own thread - so it can't hide a turn which is stuck.
@@ -785,9 +799,10 @@ class Session:
             if still_wanted is not None and not still_wanted():
                 logger.info("Dismissed part way through, so it's stopped")
                 playback.stop()
-                return
+                return False
             if self._overdue(playback, started):
-                return
+                return False
+        return True
 
     def alert(self, alert):
         """
@@ -796,10 +811,13 @@ class Session:
 
         Args:
             alert: The ntfy Alert.
+
+        Returns:
+            Whether it was said to the end, as announce has it.
         """
         # "Send that to my phone" straight afterwards sends the whole of it.
         self.actions.last_answer = (alert.title or f"From {alert.topic}", alert.details)
-        self.announce(f"{alert.topic.capitalize()}: {alert.headline}")
+        return self.announce(f"{alert.topic.capitalize()}: {alert.headline}")
 
     def run_routine(self, routine):
         """

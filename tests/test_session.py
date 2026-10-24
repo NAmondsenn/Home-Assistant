@@ -1020,3 +1020,49 @@ def test_a_sessions_actions_read_batteries_from_the_brains_watcher(brain, make_s
     # One watcher for the brain, so a spoken answer and a warning are the same reading.
     brain.batteries = object()
     assert make_session().actions.batteries is brain.batteries
+
+
+def _the_brain_says(session, message):
+    """
+    What Brain._say_battery and Brain._alert return with this real session as the default
+    satellite's - they need nothing else of a brain, and it's imported here since the
+    session mustn't need it.
+    """
+    from voice_assistant.brain import Brain
+    from voice_assistant.ntfy import Alert
+
+    brain = SimpleNamespace(session_for=lambda satellite: session)
+    return Brain._say_battery(brain, message), Brain._alert(brain, Alert("homelab", message, ""))
+
+
+def test_an_announcement_says_whether_it_was_said_to_the_end(connect, make_session):
+    session = make_session(connect()[0])
+    assert session.announce("Your phone's battery is down to 5%.") is True
+
+
+def test_an_announcement_whose_playback_failed_says_it_wasnt_said(connect, make_session):
+    session = make_session(connect()[0])
+
+    def fail(*args, **kwargs):
+        raise OSError("couldn't play it")
+
+    session.speaker.play_stream = fail
+    assert session.announce("Your phone's battery is down to 5%.") is False
+    # So a battery warning is held for later, and an alert is kept for "any notifications?".
+    assert _the_brain_says(session, "Your phone's battery is down to 5%.") == (False, False)
+
+
+def test_an_announcement_cut_off_by_the_satellite_going_says_it_wasnt_said(connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    # Held playing, as a satellite part way through a sentence would be.
+    pi.held = {1}
+    results = []
+    saying = threading.Thread(target=lambda: results.append(
+        (session.announce("Your phone's battery is down to 5%."),)), daemon=True)
+    saying.start()
+    assert wait_for(lambda: pi.messages("stream_end"))
+    pi.go()
+    saying.join(10)
+    assert results == [(False,)]
+    assert _the_brain_says(session, "Again.") == (False, False)

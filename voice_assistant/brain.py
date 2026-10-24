@@ -671,15 +671,18 @@ class Brain:
             alert: The ntfy Alert.
 
         Returns:
-            Whether it was said. One which wasn't, with the default satellite away,
-            is kept for "any notifications?".
+            Whether it was said to the end. One which wasn't, with the default
+            satellite away or cut off, is kept for "any notifications?".
         """
         session = self.session_for(None)
         if session is None:
             logger.warning(f"An alert from {alert.topic} wasn't said, as the default satellite isn't connected, "
                            f"so it's kept for \"any notifications?\"")
             return False
-        session.alert(alert)
+        if not session.alert(alert):
+            logger.warning(f"An alert from {alert.topic} wasn't said to the end, so it's kept for "
+                           f"\"any notifications?\"")
+            return False
         return True
 
     def _say_battery(self, message: str) -> bool:
@@ -690,20 +693,23 @@ class Brain:
             message: What to say, e.g. "Your MacBook Pro's battery is down to 15%."
 
         Returns:
-            Whether it was said - it wasn't with the default satellite away, or if saying it
-            went wrong, and the watcher then sends it or holds it instead. Never raises.
+            Whether it was said to the end - it wasn't with the default satellite away, or
+            if saying it failed or was cut off, and the watcher then sends it or holds it
+            instead. Never raises.
         """
         session = self.session_for(None)
         if session is None:
             logger.warning("A battery warning wasn't said, as the default satellite isn't connected")
             return False
         try:
-            session.announce(message)
+            said = session.announce(message)
         except Exception:
             # The satellite going away mid-sentence, most likely.
             logger.exception("A battery warning couldn't be said")
             return False
-        return True
+        if not said:
+            logger.warning("A battery warning wasn't said to the end")
+        return bool(said)
 
     def _unanswered(self, timer, kind, satellite=None):
         """

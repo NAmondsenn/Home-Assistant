@@ -959,7 +959,7 @@ class ActionExecutor:
     # Notifications
 
     @tool(
-        "Send something to the user's phone, as a notification, as a notification - for 'send that to my phone', "
+        "Send something to the user's phone, as a notification - for 'send that to my phone', "
         "'text me the recipe', 'put the shopping list on my phone'. Write out in full what "
         "they'd want to read there: it isn't said out loud, so it can be longer and more "
         "detailed than a spoken reply. Leave text out to send exactly what you last said.",

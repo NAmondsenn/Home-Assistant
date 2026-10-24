@@ -114,6 +114,8 @@ class FakeSession:
         self.number = sum(1 for event in happened if event[0] == "made") + 1
         happened.append(("made", satellite.name, self.number))
         self.announced, self.alerts, self.routines = [], [], []
+        # What announce and alert return, as the real ones do - whether it was said to the end.
+        self.said = True
         self.volume, self.music_player, self.actions, self.home = (object() for _ in range(4))
         self.closed = threading.Event()
         # Never stuck, unless a test says it is.
@@ -135,9 +137,11 @@ class FakeSession:
     def announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None,
                  start=0.0, length=None, level=1.0):
         self.announced.append(message)
+        return self.said
 
     def alert(self, alert):
         self.alerts.append(alert.headline)
+        return self.said
 
     def run_routine(self, routine):
         self.routines.append(routine["name"])
@@ -1084,3 +1088,12 @@ def test_the_battery_watcher_runs_while_the_brain_does_and_stops_with_it(brain, 
     brain.run()
     assert running == [True]
     assert not any(thread.name == "batteries" for thread in threading.enumerate())
+
+
+def test_a_warning_or_alert_not_said_to_the_end_counts_as_not_said(brain, connect):
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    bedroom.said = False
+    assert brain._say_battery("Your phone's battery is down to 5%.") is False
+    assert brain._alert(Alert("homelab", "Disk nearly full", "")) is False
