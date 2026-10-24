@@ -539,6 +539,11 @@ class BatteryWatcher:
         self._thread: Optional[threading.Thread] = None
 
     @property
+    def choices(self) -> BatteryChoices:
+        """The owner's choices, which the settings page changes."""
+        return self._choices
+
+    @property
     def stale_after(self) -> float:
         """Seconds old a reading may be and still count as current - what a spoken answer needs, too."""
         return self._stale_after

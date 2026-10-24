@@ -38,6 +38,8 @@ from urllib.parse import parse_qs, urlsplit
 import yaml
 
 from voice_assistant import paths, storage, timeline
+from voice_assistant.batteries import HOME_FAILURES
+from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, Config, ConfigError, check
 
 # Logger setup
@@ -411,6 +413,45 @@ class SettingsPage:
             return {"available": False}
         return {"available": True, "area": home.area, **home.overview()}
 
+    def batteries_state(self) -> Dict:
+        """
+        Every battery Home Assistant has, with what the user chose for it - read fresh
+        each time, as the choices are for the devices it shows now.
+
+        Returns:
+            {"available": True, "also_send_when_said": ..., "devices": [...]} in name
+            order, each device with its id, name, level, charging state, "stale" (how
+            old its reading is, in words, if it's gone stale), kind, enabled, marks,
+            default_marks, send_to_phone and "changed" (whether any of those differ
+            from the defaults, which is when the page offers to put them back). Else
+            {"available": False, "message": ...}.
+        """
+        watcher = self.brain.batteries
+        if watcher is None:
+            return {"available": False, "message": "Nova isn't connected to Home Assistant. "
+                    "Add its address in Settings, and its token in Keys."}
+        try:
+            found = watcher.read()
+        except HOME_FAILURES as e:
+            logger.warning(f"Settings page: couldn't read the batteries: {e}")
+            return {"available": False, "message": "Nova can't reach Home Assistant just now."}
+        choices = watcher.choices
+        now = time.time()
+        devices = []
+        for battery in sorted(found, key=lambda b: (b.name.lower(), b.id)):
+            age = now - battery.changed
+            marks, default_marks = choices.marks_for(battery), choices.default_marks(battery)
+            enabled, send_to_phone = choices.enabled(battery.id), choices.send_to_phone(battery)
+            devices.append({
+                "id": battery.id, "name": battery.name, "level": round(battery.level),
+                "charging": battery.charging,
+                "stale": format_duration(age) if age > watcher.stale_after else None,
+                "kind": battery.kind, "enabled": enabled, "marks": marks, "default_marks": default_marks,
+                "send_to_phone": send_to_phone,
+                "changed": (marks != default_marks or not enabled or send_to_phone != (not battery.phone)),
+            })
+        return {"available": True, "also_send_when_said": choices.also_send_when_said, "devices": devices}
+
     def _saved(self):
         """The settings as saved now - which take effect at the next restart - and any problem reading them."""
         try:
@@ -634,6 +675,69 @@ class SettingsPage:
         return session.home.set_light(str(entity_id), on=on, brightness=None if brightness is None else int(brightness),
                                    hue=hue, saturation=saturation, kelvin=kelvin)
 
+    def set_battery(self, battery_id: str, who: str, enabled=None, marks=None, send_to_phone=None,
+                    reset: bool = False) -> Dict:
+        """
+        Changes what's chosen for a battery - see BatteryChoices - or, with reset, puts
+        its defaults back. It takes effect at the next check, with no restart. The
+        types are checked here, as bool("false") would be True.
+
+        Args:
+            battery_id: The battery's sensor id. Home Assistant has to show it just now,
+                as its kind says how many marks it may have.
+            who: The login making the change.
+            enabled: Whether its warnings are on, or None to leave it.
+            marks: Its marks, a list of whole numbers, or None to leave them.
+            send_to_phone: Whether its warnings go to the phone, or None to leave it.
+            reset: Whether to forget the device's own choices instead.
+
+        Returns:
+            {"success": ..., "message": ...}
+        """
+        if (any(value is not None and not isinstance(value, bool) for value in (enabled, send_to_phone))
+                or not isinstance(reset, bool)
+                or (marks is not None and not isinstance(marks, list))):
+            return {"success": False, "message": "That didn't make sense."}
+        watcher = self.brain.batteries
+        if watcher is None:
+            return {"success": False, "message": "Nova isn't connected to Home Assistant."}
+        try:
+            battery = next((b for b in watcher.read() if b.id == str(battery_id)), None)
+        except HOME_FAILURES as e:
+            logger.warning(f"Settings page: couldn't read the batteries: {e}")
+            return {"success": False, "message": "Nova can't reach Home Assistant just now."}
+        if battery is None:
+            return {"success": False, "message": "Home Assistant isn't showing that battery just now."}
+        with self._saving:
+            try:
+                if reset:
+                    watcher.choices.reset(battery.id)
+                else:
+                    watcher.choices.set(battery, enabled=enabled, marks=marks, send_to_phone=send_to_phone)
+            except ValueError as e:
+                return {"success": False, "message": str(e)}
+            except OSError as e:
+                logger.error(f"Settings page: couldn't save a battery change: {e}")
+                return {"success": False, "message": "Couldn't save that."}
+        logger.info(f"Settings page: {who} changed the warnings for {battery.id}")
+        return {"success": True, "message": f"Saved. It's used straight away for {battery.name}."}
+
+    def set_battery_also_send(self, on, who: str) -> Dict:
+        """Sets whether a battery level Nova says aloud is also sent to the phone."""
+        if not isinstance(on, bool):
+            return {"success": False, "message": "That didn't make sense."}
+        watcher = self.brain.batteries
+        if watcher is None:
+            return {"success": False, "message": "Nova isn't connected to Home Assistant."}
+        with self._saving:
+            try:
+                watcher.choices.set_also_send_when_said(on)
+            except OSError as e:
+                logger.error(f"Settings page: couldn't save a battery change: {e}")
+                return {"success": False, "message": "Couldn't save that."}
+        logger.info(f"Settings page: {who} {'switched on' if on else 'switched off'} sending what Nova says about batteries")
+        return {"success": True, "message": "Saved. It's used straight away."}
+
     def run(self, entity_id: str, who: str, satellite: Optional[str] = None) -> Dict:
         """Runs a script or sets a scene - see HomeAssistant.run."""
         session, name = self._session(satellite)
@@ -689,6 +793,9 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/light": lambda page, body, who: page.set_light(
         body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
         body.get("kelvin"), body.get("satellite")),
+    "/api/batteries": lambda page, body, who: page.set_battery(
+        body["id"], who, body.get("enabled"), body.get("marks"), body.get("send_to_phone"), body.get("reset", False)),
+    "/api/batteries/also": lambda page, body, who: page.set_battery_also_send(body["on"], who),
     "/api/run": lambda page, body, who: page.run(body["id"], who, body.get("satellite")),
     "/api/routines": lambda page, body, who: page.save_routine(body["routine"], who),
     "/api/routines/remove": lambda page, body, who: page.remove_routine(body["id"], who),
@@ -726,6 +833,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(page.music_state(satellite))
         elif path == "/api/home":
             self._send_json(page.home_state(satellite))
+        elif path == "/api/batteries":
+            self._send_json(page.batteries_state())
         elif path == "/api/cover":
             # Whatever's playing now - the page adds its id only so a new one is fetched.
             cover = page.cover(satellite)

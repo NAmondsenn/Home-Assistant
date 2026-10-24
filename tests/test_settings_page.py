@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from voice_assistant import paths
+from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant import settings_page as page_module
 from voice_assistant.config import Config
 from voice_assistant.routines import Routines
@@ -178,7 +179,7 @@ class FakeBrain:
         self.sessions = sessions
         self.known = list(sessions) if known is None else known
         self.clock, self.memory = FakeClock(), FakeMemory()
-        self.ntfy = self.stt = self.routines = None
+        self.ntfy = self.stt = self.routines = self.batteries = None
         self.ran = []
         for name, part in parts.items():
             setattr(self, name, part)
@@ -800,3 +801,165 @@ def test_restarting_asks_the_brain_to_stop_for_a_restart(files):
     page.brain.restart = lambda: asked.append("restart") or "Restarting."
     page._restart = None
     assert page.restart(LOGIN) == {"success": True, "message": "Restarting."} and asked == ["restart"]
+
+
+# The batteries
+
+BATTERIES_NOW = 1_800_000_000.0
+
+
+class FakeBatteryHome:
+    """Answers batteries() as Home Assistant does, from what a test sets."""
+
+    def __init__(self):
+        self.fails = None
+        self.found = [
+            {"id": "sensor.macbook_battery_level", "name": "macbook", "level": 40, "changed": BATTERIES_NOW,
+             "device": "d1", "maker": "Apple", "model": "Mac16,8", "charging": "Not Charging", "app": True},
+            {"id": "sensor.s25_battery_level", "name": "s25", "level": 80, "changed": BATTERIES_NOW - 7200,
+             "device": "d2", "maker": "samsung", "model": "SM-S938B", "charging": "Charging", "app": True},
+        ]
+
+    def batteries(self):
+        if self.fails:
+            raise self.fails
+        return list(self.found)
+
+    def people(self):
+        return []
+
+
+def _watched(tmp_path):
+    """A page over a real battery watcher, which a test can find fault in Home Assistant with."""
+    home = FakeBatteryHome()
+    choices = BatteryChoices(str(tmp_path / "batteries.json"), mobile_marks=[5], other_marks=[15, 5])
+    watcher = BatteryWatcher(home, choices, lambda message: True, None, lambda: False,
+                             check_every=60, stale_after=3600)
+    return _page(batteries=watcher), home, choices
+
+
+def _device(page, battery_id):
+    return next(d for d in page.batteries_state()["devices"] if d["id"] == battery_id)
+
+
+MAC = "sensor.macbook_battery_level"
+PHONE = "sensor.s25_battery_level"
+
+
+def test_the_batteries_are_listed_with_their_choices(files, tmp_path, monkeypatch):
+    page, home, choices = _watched(tmp_path)
+    monkeypatch.setattr(page_module.time, "time", lambda: BATTERIES_NOW)
+    state = page.batteries_state()
+    assert state["available"] is True and state["also_send_when_said"] is True
+    # In name order, each with its choices and the age of a reading which has gone stale.
+    assert [d["id"] for d in state["devices"]] == [MAC, PHONE]
+    mac, phone = state["devices"]
+    assert mac == {"id": MAC, "name": mac["name"], "level": 40, "charging": False, "stale": None, "kind": "other",
+                   "enabled": True, "marks": [15, 5], "default_marks": [15, 5], "send_to_phone": True,
+                   "changed": False}
+    assert phone["kind"] == "mobile" and phone["charging"] is True and phone["stale"] == "2 hours"
+    assert phone["marks"] == [5] and phone["send_to_phone"] is False
+    choices.set(page.brain.batteries.read()[0], marks=[30, 10])
+    assert _device(page, MAC)["marks"] == [30, 10] and _device(page, MAC)["default_marks"] == [15, 5]
+    assert _device(page, MAC)["changed"] is True
+
+
+def test_a_batterys_warnings_can_be_switched_off_and_it_works_straight_away(files, tmp_path, caplog):
+    page, home, choices = _watched(tmp_path)
+    batteries = page.brain.batteries.read()
+    home.found[0]["level"] = 10
+    with caplog.at_level(logging.INFO):
+        result = page.set_battery(MAC, LOGIN, enabled=False)
+    assert result["success"] and "restart" not in result["message"].lower()
+    assert LOGIN in caplog.text and MAC in caplog.text
+    assert not _device(page, MAC)["enabled"]
+    assert choices.due(page.brain.batteries.read()) == []
+    page.set_battery(MAC, LOGIN, enabled=True)
+    assert [w.mark for w in choices.due(page.brain.batteries.read())] == [15]
+    # Marks and the phone switch work the same way, and the defaults come back.
+    assert page.set_battery(PHONE, LOGIN, marks=[50], send_to_phone=True)["success"]
+    assert _device(page, PHONE)["marks"] == [50] and _device(page, PHONE)["send_to_phone"] is True
+    assert page.set_battery(PHONE, LOGIN, reset=True)["success"]
+    assert _device(page, PHONE)["marks"] == [5] and _device(page, PHONE)["send_to_phone"] is False
+    assert len(batteries) == 2
+
+
+@pytest.mark.parametrize("marks, said", [
+    ([150], "needs two marks"), ([5, 5], "must be different"), ([5, 10, 15], "needs two marks"),
+    ([1.5, 10], "whole number"), ([0, 10], "whole number")])
+def test_marks_which_dont_make_sense_are_refused(files, tmp_path, marks, said):
+    page, home, choices = _watched(tmp_path)
+    result = page.set_battery(MAC, LOGIN, marks=marks)
+    assert not result["success"] and said in result["message"]
+    assert _device(page, MAC)["marks"] == [15, 5]
+    # One mark is too few for the Mac, and two too many for the phone.
+    assert "needs two marks" in page.set_battery(MAC, LOGIN, marks=[5])["message"]
+    assert "needs one mark" in page.set_battery(PHONE, LOGIN, marks=[5, 10])["message"]
+
+
+def test_a_battery_change_which_cant_be_understood_or_saved_is_refused(files, tmp_path, monkeypatch):
+    page, home, choices = _watched(tmp_path)
+    # In Python bool("false") is True, so nothing is coerced.
+    for bad in ({"enabled": "false"}, {"send_to_phone": 0}, {"marks": "15"}):
+        assert page.set_battery(MAC, LOGIN, **bad) == {"success": False, "message": "That didn't make sense."}
+    # A True in the marks is refused by the choices, with their own sentence.
+    assert not page.set_battery(MAC, LOGIN, marks=[True, 5])["success"]
+    assert page.set_battery_also_send("no", LOGIN)["success"] is False
+    assert choices.also_send_when_said is True
+
+    def full(*args):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(choices, "_change", full)
+    assert page.set_battery(MAC, LOGIN, enabled=False) == {"success": False, "message": "Couldn't save that."}
+    assert page.set_battery(MAC, LOGIN, reset=True) == {"success": False, "message": "Couldn't save that."}
+    assert page.set_battery_also_send(False, LOGIN) == {"success": False, "message": "Couldn't save that."}
+
+
+def test_a_battery_home_assistant_doesnt_show_just_now_is_refused(files, tmp_path):
+    page, home, choices = _watched(tmp_path)
+    result = page.set_battery("sensor.gone_battery_level", LOGIN, enabled=False)
+    assert not result["success"] and "gone_battery_level" not in choices._state["devices"]
+    import requests
+    home.fails = requests.ConnectionError("down")
+    assert not page.set_battery(MAC, LOGIN, enabled=False)["success"]
+    assert MAC not in choices._state["devices"]
+    assert page.brain.batteries is not None and _page().batteries_state()["available"] is False
+
+
+def test_also_send_when_said_can_be_switched_off(files, tmp_path):
+    page, home, choices = _watched(tmp_path)
+    assert page.set_battery_also_send(False, LOGIN)["success"]
+    assert choices.also_send_when_said is False and page.batteries_state()["also_send_when_said"] is False
+    assert page.set_battery_also_send(True, LOGIN)["success"] and choices.also_send_when_said
+
+
+def test_the_section_says_when_home_assistant_cant_be_reached(files, tmp_path):
+    import requests
+    page, home, choices = _watched(tmp_path)
+    home.fails = requests.ConnectionError("down")
+    state = page.batteries_state()
+    assert state["available"] is False and "Home Assistant" in state["message"]
+    # Nor does it with nothing to reach it with.
+    assert _page().batteries_state()["available"] is False
+    home.fails = ValueError("not JSON")
+    assert page.batteries_state()["available"] is False
+
+
+def test_a_battery_change_needs_the_pages_own_header(files, tmp_path):
+    page, home, choices = _watched(tmp_path)
+    page.start()
+    try:
+        body = {"id": MAC, "enabled": False}
+        assert _ask(page, "/api/batteries", body)[0] == 403
+        assert _ask(page, "/api/batteries/also", {"on": False})[0] == 403
+        assert _ask(page, "/api/batteries", body, X_Nova="page", Sec_Fetch_Site="cross-site")[0] == 403
+        assert choices.enabled(MAC) and choices.also_send_when_said
+        assert json.loads(_ask(page, "/api/batteries")[2])["devices"][0]["id"] == MAC
+        assert json.loads(_ask(page, "/api/batteries", body, X_Nova="page")[2])["success"]
+        assert json.loads(_ask(page, "/api/batteries/also", {"on": False}, X_Nova="page")[2])["success"]
+        assert not choices.enabled(MAC) and not choices.also_send_when_said
+        # No server error for nonsense.
+        assert json.loads(_ask(page, "/api/batteries", {"enabled": False}, X_Nova="page")[2])["success"] is False
+    finally:
+        page.stop()

@@ -20,6 +20,9 @@ const STATE_EVERY = 20000;
 const MUSIC_EVERY = 5000;
 const HOME_EVERY = 15000;
 
+// The batteries change slowly, and every look asks Home Assistant, so once a minute.
+const BATTERIES_EVERY = 60000;
+
 // The least time between volume changes sent while a slider's dragged, in
 // milliseconds - often enough for the beep to keep up with the finger, without
 // asking for every step - and between a light's, which take Home Assistant longer.
@@ -99,6 +102,9 @@ let allPlaylists = false;
 
 // What /api/home last said.
 let home = null;
+
+// What /api/batteries last said.
+let batteries = null;
 
 // Making things
 
@@ -305,6 +311,7 @@ async function live() {
     load();
     loadMusic();
     loadHome();
+    loadBatteries();
   }
   activity = now;
   showActivity();
@@ -704,6 +711,101 @@ function showHome() {
   for (const light of home.lights) lights[light.id].show(light);
   routines.hidden = false;
   drawIfChanged("routines", home.routines, showRoutines);
+}
+
+// The batteries
+
+async function loadBatteries() {
+  try {
+    const response = await fetch("/api/batteries");
+    if (!response.ok) return;
+    batteries = await response.json();
+  } catch (error) {
+    return;
+  }
+  showBatteries(batteries);
+}
+
+// Sends a change to a battery's warnings, says how it went, and shows the batteries as they are now.
+async function changeBattery(path, body) {
+  let result;
+  try {
+    result = await send(path, body);
+  } catch (error) {
+    result = { success: false, message: "Couldn't reach Nova." };
+  }
+  toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
+  await loadBatteries();
+  return result;
+}
+
+function showBatteries(state) {
+  const list = document.getElementById("batteries");
+  const also = document.getElementById("also-send");
+  if (!state.available) {
+    also.hidden = true;
+    drawIfChanged("batteries", state.message, () => list.replaceChildren(emptyRow(state.message)));
+    return;
+  }
+  also.hidden = false;
+  // A switch someone has just tapped is already as they want it, so it's only set when
+  // it differs.
+  document.getElementById("also-send-box").checked = state.also_send_when_said;
+  drawIfChanged("batteries", state.devices, () => {
+    // Not while a number is being typed, which a redraw would wipe - tried again next time.
+    if (list.contains(document.activeElement)) return false;
+    list.replaceChildren(...(state.devices.length ? state.devices.map(batteryRow) : [emptyRow("Home Assistant has no batteries.")]));
+  });
+}
+
+// A battery: how it is, a switch for its warnings and one for sending them to the phone,
+// a box for each mark, and a way back to the defaults once anything's been changed.
+function batteryRow(device) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", device.name, "name"));
+  const charging = device.charging === null ? "" : device.charging ? ", charging" : ", not charging";
+  what.append(element("span", `${device.level}%${charging}${device.stale ? `, as of ${device.stale} ago` : ""}`, "sub"));
+  top.append(icon("i-battery"), what);
+  row.append(top);
+
+  const choose = (label, id, checked, key) => {
+    const field = element("div", undefined, "choice");
+    const name = element("label", label);
+    name.htmlFor = id;
+    const box = element("input");
+    Object.assign(box, { type: "checkbox", id, checked });
+    box.setAttribute("role", "switch");
+    box.addEventListener("change", () => changeBattery("/api/batteries", { id: device.id, [key]: box.checked }));
+    field.append(name, box);
+    return field;
+  };
+  row.append(choose("Warn me", `battery-on-${device.id}`, device.enabled, "enabled"));
+  row.append(choose("Send to my phone", `battery-phone-${device.id}`, device.send_to_phone, "send_to_phone"));
+
+  const marks = element("div", undefined, "marks");
+  marks.append(element("span", device.marks.length === 1 ? "Warn at" : "Warn at both"));
+  const boxes = device.marks.map((mark, i) => {
+    const box = element("input");
+    Object.assign(box, { type: "number", min: 1, max: 99, step: 1, value: mark });
+    box.inputMode = "numeric";
+    box.setAttribute("aria-label", `${device.name} warning mark ${i + 1}, in percent`);
+    box.addEventListener("change", () => changeBattery("/api/batteries", {
+      id: device.id, marks: boxes.map((each) => Number(each.value)),
+    }));
+    marks.append(box, element("span", "%"));
+    return box;
+  });
+  row.append(marks);
+
+  if (device.changed) {
+    const back = element("button", "Back to the defaults", "button quiet");
+    back.type = "button";
+    back.addEventListener("click", () => changeBattery("/api/batteries", { id: device.id, reset: true }));
+    row.append(back);
+  }
+  return row;
 }
 
 // How a colour looks at full brightness, for a light's icon and swatches.
@@ -1310,4 +1412,7 @@ document.addEventListener("DOMContentLoaded", () => {
   every(LIVE_EVERY, live);
   every(MUSIC_EVERY, loadMusic);
   every(HOME_EVERY, loadHome);
+  every(BATTERIES_EVERY, loadBatteries);
+  document.getElementById("also-send-box").addEventListener("change", (event) =>
+    changeBattery("/api/batteries/also", { on: event.target.checked }));
 });
