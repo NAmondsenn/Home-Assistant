@@ -96,6 +96,15 @@ GUARDED_COVERS = {"door": ("door", "doors"), "garage": ("garage", "garages"), "g
 SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",)}
 BY_AREA = ("light",)
 
+# How far "dim" and "brighten" move a light, in points of brightness. 30 is steps that
+# can be told apart across a room - 10 isn't - and a light at 40% takes two to go dark.
+DIM_STEP = 30
+# The dimmest "dim" leaves a light at. It never switches one off: a dim lamp is still
+# there to find in the dark, and an off one is a light the user asked to switch off.
+DIM_FLOOR = 5
+# What lights_called takes "lights" or "lamp" on its own to mean: those in Nova's room.
+GENERIC_LIGHT_WORDS = ("light", "lights", "lamp", "lamps")
+
 # The error codes Assist gives when it matched nothing at all - no sentence it knows,
 # or none of the devices exposed to it - as opposed to understanding and failing, which
 # is "failed_to_handle". Only the first kind is worth trying Claude on: "dim the
@@ -517,7 +526,9 @@ class HomeAssistant:
             ["color_temp", "hs"]), "min_kelvin" and "max_kelvin" (the warmest and
             coolest white it makes, or None) and how it's set now: "hue" (0 to 360)
             and "saturation" (percent) if it's set to a colour, or "kelvin" if it's set
-            to a white. Whichever it isn't set to is None.
+            to a white. Whichever it isn't set to is None. And "aliases", the other names
+            the user gave it in Home Assistant, e.g. ["main light"] - [] if it has none,
+            or Nova can't read the registry.
 
         Raises:
             requests.RequestException: If Home Assistant couldn't be asked, or turned
@@ -525,7 +536,8 @@ class HomeAssistant:
             ValueError: If it didn't answer with the lights.
         """
         found = self._template(LIGHTS_TEMPLATE, timeout=timeout)
-        return [_light(state) for state in json.loads(found)]
+        snapshot = self._snapshot()
+        return [_light(state, snapshot.aliases(state["entity_id"]) if snapshot else ()) for state in json.loads(found)]
 
     def batteries(self, timeout: Optional[float] = None) -> List[Dict]:
         """
@@ -621,8 +633,9 @@ class HomeAssistant:
                 reply which takes longer counts as the lights being unreadable.
 
         Returns:
-            e.g. "Nova is in the Bedroom. Lights: Bedroom Light (light.bedroom_light,
-            Bedroom) on at 40%, 2700K; Lamp (light.lamp, Bedroom) off" - or "Nova's
+            e.g. "Nova is in the Bedroom. Lights: Bedroom Light, also main light
+            (light.bedroom_light, Bedroom) on at 40%, 2700K; Lamp (light.lamp, Bedroom)
+            off" - or "Nova's
             room isn't known." to begin with, when it isn't. "" if the lights couldn't
             be read.
         """
@@ -641,6 +654,85 @@ class HomeAssistant:
         if not lights:
             return f"{room} There are no lights."
         return f"{room} Lights: " + "; ".join(_light_said(light) for light in lights)
+
+    def lights_called(self, words: str, lights: List[Dict]) -> Optional[List[Dict]]:
+        """
+        The lights some words mean, for "dim the main light" or "brighten the bedroom
+        lights" - worked out here, as there's no Assist sentence for dimming.
+
+        Args:
+            words: What the user called them, e.g. "the main light". A leading "all",
+                "the" or "my" is ignored, and so are case and punctuation.
+            lights: The lights, as lights() has them.
+
+        Returns:
+            The lights named, whether by name or by another name; else, for "lights" or
+            "lamp" alone, those in Nova's room - none if that isn't known; else those in
+            the room named, e.g. "bedroom lights". None if the words mean nothing Nova
+            knows.
+        """
+        said = _plain(words)
+        while said.split(" ")[0] in ("all", "the", "my") and " " in said:
+            said = said.split(" ", 1)[1]
+        if not said:
+            return None
+        # Before the generic words, so that a light the user calls "Lamp" is the lamp
+        # rather than every light in the room - "brighten the lamp" with a ceiling
+        # light in the room too.
+        named = [light for light in lights if said in [_plain(name) for name in [light["name"], *light["aliases"]]]]
+        if named:
+            return named
+        if said in GENERIC_LIGHT_WORDS:
+            return [light for light in lights if self.area and light["area"] == self.area]
+        room = said.rsplit(" ", 1)[0] if said.rsplit(" ", 1)[-1] in GENERIC_LIGHT_WORDS else None
+        if room:
+            in_room = [light for light in lights if light["area"] and _plain(light["area"]) == room]
+            return in_room or None
+        return None
+
+    def dim(self, direction: str, words: str) -> Dict:
+        """
+        Makes lights dimmer or brighter by a step, from where each one is now - "dim the
+        lights" for a lamp at 80% and a ceiling light at 40% is 50% and 10%. Never
+        switches a light off: a light at the floor stays there, and one that's off
+        stays off when dimmed.
+
+        Args:
+            direction: "down" or "up".
+            words: The lights, as the user called them - see lights_called.
+
+        Returns:
+            Dict with 'success' and a 'message', and a 'chime' for success when
+            something changed, since the lights changing speaks for itself. A
+            'not_understood' of True when Nova doesn't know the lights, so that Claude
+            is asked.
+        """
+        try:
+            lights = self._in_order(self.lights())
+            found = self.lights_called(words, lights)
+            if found is None or (not found and self.area):
+                return {"success": False, "message": "I don't know a light called that.", "not_understood": True}
+            if not found:
+                return {"success": False, "message": "Which room?"}
+
+            by_brightness: Dict[int, List[str]] = {}
+            for light in found:
+                new = _stepped(light, direction)
+                if new is not None:
+                    by_brightness.setdefault(new, []).append(light["id"])
+            if not by_brightness:
+                dimmable = [light for light in found if light["reachable"] and _dims(light)]
+                if not dimmable and any(light["colour_modes"] and not _dims(light) for light in found):
+                    return {"success": True, "message": "Those lights only switch on and off."}
+                return {"success": True,
+                        "message": "They're as dim as they go." if direction == "down" else "They're as bright as they go."}
+            for brightness, ids in by_brightness.items():
+                logger.info(f"Lights dimmed {direction}: {ids} to {brightness}%")
+                self._call_service("light", "turn_on", {"entity_id": ids, "brightness_pct": brightness})
+        except (requests.RequestException, ValueError) as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        return {"success": True, "message": "Done.", "chime": True}
 
     def set_light(self, entity_id: str, on: Optional[bool] = None, brightness: Optional[int] = None,
                   hue: Optional[float] = None, saturation: Optional[float] = None,
@@ -1031,7 +1123,39 @@ def _refused(error: Exception) -> bool:
     return isinstance(error, requests.HTTPError) and status in (401, 403)
 
 
-def _light(state: Dict) -> Dict:
+def _plain(text: str) -> str:
+    """Words for comparing, e.g. "The Main Light!" is "the main light"."""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split())
+
+
+def _dims(light: Dict) -> bool:
+    """Whether a light can be set to a brightness, rather than only switched."""
+    return any(mode != "onoff" for mode in light["colour_modes"])
+
+
+def _stepped(light: Dict, direction: str) -> Optional[int]:
+    """
+    The brightness a light is to be set to, or None to leave it alone.
+
+    A light that is off, unavailable or only switches is left as it is - except that
+    brightening an off one switches it on. One already at the end of the way, or past
+    the floor, is left rather than moved the wrong way: a light at 3% stays there.
+    """
+    if not light["reachable"] or not _dims(light):
+        return None
+    if not light["on"]:
+        return DIM_STEP if direction == "up" else None
+    now = light["brightness"]
+    if now is None:
+        return None
+    if direction == "down":
+        new = max(DIM_FLOOR, now - DIM_STEP)
+        return new if new < now else None
+    new = min(100, now + DIM_STEP)
+    return new if new > now else None
+
+
+def _light(state: Dict, aliases: Iterable[str] = ()) -> Dict:
     """
     A light as lights() has it, from its state as LIGHTS_TEMPLATE renders it - or as
     /api/states has it, which has no area.
@@ -1040,6 +1164,10 @@ def _light(state: Dict) -> Dict:
     the kelvin in colour temperature mode. For a light which can do both, Home
     Assistant works out the other from it, so a warm white would otherwise be read as
     "hue 30", and a blue as "6500K".
+
+    Args:
+        state: The light's state.
+        aliases: The other names the user gave it in Home Assistant.
     """
     attributes = state.get("attributes") or {}
     mode = attributes.get("color_mode")
@@ -1054,11 +1182,11 @@ def _light(state: Dict) -> Dict:
             "hue": hue, "saturation": saturation,
             "kelvin": attributes.get("color_temp_kelvin") if mode == "color_temp" else None,
             "min_kelvin": attributes.get("min_color_temp_kelvin"),
-            "max_kelvin": attributes.get("max_color_temp_kelvin")}
+            "max_kelvin": attributes.get("max_color_temp_kelvin"), "aliases": list(aliases)}
 
 
 def _light_said(light: Dict) -> str:
-    """One light as Claude is told of it: "Lamp (light.lamp, Bedroom) on at 40%, 2700K"."""
+    """One light as Claude is told of it: "Lamp, also reading (light.lamp, Bedroom) on at 40%, 2700K"."""
     where = f"{light['id']}, {light['area']}" if light["area"] else light["id"]
     if not light["reachable"]:
         how = "unavailable"
@@ -1070,7 +1198,9 @@ def _light_said(light: Dict) -> str:
             how += f", {light['kelvin']}K"
         elif light["hue"] is not None:
             how += f", hue {light['hue']} saturation {light['saturation']}%"
-    return f"{light['name']} ({where}) {how}"
+    # "Bedroom Light, also main light" - or "also main or big" for two, which reads aloud.
+    also = f", also {' or '.join(light['aliases'])}" if light["aliases"] else ""
+    return f"{light['name']}{also} ({where}) {how}"
 
 
 def _called(words: List[str]) -> re.Pattern:

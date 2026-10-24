@@ -776,6 +776,21 @@ class ActionExecutor:
             return {"success": False, "message": "I didn't catch what to do with the lights."}
         return self.home.command(command)
 
+    # Only the local "dim the lights" produces this: Claude steps a brightness itself
+    # with set_lights, from the brightness in the list of lights it is given.
+    @tool(
+        "Make lights dimmer or brighter by a step.",
+        needs="home",
+        for_model=False,
+        required=["direction", "words"],
+        direction={"type": "string", "description": "down or up."},
+        words={"type": "string", "description": "The lights, as the user said them."},
+    )
+    def dim_lights(self, direction: Optional[str] = None, words: Optional[str] = None):
+        if direction not in ("down", "up") or not words:
+            return {"success": False, "message": "I didn't catch what to dim."}
+        return self.home.dim(direction, words)
+
     @tool(
         "Work the lights through Home Assistant: switch them on or off, set how bright "
         "they are, or change their colour or warmth - one light, or all the lights in a "

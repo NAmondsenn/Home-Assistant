@@ -114,6 +114,27 @@ def test_the_lights_go_straight_to_home_assistant(text, command):
     assert _actions(text) == [Action("control_home", {"command": command})]
 
 
+@pytest.mark.parametrize("text, direction, words", [
+    ("Dim the lights.", "down", "the lights"),
+    ("Brighten the lamp.", "up", "the lamp"),
+    ("Dim the bedroom lights.", "down", "the bedroom lights"),
+    ("Dim the main light.", "down", "the main light"),
+    ("brighten all the lights, please", "up", "all the lights"),
+])
+def test_dimming_is_done_without_claude(text, direction, words):
+    assert _actions(text) == [Action("dim_lights", {"direction": direction, "words": words})]
+
+
+@pytest.mark.parametrize("text", ["Dim the timer and the lights.", "Dim the screen.", "Dim the lights by half.",
+                                  "Brighten my day.", "Brighten up the lights a bit.", "Dim."])
+def test_dimming_leaves_what_isnt_a_light_to_claude(text):
+    assert _actions(text) is None
+
+
+def test_setting_a_light_to_a_level_still_goes_to_assist():
+    assert _actions("Set the lamp to 30 percent.") == [Action("control_home", {"command": "set the lamp to 30 percent"})]
+
+
 def test_the_lights_with_something_else_are_left_to_claude():
     # Sent whole, Home Assistant would take "the timer and the" for a light's name.
     assert _actions("Turn off the timer and the lights.") is None

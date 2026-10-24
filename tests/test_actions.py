@@ -284,6 +284,37 @@ def test_claude_isnt_offered_control_home_but_is_offered_set_lights():
     assert "set_lights" not in [schema["name"] for schema in ActionExecutor().tool_schemas()]
 
 
+def test_dim_lights_isnt_offered_to_claude():
+    names = [schema["name"] for schema in ActionExecutor(home=object()).tool_schemas()]
+    assert "dim_lights" not in names and "set_lights" in names
+
+
+def test_dimming_is_passed_to_home_assistant():
+    class FakeHome:
+        def dim(self, direction, words):
+            self.asked = (direction, words)
+            return {"success": True, "message": "Done.", "chime": True}
+
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(Action("dim_lights", {"direction": "up", "words": "the lamp"}))
+    assert home.asked == ("up", "the lamp") and (result.ok, result.confirm) == (True, "chime")
+
+
+def test_claude_cant_run_dim_lights_either():
+    class FakeHome:
+        def dim(self, direction, words):
+            raise AssertionError("not for Claude")
+
+    result = ActionExecutor(home=FakeHome()).execute(
+        Action("dim_lights", {"direction": "down", "words": "the lights"}, from_model=True))
+    assert result.ok is False
+
+
+def test_without_home_assistant_dimming_says_so():
+    result = ActionExecutor().execute(Action("dim_lights", {"direction": "down", "words": "the lights"}))
+    assert (result.ok, result.say) == (False, "Home Assistant isn't set up yet.")
+
+
 def test_a_local_light_command_still_reaches_assist():
     # What Claude isn't offered can still be asked for: the local phrases ("lamp off") and the
     # offline keyword fallback both produce control_home, which goes to Assist as it always did.

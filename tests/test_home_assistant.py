@@ -8,6 +8,7 @@ import inspect
 import json
 import time
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -382,7 +383,7 @@ def test_the_page_is_shown_the_lights_and_only_whats_safe_to_run(make_home):
     assert overview["lights"][1] == {"id": "light.kitchen", "name": "Kitchen", "area": "Kitchen", "on": True,
                                      "reachable": True, "dimmable": True, "brightness": 50,
                                      "colour_modes": ["color_temp"], "hue": None, "saturation": None, "kelvin": 3000,
-                                     "min_kelvin": 2500, "max_kelvin": 6500}
+                                     "min_kelvin": 2500, "max_kelvin": 6500, "aliases": []}
     assert not overview["lights"][0]["dimmable"] and not overview["lights"][2]["reachable"]
     # A light can't let anyone in, whatever it's called; a script or scene might, and
     # nothing else is offered at all.
@@ -424,7 +425,7 @@ def test_without_an_administrators_token_the_page_still_has_the_lights(make_home
     assert overview["lights"] == [{"id": "light.kitchen", "name": "Kitchen", "area": None, "on": True,
                                    "reachable": True, "dimmable": True, "brightness": 50,
                                    "colour_modes": ["color_temp"], "hue": None, "saturation": None, "kelvin": 3000,
-                                   "min_kelvin": 2500, "max_kelvin": 6500}]
+                                   "min_kelvin": 2500, "max_kelvin": 6500, "aliases": []}]
     assert [routine["id"] for routine in overview["routines"]] == ["script.movie_night", "scene.relax"]
 
 
@@ -567,7 +568,7 @@ def test_lights_come_with_their_area_and_colour(make_home):
     home = make_home({"/api/template": _rendered(LAMP_BLUE)})
     assert home.lights() == [{"id": "light.lamp", "name": "Lamp", "area": "Bedroom", "on": True, "reachable": True,
                               "brightness": 40, "colour_modes": ["color_temp", "hs"], "hue": 240, "saturation": 100,
-                              "kelvin": None, "min_kelvin": 2500, "max_kelvin": 6500}]
+                              "kelvin": None, "min_kelvin": 2500, "max_kelvin": 6500, "aliases": []}]
 
 
 def test_every_light_is_read_in_one_request(make_home):
@@ -1079,3 +1080,150 @@ def test_people_come_with_their_trackers_devices(make_home):
 def test_a_refused_template_raises_as_for_the_lights(make_home, ask, answer):
     with pytest.raises((requests.RequestException, ValueError)):
         getattr(make_home({"/api/template": answer}), ask)()
+
+
+# The lights by their other names, and dimming them
+
+def _other_names(**aliases):
+    """A registry snapshot that knows only these other names, e.g. light_bedroom_light=["main light"]."""
+    return SimpleNamespace(aliases=lambda entity_id: tuple(aliases.get(entity_id.replace(".", "_"), ())))
+
+
+KITCHEN_LIGHT = _rendered_light("light.kitchen_light", "Kitchen Light", "Kitchen", brightness=255)
+TURN_ON = "/api/services/light/turn_on"
+TURN_OFF = "/api/services/light/turn_off"
+
+
+def _dimmed(home):
+    """What the lights were told, as [(service, data)]."""
+    return [(path.rsplit("/", 1)[1], sent["json"]) for _, path, sent in home._session.requests
+            if path.startswith("/api/services/")]
+
+
+def _house(make_home, *lights, area="Bedroom"):
+    """A house with these lights, Nova in the area, and every service call answered."""
+    home = make_home({"/api/template": _rendered(*lights), TURN_ON: FakeResponse(""), TURN_OFF: FakeResponse("")})
+    home.area = area
+    return home
+
+
+def test_lights_come_with_their_other_names(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_OFF, BEDROOM_LIGHT_WARM)})
+    home._snapshot = lambda: _other_names(light_bedroom_light=["main light"])
+    lamp, bedroom = home.lights()
+    assert (lamp["aliases"], bedroom["aliases"]) == ([], ["main light"])
+    home._snapshot = lambda: None
+    assert [light["aliases"] for light in home.lights()] == [[], []]
+
+
+def test_claude_is_told_the_lights_other_names(make_home):
+    home = make_home({"/api/template": _rendered(LAMP_OFF, BEDROOM_LIGHT_WARM)})
+    home.area = "Bedroom"
+    home._snapshot = lambda: _other_names(light_bedroom_light=["main light"], light_lamp=["reading", "desk"])
+    assert home.describe_lights() == (
+        "Nova is in the Bedroom. Lights: Bedroom Light, also main light (light.bedroom_light, Bedroom) on at 40%, "
+        "2700K; Lamp, also reading or desk (light.lamp, Bedroom) off")
+
+
+def test_lights_are_found_by_name_other_name_or_room(make_home):
+    home = _house(make_home, LAMP_OFF, BEDROOM_LIGHT_WARM, KITCHEN_LIGHT)
+    home._snapshot = lambda: _other_names(light_bedroom_light=["main light"])
+    lights = home._in_order(home.lights())
+
+    def called(words):
+        found = home.lights_called(words, lights)
+        return found if found is None else [light["id"] for light in found]
+
+    assert called("the lights") == ["light.bedroom_light", "light.lamp"]
+    assert called("all the lights") == called("my lights") == called("lights")
+    assert called("main light") == ["light.bedroom_light"]
+    assert called("the Bedroom Light!") == ["light.bedroom_light"]
+    assert called("lamp") == ["light.lamp"]
+    assert called("bedroom lights") == ["light.bedroom_light", "light.lamp"]
+    assert called("kitchen lights") == ["light.kitchen_light"]
+    assert called("attic lights") is None and called("the toaster") is None
+
+
+def test_dimming_steps_each_light_down_from_where_it_is(make_home):
+    lamp = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=204)
+    bedroom = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=51)
+    home = _house(make_home, lamp, bedroom)
+    result = home.dim("down", "the lights")
+    assert result["success"] and result["chime"]
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.bedroom_light"], "brightness_pct": 5}),
+                             ("turn_on", {"entity_id": ["light.lamp"], "brightness_pct": 50})]
+
+
+def test_lights_at_the_same_brightness_are_dimmed_in_one_call(make_home):
+    lamp = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=204)
+    bedroom = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=204)
+    home = _house(make_home, lamp, bedroom)
+    home.dim("down", "lights")
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.bedroom_light", "light.lamp"], "brightness_pct": 50})]
+
+
+def test_dimming_never_switches_a_light_off(make_home):
+    floor = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=13)
+    off = _rendered_light("light.lamp", "Lamp", "Bedroom", state="off")
+    switch = _rendered_light("light.plug", "Plug", "Bedroom", supported_color_modes=["onoff"])
+    gone = _rendered_light("light.hall", "Hall", "Bedroom", state="unavailable")
+    home = _house(make_home, floor, off, switch, gone)
+    assert home.dim("down", "bedroom lights") == {"success": True, "message": "They're as dim as they go."}
+    assert _dimmed(home) == []
+
+    # Below the floor already, a light is left alone rather than brightened.
+    quiet = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=3)
+    home = _house(make_home, quiet)
+    assert home.dim("down", "lights")["message"] == "They're as dim as they go." and _dimmed(home) == []
+
+    # The others still dim, and nothing is ever switched off.
+    bright = _rendered_light("light.kitchen_light", "Kitchen Light", "Bedroom", brightness=255)
+    home = _house(make_home, bright, off, switch, gone)
+    home.dim("down", "lights")
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.kitchen_light"], "brightness_pct": 70})]
+    assert not [call for call in _dimmed(home) if call[0] == "turn_off"]
+
+
+def test_lights_which_only_switch_are_said_to_be_so(make_home):
+    plug = _rendered_light("light.plug", "Plug", "Bedroom", supported_color_modes=["onoff"])
+    home = _house(make_home, plug)
+    assert home.dim("down", "lights")["message"] == "Those lights only switch on and off."
+    assert home.dim("up", "lights")["message"] == "Those lights only switch on and off."
+    assert _dimmed(home) == []
+
+
+def test_brightening_switches_an_off_light_on_at_one_step(make_home):
+    off = _rendered_light("light.lamp", "Lamp", "Bedroom", state="off")
+    high = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=230)
+    home = _house(make_home, off, high)
+    assert home.dim("up", "lights")["success"]
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.bedroom_light"], "brightness_pct": 100}),
+                             ("turn_on", {"entity_id": ["light.lamp"], "brightness_pct": 30})]
+
+
+def test_brightening_the_brightest_changes_nothing(make_home):
+    full = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=255)
+    switch = _rendered_light("light.plug", "Plug", "Bedroom", supported_color_modes=["onoff"])
+    gone = _rendered_light("light.hall", "Hall", "Bedroom", state="unavailable")
+    home = _house(make_home, full, switch, gone)
+    assert home.dim("up", "lights")["message"] == "They're as bright as they go."
+    assert _dimmed(home) == []
+
+
+def test_dimming_a_light_nova_doesnt_know_goes_to_claude(make_home):
+    home = _house(make_home, LAMP_OFF)
+    assert home.dim("down", "the attic lights") == {"success": False, "message": "I don't know a light called that.",
+                                                    "not_understood": True}
+    assert _dimmed(home) == []
+
+
+def test_dimming_with_no_room_known_asks_which(make_home):
+    home = _house(make_home, BEDROOM_LIGHT_WARM, area=None)
+    assert home.dim("down", "the lights") == {"success": False, "message": "Which room?"}
+    assert _dimmed(home) == []
+
+
+def test_dimming_with_home_assistant_down_says_so(make_home):
+    home = make_home({"/api/template": requests.ConnectionError("down")})
+    result = home.dim("down", "lights")
+    assert result["success"] is False and "not_understood" not in result

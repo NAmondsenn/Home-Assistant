@@ -148,10 +148,13 @@ class LocalIntents:
             (r"(?:cancel|stop|delete) (?:the|my) timer", self._cancel_only_timer),
             (r"what(?:'s| is| will) the weather(?: (?:going to )?be)?(?: like)?(?: (?P<day>today|tomorrow))?"
              r"|what(?:'s| is) the forecast(?: for)?(?: (?P<day2>today|tomorrow))?", self._weather),
+            # Dimming has no sentence of Assist's own, so Nova steps the brightness
+            # itself, from the lights' names in Home Assistant.
+            (rf"(?P<direction>dim|brighten) (?P<words>{LIGHT})", self._dim),
             # The lights go straight to Home Assistant, which works out which ones
             # from the words itself - and still works with the internet down.
             (rf"(?:turn|switch) (?:on|off) {LIGHT}|(?:turn|switch) {LIGHT} (?:on|off)|{LIGHT} (?:on|off)"
-             rf"|(?:dim|brighten) {LIGHT}|set {LIGHT} to \d{{1,3}}(?: percent)?", self._lights),
+             rf"|set {LIGHT} to \d{{1,3}}(?: percent)?", self._lights),
             # The calendar, for a day asked about by name. One rule each, since a
             # pattern can only name the day once.
             (rf"what(?:'s| is) (?:on )?(?:my )?(?:calendar|schedule|diary|agenda)(?:(?: (?:on|for))? {DAY})?",
@@ -257,6 +260,10 @@ class LocalIntents:
 
     def _lights(self, found) -> Dict:
         return self._result("Okay.", [Action("control_home", {"command": found.string})])
+
+    def _dim(self, found) -> Dict:
+        direction = "down" if found["direction"] == "dim" else "up"
+        return self._result("Okay.", [Action("dim_lights", {"direction": direction, "words": found["words"]})])
 
     def _calendar(self, found) -> Dict:
         first, days = calendar_days(found["day"], date.today())
