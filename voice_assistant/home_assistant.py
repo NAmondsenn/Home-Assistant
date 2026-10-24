@@ -41,7 +41,7 @@ import logging
 import math
 import re
 from datetime import date, datetime, time as day_time, timedelta
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 
@@ -907,9 +907,9 @@ def _sensitive_words(text: str) -> bool:
     return bool(SENSITIVE.search(PC_LOCK.sub(" ", text.lower())))
 
 
-def _plain(text: str) -> str:
-    """Words alone, in lower case and with a space either side, e.g. " front door " for "Front-door!"."""
-    return " " + " ".join(re.findall(r"[a-z0-9]+", text.lower())) + " "
+def _words(text: str) -> Tuple[str, ...]:
+    """Words alone, in lower case, e.g. ("front", "door") for "Front-door!"."""
+    return tuple(re.findall(r"[a-z0-9]+", text.lower()))
 
 
 def _guarded(entity_id: str, attributes: Dict) -> Optional[Sequence[str]]:
@@ -938,8 +938,13 @@ def _names_guarded(request: str, states: List[Dict]) -> bool:
     That's everything, not only what's exposed to Assist, as only Home Assistant's
     WebSocket API says what is.
 
-    A name which holds a guarded one - "front door light", with a lock called "front
-    door" - is taken out first, as it's that which is named.
+    A harmless thing's name which holds a guarded one's - "front door light", with a
+    lock called "front door" - is that harmless thing, so what's wholly within it is
+    let be. Not when something guarded has that name too, though - a doorbell camera
+    and its lock both called "front door" - nor when it has a kind's word of its own,
+    as "bedroom window" could be every window in the bedroom to Assist. And only
+    what's wholly within it: "front door light well" is still refused, with a window
+    called "light well".
 
     Args:
         request: What would go to Assist, e.g. "turn off the front door".
@@ -948,22 +953,46 @@ def _names_guarded(request: str, states: List[Dict]) -> bool:
     Returns:
         Whether it's to be refused.
     """
-    words = _plain(PC_LOCK.sub(" ", request.lower()))
-    guarded, others = set(), set()
+    words = _words(PC_LOCK.sub(" ", request.lower()))
+    guarded, kinds, others = set(), set(), set()
     for state in states:
         entity = str(state.get("entity_id") or "")
         attributes = state.get("attributes") or {}
-        names = {_plain(str(attributes.get("friendly_name") or "")), _plain(entity.partition(".")[2].replace("_", " "))}
-        names.discard("  ")
+        names = {_words(str(attributes.get("friendly_name") or "")), _words(entity.partition(".")[2].replace("_", " "))}
+        names.discard(())
         kind = _guarded(entity, attributes)
         if kind is None:
             others |= names
         else:
-            guarded |= names | {f" {word} " for word in kind}
-    for name in sorted(others, key=len, reverse=True):
-        if any(term in name and term != name for term in guarded):
-            words = words.replace(name, " | ")
-    return any(term in words for term in guarded)
+            guarded |= names
+            kinds |= {(word,) for word in kind}
+    harmless = [name for name in others - guarded if not _found_outside(name, kinds, guarded)]
+    return _found_outside(words, guarded | kinds, harmless)
+
+
+def _found_outside(words: Tuple[str, ...], terms: Iterable[Tuple[str, ...]],
+                   within: Iterable[Tuple[str, ...]]) -> bool:
+    """
+    Whether any of some terms is in some words other than wholly within one of some
+    names.
+
+    Args:
+        words: e.g. ("turn", "on", "the", "front", "door", "light").
+        terms: What's looked for, e.g. {("door",)}.
+        within: Where it may be, e.g. [("front", "door", "light")] - which "door"
+            is wholly within here, so it isn't found outside.
+
+    Returns:
+        Whether any is.
+    """
+    spans = [(start, start + len(name)) for name in within for start in _starts(words, name)]
+    return any(not any(first <= start and start + len(term) <= last for first, last in spans)
+               for term in terms for start in _starts(words, term))
+
+
+def _starts(words: Tuple[str, ...], term: Tuple[str, ...]) -> List[int]:
+    """Where a term starts in some words, e.g. [3] for ("front", "door") in "turn off the front door"."""
+    return [start for start in range(len(words) - len(term) + 1) if words[start:start + len(term)] == term]
 
 
 def _refused(error: Exception) -> bool:

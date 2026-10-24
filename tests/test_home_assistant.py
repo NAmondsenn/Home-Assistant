@@ -260,6 +260,32 @@ def test_a_light_whose_name_holds_a_locks_is_that_light(make_home):
     assert not home.command("turn on the front door light and the front door")["success"]
 
 
+# A doorbell camera or a contact sensor is often called what its lock or window is, and
+# Assist could still take the words as the lock. Nor may a harmless name hide a kind's
+# word, which Assist takes with a room - "the bedroom window" opens the bedroom's
+# windows - or take half of a guarded name with it.
+@pytest.mark.parametrize("things, request_text", [
+    ([_thing("lock.front_door", "Front door"), _thing("camera.front_door", "Front door")],
+     "turn off the front door"),
+    ([_thing("lock.front_door", "Front door"), _thing("binary_sensor.front_door", "Front door", "door")],
+     "turn off the front door"),
+    ([_thing("lock.front_door", "Front door"), _thing("light.front_door", "Porch light")],
+     "turn off the front door"),
+    ([_thing("cover.bedroom_window", "Bedroom window", "window"),
+      _thing("binary_sensor.bedroom_window", "Bedroom window", "window")], "turn on the bedroom window"),
+    ([_thing("cover.skylight", "Skylight", "window"),
+      _thing("binary_sensor.bedroom_window", "Bedroom window", "window")], "turn on the bedroom window"),
+    ([_thing("lock.front", "Front"), _thing("cover.skylight", "Skylight", "window"),
+      _thing("binary_sensor.front_window", "Front window", "window")], "turn on the front window"),
+    ([_thing("lock.front_door", "Front door"), _thing("light.front_door_light", "Front door light"),
+      _thing("cover.light_well", "Light well", "window")], "turn on the front door light well"),
+])
+def test_a_harmless_name_never_hides_a_guarded_one(make_home, things, request_text):
+    home = make_home({"/api/states": things, "/api/conversation/process": _assist("action_done", "Done")})
+    assert not home.command(request_text)["success"]
+    assert [path for _, path, _ in home._session.requests] == ["/api/states"]
+
+
 def test_locking_the_pc_is_the_one_exception(make_home):
     # HASS.Agent's button.windows_pc_lock is a button, not a lock, and locking the PC
     # only makes things safer - the user's call. Unlocking anything still isn't done.
