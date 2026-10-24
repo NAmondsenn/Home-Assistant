@@ -57,6 +57,7 @@
     - `"changed"`: epoch seconds of `last_reported` - when Home Assistant last heard the reading, not when its value last moved (`last_changed` would make a steady level look old);
     - `"device"`: the device id, or None;
     - `"maker"`, `"model"`: or None;
+    - `"app"`: a bool, whether the battery sensor belongs to the Home Assistant app (`battery.entity_id in integration_entities('mobile_app')` in the template);
     - `"charging"`: the raw state of the same device's charging entity, or None. That's a `binary_sensor` with device class `battery_charging`, else a `sensor` whose entity id ends in `battery_state`.
   - `HomeAssistant.people(timeout: Optional[float] = None) -> List[Dict]`, with keys `"id"`, `"state"` (e.g. `"home"`, `"not_home"`) and `"devices"`: the device ids of the person's `device_trackers`.
   - Both raise like `lights()`: `requests.RequestException`, or `ValueError` for an answer that isn't the expected JSON.
@@ -82,10 +83,10 @@
 **Interfaces:**
 - Consumes: Task 1's battery dicts.
 - Produces:
-  - `@dataclass Battery`, with fields `id: str`, `name: str` (spoken, see `spoken_name`), `level: float`, `changed: float`, `device: Optional[str]`, `kind: str` (`"mobile"` or `"other"`), `phone: bool`, and `charging: Optional[bool]`;
+  - `@dataclass Battery`, with fields `id: str`, `name: str` (spoken, see `spoken_name`), `level: float`, `changed: float`, `device: Optional[str]`, `kind: str` (`"mobile"` or `"other"`), `phone: bool`, `computer: bool` (on the app and an Apple Mac) and `charging: Optional[bool]`;
   - `Battery.from_home(found: Dict) -> Battery`;
-  - `kind_of(maker: Optional[str], model: Optional[str]) -> str`;
-  - `is_phone(maker: Optional[str], model: Optional[str]) -> bool`;
+  - `kind_of(maker: Optional[str], model: Optional[str], app: bool) -> str` (on the app is "mobile", unless it's an Apple Mac; off the app is "other");
+  - `is_phone(maker: Optional[str], model: Optional[str]) -> bool` (only an Apple "iPhone..." or a Samsung SM-S, G, A, F, N, M or E model; every other mobile device counts as a tablet);
   - `charging_from(raw: Optional[str]) -> Optional[bool]`;
   - `spoken_name(name: str) -> str`;
   - `find(batteries: List[Battery], asked: str) -> List[Battery]`;
@@ -102,7 +103,7 @@
 - [ ] **Step 2: Run** `bash .superpowers/tools/pi_test.sh tests/test_batteries.py`. Expected: they fail, with `ModuleNotFoundError: voice_assistant.batteries`.
 - [ ] **Step 3: Implement** the functions in `voice_assistant/batteries.py`.
   - `spoken_name` keeps a word with a digit as it is, upper-cased (`S25`), and capitalises the rest, apart from a short list of known spellings (`MacBook`, `iPhone`, `iPad`).
-  - `find` matches the asked words against each name's words, prefixes included. Then it matches against kind words: phone, tablet, laptop, computer and mac.
+  - `find` matches the asked words against each name's words, prefixes included. Then it matches against kind words: phone, tablet, and (against `computer` only) laptop, computer and mac. It keeps only the batteries matching the most asked words, at least one.
 - [ ] **Step 4: Run them again** - expected: they pass.
 - [ ] **Step 5: Commit** - "Tell what each battery is, whether it's charging, and its name".
 

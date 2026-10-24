@@ -7,6 +7,9 @@ nothing here is a hand-kept list of devices. What it says about each device's
 maker and model is enough to sort it into "mobile" (an Android phone or tablet,
 an iPhone or iPad - warned about once, at 5%) or "other" (a Mac, a remote, a
 sensor, or anything whose kind can't be worked out - warned about at 15% and 5%).
+Whatever is on the Home Assistant app is mobile, bar a Mac, so a new Android
+maker needs no list; and only a model that shows a phone is the phone, as a wrong
+guess towards "tablet" costs a duplicate warning where the other loses one.
 
 Charging is read from the words each app uses for its charging sensor, and a
 reading old enough to be stale is said with its age, so that a tablet last heard
@@ -18,20 +21,23 @@ from typing import Dict, List, Optional
 
 from voice_assistant.clock import format_duration
 
-# Makers of Android phones and tablets, apart from Samsung, whose models are
-# told apart by their "SM-" prefix below (a Samsung TV is not a phone).
-_ANDROID_MAKERS = {
-    "google", "oneplus", "xiaomi", "motorola", "sony", "huawei", "oppo", "realme", "nothing",
-}
-
 # Spellings a plain capital letter would get wrong - "macbook" is not "Macbook".
 _KNOWN_SPELLINGS = {"macbook": "MacBook", "iphone": "iPhone", "ipad": "iPad"}
 
 _CHARGING_WORDS = {"charging", "full", "on"}
 _NOT_CHARGING_WORDS = {"discharging", "not charging", "off"}
 
-# Words a person uses for a kind of device, and which batteries each one means.
-_KIND_WORDS = ("phone", "tablet", "laptop", "computer", "mac")
+# Samsung's phone model prefixes. The others are tablets (SM-X, SM-T, SM-P) or watches (SM-R).
+_SAMSUNG_PHONES = ("sm-s", "sm-g", "sm-a", "sm-f", "sm-n", "sm-m", "sm-e")
+
+# Words a person uses for a kind of device, and the test of which batteries each one means.
+_KIND_WORDS = {
+    "phone": lambda b: b.phone,
+    "tablet": lambda b: b.kind == "mobile" and not b.phone,
+    "laptop": lambda b: b.computer,
+    "computer": lambda b: b.computer,
+    "mac": lambda b: b.computer,
+}
 
 
 @dataclass
@@ -47,6 +53,7 @@ class Battery:
         device: The Home Assistant device id, or None if the sensor has none.
         kind: "mobile" or "other".
         phone: Whether the device is a phone, rather than a tablet or something else.
+        computer: Whether it's a Mac running the Home Assistant app.
         charging: Whether it's charging, or None if that isn't known.
     """
 
@@ -57,6 +64,7 @@ class Battery:
     device: Optional[str]
     kind: str
     phone: bool
+    computer: bool
     charging: Optional[bool]
 
     @classmethod
@@ -65,7 +73,7 @@ class Battery:
         Builds a battery from one of HomeAssistant.batteries()'s dicts.
 
         Args:
-            found: The dict, with id, name, level, changed, device, maker, model and charging.
+            found: The dict, with id, name, level, changed, device, maker, model, charging and app.
 
         Returns:
             The battery. With no device there is nothing to read a kind or a
@@ -74,51 +82,45 @@ class Battery:
         device = found.get("device")
         maker = found.get("maker") if device else None
         model = found.get("model") if device else None
+        app = bool(found.get("app")) and bool(device)
+        kind = kind_of(maker, model, app)
         return cls(
             id=found["id"],
             name=spoken_name(found["name"]),
             level=found["level"],
             changed=found["changed"],
             device=device,
-            kind=kind_of(maker, model),
-            phone=is_phone(maker, model),
+            kind=kind,
+            phone=kind == "mobile" and is_phone(maker, model),
+            computer=app and _is_mac(maker, model),
             charging=charging_from(found.get("charging")) if device else None,
         )
 
 
-def _is_tablet(maker: Optional[str], model: Optional[str]) -> bool:
-    """Whether a mobile device is a tablet, from its model."""
-    model = (model or "").lower()
-    if (maker or "").lower() == "samsung":
-        # Galaxy Tabs are SM-X and SM-T; everything else mobile is a phone.
-        return model.startswith(("sm-x", "sm-t"))
-    return model.startswith("ipad") or "tab" in model or "pad" in model
+def _is_mac(maker: Optional[str], model: Optional[str]) -> bool:
+    """Whether a device is an Apple Mac, e.g. maker "Apple", model "Mac16,8"."""
+    return (maker or "").lower() == "apple" and (model or "").lower().startswith("mac")
 
 
-def kind_of(maker: Optional[str], model: Optional[str]) -> str:
+def kind_of(maker: Optional[str], model: Optional[str], app: bool) -> str:
     """
     Sorts a device into mobile or other.
 
     Args:
         maker: The device's manufacturer, as Home Assistant says it, or None.
         model: The device's model, or None.
+        app: Whether the battery sensor belongs to the Home Assistant app.
 
     Returns:
-        "mobile" for an Android phone or tablet, an iPhone or an iPad;
-        otherwise "other", including when the maker or model is unknown.
+        "mobile" for what's on the app, apart from a Mac; "other" for a Mac,
+        anything off the app, and anything unknown.
     """
-    maker = (maker or "").lower()
-    model = (model or "").lower()
-    if maker == "apple":
-        return "mobile" if model.startswith(("iphone", "ipad")) else "other"
-    if maker == "samsung":
-        return "mobile" if model.startswith("sm-") else "other"
-    return "mobile" if maker in _ANDROID_MAKERS else "other"
+    return "mobile" if app and not _is_mac(maker, model) else "other"
 
 
 def is_phone(maker: Optional[str], model: Optional[str]) -> bool:
     """
-    Whether a device is a phone - the one device whose warnings aren't sent to
+    Whether a model shows a phone - the one device whose warnings aren't sent to
     the phone, as that's the phone running out.
 
     Args:
@@ -126,9 +128,14 @@ def is_phone(maker: Optional[str], model: Optional[str]) -> bool:
         model: The device's model, or None.
 
     Returns:
-        True for a mobile device that isn't a tablet.
+        True for an iPhone or a Samsung model with a phone prefix (SM-S, G, A, F,
+        N, M or E). Everything else, including a model Nova can't place, is not.
     """
-    return kind_of(maker, model) == "mobile" and not _is_tablet(maker, model)
+    maker = (maker or "").lower()
+    model = (model or "").lower()
+    if maker == "apple":
+        return model.startswith("iphone")
+    return maker == "samsung" and model.startswith(_SAMSUNG_PHONES)
 
 
 def charging_from(raw: Optional[str]) -> Optional[bool]:
@@ -174,16 +181,6 @@ def spoken_name(name: str) -> str:
     return " ".join(said_words)
 
 
-def _kind_word_matches(word: str, battery: Battery) -> bool:
-    """Whether a kind word like "tablet" describes a battery's device."""
-    if word == "phone":
-        return battery.phone
-    if word == "tablet":
-        return battery.kind == "mobile" and not battery.phone
-    # A laptop, computer or Mac is something else, as nothing mobile is one.
-    return battery.kind == "other"
-
-
 def find(batteries: List[Battery], asked: str) -> List[Battery]:
     """
     Finds the devices someone meant by what they said.
@@ -195,22 +192,24 @@ def find(batteries: List[Battery], asked: str) -> List[Battery]:
     Returns:
         The batteries meant, in their given order. A word matches the start of
         any word in a name ("mac" finds "MacBook Pro"), or is a kind word:
-        phone, tablet, laptop, computer or mac. Empty if nothing matches.
+        phone, tablet, laptop, computer or mac. Only the batteries matching the
+        most asked words are kept, so "s25 ultra" doesn't also find the Tab S11
+        Ultra. Empty if nothing matches.
     """
     words = [w for w in asked.lower().split() if w != "all"]
     if not words:
         return list(batteries)
 
-    found = []
+    matches = []
     for battery in batteries:
         name_words = battery.name.lower().split()
-        for word in words:
-            if any(n.startswith(word) for n in name_words) or (
-                word in _KIND_WORDS and _kind_word_matches(word, battery)
-            ):
-                found.append(battery)
-                break
-    return found
+        matches.append(sum(
+            any(n.startswith(word) for n in name_words)
+            or (word in _KIND_WORDS and _KIND_WORDS[word](battery))
+            for word in words
+        ))
+    best = max(matches)
+    return [b for b, count in zip(batteries, matches) if best and count == best]
 
 
 def said(battery: Battery, now: float, stale_after: float) -> str:

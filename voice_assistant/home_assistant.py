@@ -176,7 +176,8 @@ BATTERIES_TEMPLATE = """
     'device_name_by_user': device_attr(device, 'name_by_user') if device else none,
     'maker': device_attr(device, 'manufacturer') if device else none,
     'model': device_attr(device, 'model') if device else none,
-    'charging': charging.state if charging.state is not none else charging.fallback
+    'charging': charging.state if charging.state is not none else charging.fallback,
+    'app': battery.entity_id in integration_entities('mobile_app')
   }] -%}
 {%- endfor -%}
 {{ found.batteries | tojson }}
@@ -522,7 +523,8 @@ class HomeAssistant:
             "level" (a float), "changed" (when Home Assistant last heard the level, in epoch
             seconds, even if the level did not move), "device" (its id, or None), "maker" and "model" (or None) and
             "charging" (its device's charging state as Home Assistant has it, e.g.
-            "discharging", or None). A sensor which is unavailable, unknown, not a number
+            "discharging", or None) and "app" (whether the sensor belongs to the Home Assistant app, which
+            is how a phone or tablet is told from a sensor or remote). A sensor which is unavailable, unknown, not a number
             or not in percent is left out - never taken as 0%, which would be a warning
             for nothing.
 
@@ -546,7 +548,8 @@ class HomeAssistant:
                           "name": state["device_name_by_user"] or state["device_name"] or state["friendly_name"]
                                   or state["entity_id"],
                           "level": level, "changed": state["changed"], "device": state["device"],
-                          "maker": state["maker"], "model": state["model"], "charging": state["charging"]})
+                          "maker": state["maker"], "model": state["model"], "charging": state["charging"],
+                          "app": state["app"]})
         return found
 
     def people(self, timeout: Optional[float] = None) -> List[Dict]:

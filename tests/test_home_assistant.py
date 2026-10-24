@@ -1009,20 +1009,23 @@ def _rendered_battery(entity="sensor.s25_ultra_battery_level", state="46", unit=
     return {"entity_id": entity, "state": state, "unit": unit, "changed": 1761200000.0,
             "friendly_name": "S25 Ultra Battery level", "device": "dev25", "device_name": "SM-S938B",
             "device_name_by_user": "s25-ultra", "maker": "samsung", "model": "SM-S938B",
-            "charging": "discharging", **shown}
+            "charging": "discharging", "app": True, **shown}
 
 
 def test_batteries_are_read_with_their_device_and_charging_state(make_home):
     home = make_home({"/api/template": FakeResponse(json.dumps([_rendered_battery()]))})
     assert home.batteries() == [{"id": "sensor.s25_ultra_battery_level", "name": "s25-ultra", "level": 46.0,
                                  "changed": 1761200000.0, "device": "dev25", "maker": "samsung",
-                                 "model": "SM-S938B", "charging": "discharging"}]
+                                 "model": "SM-S938B", "charging": "discharging", "app": True}]
     (method, path, sent), = home._session.requests
     assert (method, path) == ("POST", "/api/template")
     assert "battery_charging" in sent["json"]["template"] and "battery_state" in sent["json"]["template"]
     # "changed" is when Home Assistant last heard the level, not when it last moved: a level that holds
     # steady (a phone full on its charger) would otherwise read as old.
     assert "battery.last_reported | as_timestamp" in sent["json"]["template"]
+    # "app" says whether the sensor belongs to the Home Assistant app, which is how a phone, tablet or
+    # any other mobile device is told from a sensor without a list of makers.
+    assert "integration_entities('mobile_app')" in sent["json"]["template"]
     assert "last_changed" not in sent["json"]["template"]
 
 
@@ -1041,10 +1044,10 @@ def test_a_decimal_level_is_read_and_other_units_are_left_out(make_home):
 
 def test_a_battery_with_no_device_is_named_by_its_friendly_name(make_home):
     row = _rendered_battery("sensor.spare", "70", friendly_name="Spare", device=None, device_name=None,
-                            device_name_by_user=None, maker=None, model=None, charging=None)
+                            device_name_by_user=None, maker=None, model=None, charging=None, app=False)
     battery, = make_home({"/api/template": FakeResponse(json.dumps([row]))}).batteries()
-    assert (battery["name"], battery["device"], battery["maker"], battery["model"], battery["charging"]) == \
-        ("Spare", None, None, None, None)
+    assert (battery["name"], battery["device"], battery["maker"], battery["model"], battery["charging"], battery["app"]) == \
+        ("Spare", None, None, None, None, False)
     unnamed = _rendered_battery(device_name_by_user=None)
     assert make_home({"/api/template": FakeResponse(json.dumps([unnamed]))}).batteries()[0]["name"] == "SM-S938B"
 
