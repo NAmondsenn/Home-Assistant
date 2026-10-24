@@ -16,7 +16,7 @@ word, leaving the default quietly in force.
 import difflib
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -29,9 +29,10 @@ logger = logging.getLogger(__name__)
 BETWEEN_0_AND_1 = {("thresholds", "vad_threshold"), ("thresholds", "wake_word_confidence"),
                    ("thresholds", "silence_threshold"), ("llm", "temperature")}
 CHOICES = {("music", "player"): ("navidrome", "spotify")}
-# Battery marks are percentages, at least one of them, and the battery watcher can't
-# check every 0 seconds or call a reading old after -5.
-MARKS = {("batteries", "mobile_marks"), ("batteries", "other_marks")}
+# Battery marks are percentages, and how many each kind of device has - the settings page
+# allows no other number. The battery watcher can't check every 0 seconds or call a
+# reading old after -5.
+MARKS = {("batteries", "mobile_marks"): 1, ("batteries", "other_marks"): 2}
 POSITIVE = {("batteries", "check_every"), ("batteries", "stale_after")}
 
 # Sections an install's file may still have from when the Pi heard for itself, before
@@ -78,23 +79,32 @@ def _guess(name: str, options) -> str:
     return f" Did you mean '{close[0]}'?" if close else ""
 
 
-def _check_marks(setting: str, marks: Any):
+def marks_problem(marks: Any, count: int, who: str) -> Optional[str]:
     """
-    Checks a list of battery marks.
+    Says what is wrong with a list of battery marks, if anything - the one rule for
+    config.yaml's and the settings page's alike, so the page can always save what
+    config.yaml starts it with.
 
     Args:
-        setting: What to call the setting in an error, e.g. "config.yaml: 'batteries.mobile_marks'".
-        marks: What the setting holds.
+        marks: The marks, e.g. [15, 5].
+        count: How many there must be - one for a mobile device, two for anything else.
+        who: What they belong to, to start the sentence with, e.g. "MacBook Pro" or
+            "config.yaml: 'batteries.mobile_marks'".
 
-    Raises:
-        ConfigError: If it isn't at least one whole number from 1 to 99 - 0% would never be
-            reached, and a mark of 100 or more would warn about a full battery.
+    Returns:
+        A sentence saying what is wrong, or None if they are fine: the right number of
+        whole numbers from 1 to 99 (0% would never be reached, and 100 or more would
+        warn about a full battery), all different.
     """
-    if not isinstance(marks, list) or not marks:
-        raise ConfigError(f"{setting} should have at least one mark, like [15, 5], not {marks!r}")
-    for mark in marks:
-        if isinstance(mark, bool) or not isinstance(mark, int) or not 1 <= mark <= 99:
-            raise ConfigError(f"{setting} should be whole numbers from 1 to 99, like [15, 5], not {marks!r}")
+    if not isinstance(marks, list):
+        return f"{who} needs {'one mark' if count == 1 else 'two marks'}, in a list, not {marks!r}."
+    if len(marks) != count:
+        return f"{who} needs {'one mark' if count == 1 else 'two marks'}, not {len(marks)}."
+    if any(isinstance(m, bool) or not isinstance(m, int) or not 1 <= m <= 99 for m in marks):
+        return "A mark must be a whole number from 1 to 99."
+    if len(set(marks)) != len(marks):
+        return "The two marks must be different."
+    return None
 
 
 def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
@@ -131,7 +141,11 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
             if (section, name) in BETWEEN_0_AND_1 and value is not None and not 0 <= value <= 1:
                 raise ConfigError(f"{path}: '{section}.{name}' should be between 0 and 1, not {value}")
             if (section, name) in MARKS:
-                _check_marks(f"{path}: '{section}.{name}'", value)
+                setting = f"{path}: '{section}.{name}'"
+                problem = marks_problem(value, MARKS[(section, name)], setting)
+                if problem:
+                    # Only some of the sentences begin with who they're about.
+                    raise ConfigError(problem if problem.startswith(setting) else f"{setting}: {problem}")
             if (section, name) in POSITIVE and not (isinstance(value, (int, float)) and value > 0):
                 raise ConfigError(f"{path}: '{section}.{name}' should be a number above 0, not {value!r}")
             choices = CHOICES.get((section, name))

@@ -9,6 +9,7 @@ import requests
 
 from voice_assistant import storage
 
+from voice_assistant.config import marks_problem
 from voice_assistant.batteries import (
     Battery,
     BatteryChoices,
@@ -87,6 +88,12 @@ def test_names_are_said_as_words():
     assert spoken_name("macbook-pro") == "MacBook Pro"
     assert spoken_name("s25-ultra") == "S25 Ultra"
     assert spoken_name("tab-s11-ultra") == "Tab S11 Ultra"
+
+
+def test_a_name_the_user_typed_keeps_its_own_capitals():
+    assert spoken_name("TV remote") == "TV Remote"
+    assert spoken_name("AirPods") == "AirPods"
+    assert spoken_name("Nathaniel's Kindle") == "Nathaniel's Kindle"
 
 
 def test_asking_finds_the_device_meant():
@@ -175,6 +182,15 @@ def test_falling_past_a_mark_warns_once(tmp_path):
     assert _marks(choices, _mac(15)) == []
     assert _marks(choices, _mac(14.9)) == [("MacBook Pro", 15)]
     assert _marks(choices, _mac(14.9)) == []
+
+
+def test_a_charging_device_below_a_mark_gives_nothing(tmp_path):
+    choices = _choices(tmp_path)
+    assert _marks(choices, _mac(10, charging=True)) == []
+    # Nor after it fell, and charging has started the marks over rather than warned.
+    assert _marks(choices, _mac(40)) == []
+    assert _marks(choices, _mac(8, charging=True)) == []
+    assert _marks(choices, _mac(8)) == [("MacBook Pro", 15)]
 
 
 def test_a_wobble_round_a_mark_never_warns_twice(tmp_path):
@@ -301,6 +317,19 @@ def test_marks_which_dont_make_sense_are_refused(tmp_path):
     assert choices.marks_for(phone) == [5]
 
 
+@pytest.mark.parametrize("marks", [[5], [15, 5], [20, 10, 5], [10, 10], [], [0], [100], [5.5], [True], ["5"], [99, 1]])
+def test_config_and_the_page_agree_on_which_marks_make_sense(tmp_path, marks):
+    # config.yaml's defaults and a device's own marks follow one rule, so the page is never offered a
+    # device it can't then save.
+    for battery, count in ((_phone(50), 1), (_mac(50), 2)):
+        refused_by_page = False
+        try:
+            _choices(tmp_path).set(battery, marks=marks)
+        except ValueError:
+            refused_by_page = True
+        assert (marks_problem(marks, count, "x") is not None) == refused_by_page, (battery.kind, marks)
+
+
 def test_a_refused_change_changes_nothing(tmp_path):
     choices = _choices(tmp_path)
     mac = _mac(50)
@@ -308,6 +337,25 @@ def test_a_refused_change_changes_nothing(tmp_path):
         choices.set(mac, enabled=False, marks=[150])
     assert choices.enabled(mac.id)
     assert not (tmp_path / "batteries.json").exists()
+
+
+def test_changed_says_whether_any_choice_differs_from_the_defaults(tmp_path):
+    choices = _choices(tmp_path)
+    for battery in (_mac(50), _phone(50), _tablet(50)):
+        assert not choices.changed(battery)
+        choices.set(battery, enabled=False)
+        assert choices.changed(battery)
+        choices.reset(battery.id)
+        assert not choices.changed(battery)
+        choices.set(battery, marks=[40] if battery.kind == "mobile" else [40, 20])
+        assert choices.changed(battery)
+        choices.reset(battery.id)
+        choices.set(battery, send_to_phone=not choices.send_to_phone(battery))
+        assert choices.changed(battery)
+    # Choosing what the defaults already are is no change.
+    choices.reset(_mac(50).id)
+    choices.set(_mac(50), enabled=True, marks=[15, 5], send_to_phone=True)
+    assert not choices.changed(_mac(50))
 
 
 def test_the_defaults_are_the_kinds_highest_first(tmp_path):
@@ -530,6 +578,34 @@ def test_a_held_warning_no_longer_true_is_dropped(tmp_path):
     rig.fall_to(_mac(60, charging=True))
     assert rig.said == [] and rig.sent == []
     assert rig.choices.held() == {}
+
+
+def test_a_held_warning_no_longer_true_is_let_go_with_a_line_in_the_log(tmp_path, caplog):
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    rig.quiet = False
+    with caplog.at_level(logging.INFO, logger="voice_assistant.batteries"):
+        rig.fall_to(_mac(60, charging=True))
+    assert "MacBook Pro" in caplog.text and "charging" in caplog.text
+    caplog.clear()
+    (tmp_path / "second").mkdir()
+    quiet = _fallen(tmp_path / "second", state="not_home", sends=False, quiet=True)
+    quiet.quiet = False
+    quiet.choices.set(_mac(14), enabled=False)
+    with caplog.at_level(logging.INFO, logger="voice_assistant.batteries"):
+        quiet.watcher.check(NOW)
+    assert quiet.said == [] and quiet.choices.held() == {}
+    assert "MacBook Pro" in caplog.text and "off" in caplog.text
+
+
+def test_a_held_warning_stays_held_while_its_battery_isnt_listed(tmp_path):
+    # Home Assistant leaves out a sensor that is unavailable for a moment, as it is while Home Assistant restarts.
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    rig.quiet = False
+    rig.home.found = []
+    rig.watcher.check(NOW)
+    assert rig.said == [] and rig.choices.held() == {_mac(14).id: 15}
+    rig.fall_to(_mac(14))
+    assert rig.said == [MAC_MESSAGE] and rig.choices.held() == {}
 
 
 def test_a_held_warning_which_couldnt_be_said_stays_held(tmp_path):

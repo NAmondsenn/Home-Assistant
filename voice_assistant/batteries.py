@@ -28,6 +28,7 @@ import requests
 from voice_assistant import storage
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.clock import format_duration
+from voice_assistant.config import marks_problem
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,8 @@ def spoken_name(name: str) -> str:
 
     Returns:
         The words - "MacBook Pro", "S25 Ultra". A word with a digit is upper-cased
-        as it is, a known spelling is used, and the rest are capitalised.
+        as it is, a known spelling is used, and an all-lower-case word is capitalised.
+        Any other keeps the capitals the user gave it ("TV remote" is "TV Remote").
     """
     words = name.replace("-", " ").replace("_", " ").split()
     said_words = []
@@ -187,7 +189,7 @@ def spoken_name(name: str) -> str:
         elif any(c.isdigit() for c in word):
             said_words.append(word.upper())
         else:
-            said_words.append(word.capitalize())
+            said_words.append(word.capitalize() if word.islower() else word)
     return " ".join(said_words)
 
 
@@ -321,6 +323,11 @@ class BatteryChoices:
         with self._lock:
             return self._state["devices"].get(battery.id, {}).get("send_to_phone", not battery.phone)
 
+    def changed(self, battery: Battery) -> bool:
+        """Whether any of a device's choices differ from the defaults - when the page offers to put them back."""
+        return (self.marks_for(battery) != self.default_marks(battery) or not self.enabled(battery.id)
+                or self.send_to_phone(battery) != (not battery.phone))
+
     def set(
         self,
         battery: Battery,
@@ -346,7 +353,7 @@ class BatteryChoices:
         if marks is not None:
             marks = self._checked(battery, marks)
         with self._lock:
-            def change(state):
+            def change(state: Dict):
                 device = state["devices"].setdefault(battery.id, {})
                 if enabled is not None:
                     device["enabled"] = bool(enabled)
@@ -413,7 +420,7 @@ class BatteryChoices:
                     warned[battery.id] = sorted(now)
 
             if warned:
-                def remember(state):
+                def remember(state: Dict):
                     for battery_id, marks in warned.items():
                         if marks:
                             state["warned"][battery_id] = marks
@@ -434,12 +441,12 @@ class BatteryChoices:
         night doesn't lose it. A device has at most one held warning - a newer one
         replaces it, as only the lowest mark is still worth saying.
 
+        A failed save still holds it in memory, as due() does for the warned marks, so
+        the warning isn't dropped - only forgotten by a restart.
+
         Args:
             battery_id: The device's sensor id.
             mark: The mark that warned, e.g. 15.
-
-        A failed save still holds it in memory, as due() does for the warned marks, so
-        the warning isn't dropped - only forgotten by a restart.
         """
         with self._lock:
             self._keep(lambda state: state["held"].__setitem__(battery_id, mark), "held warning")
@@ -462,7 +469,7 @@ class BatteryChoices:
             if battery_id in self._state["held"]:
                 self._keep(lambda state: state["held"].pop(battery_id), "release of a held warning")
 
-    def _keep(self, change, what: str):
+    def _keep(self, change: Callable[[Dict], object], what: str):
         """Saves a change, or keeps it in memory alone if the save fails."""
         try:
             self._change(change)
@@ -470,7 +477,7 @@ class BatteryChoices:
             change(self._state)
             logger.warning(f"Couldn't save the {what}: {e}")
 
-    def _change(self, change):
+    def _change(self, change: Callable[[Dict], object]):
         """Applies a change to a copy of the state, saves it, and only then keeps it."""
         new = copy.deepcopy(self._state)
         change(new)
@@ -479,15 +486,9 @@ class BatteryChoices:
 
     def _checked(self, battery: Battery, marks: List[int]) -> List[int]:
         """Returns marks highest first, or raises ValueError saying what is wrong."""
-        wanted = 1 if battery.kind == "mobile" else 2
-        if len(marks) != wanted:
-            raise ValueError(
-                f"{battery.name} needs {'one mark' if wanted == 1 else 'two marks'}, not {len(marks)}."
-            )
-        if any(type(m) is not int or not 1 <= m <= 99 for m in marks):
-            raise ValueError("A mark must be a whole number from 1 to 99.")
-        if len(set(marks)) != len(marks):
-            raise ValueError("The two marks must be different.")
+        problem = marks_problem(marks, 1 if battery.kind == "mobile" else 2, battery.name)
+        if problem:
+            raise ValueError(problem)
         return sorted(marks, reverse=True)
 
 
@@ -589,7 +590,8 @@ class BatteryWatcher:
         them. Once quiet hours are over it also says any held warning which is still true.
 
         If Home Assistant doesn't answer, that is logged once until it does, and
-        nothing else happens. Any other error is a bug, and is raised.
+        nothing else happens. Any other error is a bug: it is logged with its
+        traceback, and the pass goes on with the rest.
 
         Args:
             now: The current epoch time.
@@ -680,8 +682,17 @@ class BatteryWatcher:
             self._choices.hold(battery.id, warning.mark)
 
     def _message(self, battery: Battery, now: float) -> str:
-        """The warning's words - with the reading's age if it's old, as said() does, so that 4% last heard
-        three days ago isn't taken to be the level now."""
+        """
+        The warning's words - with the reading's age if it's old, as said() does, so that
+        4% last heard three days ago isn't taken to be the level now.
+
+        Args:
+            battery: The battery which has fallen.
+            now: The current epoch time.
+
+        Returns:
+            e.g. "Your MacBook Pro's battery is down to 14%."
+        """
         level = f"{round(battery.level)}%"
         age = now - battery.changed
         if age > self._stale_after:
@@ -702,8 +713,18 @@ class BatteryWatcher:
         by_id = {b.id: b for b in batteries}
         for battery_id, mark in held.items():
             battery = by_id.get(battery_id)
-            true = battery is not None and not battery.charging and battery.level < mark \
-                and self._choices.enabled(battery_id)
-            if true and not self._say(self._message(battery, now)):
+            if battery is None:
+                # Home Assistant leaves out a sensor which is unavailable for a moment, as while it restarts - the
+                # warning waits, rather than being lost to that. A device gone for good costs one small entry.
                 continue
+            gone = (
+                "it's charging" if battery.charging
+                else f"it's no longer down to {mark}%" if battery.level >= mark
+                else "its warnings are switched off" if not self._choices.enabled(battery_id)
+                else None
+            )
+            if gone is None and not self._say(self._message(battery, now)):
+                continue
+            if gone:
+                logger.info(f"Letting go of the held battery warning for {battery.name}: {gone}")
             self._choices.release(battery_id)
