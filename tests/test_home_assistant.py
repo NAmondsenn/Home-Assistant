@@ -1020,6 +1020,10 @@ def test_batteries_are_read_with_their_device_and_charging_state(make_home):
     (method, path, sent), = home._session.requests
     assert (method, path) == ("POST", "/api/template")
     assert "battery_charging" in sent["json"]["template"] and "battery_state" in sent["json"]["template"]
+    # "changed" is when Home Assistant last heard the level, not when it last moved: a level that holds
+    # steady (a phone full on its charger) would otherwise read as old.
+    assert "battery.last_reported | as_timestamp" in sent["json"]["template"]
+    assert "last_changed" not in sent["json"]["template"]
 
 
 def test_an_unreadable_battery_is_left_out(make_home):

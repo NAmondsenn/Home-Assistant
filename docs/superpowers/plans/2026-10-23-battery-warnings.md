@@ -54,7 +54,7 @@
     - `"id"`: the entity id;
     - `"name"`: the device's `name_by_user`, else its name, else the entity's friendly name;
     - `"level"`: a float;
-    - `"changed"`: epoch seconds of `last_changed`;
+    - `"changed"`: epoch seconds of `last_reported` - when Home Assistant last heard the reading, not when its value last moved (`last_changed` would make a steady level look old);
     - `"device"`: the device id, or None;
     - `"maker"`, `"model"`: or None;
     - `"charging"`: the raw state of the same device's charging entity, or None. That's a `binary_sensor` with device class `battery_charging`, else a `sensor` whose entity id ends in `battery_state`.

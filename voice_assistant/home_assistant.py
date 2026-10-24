@@ -169,7 +169,7 @@ BATTERIES_TEMPLATE = """
     'entity_id': battery.entity_id,
     'state': battery.state,
     'unit': battery.attributes.get('unit_of_measurement'),
-    'changed': battery.last_changed | as_timestamp,
+    'changed': battery.last_reported | as_timestamp,
     'friendly_name': battery.attributes.get('friendly_name'),
     'device': device,
     'device_name': device_attr(device, 'name') if device else none,
@@ -519,8 +519,8 @@ class HomeAssistant:
             One dict for each sensor of device class battery that reads in percent and
             has a level, with "id" (e.g. "sensor.s25_ultra_battery_level"), "name" (the
             device's own name for it, else its name, else the sensor's friendly name),
-            "level" (a float), "changed" (when the level last changed, in epoch
-            seconds), "device" (its id, or None), "maker" and "model" (or None) and
+            "level" (a float), "changed" (when Home Assistant last heard the level, in epoch
+            seconds, even if the level did not move), "device" (its id, or None), "maker" and "model" (or None) and
             "charging" (its device's charging state as Home Assistant has it, e.g.
             "discharging", or None). A sensor which is unavailable, unknown, not a number
             or not in percent is left out - never taken as 0%, which would be a warning
