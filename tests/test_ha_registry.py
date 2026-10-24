@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 import time
 
 import pytest
@@ -36,8 +37,9 @@ class FakeConnection:
     def recv(self):
         return self._queue.pop(0)
 
-    def close(self):
+    def close(self, timeout=None):
         self.closed = True
+        self.closed_with = timeout
 
 
 @pytest.fixture
@@ -258,6 +260,66 @@ def test_a_call_has_one_deadline_for_the_whole_exchange(connect):
     with pytest.raises(HomeSocketError):
         HomeSocket("http://ha.test:8123", "token", timeout=0.1).call([{"type": "one"}, {"type": "two"}])
     assert slow.closed
+
+
+def test_connecting_slower_than_the_deadline_raises(connect, monkeypatch):
+    slow = FakeConnection()
+    connect(slow)
+
+    def create(url, timeout=None):
+        time.sleep(0.15)
+        return slow
+    monkeypatch.setattr(websocket, "create_connection", create)
+    started = time.monotonic()
+    with pytest.raises(HomeSocketError):
+        HomeSocket("http://ha.test:8123", "token", timeout=0.05).call([{"type": "one"}])
+    assert time.monotonic() - started < 1 and slow.closed
+
+
+def test_closing_never_waits_for_home_assistant(connect):
+    class SlowClose(FakeConnection):
+        def close(self, timeout=None):
+            # websocket-client waits 3 seconds for the close frame unless told not to.
+            time.sleep(3 if timeout is None else timeout)
+            super().close(timeout)
+
+    connection = SlowClose()
+    connect(connection)
+    started = time.monotonic()
+    HomeSocket("http://ha.test:8123", "token").call([{"type": "one"}])
+    assert time.monotonic() - started < 1 and connection.closed_with == 0
+
+
+def test_an_answer_which_never_finishes_is_cut_off_at_the_deadline(connect):
+    class Stuck(FakeConnection):
+        def __init__(self):
+            super().__init__()
+            self.aborted = threading.Event()
+
+        def send(self, text):
+            # Signs in, but never answers what's asked after.
+            if json.loads(text)["type"] == "auth":
+                super().send(text)
+
+        def recv(self):
+            if self._queue:
+                return super().recv()
+            # Trickling in, never done - until the socket is aborted.
+            self.aborted.wait(5)
+            raise OSError("aborted")
+
+        def abort(self):
+            self.aborted.set()
+
+    stuck = Stuck()
+    connect(stuck)
+    timers = {thread for thread in threading.enumerate() if isinstance(thread, threading.Timer)}
+    started = time.monotonic()
+    with pytest.raises(HomeSocketError):
+        HomeSocket("http://ha.test:8123", "token", timeout=0.1).call([{"type": "one"}])
+    assert 0.05 < time.monotonic() - started < 1 and stuck.closed
+    # Whatever other tests left behind aside, the call leaves no timer running.
+    assert {thread for thread in threading.enumerate() if isinstance(thread, threading.Timer)} <= timers
 
 
 def test_no_snapshot_until_a_read_works_and_none_while_reads_fail(caplog):
