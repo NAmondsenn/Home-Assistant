@@ -56,7 +56,7 @@ For the controller, read-only, with the user's OK. `.superpowers/tools/ha_assist
 
 **Results (24 October, read-only, from the brain):**
 1. `websocket-client==1.9.2` (31 August 2026); its `requires_dist` is extras only, so no dependencies.
-2. As expected: `result.results[i]` is `{"intent": {"name"}, "slots", "details", "targets": {entity_id: {"matched": true}}, "match", "sentence_template", "unmatched_slots", "source": "builtin"}`, and an unmatched sentence is `null`. No automation here has a sentence trigger, so that case wasn't seen.
+2. As expected: `result.results[i]` is `{"intent": {"name"}, "slots", "details", "targets": {entity_id: {"matched": true}}, "match", "sentence_template", "unmatched_slots", "source": "builtin"}`, and an unmatched sentence is `null`. No automation here has a sentence trigger, so that case wasn't seen. *Put right on 25 October:* a sentence that fits a template but names nothing that exists isn't `null` - it's a full result with `"match": false` and the unknown slot in `unmatched_slots` ("pause the tv", with no media player called TV, is `HassMediaPause` with no targets and `"unmatched_slots": {"name": "tv"}`). Only `"match": true` is a match.
 3. Loose wordings match through the debugging too - "could you please turn the lamp off for me" is `HassTurnOff` on `light.lamp`.
 4. `config/entity_registry/list` has no aliases (1,113 entries). `config/entity_registry/get_entries` gives each `aliases`, and a list can hold `None` - drop those.
 5. As expected. 17 things are exposed (8 switches, 4 to-do lists, 3 media players, 2 lights), and no script - so "run goodnight" and "activate goodnight" match `HassTurnOn` with no targets.
