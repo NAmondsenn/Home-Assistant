@@ -56,6 +56,10 @@ logger = logging.getLogger(__name__)
 # so anything slower than this means it's down.
 REQUEST_TIMEOUT = 5
 
+# What's said when Home Assistant can't be asked - by the lights and calendar, and by
+# the battery questions, so it's the same sentence wherever it comes up.
+CANT_REACH = "I can't reach Home Assistant right now."
+
 # Home Assistant's own built-in Assist, which matches requests against the exposed
 # devices by itself. Named, rather than left to the default, in case the default
 # has been set to a language model - which would be slower, and less predictable.
@@ -346,7 +350,7 @@ class HomeAssistant:
         if status == 401:
             return "Home Assistant didn't accept my token. HA_TOKEN in the .env file needs checking."
         if isinstance(error, (requests.ConnectionError, requests.Timeout)):
-            return "I can't reach Home Assistant right now."
+            return CANT_REACH
         return "Home Assistant had a problem with that."
 
     def command(self, request: str) -> Dict:

@@ -52,6 +52,10 @@ ACTIVITIES = {"work": "work", "working": "work", "shift": "work", "shifts": "wor
               "class": "uni", "classes": "uni"}
 ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
 
+# The devices a battery is asked about by - the kind words batteries.find knows. A
+# device with a name of its own ("the S25 Ultra") is left to Claude.
+BATTERY_DEVICE = "mac|phone|tablet|laptop|computer"
+
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
 DAY = r"(?P<day>today|tonight|tomorrow|this weekend|the weekend|" + "|".join(WEEKDAYS) + ")"
@@ -171,6 +175,13 @@ class LocalIntents:
             (r"(?:are there |have i got |do i have )?any (?:new )?notifications|what(?:'s| are) my notifications"
              r"|read (?:me )?my notifications", self._notifications),
             (r"tell me more|what was that(?: about)?", self._tell_more),
+            # The batteries - see batteries.py. A device is only the one word, so "what's on my
+            # phone" or "how's my phone's screen" are never taken for a battery.
+            (rf"(?:how(?:'s| is)|what(?:'s| is)) (?:the |my )(?P<device>{BATTERY_DEVICE})(?:'s)? battery"
+             rf"(?: level| percentage)?|what(?:'s| is) (?:the |my )(?P<device2>{BATTERY_DEVICE}) (?:on|at)",
+             self._batteries),
+            (r"(?:what(?:'s| are| is) (?:the |my )?)?battery levels?|how are (?:all )?my batteries(?: doing)?",
+             self._batteries),
             (r"(?:send|text) (?:that|it|this) to (?:my phone|me)|text me (?:that|it)"
              r"|(?:send|put) (?:that|it|this) on my phone", self._send_to_phone),
         ]
@@ -272,6 +283,10 @@ class LocalIntents:
         if not self.clock or self.clock.timer_count() != 1:
             return None
         return self._result("Okay.", [Action("cancel_timer")])
+
+    def _batteries(self, found) -> Dict:
+        device = found.groupdict().get("device") or found.groupdict().get("device2")
+        return self._result("Okay.", [Action("get_batteries", {"device": device} if device else {})])
 
     def _notifications(self, found) -> Optional[Dict]:
         return self._result("Okay.", [Action("read_notifications")]) if self.ntfy else None

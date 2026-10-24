@@ -28,6 +28,7 @@ from voice_assistant import memory as memory_module
 from voice_assistant import paths, protocol
 from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
+from voice_assistant.batteries import BatteryWatcher
 from voice_assistant.ntfy import Alert
 from voice_assistant.recording import RATE
 from voice_assistant.remote import RemoteSatellite
@@ -988,3 +989,98 @@ def test_run_routine_says_whether_it_ran(brain, connect):
     connect(brain)
     connected(brain)
     assert brain.run_routine({"name": "Good morning", "satellite": None}) is True
+
+
+# Batteries
+
+HOME_ASSISTANT = {"url": "http://home-assistant.test:8123"}
+
+
+@pytest.fixture
+def home_assistant_token(monkeypatch):
+    monkeypatch.setenv("HA_TOKEN", "a-token")
+
+
+def test_the_brain_watches_batteries_when_home_assistant_is_set_up(make_brain, home_assistant_token, tmp_path):
+    brain = make_brain(home_assistant=HOME_ASSISTANT,
+                       batteries={"mobile_marks": [7], "other_marks": [30, 7], "check_every": 10, "stale_after": 99})
+    assert isinstance(brain.batteries, BatteryWatcher) and brain.home is not None
+    assert brain.batteries.stale_after == 99
+    assert brain.batteries._check_every == 10
+    # The settings come from config.yaml's batteries section, kept in the brain's own data folder.
+    assert brain.batteries._choices._defaults == {"mobile": [7], "other": [30, 7]}
+    assert brain.batteries._choices._path == str(tmp_path / "batteries.json")
+    # Not running until run() starts it.
+    assert brain.batteries._thread is None
+
+
+def test_the_brain_has_no_battery_watcher_without_home_assistant(make_brain, monkeypatch):
+    monkeypatch.delenv("HA_TOKEN", raising=False)
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    assert brain.batteries is None and brain.home is None
+    assert make_brain().batteries is None
+
+
+def test_a_battery_warning_is_said_on_the_default_satellite(brain, connect):
+    # With the bedroom, the first satellite added, away, there's nothing to say it.
+    assert brain._say_battery("Your phone's battery is down to 5%.") is False
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    kitchen = connected(brain, "kitchen")
+    assert brain._say_battery("Your phone's battery is down to 5%.") is False
+
+    connect(brain)
+    bedroom = connected(brain)
+    assert brain._say_battery("Your MacBook Pro's battery is down to 15%.") is True
+    assert bedroom.announced == ["Your MacBook Pro's battery is down to 15%."] and kitchen.announced == []
+
+
+def test_saying_a_battery_warning_never_raises(brain, connect, caplog):
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+
+    def fail(message, *args, **kwargs):
+        raise OSError("the satellite went mid-sentence")
+
+    bedroom.announce = fail
+    with caplog.at_level(logging.WARNING):
+        assert brain._say_battery("Your phone's battery is down to 5%.") is False
+    assert "battery warning" in caplog.text
+
+
+def test_warnings_go_to_the_phone_through_ntfy_and_wait_for_ntfys_quiet_hours(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT,
+                       ntfy={"url": "http://ntfy.test", "phone": "my-phone", "quiet_from": "22:00",
+                             "quiet_until": "06:30"})
+    sent = []
+    brain.ntfy.send = lambda topic, message, title="": sent.append((topic, message, title)) or True
+    assert brain.batteries._send("It's low.", "Battery low") is True
+    assert sent == [("my-phone", "It's low.", "Battery low")]
+    assert brain.batteries._quiet == brain.ntfy.quiet
+
+
+def test_without_ntfy_warnings_are_only_said_and_quiet_hours_are_still_ntfys(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"quiet_from": "22:00", "quiet_until": "06:30"})
+    assert brain.ntfy is None and brain.batteries._send is None
+    assert (brain.batteries._quiet.__self__.quiet_from, brain.batteries._quiet.__self__.quiet_until) == (
+        "22:00", "06:30")
+    # And with ntfy but nowhere to send to, the same.
+    brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"url": "http://ntfy.test", "phone": ""})
+    assert brain.batteries._send is None
+
+
+def test_the_battery_watcher_runs_while_the_brain_does_and_stops_with_it(brain, home_assistant_token, make_brain):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    # Nothing here may reach a real Home Assistant.
+    brain.home.batteries = lambda timeout=None: []
+    brain.home.people = lambda: []
+    running = []
+
+    def serve():
+        running.append(any(thread.name == "batteries" and thread.is_alive() for thread in threading.enumerate()))
+
+    brain.serve = serve
+    brain.run()
+    assert running == [True]
+    assert not any(thread.name == "batteries" for thread in threading.enumerate())

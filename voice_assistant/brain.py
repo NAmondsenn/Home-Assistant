@@ -28,7 +28,9 @@ from typing import Dict, List, Optional, Set, Tuple
 import numpy as np
 
 from voice_assistant import paths, protocol, storage, watchdog
+from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.clock import Clock, spoken_clock_time
+from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
 from voice_assistant.ntfy import Ntfy
@@ -237,6 +239,12 @@ class Brain:
         # and things sent to their phone. None if it isn't set up - see ntfy.py.
         self.ntfy = Ntfy.from_config(config, os.getenv("NTFY_TOKEN"), on_alert=self._alert)
 
+        # Home Assistant, the brain's own client - for watching the batteries, and what
+        # the satellites' sessions ask of it besides is theirs - or None until it's set
+        # up. See batteries.py.
+        self.home = HomeAssistant.from_config(config, os.getenv("HA_TOKEN"))
+        self.batteries = self._make_battery_watcher() if self.home else None
+
         # Every satellite's timers and alarms, rung on the satellite each was set from.
         # Started in run(), once what rings on no satellite has gone to the default.
         self.clock = Clock(on_timer_finished=self._announce, on_unanswered=self._unanswered,
@@ -252,6 +260,30 @@ class Brain:
         # switched off - see settings_page.py. It looks each satellite's session up at
         # every request, so it never holds one which has gone.
         self.settings_page = SettingsPage.from_config(config, self)
+
+    def _make_battery_watcher(self) -> BatteryWatcher:
+        """
+        The watcher for the batteries, which warns the user's phone and says it aloud as
+        well - see BatteryWatcher. It's started by run().
+
+        Returns:
+            The watcher, set up from config.yaml's batteries section, and keeping ntfy's
+            quiet hours. With no ntfy there's still a night to keep quiet in, so its
+            hours are read from the same settings and kept by the same function.
+        """
+        settings = self.config.section("batteries")
+        choices = BatteryChoices(os.path.join(paths.DATA_DIR, "batteries.json"),
+                                 settings.get("mobile_marks", [5]), settings.get("other_marks", [15, 5]))
+        send = None
+        if self.ntfy and self.ntfy.phone:
+            def send(message: str, title: str) -> bool:
+                return self.ntfy.send(self.ntfy.phone, message, title=title)
+        ntfy_settings = self.config.section("ntfy")
+        quiet = (self.ntfy or Ntfy("", quiet_from=ntfy_settings.get("quiet_from", "23:00"),
+                                   quiet_until=ntfy_settings.get("quiet_until", "07:00"))).quiet
+        return BatteryWatcher(self.home, choices, say=self._say_battery, send=send, quiet=quiet,
+                              check_every=settings.get("check_every", 60),
+                              stale_after=settings.get("stale_after", 3600))
 
     # The satellites
 
@@ -650,6 +682,29 @@ class Brain:
         session.alert(alert)
         return True
 
+    def _say_battery(self, message: str) -> bool:
+        """
+        Says a battery warning on the default satellite, as BatteryWatcher has it said.
+
+        Args:
+            message: What to say, e.g. "Your MacBook Pro's battery is down to 15%."
+
+        Returns:
+            Whether it was said - it wasn't with the default satellite away, or if saying it
+            went wrong, and the watcher then sends it or holds it instead. Never raises.
+        """
+        session = self.session_for(None)
+        if session is None:
+            logger.warning("A battery warning wasn't said, as the default satellite isn't connected")
+            return False
+        try:
+            session.announce(message)
+        except Exception:
+            # The satellite going away mid-sentence, most likely.
+            logger.exception("A battery warning couldn't be said")
+            return False
+        return True
+
     def _unanswered(self, timer, kind, satellite=None):
         """
         Sends a reminder nobody answered to the user's phone, once it's stopped ringing.
@@ -799,6 +854,8 @@ class Brain:
             self.settings_page.start()
         threading.Thread(target=self._run_routines_when_due, daemon=True, name="routines").start()
         threading.Thread(target=self._send_alarms_hourly, daemon=True, name="alarm-copies").start()
+        if self.batteries:
+            self.batteries.start()
         logger.info(f"{self.name}'s brain is ready")
 
         # However listening ends - a stop signal, stop() or something unexpected -
@@ -844,12 +901,14 @@ class Brain:
     def _clean_up(self):
         """
         Closes everything down in order - the clock, so nothing else starts ringing,
-        then ntfy and the settings page, then every satellite's session, so its device
+        then the batteries, ntfy and the settings page, then every satellite's session, so its device
         in Home Assistant and its music stop - and then the Piper process kept waiting
         for the next thing to say.
         """
         self.running = False
         self.clock.stop()
+        if self.batteries:
+            self.batteries.stop()
         if self.ntfy:
             self.ntfy.stop()
         if self.settings_page:

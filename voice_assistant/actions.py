@@ -17,11 +17,14 @@ both a description and the code to run it.
 import inspect
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from voice_assistant import network
+from voice_assistant.batteries import HOME_FAILURES, find, said
+from voice_assistant.home_assistant import CANT_REACH
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -38,6 +41,7 @@ UNAVAILABLE = {
     "home": "Home Assistant isn't set up yet.",
     "memory": "I can't remember things right now.",
     "ntfy": "Notifications aren't set up yet.",
+    "batteries": "Battery levels need Home Assistant.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -207,7 +211,7 @@ class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
     def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
-                 satellite: Optional[str] = None):
+                 satellite: Optional[str] = None, batteries=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -221,6 +225,8 @@ class ActionExecutor:
                 set up.
             satellite: The satellite the user is talking to, whose timers and alarms
                 ring where they were set - or None for none in particular.
+            batteries: BatteryWatcher, for asking how full the batteries are, or None
+                if Home Assistant isn't set up.
         """
         self.music = music
         self.clock = clock
@@ -230,6 +236,7 @@ class ActionExecutor:
         self.memory = memory
         self.ntfy = ntfy
         self.satellite = satellite
+        self.batteries = batteries
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -922,10 +929,37 @@ class ActionExecutor:
     def list_memories(self):
         return self.memory.describe()
 
+    # Batteries
+
+    @tool(
+        "Say how full the batteries of the user's devices are - their phone, tablet, Mac and "
+        "the like - for 'how's my Mac's battery?', 'what's my phone on?' or 'battery levels'. "
+        "Give the device as the user said it, or leave it out for all of them. It's read out "
+        "for you, so just reply 'Okay.'",
+        needs="batteries",
+        device={
+            "type": "string",
+            "description": ("Which device, as the user said it, e.g. 'mac', 'phone', 'tablet' or "
+                            "'s25 ultra'. Leave out for every battery."),
+        },
+    )
+    def get_batteries(self, device: Optional[str] = None):
+        try:
+            batteries = self.batteries.read()
+        except HOME_FAILURES as e:
+            logger.warning(f"Couldn't read the batteries: {e}")
+            return {"success": False, "message": CANT_REACH}
+        found = find(batteries, device or "")
+        if not found:
+            return {"success": False, "message": "I can't find a battery called that."}
+        now = time.time()
+        return {"success": True, "message": " ".join(said(battery, now, self.batteries.stale_after)
+                                                     for battery in found)}
+
     # Notifications
 
     @tool(
-        "Send something to the user's phone, as a notification - for 'send that to my phone', "
+        "Send something to the user's phone, as a notification, as a notification - for 'send that to my phone', "
         "'text me the recipe', 'put the shopping list on my phone'. Write out in full what "
         "they'd want to read there: it isn't said out loud, so it can be longer and more "
         "detailed than a spoken reply. Leave text out to send exactly what you last said.",

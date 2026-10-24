@@ -13,6 +13,7 @@ It's built in two halves - see [docs/decisions/0006](docs/decisions/0006-the-pi-
 - **The lights** - "turn off the kitchen lights", "set the living room lights to 30 percent", "make the lamp blue", "make the lights warmer", through Home Assistant. Short commands like "lights on" mean the lights in the room Nova is in.
 - **In Home Assistant** - Nova is a device there, with its volumes, next alarm, timers, stop, restart, a box to make it say something, and a switch to mute its microphone. See "Nova in Home Assistant" below.
 - **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar. "What have I got on this week?" is an overview - which days there's work or uni, and anything else by day - rather than every time of every day. "When's my MOT?" looks for one thing, up to three months ahead. And "what time do I have work tomorrow?", "when's my next shift?" or "when do I finish uni today?" - say what each is called on the calendar in `home_assistant.activities`.
+- **Batteries** - "how's my Mac's battery?", "what's my phone on?" or "battery levels", for every device Home Assistant has a battery level for. Nova also warns you as one runs low. See "Batteries" below.
 - **The weather** - now, today or tomorrow, from Open-Meteo.
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
@@ -171,6 +172,12 @@ This is set up on the brain, which is what talks to Home Assistant - a satellite
 6. For your calendar, add Google Calendar (or any other) to Home Assistant through its integration. Every calendar it has is read, unless you list the ones you want in `home_assistant.calendars`.
 
 Then restart the brain. Its log says `Home Assistant at ...` once it's on.
+
+### Batteries
+
+With Home Assistant set up, the brain finds every device it has a battery level for - phones, tablets, laptops, remotes - by itself, so a new one is there without telling Nova. Ask "how's my Mac's battery?", "what's my phone on?" or "battery levels", and Nova says each level, with how old the reading is if it's stale.
+
+It also warns you as a battery falls: once at 5% for a phone or tablet, and at 15% and 5% for anything else, each only once until the device has charged. The warning goes to your phone through ntfy (`ntfy.phone`), and is said out loud as well on the default satellite while you're home and it isn't quiet hours (ntfy's `quiet_from` and `quiet_until`). With no ntfy, or if sending fails, it's said instead, and held until the morning if it comes at night. The marks, how often the batteries are read and when a reading counts as old are in `config.yaml`'s `batteries` section. See `docs/decisions/0007-battery-warnings.md`.
 
 ### Nova in Home Assistant
 

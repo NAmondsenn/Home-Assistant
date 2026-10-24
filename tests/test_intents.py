@@ -215,3 +215,31 @@ def test_tell_me_more_is_only_about_an_alert_just_said():
 def test_without_ntfy_notification_commands_go_to_claude():
     for said in ("Any notifications?", "Send that to my phone.", "Tell me more."):
         assert LocalIntents().match(said) is None
+
+
+@pytest.mark.parametrize("text, params", [
+    ("How's my Mac's battery?", {"device": "mac"}),
+    ("what's my phone on", {"device": "phone"}),
+    ("What's the tablet's battery?", {"device": "tablet"}),
+    ("Battery levels.", {}),
+    ("How are my batteries?", {}),
+])
+def test_battery_questions_are_answered_locally(text, params):
+    assert _actions(text) == [Action("get_batteries", params)]
+
+
+@pytest.mark.parametrize("text", [
+    "What's on my phone",
+    "What's on tonight",
+    "Play battery by Metallica",
+    "Set an alarm for 7",
+    "How's my battery",
+    "My phone's battery is flat",
+    "What's the battery of the car",
+    "Battery levels and the weather",
+    "Turn off my phone",
+])
+def test_what_the_battery_rules_mustnt_catch_is_left_alone(text):
+    # 0003: local rules stay strict. "What's on tonight" is the calendar's, and the rest isn't a battery question.
+    actions = _actions(text)
+    assert not actions or all(action.tool != "get_batteries" for action in actions)

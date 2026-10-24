@@ -191,6 +191,22 @@ home_assistant:
   activities:
     work: ["work"]
 
+batteries:
+  # Nova finds every device Home Assistant has a battery level for, and warns you once as
+  # each falls past a mark. Warnings go to your phone through ntfy.phone and, while
+  # you're home outside ntfy's quiet hours, are said out loud as well - see
+  # docs/decisions/0007. Home Assistant is needed for this. These are the marks to start
+  # with; each device's own are changed on the settings page.
+  # Phones and tablets, which are warned about once, as a percentage.
+  mobile_marks: [5]
+  # Everything else - a laptop, a remote - warned about at each, highest first.
+  other_marks: [15, 5]
+  # How often, in seconds, the batteries are read.
+  check_every: 60
+  # How old a reading may be, in seconds, and still count as the level now. One older
+  # is said with its age - "was on 88%, 3 days ago" - so it isn't taken for the level now.
+  stale_after: 3600
+
 mqtt:
   # Home Assistant's MQTT broker - the Mosquitto add-on - through which Nova is a
   # device of its own in Home Assistant, with its controls and its room there. See

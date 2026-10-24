@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 BETWEEN_0_AND_1 = {("thresholds", "vad_threshold"), ("thresholds", "wake_word_confidence"),
                    ("thresholds", "silence_threshold"), ("llm", "temperature")}
 CHOICES = {("music", "player"): ("navidrome", "spotify")}
+# Battery marks are percentages, at least one of them, and the battery watcher can't
+# check every 0 seconds or call a reading old after -5.
+MARKS = {("batteries", "mobile_marks"), ("batteries", "other_marks")}
+POSITIVE = {("batteries", "check_every"), ("batteries", "stale_after")}
 
 # Sections an install's file may still have from when the Pi heard for itself, before
 # the brain did - see docs/decisions/0006. Nothing reads them now, but a Pi's own
@@ -74,6 +78,25 @@ def _guess(name: str, options) -> str:
     return f" Did you mean '{close[0]}'?" if close else ""
 
 
+def _check_marks(setting: str, marks: Any):
+    """
+    Checks a list of battery marks.
+
+    Args:
+        setting: What to call the setting in an error, e.g. "config.yaml: 'batteries.mobile_marks'".
+        marks: What the setting holds.
+
+    Raises:
+        ConfigError: If it isn't at least one whole number from 1 to 99 - 0% would never be
+            reached, and a mark of 100 or more would warn about a full battery.
+    """
+    if not isinstance(marks, list) or not marks:
+        raise ConfigError(f"{setting} should have at least one mark, like [15, 5], not {marks!r}")
+    for mark in marks:
+        if isinstance(mark, bool) or not isinstance(mark, int) or not 1 <= mark <= 99:
+            raise ConfigError(f"{setting} should be whole numbers from 1 to 99, like [15, 5], not {marks!r}")
+
+
 def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
     """
     Checks an install's settings against config.yaml's.
@@ -107,6 +130,10 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
                 raise ConfigError(f"{path}: '{section}.{name}' should be {_kind(default)}, not {value!r}")
             if (section, name) in BETWEEN_0_AND_1 and value is not None and not 0 <= value <= 1:
                 raise ConfigError(f"{path}: '{section}.{name}' should be between 0 and 1, not {value}")
+            if (section, name) in MARKS:
+                _check_marks(f"{path}: '{section}.{name}'", value)
+            if (section, name) in POSITIVE and not (isinstance(value, (int, float)) and value > 0):
+                raise ConfigError(f"{path}: '{section}.{name}' should be a number above 0, not {value!r}")
             choices = CHOICES.get((section, name))
             if choices and str(value).lower() not in choices:
                 raise ConfigError(f"{path}: '{section}.{name}' should be one of {', '.join(choices)}, not {value!r}")

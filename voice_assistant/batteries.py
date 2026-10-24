@@ -493,7 +493,7 @@ class BatteryChoices:
 
 # Every way a reading of Home Assistant can fail: it can't be reached, or it answers with
 # something that isn't JSON, or with JSON of the wrong shape.
-_HOME_FAILURES = (requests.RequestException, ValueError, KeyError, TypeError)  # Only ever caught round a read.
+HOME_FAILURES = (requests.RequestException, ValueError, KeyError, TypeError)  # Only ever caught round a read.
 
 
 class BatteryWatcher:
@@ -538,6 +538,11 @@ class BatteryWatcher:
         self._stopping = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+    @property
+    def stale_after(self) -> float:
+        """Seconds old a reading may be and still count as current - what a spoken answer needs, too."""
+        return self._stale_after
+
     def read(self) -> List[Battery]:
         """
         Reads the batteries fresh from Home Assistant.
@@ -565,7 +570,7 @@ class BatteryWatcher:
         """
         try:
             people = self._home.people()
-        except _HOME_FAILURES as e:
+        except HOME_FAILURES as e:
             logger.warning(f"Couldn't tell whether the user is home: {e}")
             return None
         if not people:
@@ -586,7 +591,7 @@ class BatteryWatcher:
         """
         try:
             batteries = self.read()
-        except _HOME_FAILURES as e:
+        except HOME_FAILURES as e:
             # A minute-by-minute line for a night of Home Assistant being restarted would bury the log.
             if not self._down:
                 logger.warning(f"Home Assistant didn't answer, so batteries aren't being watched: {e}")

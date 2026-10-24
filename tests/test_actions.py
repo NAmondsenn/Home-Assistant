@@ -4,10 +4,14 @@ Tests how actions are dispatched, using the real VolumeControl (saving into a
 temporary folder) and a fake Spotify controller, so nothing plays or goes online.
 """
 
+import time
+
 import pytest
+import requests
 
 from voice_assistant import volume as volume_module
 from voice_assistant.actions import Action, ActionExecutor, ActionResult, confirm
+from voice_assistant.batteries import Battery
 from voice_assistant.volume import VolumeControl
 
 
@@ -425,3 +429,64 @@ def test_notifications_are_only_offered_once_ntfy_is_set_up():
     assert tools <= offered(ActionExecutor(ntfy=FakeNtfy()))
     assert not tools & offered(ActionExecutor())
     assert ActionExecutor().execute(Action("read_notifications")).say == "Notifications aren't set up yet."
+
+
+class FakeBatteries:
+    """Stands in for the battery watcher, reading what it's given - or failing as Home Assistant can."""
+
+    stale_after = 3600.0
+
+    def __init__(self, batteries=(), fails=None):
+        self.batteries, self.fails = list(batteries), fails
+
+    def read(self):
+        if self.fails is not None:
+            raise self.fails
+        return self.batteries
+
+
+def _battery(name, level, kind="other", charging=False, age=0.0):
+    return Battery(id=f"sensor.{name}", name=name, level=level, changed=time.time() - age, device=None,
+                   kind=kind, phone=False, computer=False, charging=charging)
+
+
+def test_get_batteries_says_each_one_found():
+    executor = ActionExecutor(batteries=FakeBatteries([
+        _battery("MacBook Pro", 72), _battery("S25 Ultra", 40, "mobile", False),
+        _battery("Tab S11 Ultra", 88, "mobile", age=3 * 86400)]))
+    everything = executor.execute(Action("get_batteries"))
+    assert everything.ok
+    assert everything.say == ("Your MacBook Pro's on 72%, and not charging. "
+                              "Your S25 Ultra's on 40%, and not charging. "
+                              "Your Tab S11 Ultra was on 88%, 3 days ago.")
+    # The same sentence the local commands and the watcher use, for just the one asked about.
+    assert executor.execute(Action("get_batteries", {"device": "mac"})).say == "Your MacBook Pro's on 72%, and not charging."
+    assert executor.execute(Action("get_batteries", {"device": "tab"})).say == "Your Tab S11 Ultra was on 88%, 3 days ago."
+
+
+def test_get_batteries_finds_nothing_called_that():
+    executor = ActionExecutor(batteries=FakeBatteries([_battery("MacBook Pro", 72)]))
+    result = executor.execute(Action("get_batteries", {"device": "kettle"}))
+    assert (result.ok, result.say) == (False, "I can't find a battery called that.")
+
+
+@pytest.mark.parametrize("failure", [
+    requests.ConnectionError("down"), ValueError("not JSON"), KeyError("unit"), TypeError("not a list")])
+def test_get_batteries_with_home_assistant_down_says_so(failure):
+    # A wrong-shaped answer raises KeyError or TypeError, not only ValueError.
+    result = ActionExecutor(batteries=FakeBatteries(fails=failure)).execute(Action("get_batteries"))
+    assert (result.ok, result.say) == (False, "I can't reach Home Assistant right now.")
+
+
+def test_a_bug_reading_batteries_isnt_taken_for_home_assistant_being_down():
+    with pytest.raises(RuntimeError):
+        ActionExecutor(batteries=FakeBatteries(fails=RuntimeError("bug"))).execute(Action("get_batteries"))
+
+
+def test_batteries_are_only_offered_with_home_assistant():
+    def offered(executor):
+        return {schema["name"] for schema in executor.tool_schemas()}
+
+    assert "get_batteries" in offered(ActionExecutor(batteries=FakeBatteries()))
+    assert "get_batteries" not in offered(ActionExecutor())
+    assert ActionExecutor().execute(Action("get_batteries")).say == "Battery levels need Home Assistant."

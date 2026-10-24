@@ -120,3 +120,41 @@ def test_the_real_config_yaml_reads(tmp_path):
     # Every setting the repository ships has to be readable as the defaults.
     config = Config(path=str(tmp_path / "none.yaml"))
     assert config.section("music")["player"] in ("navidrome", "spotify")
+
+
+def test_the_batteries_defaults_are_checked(tmp_path):
+    config = Config(path=str(tmp_path / "none.yaml"))
+    batteries = config.section("batteries")
+    assert batteries["mobile_marks"] == [5] and batteries["other_marks"] == [15, 5]
+    assert batteries["check_every"] == 60 and batteries["stale_after"] == 3600
+
+    def own(text):
+        (tmp_path / "config.yaml").write_text(text)
+        return Config(path=str(tmp_path / "config.yaml"))
+
+    assert own("batteries:\n  mobile_marks: [10]\n  check_every: 30.5\n").section("batteries")["mobile_marks"] == [10]
+    with pytest.raises(ConfigError) as caught:
+        own('batteries:\n  mobile_marks: "five"\n')
+    assert "'batteries.mobile_marks' should be a list, not 'five'" in str(caught.value)
+
+
+@pytest.mark.parametrize("own, setting", [
+    ("mobile_marks: []", "mobile_marks"),
+    ("other_marks: []", "other_marks"),
+    ("mobile_marks:", "mobile_marks"),
+    ("mobile_marks: [0]", "mobile_marks"),
+    ("other_marks: [15, 100]", "other_marks"),
+    ("other_marks: [5.5]", "other_marks"),
+    ("other_marks: [true]", "other_marks"),
+    ('mobile_marks: ["5"]', "mobile_marks"),
+    ("check_every: 0", "check_every"),
+    ("check_every: -60", "check_every"),
+    ("check_every:", "check_every"),
+    ('stale_after: "an hour"', "stale_after"),
+    ("stale_after: 0", "stale_after"),
+])
+def test_a_battery_setting_which_cant_work_is_refused_by_name(tmp_path, own, setting):
+    (tmp_path / "config.yaml").write_text(f"batteries:\n  {own}\n")
+    with pytest.raises(ConfigError) as caught:
+        Config(path=str(tmp_path / "config.yaml"))
+    assert f"'batteries.{setting}'" in str(caught.value)

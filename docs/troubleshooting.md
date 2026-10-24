@@ -100,6 +100,16 @@ On the brain, which talks to Home Assistant for every satellite:
 - **"The lights" means the wrong room** - each satellite's lights are those of the area its device is in, in Home Assistant. Check the satellite's Nova device is in the right one.
 - **The calendar says nothing's on** - check the calendar shows events in Home Assistant itself, and, if `home_assistant.calendars` is set, that it's listed there.
 
+## A battery warning didn't come
+
+On the brain, which watches the batteries for every satellite:
+
+- **Nothing is watched without Home Assistant** - "Battery levels need Home Assistant" means `home_assistant.url` or `HA_TOKEN` isn't set up on the brain - see "The lights or the calendar don't work" above. Its log says `Home Assistant didn't answer, so batteries aren't being watched` once while it can't be reached, and `Home Assistant answers again` when it can.
+- **The device isn't there** - ask "battery levels". A device is only found if Home Assistant has a battery sensor for it which reads in percent, and it isn't unavailable.
+- **It's only on the phone, or only said out loud** - a warning is said out loud only while you're home (Home Assistant's person) and outside `ntfy.quiet_from` to `ntfy.quiet_until`; otherwise it goes to `ntfy.phone`. The phone's own warning isn't sent to itself. With no ntfy, or a failed send, it's said instead - and held until the quiet hours end if it came in them, then said only if it's still true.
+- **A mark already warned** - each mark warns once as the level falls. It starts again once the device has charged, or its level is 10 points above its highest mark. What has warned is kept in `batteries.json` in the brain's `~/.local/share/nova`.
+- **Nothing is said out loud** - the default satellite (the first added) has to be connected. The brain's log says `A battery warning wasn't said, as the default satellite isn't connected`.
+
 ## A timer or alarm didn't go off
 
 - The brain keeps them, in `timers.json` and `alarms.json` in its `~/.local/share/nova`, and rings each on the satellite it was set from. Anything which came due while the brain was off is announced late, as "While I was off: ...", once its satellite is back - unless the satellite rang it itself meanwhile. It's kept in `timers.json` until then, however often the brain restarts, and said only once - though anything over an hour old as the brain starts is dropped.
