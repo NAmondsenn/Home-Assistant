@@ -114,7 +114,7 @@ class FakeSession:
         self.number = sum(1 for event in happened if event[0] == "made") + 1
         happened.append(("made", satellite.name, self.number))
         self.announced, self.alerts, self.routines = [], [], []
-        # What announce and alert return, as the real ones do - whether it was said to the end.
+        # What announce and alert return, as the real ones do - whether it was said.
         self.said = True
         self.volume, self.music_player, self.actions, self.home = (object() for _ in range(4))
         self.closed = threading.Event()

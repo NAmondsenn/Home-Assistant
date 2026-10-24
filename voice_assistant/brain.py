@@ -671,8 +671,9 @@ class Brain:
             alert: The ntfy Alert.
 
         Returns:
-            Whether it was said to the end. One which wasn't, with the default
-            satellite away or cut off, is kept for "any notifications?".
+            Whether it was said - Stop, the wake word and an overdue sound count as
+            said, as the user has heard it. One which wasn't, because saying it failed
+            or the default satellite was away, is kept for "any notifications?".
         """
         session = self.session_for(None)
         if session is None:
@@ -680,7 +681,7 @@ class Brain:
                            f"so it's kept for \"any notifications?\"")
             return False
         if not session.alert(alert):
-            logger.warning(f"An alert from {alert.topic} wasn't said to the end, so it's kept for "
+            logger.warning(f"An alert from {alert.topic} wasn't said, so it's kept for "
                            f"\"any notifications?\"")
             return False
         return True
@@ -693,9 +694,9 @@ class Brain:
             message: What to say, e.g. "Your MacBook Pro's battery is down to 15%."
 
         Returns:
-            Whether it was said to the end - it wasn't with the default satellite away, or
-            if saying it failed or was cut off, and the watcher then sends it or holds it
-            instead. Never raises.
+            Whether it was said - it wasn't with the default satellite away, or if
+            saying it failed, and the watcher then sends it or holds it instead. Never
+            raises.
         """
         session = self.session_for(None)
         if session is None:
@@ -708,7 +709,7 @@ class Brain:
             logger.exception("A battery warning couldn't be said")
             return False
         if not said:
-            logger.warning("A battery warning wasn't said to the end")
+            logger.warning("A battery warning wasn't said")
         return bool(said)
 
     def _unanswered(self, timer, kind, satellite=None):
