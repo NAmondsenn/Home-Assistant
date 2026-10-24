@@ -374,7 +374,7 @@ class BatteryChoices:
         Works out which warnings to give now, and remembers them.
 
         A mark warns once. The marks start over when the device charges, or when
-        its level reaches its highest mark + 10 - the second is for a device with
+        its level reaches its highest mark + 10 (at most 100) - the second is for a device with
         no charging state, or a Mac which says "not charging" even when it has
         been, and keeps a wobble from 14% to 16% from being taken for a charge.
 
@@ -390,18 +390,21 @@ class BatteryChoices:
             warned = {}
             given = []
             for battery in batteries:
-                if not self.enabled(battery.id):
-                    continue
                 marks = self.marks_for(battery)
                 before = set(self._state["warned"].get(battery.id, []))
-                if battery.charging or battery.level >= max(marks) + 10:
+                # Capped at 100%, or a mark of 95 could never start over for a device with no charging state.
+                start_over = min(max(marks) + 10, 100)
+                if battery.charging or battery.level >= start_over:
                     now = set()
-                else:
+                elif self.enabled(battery.id):
                     under = {m for m in marks if battery.level < m}
                     fresh = under - before
                     if fresh:
                         given.append(BatteryWarning(battery, min(fresh)))
                     now = before | under
+                else:
+                    # A switched-off device only starts over, so a charge while it was off isn't missed.
+                    now = before
                 if now != before:
                     warned[battery.id] = sorted(now)
 
@@ -415,7 +418,9 @@ class BatteryChoices:
                 try:
                     self._change(remember)
                 except OSError as e:
-                    # The warnings are still given: a lost save costs a repeat after a restart.
+                    # The warnings are still given and kept in memory, so they aren't repeated every
+                    # minute while saves fail - only after a restart.
+                    remember(self._state)
                     logger.warning(f"Couldn't save the warned battery marks: {e}")
             return given
 

@@ -4,6 +4,8 @@ import threading
 
 import pytest
 
+from voice_assistant import storage
+
 from voice_assistant.batteries import (
     Battery,
     BatteryChoices,
@@ -362,3 +364,37 @@ def test_a_watcher_and_the_page_at_once_lose_neither_a_choice_nor_a_warned_mark(
     again = _choices(tmp_path)
     assert all(not again.send_to_phone(b) for b in devices)
     assert all(again.due([b]) == [] for b in devices)
+
+
+def test_a_failed_save_of_the_warned_marks_still_warns_only_once(tmp_path, monkeypatch):
+    choices = _choices(tmp_path)
+
+    def failing(path, data, indent=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(storage, "save_json", failing)
+    assert _marks(choices, _mac(14)) == [("MacBook Pro", 15)]
+    assert _marks(choices, _mac(14)) == []
+
+
+def test_a_switched_off_device_still_starts_over_when_charged(tmp_path):
+    choices = _choices(tmp_path)
+    mac = _mac(14)
+    assert _marks(choices, mac) == [("MacBook Pro", 15)]
+    choices.set(mac, enabled=False)
+    assert _marks(choices, _mac(40, charging=True)) == []
+    choices.set(mac, enabled=True)
+    assert _marks(choices, _mac(14)) == [("MacBook Pro", 15)]
+
+
+def test_a_mark_near_the_top_still_starts_over_at_full(tmp_path):
+    choices = _choices(tmp_path)
+
+    def tablet(level):
+        return Battery.from_home(_found("tab-s11-ultra", level, "d3", "samsung", "SM-X930", None))
+
+    choices.set(tablet(90), marks=[95])
+    assert _marks(choices, tablet(90)) == [("Tab S11 Ultra", 95)]
+    assert _marks(choices, tablet(99)) == []
+    assert _marks(choices, tablet(100)) == []
+    assert _marks(choices, tablet(90)) == [("Tab S11 Ultra", 95)]
