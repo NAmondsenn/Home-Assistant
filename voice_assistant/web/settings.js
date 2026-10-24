@@ -745,8 +745,8 @@ function showBatteries(state) {
     return;
   }
   also.hidden = false;
-  // A switch someone has just tapped is already as they want it, so it's only set when
-  // it differs.
+  // Set at every load. A switch someone has just tapped is already as they want it, and a
+  // load that lands during its own save sets it back for the round trip, then corrects it.
   document.getElementById("also-send-box").checked = state.also_send_when_said;
   drawIfChanged("batteries", state.devices, () => {
     // Not while a number is being typed, which a redraw would wipe - tried again next

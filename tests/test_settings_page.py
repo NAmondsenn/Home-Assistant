@@ -814,10 +814,11 @@ class FakeBatteryHome:
     def __init__(self):
         self.fails = None
         self.found = [
-            {"id": "sensor.macbook_battery_level", "name": "macbook", "level": 40, "changed": BATTERIES_NOW,
-             "device": "d1", "maker": "Apple", "model": "Mac16,8", "charging": "Not Charging", "app": True},
+            # Not in name order, so the page's sorting is what puts the MacBook first.
             {"id": "sensor.s25_battery_level", "name": "s25", "level": 80, "changed": BATTERIES_NOW - 7200,
              "device": "d2", "maker": "samsung", "model": "SM-S938B", "charging": "Charging", "app": True},
+            {"id": "sensor.macbook_battery_level", "name": "macbook", "level": 40, "changed": BATTERIES_NOW,
+             "device": "d1", "maker": "Apple", "model": "Mac16,8", "charging": "Not Charging", "app": True},
         ]
 
     def batteries(self):
@@ -854,12 +855,12 @@ def test_the_batteries_are_listed_with_their_choices(files, tmp_path, monkeypatc
     # In name order, each with its choices and the age of a reading which has gone stale.
     assert [d["id"] for d in state["devices"]] == [MAC, PHONE]
     mac, phone = state["devices"]
-    assert mac == {"id": MAC, "name": mac["name"], "level": 40, "charging": False, "stale": None, "kind": "other",
+    assert mac == {"id": MAC, "name": "MacBook", "level": 40, "charging": False, "stale": None, "kind": "other",
                    "enabled": True, "marks": [15, 5], "default_marks": [15, 5], "send_to_phone": True,
                    "changed": False}
     assert phone["kind"] == "mobile" and phone["charging"] is True and phone["stale"] == "2 hours"
     assert phone["marks"] == [5] and phone["send_to_phone"] is False
-    choices.set(page.brain.batteries.read()[0], marks=[30, 10])
+    choices.set(page.brain.batteries.read()[1], marks=[30, 10])
     assert _device(page, MAC)["marks"] == [30, 10] and _device(page, MAC)["default_marks"] == [15, 5]
     assert _device(page, MAC)["changed"] is True
 
@@ -867,7 +868,7 @@ def test_the_batteries_are_listed_with_their_choices(files, tmp_path, monkeypatc
 def test_a_batterys_warnings_can_be_switched_off_and_it_works_straight_away(files, tmp_path, caplog):
     page, home, choices = _watched(tmp_path)
     batteries = page.brain.batteries.read()
-    home.found[0]["level"] = 10
+    home.found[1]["level"] = 10
     with caplog.at_level(logging.INFO):
         result = page.set_battery(MAC, LOGIN, enabled=False)
     assert result["success"] and "restart" not in result["message"].lower()

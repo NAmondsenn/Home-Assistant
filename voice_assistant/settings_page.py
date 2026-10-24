@@ -448,7 +448,7 @@ class SettingsPage:
                 "stale": format_duration(age) if age > watcher.stale_after else None,
                 "kind": battery.kind, "enabled": enabled, "marks": marks, "default_marks": default_marks,
                 "send_to_phone": send_to_phone,
-                "changed": (marks != default_marks or not enabled or send_to_phone != (not battery.phone)),
+                "changed": choices.changed(battery),
             })
         return {"available": True, "also_send_when_said": choices.also_send_when_said, "devices": devices}
 
