@@ -1227,3 +1227,27 @@ def test_dimming_with_home_assistant_down_says_so(make_home):
     home = make_home({"/api/template": requests.ConnectionError("down")})
     result = home.dim("down", "lights")
     assert result["success"] is False and "not_understood" not in result
+
+
+@pytest.mark.parametrize("direction", ["down", "up"])
+def test_a_light_that_cant_be_reached_is_said_so_not_called_as_dim_as_it_goes(make_home, direction):
+    gone = _rendered_light("light.lamp", "Lamp", "Bedroom", state="unavailable")
+    home = _house(make_home, gone)
+    assert home.dim(direction, "the lamp") == {"success": False, "message": "Home Assistant can't reach that light."}
+    assert _dimmed(home) == []
+
+
+def test_lights_that_cant_be_reached_are_said_so(make_home):
+    gone = _rendered_light("light.lamp", "Lamp", "Bedroom", state="unavailable")
+    also = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", state="unavailable")
+    home = _house(make_home, gone, also)
+    assert home.dim("up", "lights") == {"success": False, "message": "Home Assistant can't reach those lights."}
+    assert _dimmed(home) == []
+
+
+def test_only_the_lights_that_can_be_reached_are_dimmed(make_home):
+    gone = _rendered_light("light.lamp", "Lamp", "Bedroom", state="unavailable")
+    bright = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=255)
+    home = _house(make_home, gone, bright)
+    assert home.dim("down", "lights")["success"]
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.bedroom_light"], "brightness_pct": 70})]

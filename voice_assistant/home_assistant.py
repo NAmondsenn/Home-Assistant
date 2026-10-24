@@ -715,6 +715,12 @@ class HomeAssistant:
             if not found:
                 return {"success": False, "message": "Which room?"}
 
+            # Said rather than "as dim as they go", which would tell the user a lamp
+            # switched off at the wall is as bright as it goes while the room is dark.
+            if not any(light["reachable"] for light in found):
+                which = "that light" if len(found) == 1 else "those lights"
+                return {"success": False, "message": f"Home Assistant can't reach {which}."}
+
             by_brightness: Dict[int, List[str]] = {}
             for light in found:
                 new = _stepped(light, direction)
