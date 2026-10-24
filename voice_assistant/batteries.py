@@ -16,10 +16,16 @@ reading old enough to be stale is said with its age, so that a tablet last heard
 from three days ago isn't taken to be on 88% now.
 """
 
+import copy
+import logging
+import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from voice_assistant import storage
 from voice_assistant.clock import format_duration
+
+logger = logging.getLogger(__name__)
 
 # Spellings a plain capital letter would get wrong - "macbook" is not "Macbook".
 _KNOWN_SPELLINGS = {"macbook": "MacBook", "iphone": "iPhone", "ipad": "iPad"}
@@ -233,3 +239,202 @@ def said(battery: Battery, now: float, stale_after: float) -> str:
         return f"Your {battery.name}'s on {level}."
     state = "charging" if battery.charging else "not charging"
     return f"Your {battery.name}'s on {level}, and {state}."
+
+
+@dataclass
+class BatteryWarning:
+    """
+    A warning that is due.
+
+    Attributes:
+        battery: The battery that has fallen.
+        mark: The percentage mark it fell under, e.g. 15.
+    """
+
+    battery: Battery
+    mark: int
+
+
+class BatteryChoices:
+    """
+    What each battery's owner chose, and which marks have already warned.
+
+    Both are kept in one file, so a restart neither forgets a choice nor warns a
+    second time about a battery that is still low. A device Home Assistant stops
+    listing keeps its entry, in case it comes back. The watcher thread calls due()
+    while the settings page's thread changes choices, so one lock guards the state
+    and every save: a save from one can't lose the other's change.
+    """
+
+    def __init__(self, path: str, mobile_marks: List[int], other_marks: List[int]):
+        """
+        Args:
+            path: The file to keep choices and warned marks in, e.g. batteries.json.
+            mobile_marks: The default marks for a mobile device, e.g. [5].
+            other_marks: The default marks for anything else, e.g. [5, 15].
+        """
+        self._path = path
+        self._defaults = {
+            "mobile": sorted(mobile_marks, reverse=True),
+            "other": sorted(other_marks, reverse=True),
+        }
+        self._lock = threading.RLock()
+        self._state = {"devices": {}, "warned": {}, "also_send_when_said": True}
+        try:
+            saved = storage.load_json(path, {})
+        except (OSError, ValueError) as e:
+            # Better to warn again about a low battery than to refuse to start.
+            logger.warning(f"Couldn't read {path}, starting without choices: {e}")
+            saved = {}
+        if isinstance(saved, dict):
+            for key in self._state:
+                if key in saved:
+                    self._state[key] = saved[key]
+
+    @property
+    def also_send_when_said(self) -> bool:
+        """Whether a battery level Nova says aloud is also sent to the phone."""
+        with self._lock:
+            return bool(self._state["also_send_when_said"])
+
+    def default_marks(self, battery: Battery) -> List[int]:
+        """Returns the marks for a battery's kind, highest first, e.g. [15, 5]."""
+        return list(self._defaults[battery.kind])
+
+    def marks_for(self, battery: Battery) -> List[int]:
+        """Returns the device's own marks if it has any, else its kind's, highest first."""
+        with self._lock:
+            own = self._state["devices"].get(battery.id, {}).get("marks")
+            return sorted(own, reverse=True) if own else self.default_marks(battery)
+
+    def enabled(self, battery_id: str) -> bool:
+        """Whether a device's warnings are on - they are, until switched off."""
+        with self._lock:
+            return self._state["devices"].get(battery_id, {}).get("enabled", True)
+
+    def send_to_phone(self, battery: Battery) -> bool:
+        """Whether a device's warnings go to the phone - not the phone's own, by default."""
+        with self._lock:
+            return self._state["devices"].get(battery.id, {}).get("send_to_phone", not battery.phone)
+
+    def set(
+        self,
+        battery: Battery,
+        enabled: Optional[bool] = None,
+        marks: Optional[List[int]] = None,
+        send_to_phone: Optional[bool] = None,
+    ):
+        """
+        Changes a device's choices and saves them.
+
+        Args:
+            battery: The device. Its kind says how many marks it may have.
+            enabled: Whether its warnings are on, or None to leave it as it is.
+            marks: Its marks, or None to leave them as they are.
+            send_to_phone: Whether its warnings go to the phone, or None to leave it.
+
+        Raises:
+            ValueError: With a sentence the page can show, if the marks aren't whole
+                numbers from 1 to 99, distinct, one for a mobile device and two for
+                anything else. Nothing is changed then.
+            OSError: If it couldn't be saved. Nothing is changed then either.
+        """
+        if marks is not None:
+            marks = self._checked(battery, marks)
+        with self._lock:
+            def change(state):
+                device = state["devices"].setdefault(battery.id, {})
+                if enabled is not None:
+                    device["enabled"] = bool(enabled)
+                if marks is not None:
+                    device["marks"] = marks
+                if send_to_phone is not None:
+                    device["send_to_phone"] = bool(send_to_phone)
+            self._change(change)
+
+    def reset(self, battery_id: str):
+        """
+        Forgets a device's own choices, so it follows its kind's defaults again,
+        and saves. Its warned marks are kept, so putting the defaults back while
+        a battery is low doesn't make it warn a second time.
+
+        Args:
+            battery_id: The device's sensor id.
+        """
+        with self._lock:
+            self._change(lambda state: state["devices"].pop(battery_id, None))
+
+    def set_also_send_when_said(self, on: bool):
+        """Sets whether a level Nova says aloud is also sent to the phone, and saves."""
+        with self._lock:
+            self._change(lambda state: state.update(also_send_when_said=bool(on)))
+
+    def due(self, batteries: List[Battery]) -> List[BatteryWarning]:
+        """
+        Works out which warnings to give now, and remembers them.
+
+        A mark warns once. The marks start over when the device charges, or when
+        its level reaches its highest mark + 10 - the second is for a device with
+        no charging state, or a Mac which says "not charging" even when it has
+        been, and keeps a wobble from 14% to 16% from being taken for a charge.
+
+        Args:
+            batteries: Every battery Home Assistant shows just now.
+
+        Returns:
+            The warnings, at most one for each battery - for the lowest mark it is
+            under that hadn't warned. Every mark it is under counts as warned, so
+            a device first seen at 4% warns once, not for 15% then 5%.
+        """
+        with self._lock:
+            warned = {}
+            given = []
+            for battery in batteries:
+                if not self.enabled(battery.id):
+                    continue
+                marks = self.marks_for(battery)
+                before = set(self._state["warned"].get(battery.id, []))
+                if battery.charging or battery.level >= max(marks) + 10:
+                    now = set()
+                else:
+                    under = {m for m in marks if battery.level < m}
+                    fresh = under - before
+                    if fresh:
+                        given.append(BatteryWarning(battery, min(fresh)))
+                    now = before | under
+                if now != before:
+                    warned[battery.id] = sorted(now)
+
+            if warned:
+                def remember(state):
+                    for battery_id, marks in warned.items():
+                        if marks:
+                            state["warned"][battery_id] = marks
+                        else:
+                            state["warned"].pop(battery_id, None)
+                try:
+                    self._change(remember)
+                except OSError as e:
+                    # The warnings are still given: a lost save costs a repeat after a restart.
+                    logger.warning(f"Couldn't save the warned battery marks: {e}")
+            return given
+
+    def _change(self, change):
+        """Applies a change to a copy of the state, saves it, and only then keeps it."""
+        new = copy.deepcopy(self._state)
+        change(new)
+        storage.save_json(self._path, new)
+        self._state = new
+
+    def _checked(self, battery: Battery, marks: List[int]) -> List[int]:
+        """Returns marks highest first, or raises ValueError saying what is wrong."""
+        wanted = 1 if battery.kind == "mobile" else 2
+        if len(marks) != wanted:
+            raise ValueError(
+                f"{battery.name} needs {'one mark' if wanted == 1 else 'two marks'}, not {len(marks)}."
+            )
+        if any(type(m) is not int or not 1 <= m <= 99 for m in marks):
+            raise ValueError("A mark must be a whole number from 1 to 99.")
+        if len(set(marks)) != len(marks):
+            raise ValueError("The two marks must be different.")
+        return sorted(marks, reverse=True)

@@ -123,9 +123,12 @@
     - `enabled(battery_id: str) -> bool`;
     - `send_to_phone(battery: Battery) -> bool` - the default is `not battery.phone`;
     - `also_send_when_said: bool`;
-    - `set(battery_id: str, enabled: Optional[bool] = None, marks: Optional[List[int]] = None, send_to_phone: Optional[bool] = None)` - this saves;
+    - `default_marks(battery: Battery) -> List[int]` - its kind's default marks, highest first;
+    - `set(battery: Battery, enabled: Optional[bool] = None, marks: Optional[List[int]] = None, send_to_phone: Optional[bool] = None)` - this saves. It takes the Battery, not its id, as checking the number of marks needs the kind; None leaves a choice as it is;
+    - `reset(battery_id: str)` - forgets the device's own enabled, marks and send_to_phone, keeps its warned marks, and saves;
     - `set_also_send_when_said(on: bool)` - this saves too;
     - `due(batteries: List[Battery]) -> List[BatteryWarning]` - which warnings to give now. It updates and saves the warned marks.
+    - One lock inside `BatteryChoices` guards its state and every save, as the watcher thread (`due`) and the settings page's thread (`set`, `reset`, `set_also_send_when_said`) share it.
   - The rule `due` follows, for each enabled battery:
     - if it's charging, its warned marks are cleared;
     - if its level is at or above its highest mark + 10, they're cleared too, whatever its charging state;
@@ -269,6 +272,7 @@
 
     Devices are in name order. With Home Assistant unreachable, it's `{"available": False, "message": ...}`.
   - `set_battery(battery_id: str, who: str, enabled=None, marks=None, send_to_phone=None) -> Dict` and `set_battery_also_send(on: bool, who: str) -> Dict`. Each gives `{"success": ..., "message": ...}`, and logs who changed what, as the page's other changes do.
+  - `set_battery` finds the `Battery` for `battery_id` with `Brain.batteries.read()` and refuses, with a message, one Home Assistant can't show just now. It passes the `Battery` to `BatteryChoices.set`; a `ValueError` becomes the message. "Back to the defaults" calls `BatteryChoices.reset(battery_id)`, and `default_marks` fills each device's `"default_marks"`.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_the_batteries_are_listed_with_their_choices`;
