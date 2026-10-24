@@ -264,11 +264,13 @@ class LocalIntents:
         return self._result(f"It's {now.strftime('%A')} the {_ordinal(now.day)} of {now.strftime('%B')}.")
 
     def _lights(self, found) -> Dict:
-        # Setting a brightness switches a light on.
+        # Setting a brightness switches a light on - bar 0%, which Home Assistant takes
+        # as off, so Nova's own lights don't switch it on at 1% instead.
         brightness = found.groupdict().get("brightness")
+        level = int(brightness) if brightness is not None else None
+        on = found["state"] == "on" if level is None else level > 0
         return self._result("Okay.", [Action("control_home", {
-            "command": found.string, "on": brightness is not None or found["state"] == "on",
-            "words": found["words"], "brightness": int(brightness) if brightness is not None else None})])
+            "command": found.string, "on": on, "words": found["words"], "brightness": level})])
 
     def _dim(self, found) -> Dict:
         direction = "down" if found["direction"] == "dim" else "up"

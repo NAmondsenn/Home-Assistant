@@ -319,7 +319,7 @@ def test_a_local_light_command_still_reaches_assist():
     # What Claude isn't offered can still be asked for: the local phrases ("lamp off") and the
     # offline keyword fallback both produce control_home, which goes to Assist as it always did.
     class FakeHome:
-        def command(self, request):
+        def command(self, request, wider=False):
             self.asked = request
             return {"success": True, "message": "Turned off the lamp", "chime": True}
 
@@ -328,11 +328,25 @@ def test_a_local_light_command_still_reaches_assist():
     assert home.asked == "lamp off" and (result.ok, result.confirm) == (True, "chime")
 
 
+def test_control_home_passes_the_wider_rule_on():
+    class FakeHome:
+        def command(self, request, wider=False):
+            self.asked = (request, wider)
+            return {"success": True, "message": "Done", "chime": True}
+
+    home = FakeHome()
+    ActionExecutor(home=home).execute(Action("control_home", {"command": "turn off the lights and the TV",
+                                                              "wider": True}))
+    assert home.asked == ("turn off the lights and the TV", True)
+    ActionExecutor(home=home).execute(Action("control_home", {"command": "lamp off"}))
+    assert home.asked == ("lamp off", False)
+
+
 def test_a_refused_light_sentence_goes_to_novas_own_lights_and_nothing_else_does():
     class FakeHome:
         switched = None
 
-        def command(self, request):
+        def command(self, request, wider=False):
             return {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
 
         def switch_lights(self, on, words, brightness=None):
@@ -357,7 +371,7 @@ def test_claude_cant_run_what_it_isnt_offered():
     class FakeHome:
         asked = None
 
-        def command(self, request):
+        def command(self, request, wider=False):
             self.asked = request
             return {"success": True, "message": "Unlocked", "chime": True}
 

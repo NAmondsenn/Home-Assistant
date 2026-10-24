@@ -770,15 +770,18 @@ class ActionExecutor:
         required=["command"],
         for_model=False,
         command={"type": "string", "description": "The request, in plain English."},
+        wider={"type": "boolean", "description": "Whether it's any of Assist's sentences, not a light sentence."},
         on={"type": "boolean", "description": "For a light sentence: on or off."},
         words={"type": "string", "description": "For a light sentence: the lights, as the user said them."},
         brightness={"type": "integer", "description": "For a light sentence: how bright, in percent."},
     )
-    def control_home(self, command: Optional[str] = None, on: Optional[bool] = None, words: Optional[str] = None,
-                     brightness: Optional[int] = None):
+    def control_home(self, command: Optional[str] = None, wider: bool = False, on: Optional[bool] = None,
+                     words: Optional[str] = None, brightness: Optional[int] = None):
         if not command:
             return {"success": False, "message": "I didn't catch what to do with the lights."}
-        reply = self.home.command(command)
+        # Any sentence of Assist's, rather than a light sentence, is only sent on the
+        # wider rule - see HomeAssistant.command.
+        reply = self.home.command(command, wider=wider)
         # A light sentence the guard won't give Assist - "turn on the front door light",
         # with a lock called "front door" - is done by Nova's own lights instead, which
         # only ever work lights. The offline fallback gives no on or off, so what it

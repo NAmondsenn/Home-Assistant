@@ -28,6 +28,12 @@ be refused for its light's name - "turn on the front door light", with a lock ca
 "front door". That's then done by Nova's own lights instead (see switch_lights), which
 only ever work lights, rather than refused for a lock nobody asked about.
 
+Nor is anything passed on before Assist's own sentence debugging has said what it would
+act on (see _assist_targets). A request is refused if any of that is guarded, and isn't
+sent at all if Assist would act on nothing the guard can see. Without the registry or
+the debugging, only Nova's own light sentences go to Assist, with the checks of what
+they name - decision 2's wider rule is off until both answer again.
+
 What Assist doesn't understand - "dim the lights" - goes to Claude, which works the
 lights through Home Assistant's own services instead, by light or by room, with a
 brightness, colour or warmth. Those services are only ever given lights, by entity
@@ -57,13 +63,13 @@ import logging
 import math
 import re
 from datetime import date, datetime, time as day_time, timedelta
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 import requests
 
 from voice_assistant import network
 from voice_assistant.clock import spoken_clock_time
-from voice_assistant.ha_registry import PC_SAFE, HomeRegistry, HomeSocket, Snapshot
+from voice_assistant.ha_registry import PC_SAFE, HomeRegistry, HomeSocket, HomeSocketError, Snapshot
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -128,6 +134,14 @@ DIM_STEP = 30
 DIM_FLOOR = 5
 # What lights_called takes "lights" or "lamp" on its own to mean: those in Nova's room.
 GENERIC_LIGHT_WORDS = ("light", "lights", "lamp", "lamps")
+
+# What Assist's sentence debugging says it would do with a sentence, without doing it:
+# whether it matched, the intent, e.g. "HassTurnOff", and every entity it would act on.
+AssistMatch = NamedTuple("AssistMatch", [("matched", bool), ("intent", Optional[str]), ("targets", List[str])])
+
+# What's said of a request which isn't given to Assist, as what Assist would act on
+# can't be told - nor, then, whether it may.
+DIDNT_UNDERSTAND = "Home Assistant didn't understand that."
 
 # The error codes Assist gives when it matched nothing at all - no sentence it knows,
 # or none of the devices exposed to it - as opposed to understanding and failing, which
@@ -311,6 +325,10 @@ class HomeAssistant:
         self._device_missing = False
         # Whether Home Assistant last turned a template down - see _template.
         self._templates_refused = False
+        # Why decision 2's wider rule is off, or None while it's on - see _wider_rule - and
+        # why the sentence debugging last didn't answer, for saying so.
+        self._wider_off: Optional[str] = None
+        self._unanswered = ""
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -401,21 +419,33 @@ class HomeAssistant:
             return CANT_REACH
         return "Home Assistant had a problem with that."
 
-    def command(self, request: str) -> Dict:
+    def command(self, request: str, wider: bool = False, only: Optional[Sequence[str]] = None) -> Dict:
         """
-        Asks Home Assistant's Assist to do something, in plain words.
+        Asks Home Assistant's Assist to do something, in plain words - once Assist has
+        said what that would act on, and none of it is guarded.
+
+        Decision 2's wider rule - Assist being given any of its own sentences, not only
+        Nova's light sentences - needs both the registry and Assist's sentence
+        debugging. Without either, only light sentences go to Assist, with the checks
+        of what they name, until both answer again: it fails shut, not open.
 
         Args:
             request: e.g. "turn off the kitchen lights".
+            wider: Whether it's any sentence of Assist's, which is only sent on the wider
+                rule - rather than one of Nova's own light sentences.
+            only: The intents Assist may act on it with, e.g. ("HassListAddItem",), or
+                None for any.
 
         Returns:
             Dict with 'success' and 'message' - Assist's own reply - and 'chime' for
             something done, since the lights changing speaks for itself. 'not_understood'
             is set too when Assist matched nothing, as opposed to failing at something
-            it did understand. 'refused' is set when Nova wouldn't ask Assist at all, by
-            the words or by what they name.
+            it did understand - and when it isn't asked to act, as what it would act on
+            can't be told. 'refused' is set when Nova wouldn't ask Assist at all, by the
+            words, by what they name or by what Assist would act on.
         """
         refused = {"success": False, "message": REFUSED, "refused": True}
+        not_understood = {"success": False, "message": DIDNT_UNDERSTAND, "not_understood": True}
         if _sensitive_words(request):
             logger.warning(f"Refused a sensitive Home Assistant request: '{request}'", extra=TRANSCRIPT)
             return refused
@@ -432,10 +462,40 @@ class HomeAssistant:
             states = self._request("GET", "/api/states").json()
             if not isinstance(states, list) or not all(isinstance(state, dict) for state in states):
                 raise ValueError("Home Assistant's states aren't a list of states")
-            if _names_guarded(request, states, self._snapshot()):
+            snapshot = self._snapshot()
+            if snapshot is None:
+                self._wider_rule("there's no read of Home Assistant's registry to go by")
+                if wider:
+                    logger.info(f"Not sent to Assist, which is only given light sentences just now: '{request}'",
+                                extra=TRANSCRIPT)
+                    return not_understood
+            if _names_guarded(request, states, snapshot):
                 logger.warning(f"Refused a Home Assistant request naming a lock, door or the like: '{request}'",
                                extra=TRANSCRIPT)
                 return refused
+
+            match = self._assist_targets(request)
+            if snapshot is not None:
+                self._wider_rule(None if match is not None else self._unanswered)
+            if match is None and wider:
+                logger.info(f"Not sent to Assist, which is only given light sentences just now: '{request}'",
+                            extra=TRANSCRIPT)
+                return not_understood
+            if match is not None:
+                # A match with no targets acts on what the guard can't see - a script
+                # which isn't exposed, or an automation's own sentence trigger. A light
+                # sentence never has none: every light it means is a target, by its
+                # room or by its name.
+                if not match.matched or (only is not None and match.intent not in only) or not match.targets:
+                    logger.info(f"Not sent to Assist, which reads it as {match.intent or 'nothing'} on "
+                                f"{match.targets}: '{request}'", extra=TRANSCRIPT)
+                    return not_understood
+                by_id = {state.get("entity_id"): state for state in states}
+                barred = [target for target in match.targets if _target_refused(target, by_id.get(target), snapshot)]
+                if barred:
+                    logger.warning(f"Refused a Home Assistant request Assist would act on {barred} with: '{request}'",
+                                   extra=TRANSCRIPT)
+                    return refused
             reply = self._request("POST", "/api/conversation/process", json=asked).json()
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
@@ -449,10 +509,69 @@ class HomeAssistant:
             return {"success": True, "message": said or "Done.", "chime": True}
         if kind == "query_answer":
             return {"success": True, "message": said}
-        failed = {"success": False, "message": said or "Home Assistant didn't understand that."}
+        failed = {"success": False, "message": said or DIDNT_UNDERSTAND}
         if kind == "error" and (response.get("data") or {}).get("code") in NOT_UNDERSTOOD:
             failed["not_understood"] = True
         return failed
+
+    def _assist_targets(self, request: str) -> Optional[AssistMatch]:
+        """
+        What Assist would act on for a request, without it acting - from the WebSocket
+        API's own sentence debugging, which matches a sentence as Assist would.
+
+        Args:
+            request: e.g. "turn off the TV".
+
+        Returns:
+            AssistMatch(True, the intent, the entity ids it would act on) for a match, or
+            AssistMatch(False, None, []) for none. None if it couldn't be asked, or gave
+            an answer of a shape it never has - and when requests go to an agent other
+            than Home Assistant's own, which the debugging doesn't speak for.
+        """
+        if self.agent != DEFAULT_AGENT:
+            self._unanswered = f"requests go to {self.agent}, which Assist's sentence debugging doesn't speak for"
+            return None
+        asked = {"type": "conversation/agent/homeassistant/debug", "sentences": [request], "language": "en"}
+        if self.device_id:
+            # As for Assist itself, so "the lights" are the same room's.
+            asked["device_id"] = self.device_id
+        try:
+            results = self.socket.call([asked])[0]["results"]
+            if len(results) != 1:
+                raise ValueError(f"{len(results)} results for one sentence")
+            found = results[0]
+            # A sentence which fits one of Assist's but names nothing there - "pause the
+            # tv", with no media player called that - is answered in full, with "match":
+            # false, and can still carry targets. Only "match": true is a match.
+            if found is None or found.get("match") is not True:
+                return AssistMatch(False, None, [])
+            intent, targets = found["intent"]["name"], found["targets"]
+            if not isinstance(intent, str) or not isinstance(targets, dict):
+                raise TypeError(f"a match of {type(intent).__name__} on {type(targets).__name__}")
+        except HomeSocketError as error:
+            self._unanswered = f"Assist's sentence debugging didn't answer ({error})"
+            return None
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+            self._unanswered = f"Assist's sentence debugging answered oddly ({type(error).__name__}: {error})"
+            return None
+        return AssistMatch(True, intent, list(targets))
+
+    def _wider_rule(self, off: Optional[str]):
+        """
+        Notes whether decision 2's wider rule is on, saying so when it goes off and when
+        it's back on.
+
+        Args:
+            off: Why it's off, e.g. "there's no read of Home Assistant's registry to go
+                by" - or None, for the registry and the sentence debugging both answering.
+        """
+        # Two requests at once can each say the same change, which does no harm.
+        if off and not self._wider_off:
+            logger.warning(f"The wider rule is off, as {off}: only light sentences go to Assist until it's back")
+        elif not off and self._wider_off:
+            logger.info("The wider rule is back on: Home Assistant's registry and Assist's sentence debugging "
+                        "both answer")
+        self._wider_off = off
 
     def find_device(self, identifier: str) -> bool:
         """
@@ -743,8 +862,7 @@ class HomeAssistant:
             # Said rather than "as dim as they go", which would tell the user a lamp
             # switched off at the wall is as bright as it goes while the room is dark.
             if not any(light["reachable"] for light in found):
-                which = "that light" if len(found) == 1 else "those lights"
-                return {"success": False, "message": f"Home Assistant can't reach {which}."}
+                return _out_of_reach(found)
 
             by_brightness: Dict[int, List[str]] = {}
             for light in found:
@@ -787,6 +905,9 @@ class HomeAssistant:
                 return {"success": False, "message": "I don't know a light called that.", "not_understood": True}
             if not found:
                 return {"success": False, "message": "Which room?"}
+            # Rather than "Done." for a lamp switched off at the wall, with nothing done.
+            if not any(light["reachable"] for light in found):
+                return _out_of_reach(found)
             data = {"entity_id": [light["id"] for light in found]}
             if on and brightness is not None:
                 data["brightness_pct"] = max(1, min(100, int(brightness)))
@@ -1141,6 +1262,10 @@ def _names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot
     front door" is refused, whatever else is called "bedroom front door". So is "turn on
     the front door light" - which, as a light sentence, Nova's own lights then do.
 
+    Nor does a name said as other words, as speech-to-text writes what it hears: "pve 2
+    shutdown" is "PVE2 Shutdown", and "shut down" is "Shutdown". Only whole words are
+    run together, though, so "casanova" is never "nova".
+
     Args:
         request: What would go to Assist, e.g. "turn off the front door".
         states: Every entity's state, as /api/states has them.
@@ -1152,8 +1277,8 @@ def _names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot
     # PC_LOCK only excuses words, so a guarded thing's name is looked for with and
     # without them: neither "turn on the PC lock", for a shutdown button called that,
     # nor a name with "lock my PC" said in the middle of it, gets by.
-    excused = _words(PC_LOCK.sub(" ", request.lower()))
-    said = (_words(request), excused)
+    excused = _runs(_words(PC_LOCK.sub(" ", request.lower())))
+    said = _runs(_words(request)) | excused
     names, kinds = set(), set()
     for state in states:
         entity = str(state.get("entity_id") or "")
@@ -1163,15 +1288,40 @@ def _names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot
             continue
         names |= {_words(str(attributes.get("friendly_name") or "")), _words(entity.partition(".")[2].replace("_", " "))}
         names |= {_words(alias) for alias in (snapshot.aliases(entity) if snapshot else ())}
-        kinds |= {(word,) for word in kind}
+        kinds |= set(kind)
     names.discard(())
-    return (any(_starts(words, name) for words in said for name in names)
-            or any(_starts(excused, kind) for kind in kinds))
+    return any("".join(name) in said for name in names) or any(kind in excused for kind in kinds)
 
 
-def _starts(words: Tuple[str, ...], term: Tuple[str, ...]) -> List[int]:
-    """Where a term starts in some words, e.g. [3] for ("front", "door") in "turn off the front door"."""
-    return [start for start in range(len(words) - len(term) + 1) if words[start:start + len(term)] == term]
+def _runs(words: Tuple[str, ...]) -> Set[str]:
+    """
+    Every run of whole words, run together - for ("pve", "2", "shutdown"), "pve", "pve2",
+    "pve2shutdown", "2", "2shutdown" and "shutdown". So a name is found as whole words
+    whether it's said as one word or more, and never inside a word.
+    """
+    return {"".join(words[start:end]) for start in range(len(words)) for end in range(start + 1, len(words) + 1)}
+
+
+def _target_refused(entity_id: str, state: Optional[Dict], snapshot: Optional[Snapshot]) -> bool:
+    """
+    Whether Assist mustn't be asked to act on something its sentence debugging says it would.
+
+    Args:
+        entity_id: e.g. "lock.main".
+        state: Its state, as /api/states has it, or None if that hasn't got it.
+        snapshot: The registry, or None if it can't be read - see _guarded.
+
+    Returns:
+        True for anything guarded, anything that wasn't there a moment ago to be checked,
+        and a button the registry can't vouch for.
+    """
+    if state is None:
+        return True
+    if _guarded(entity_id, state.get("attributes") or {}, snapshot) is not None:
+        return True
+    # A new Proxmox or HASS.Agent button is in the states at once, but in the registry
+    # only up to five minutes later - and both only ever act through buttons.
+    return entity_id.partition(".")[0] == "button" and (snapshot is None or snapshot.platform(entity_id) is None)
 
 
 def _refused(error: Exception) -> bool:
@@ -1183,6 +1333,12 @@ def _refused(error: Exception) -> bool:
 def _plain(text: str) -> str:
     """Words for comparing, e.g. "The Main Light!" is "the main light"."""
     return " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split())
+
+
+def _out_of_reach(lights: List[Dict]) -> Dict:
+    """What's said when none of the lights asked for can be reached, e.g. "Home Assistant can't reach that light."."""
+    which = "that light" if len(lights) == 1 else "those lights"
+    return {"success": False, "message": f"Home Assistant can't reach {which}."}
 
 
 def _dims(light: Dict) -> bool:

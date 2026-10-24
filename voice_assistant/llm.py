@@ -571,9 +571,13 @@ class LLMHandler:
                     query = query or None
                 return Action("play_music", {"query": query})
 
-        # The lights are left to Home Assistant, which works out which from the words.
+        # The lights are left to Home Assistant, which works out which from the words. A
+        # sentence joining more than one thing - "turn off the lights and the TV" - could
+        # name anything besides them, so it's only sent on the wider rule, which needs
+        # what Assist would act on checked (see HomeAssistant.command).
         if words & {"light", "lights", "lamp", "lamps"} and words & {"on", "off"}:
-            return Action("control_home", {"command": user_text})
+            joined = bool(words & {"and", "then", "plus"}) or "," in user_text
+            return Action("control_home", {"command": user_text, "wider": joined})
 
         # If no specific action is detected, return None
         return None

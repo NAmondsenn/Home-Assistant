@@ -58,6 +58,14 @@ class FakeHomeSession:
                                           "speech": {"plain": {"speech": "Turned on the reading lamp"}}}})
 
 
+class FakeHomeSocket:
+    """Stands in for Home Assistant's WebSocket: Assist's sentence debugging, which matches the lamp."""
+
+    def call(self, messages):
+        return [{"results": [{"intent": {"name": "HassTurnOn"}, "targets": {"light.reading_lamp": {"matched": True}},
+                              "match": True}]}]
+
+
 class FakeSpotify:
     """
     Stands in for spotipy's client: the kitchen speaker, and searches which find no
@@ -153,6 +161,7 @@ def test_none_of_what_the_user_says_reaches_the_log_with_transcripts_off(log_fil
     clock = Clock(config=make_config(), start=False)
     home = HomeAssistant("http://homeassistant.local:8123", "token")
     home._session = FakeHomeSession()
+    home.socket = FakeHomeSocket()
     music = spotify_controller.SpotifyController(config=make_config(spotify={"device_name": "Kitchen"}))
     llm = FakeLLM(Action("set_timer", {"duration_seconds": 600, "label": "take my tablets", "is_reminder": True},
                          from_model=True),

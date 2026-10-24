@@ -110,6 +110,8 @@ def test_the_weather_is_asked_for_without_claude(text, day):
     ("Living room lights on.", "living room lights on", True, "living room lights", None),
     ("Lights off, please.", "lights off", False, "lights", None),
     ("Set the bedroom lamp to 30 percent.", "set the bedroom lamp to 30 percent", True, "the bedroom lamp", 30),
+    # Off, as Home Assistant takes 0% - so Nova's own lights don't switch it on at 1%.
+    ("Set the garage light to 0 percent.", "set the garage light to 0 percent", False, "the garage light", 0),
 ])
 def test_the_lights_go_straight_to_home_assistant(text, command, on, words, brightness):
     # With what Nova's own lights need, should the guard refuse the sentence.
