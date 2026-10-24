@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 import pytest
 import websocket
@@ -112,17 +113,17 @@ ENTITIES = [
      "unique_id": "lamp-1", "original_name": "Bedroom light"},
     {"entity_id": "lock.front_door", "platform": "zwave_js", "device_id": None, "area_id": "hall",
      "unique_id": "lock-1", "original_name": "Front door"},
-    {"entity_id": "button.desk_shutdown", "platform": "hass_agent", "device_id": "dev_pc", "area_id": None,
+    {"entity_id": "button.desk_shutdown", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
      "unique_id": "abc_shutdown", "original_name": "Shutdown"},
-    {"entity_id": "button.desk_restart", "platform": "hass_agent", "device_id": "dev_pc", "area_id": None,
+    {"entity_id": "button.desk_restart", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
      "unique_id": "abc_restart", "original_name": "Restart"},
-    {"entity_id": "button.desk_sleep", "platform": "hass_agent", "device_id": "dev_pc", "area_id": None,
+    {"entity_id": "button.desk_sleep", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
      "unique_id": "abc_sleep", "original_name": "Sleep"},
-    {"entity_id": "button.desk_monitor", "platform": "hass_agent", "device_id": "dev_pc", "area_id": None,
+    {"entity_id": "button.desk_monitor", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
      "unique_id": "abc_monitorsleep", "original_name": "Monitor Sleep"},
-    {"entity_id": "button.desk_lock", "platform": "hass_agent", "device_id": "dev_pc", "area_id": None,
+    {"entity_id": "button.desk_lock", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
      "unique_id": "abc_lock", "original_name": "Lock"},
-    {"entity_id": "button.desk_launch", "platform": "hass_agent", "device_id": "dev_pc", "area_id": None,
+    {"entity_id": "button.desk_launch", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
      "unique_id": "abc_launchha", "original_name": "Launch HA"},
     {"entity_id": "button.nova_restart", "platform": "mqtt", "device_id": "dev_nova", "area_id": None,
      "unique_id": "nova_restart", "original_name": "Restart"},
@@ -199,7 +200,7 @@ def test_hass_agents_buttons_are_found_by_their_device_and_kind():
 
 def test_a_buttons_kind_is_read_from_its_name_else_its_unique_id():
     def kind(original_name, unique_id=""):
-        return button_kind(Entry("button.x", "hass_agent", "d", None, unique_id, original_name, (), True))
+        return button_kind(Entry("button.x", "mqtt", "d", None, unique_id, original_name, (), True))
     assert kind("MonitorSleep") == "monitorsleep" and kind("Shut down") == "shutdown"
     assert kind("Reboot") == "restart"
     assert kind(None, "pc_monitorsleep") == "monitorsleep"
@@ -220,6 +221,43 @@ def test_a_wrong_shaped_answer_is_dropped_by_refresh():
     with pytest.raises(TypeError):
         registry.read()
     assert registry.refresh() is False and registry.snapshot() is None
+
+
+def test_any_failure_drops_the_snapshot_and_the_thread_carries_on(caplog):
+    socket = FakeSocket()
+    registry = HomeRegistry(socket, every=60, retry=0.01)
+    assert registry.refresh() is True and registry.snapshot() is not None
+    # An answer of a shape nobody foresaw: exposed_entities is a list.
+    odd = HomeRegistry.read
+    HomeRegistry.read = lambda self: (_ for _ in ()).throw(AttributeError("'list' has no attribute 'get'"))
+    try:
+        with caplog.at_level(logging.WARNING, logger=ha_registry.logger.name):
+            assert registry.refresh() is False and registry.snapshot() is None
+            assert caplog.records[-1].exc_info
+            registry.start()
+            deadline = time.time() + 5
+            passes = []
+            registry.refresh = lambda: passes.append(1) or False
+            while len(passes) < 3 and time.time() < deadline:
+                time.sleep(0.01)
+            assert len(passes) >= 3 and registry._thread.is_alive()
+    finally:
+        registry.stop()
+        HomeRegistry.read = odd
+
+
+def test_a_call_has_one_deadline_for_the_whole_exchange(connect):
+    class Slow(FakeConnection):
+        def recv(self):
+            time.sleep(0.03)
+            return super().recv()
+
+    slow = Slow()
+    connect(slow)
+    # Each answer is quicker than the timeout, but the five of them together aren't.
+    with pytest.raises(HomeSocketError):
+        HomeSocket("http://ha.test:8123", "token", timeout=0.1).call([{"type": "one"}, {"type": "two"}])
+    assert slow.closed
 
 
 def test_no_snapshot_until_a_read_works_and_none_while_reads_fail(caplog):
@@ -248,9 +286,9 @@ def test_the_thread_reads_at_once_then_retries_sooner_after_a_failure():
     registry = HomeRegistry(socket, every=60, retry=0.01)
     registry.start()
     try:
-        deadline = __import__("time").time() + 5
-        while len(socket.calls) < 3 and __import__("time").time() < deadline:
-            __import__("time").sleep(0.01)
+        deadline = time.time() + 5
+        while len(socket.calls) < 3 and time.time() < deadline:
+            time.sleep(0.01)
         assert len(socket.calls) >= 3
         assert registry._thread.name == "ha-registry"
     finally:

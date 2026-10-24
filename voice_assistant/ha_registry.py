@@ -56,7 +56,7 @@ class HomeSocket:
             url: Home Assistant's address, e.g. "http://homeassistant.local:8123/" -
                 "https" is reached as "wss".
             token: A long-lived access token.
-            timeout: Seconds to wait for each answer.
+            timeout: Seconds to allow a whole call, connecting and every answer.
         """
         scheme, _, rest = url.strip().rstrip("/").partition("://")
         self.url = ("wss" if scheme == "https" else "ws") + "://" + rest + "/api/websocket"
@@ -92,7 +92,7 @@ class HomeSocket:
         except (websocket.WebSocketException, OSError) as error:
             raise HomeSocketError(f"couldn't connect: {error}")
         try:
-            return self._converse(connection, messages)
+            return self._converse(connection, messages, time.monotonic() + self._timeout)
         except websocket.WebSocketTimeoutException as error:
             raise HomeSocketError(f"timed out: {error}")
         except (websocket.WebSocketException, OSError, ValueError) as error:
@@ -103,13 +103,23 @@ class HomeSocket:
             except Exception:
                 pass
 
-    def _converse(self, connection, messages: List[Dict]) -> List[Any]:
+    @staticmethod
+    def _receive(connection, deadline: float) -> Dict:
+        """The next message, waiting no longer than the call's deadline has left."""
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise HomeSocketError("timed out")
+        if hasattr(connection, "settimeout"):
+            connection.settimeout(left)
+        return json.loads(connection.recv())
+
+    def _converse(self, connection, messages: List[Dict], deadline: float) -> List[Any]:
         """Does the talking of call() on a connection, which call() then closes."""
-        first = json.loads(connection.recv())
+        first = self._receive(connection, deadline)
         if first.get("type") != "auth_required":
             raise HomeSocketError(f"expected auth_required, got {first.get('type')}")
         connection.send(json.dumps({"type": "auth", "access_token": self._token}))
-        answer = json.loads(connection.recv())
+        answer = self._receive(connection, deadline)
         if answer.get("type") != "auth_ok":
             raise HomeSocketError(f"sign-in refused ({answer.get('type')})")
 
@@ -117,7 +127,7 @@ class HomeSocket:
         for number, message in enumerate(messages, start=1):
             connection.send(json.dumps({**message, "id": number}))
             while True:
-                answer = json.loads(connection.recv())
+                answer = self._receive(connection, deadline)
                 # Anything else, such as an event, isn't the answer to this.
                 if answer.get("type") == "result" and answer.get("id") == number:
                     break
@@ -280,14 +290,19 @@ class HomeRegistry:
         Reads once and keeps the snapshot - or drops it, if that fails.
 
         Returns:
-            Whether it worked. A failure is logged the first time only, until a read works.
+            Whether it worked. A failure of any kind is logged the first time only, until a read works.
         """
         try:
             self._snapshot = self.read()
-        except (HomeSocketError, ValueError, KeyError, TypeError) as error:
+        except Exception as error:
+            # Any failure drops the snapshot: the guard must fail shut, never go by one
+            # which can't be refreshed. An answer of a shape nobody foresaw is one too, and
+            # mustn't end the thread - so it's logged with its traceback, the first time.
             self._snapshot = None
             if not self._failing:
-                logger.warning(f"Couldn't read Home Assistant's registry: {error}")
+                known = isinstance(error, (HomeSocketError, ValueError, KeyError, TypeError))
+                logger.warning(f"Couldn't read Home Assistant's registry: {error}",
+                               exc_info=None if known else True)
             self._failing = True
             return False
         if self._failing:
