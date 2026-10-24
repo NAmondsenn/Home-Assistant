@@ -237,7 +237,8 @@ def test_a_light_named_after_a_door_is_fine(make_home):
 ])
 def test_what_would_let_anyone_in_is_refused_whatever_its_called(make_home, thing, request_text):
     home = make_home({"/api/states": [thing], "/api/conversation/process": _assist("action_done", "Done")})
-    assert home.command(request_text) == {"success": False, "message": "I don't lock, unlock or open anything by voice."}
+    assert home.command(request_text) == {"success": False,
+                                          "message": "I don't lock, unlock or open anything by voice."}
     assert [path for _, path, _ in home._session.requests] == ["/api/states"]
 
 
