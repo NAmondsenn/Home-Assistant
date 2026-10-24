@@ -813,6 +813,7 @@ class FakeBatteryHome:
 
     def __init__(self):
         self.fails = None
+        self.people_now = []
         self.found = [
             # Not in name order, so the page's sorting is what puts the MacBook first.
             {"id": "sensor.s25_battery_level", "name": "s25", "level": 80, "changed": BATTERIES_NOW - 7200,
@@ -827,7 +828,7 @@ class FakeBatteryHome:
         return list(self.found)
 
     def people(self):
-        return []
+        return self.people_now
 
 
 def _watched(tmp_path):
@@ -863,6 +864,20 @@ def test_the_batteries_are_listed_with_their_choices(files, tmp_path, monkeypatc
     choices.set(page.brain.batteries.read()[1], marks=[30, 10])
     assert _device(page, MAC)["marks"] == [30, 10] and _device(page, MAC)["default_marks"] == [15, 5]
     assert _device(page, MAC)["changed"] is True
+
+
+def test_each_device_shows_who_decides_home_only_with_more_than_one_person(files, tmp_path):
+    page, home, choices = _watched(tmp_path)
+    # One person (or none) decides everything, so there is nothing to show.
+    assert all("person" not in d for d in page.batteries_state()["devices"])
+    home.people_now = [{"id": "person.a", "name": "Amy", "state": "home", "devices": ["d2"]}]
+    assert all("person" not in d for d in page.batteries_state()["devices"])
+    # With two, the one whose trackers include the device, else the first - as the watcher chooses.
+    home.people_now = [{"id": "person.a", "name": "Amy", "state": "home", "devices": ["d2"]},
+                       {"id": "person.b", "name": "Ben", "state": "not_home", "devices": ["d1"]}]
+    assert _device(page, MAC)["person"] == "Ben" and _device(page, PHONE)["person"] == "Amy"
+    home.found[0]["device"] = None
+    assert _device(page, PHONE)["person"] == "Amy"
 
 
 def test_a_batterys_warnings_can_be_switched_off_and_it_works_straight_away(files, tmp_path, caplog):

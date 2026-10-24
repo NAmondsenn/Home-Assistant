@@ -187,8 +187,9 @@ BATTERIES_TEMPLATE = """
 {{ found.batteries | tojson }}
 """
 
-# Renders every person as JSON - e.g. [{"entity_id": "person.nathaniel", "state": "home",
-# "devices": ["abc123"]}] - with the device ids of the trackers which say where they are.
+# Renders every person as JSON - e.g. [{"entity_id": "person.nathaniel", "name": "Nathaniel",
+# "state": "home", "devices": ["abc123"]}] - with the device ids of the trackers which say
+# where they are.
 # A tracker with no device, such as one made in YAML, has none to name and is left out.
 PEOPLE_TEMPLATE = """
 {%- set found = namespace(people=[]) -%}
@@ -202,6 +203,7 @@ PEOPLE_TEMPLATE = """
   {%- endfor -%}
   {%- set found.people = found.people + [{
     'entity_id': person.entity_id,
+    'name': person.name,
     'state': person.state,
     'devices': devices.ids
   }] -%}
@@ -568,9 +570,10 @@ class HomeAssistant:
             timeout: Seconds to wait for Home Assistant, or None for REQUEST_TIMEOUT.
 
         Returns:
-            One dict for each, with "id" (e.g. "person.nathaniel"), "state" (e.g.
-            "home", "not_home" or the name of a zone) and "devices" (the ids of the
-            devices of the trackers which tell where they are).
+            One dict for each, with "id" (e.g. "person.nathaniel"), "name" (e.g.
+            "Nathaniel", else the id), "state" (e.g. "home", "not_home" or the name of
+            a zone) and "devices" (the ids of the devices of the trackers which tell
+            where they are).
 
         Raises:
             requests.RequestException: If Home Assistant couldn't be asked, or turned
@@ -579,7 +582,8 @@ class HomeAssistant:
                 raises KeyError or TypeError - callers catch batteries.HOME_FAILURES,
                 which has all three.
         """
-        return [{"id": person["entity_id"], "state": person["state"], "devices": person["devices"]}
+        return [{"id": person["entity_id"], "name": person["name"] or person["entity_id"],
+                 "state": person["state"], "devices": person["devices"]}
                 for person in json.loads(self._template(PEOPLE_TEMPLATE, timeout=timeout))]
 
     def _in_order(self, lights: List[Dict]) -> List[Dict]:

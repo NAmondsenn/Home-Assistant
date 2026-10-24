@@ -423,7 +423,9 @@ class SettingsPage:
             order, each device with its id, name, level, charging state, "stale" (how
             old its reading is, in words, if it's gone stale), kind, enabled, marks,
             default_marks, send_to_phone and "changed" (whether any of those differ
-            from the defaults, which is when the page offers to put them back). Else
+            from the defaults, which is when the page offers to put them back). With
+            more than one person in Home Assistant, each also has "person": the name
+            of the one whose presence decides whether its warning is said aloud. Else
             {"available": False, "message": ...}.
         """
         watcher = self.brain.batteries
@@ -437,6 +439,7 @@ class SettingsPage:
             return {"available": False, "message": "Nova can't reach Home Assistant just now."}
         choices = watcher.choices
         now = time.time()
+        deciding = watcher.deciding_people(found)
         devices = []
         for battery in sorted(found, key=lambda b: (b.name.lower(), b.id)):
             age = now - battery.changed
@@ -450,6 +453,8 @@ class SettingsPage:
                 "send_to_phone": send_to_phone,
                 "changed": choices.changed(battery),
             })
+            if battery.id in deciding:
+                devices[-1]["person"] = deciding[battery.id]
         return {"available": True, "also_send_when_said": choices.also_send_when_said, "devices": devices}
 
     def _saved(self):

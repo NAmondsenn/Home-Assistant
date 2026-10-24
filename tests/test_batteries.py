@@ -667,6 +667,29 @@ def test_the_person_with_the_low_device_decides_home(tmp_path):
     assert rig.watcher.home_now(_bare(14)) is True
 
 
+def test_the_page_is_told_whose_presence_decides_each_device_only_with_several_people(tmp_path):
+    rig = Rig(tmp_path, _mac(40))
+    mac, phone, bare = _mac(14), _phone(4), _bare(14)
+    rig.home.people_now = [
+        {"id": "person.first", "name": "Amy", "state": "home", "devices": ["d2"]},
+        {"id": "person.second", "name": "Ben", "state": "not_home", "devices": ["d1"]},
+    ]
+    # The same rule as home_now: the owner of the device, else the first person.
+    assert rig.watcher.deciding_people([mac, phone, bare]) == {mac.id: "Ben", phone.id: "Amy", bare.id: "Amy"}
+    assert rig.watcher.home_now(mac) is False and rig.watcher.home_now(phone) is True
+    # One person decides everything, so there is nothing to show.
+    rig.home.people_now = rig.home.people_now[:1]
+    assert rig.watcher.deciding_people([mac, phone]) == {}
+    rig.home.people_now = []
+    assert rig.watcher.deciding_people([mac]) == {}
+
+
+def test_who_decides_is_left_out_when_home_assistant_cant_say(tmp_path):
+    rig = Rig(tmp_path, _mac(40))
+    rig.home.people = lambda: (_ for _ in ()).throw(requests.ConnectionError("down"))
+    assert rig.watcher.deciding_people([_mac(14)]) == {}
+
+
 def test_home_now_is_unsure_with_no_person_or_an_error(tmp_path):
     rig = Rig(tmp_path, _mac(40), state=None)
     assert rig.watcher.home_now(_mac(14)) is None

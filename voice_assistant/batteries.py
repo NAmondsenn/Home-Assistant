@@ -492,6 +492,21 @@ class BatteryChoices:
         return sorted(marks, reverse=True)
 
 
+def deciding_person(people: List[Dict], battery: Battery) -> Dict:
+    """
+    Picks the person whose presence decides whether a battery's warning is said aloud.
+
+    Args:
+        people: Home Assistant's people, as HomeAssistant.people() has them. Not empty.
+        battery: The battery which has fallen. Whoever's device it is decides; with
+            only one user, a device which belongs to nobody still means them.
+
+    Returns:
+        The person whose trackers include the battery's device, else the first.
+    """
+    return next((p for p in people if battery.device and battery.device in p["devices"]), people[0])
+
+
 # Every way a reading of Home Assistant can fail: it can't be reached, or it answers with
 # something that isn't JSON, or with JSON of the wrong shape.
 HOME_FAILURES = (requests.RequestException, ValueError, KeyError, TypeError)  # Only ever caught round a read.
@@ -581,8 +596,29 @@ class BatteryWatcher:
             return None
         if not people:
             return None
-        owner = next((p for p in people if battery.device and battery.device in p["devices"]), people[0])
-        return owner["state"] == "home"
+        return deciding_person(people, battery)["state"] == "home"
+
+    def deciding_people(self, batteries: List[Battery]) -> Dict[str, str]:
+        """
+        Whose presence decides whether each battery's warning is said aloud, for the
+        settings page to show - only worth showing with more than one person.
+
+        Args:
+            batteries: The batteries to name a person for.
+
+        Returns:
+            Each battery's sensor id and its person's name, e.g. {"sensor.mac_battery_level":
+            "Amy"} - chosen as home_now does. Empty if Home Assistant has only one person,
+            or none, or couldn't say.
+        """
+        try:
+            people = self._home.people()
+        except HOME_FAILURES as e:
+            logger.warning(f"Couldn't tell whose battery is whose: {e}")
+            return {}
+        if len(people) < 2:
+            return {}
+        return {b.id: deciding_person(people, b)["name"] for b in batteries}
 
     def check(self, now: float):
         """

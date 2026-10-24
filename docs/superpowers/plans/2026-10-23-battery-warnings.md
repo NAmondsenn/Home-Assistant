@@ -59,7 +59,7 @@
     - `"maker"`, `"model"`: or None;
     - `"app"`: a bool, whether the battery sensor belongs to the Home Assistant app (`battery.entity_id in integration_entities('mobile_app')` in the template);
     - `"charging"`: the raw state of the same device's charging entity, or None. That's a `binary_sensor` with device class `battery_charging`, else a `sensor` whose entity id ends in `battery_state`.
-  - `HomeAssistant.people(timeout: Optional[float] = None) -> List[Dict]`, with keys `"id"`, `"state"` (e.g. `"home"`, `"not_home"`) and `"devices"`: the device ids of the person's `device_trackers`.
+  - `HomeAssistant.people(timeout: Optional[float] = None) -> List[Dict]`, with keys `"id"`, `"name"` (the person's friendly name, else the id), `"state"` (e.g. `"home"`, `"not_home"`) and `"devices"`: the device ids of the person's `device_trackers`.
   - Both raise like `lights()`: `requests.RequestException`, or `ValueError` for an answer that isn't the expected JSON.
 
 - [ ] **Step 1: Write the failing tests** with the file's `make_home` and `FakeSession`, answering `/api/template` with the JSON a template would render:
@@ -170,6 +170,7 @@
   - `check(now: float)` - one pass: read, `due`, deliver. It also says any held warning which is still true once quiet hours are over. A held warning whose battery Home Assistant isn't listing just now (it leaves out a sensor that's briefly unavailable, as while it restarts) stays held; one that's listed and no longer true, or switched off, is let go with a line in the log.
   - `start()` and `stop()` - a daemon thread named `batteries`, calling `check` every `check_every` seconds. Every pass is wrapped, so one error is logged and the next pass still runs. Home Assistant being down is logged once until it answers again.
   - `home_now(battery: Battery) -> Optional[bool]` - from `people()`: the person whose `devices` include the battery's device, else the first person. `"home"` → True, any other known state → False, no person or an error → None.
+  - `deciding_people(batteries: List[Battery]) -> Dict[str, str]` - for the settings page: each battery's sensor id and the name of the person `home_now` chooses for it (module function `deciding_person(people, battery)`, which `home_now` uses too). Empty unless Home Assistant has more than one person, or if it can't say.
   - Held warnings are kept in `batteries.json` too, so a restart in quiet hours keeps them.
 - The delivery, for one `BatteryWarning` - its message `f"Your {name}'s battery is down to {round(level)}%."`, title `"Battery low"`. A reading older than `stale_after` gives `f"Your {name}'s battery was down to {round(level)}%, {age} ago."` instead, the age from `format_duration` as `said()` has it:
   1. `sending` = the device's "send to my phone" and `send is not None`.
@@ -270,7 +271,9 @@
     - `"stale"`: the age in words, or None;
     - `"kind"`;
     - `"enabled"`, `"marks"` and `"default_marks"`;
-    - `"send_to_phone"`.
+    - `"send_to_phone"`;
+    - `"changed"`: `BatteryChoices.changed(battery)`;
+    - `"person"`, only when Home Assistant has more than one person: the name of the one whose presence decides whether the device's warning is said aloud (0007 decision 4: "the page shows which"). The row's sub-line says so.
 
     Devices are in name order. With Home Assistant unreachable, it's `{"available": False, "message": ...}`.
   - `set_battery(battery_id: str, who: str, enabled=None, marks=None, send_to_phone=None) -> Dict` and `set_battery_also_send(on: bool, who: str) -> Dict`. Each gives `{"success": ..., "message": ...}`, and logs who changed what, as the page's other changes do.

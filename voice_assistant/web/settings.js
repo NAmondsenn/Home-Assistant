@@ -765,7 +765,8 @@ function batteryRow(device) {
   const what = element("span", undefined, "what");
   what.append(element("span", device.name, "name"));
   const charging = device.charging === null ? "" : device.charging ? ", charging" : ", not charging";
-  what.append(element("span", `${device.level}%${charging}${device.stale ? `, as of ${device.stale} ago` : ""}`, "sub"));
+  const decides = device.person ? `, ${device.person} decides if you're home` : "";
+  what.append(element("span", `${device.level}%${charging}${device.stale ? `, as of ${device.stale} ago` : ""}${decides}`, "sub"));
   top.append(icon("i-battery"), what);
   row.append(top);
 

@@ -1061,12 +1061,16 @@ def test_a_battery_with_no_device_is_named_by_its_friendly_name(make_home):
 
 
 def test_people_come_with_their_trackers_devices(make_home):
-    rows = [{"entity_id": "person.nathaniel", "state": "not_home", "devices": ["dev25", "devwatch"]},
-            {"entity_id": "person.guest", "state": "home", "devices": []}]
+    rows = [{"entity_id": "person.nathaniel", "name": "Nathaniel", "state": "not_home",
+             "devices": ["dev25", "devwatch"]},
+            {"entity_id": "person.guest", "name": None, "state": "home", "devices": []}]
     home = make_home({"/api/template": FakeResponse(json.dumps(rows))})
-    assert home.people() == [{"id": "person.nathaniel", "state": "not_home", "devices": ["dev25", "devwatch"]},
-                             {"id": "person.guest", "state": "home", "devices": []}]
-    assert "states.person" in home._session.requests[0][2]["json"]["template"]
+    # A person with no name of their own is called by their id, so the page always has something to show.
+    assert home.people() == [
+        {"id": "person.nathaniel", "name": "Nathaniel", "state": "not_home", "devices": ["dev25", "devwatch"]},
+        {"id": "person.guest", "name": "person.guest", "state": "home", "devices": []}]
+    template = home._session.requests[0][2]["json"]["template"]
+    assert "states.person" in template and "person.name" in template
 
 
 @pytest.mark.parametrize("ask", ["batteries", "people"])
