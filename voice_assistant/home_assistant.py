@@ -27,10 +27,10 @@ SERVICES, so nothing else in Nova can reach a lock, a cover or Home Assistant it
 Nova's token is an administrator's, which could do anything in Home Assistant, so
 this is the only guard on what Nova's own calls reach.
 
-Knowing what's in which room - the room Nova's in, and the lights' - takes an
-administrator's token, as Home Assistant only answers templates for one. With an
-ordinary user's, Nova goes through Assist alone, and the settings page has the
-lights without their rooms.
+Knowing what's in which room - the room Nova's in, and the lights' - and the batteries
+take an administrator's token, as Home Assistant only answers templates for one. With
+an ordinary user's, Nova goes through Assist alone, the settings page has the lights
+without their rooms, and Nova can't tell the batteries.
 
 The calendar is whichever calendars Home Assistant has, such as a Google Calendar
 added through its Google Calendar integration.
@@ -150,7 +150,7 @@ LIGHTS_TEMPLATE = """
 # [{"entity_id": "sensor.s25_ultra_battery_level", "state": "46", "unit": "%", "changed":
 # 1761200000.0, "friendly_name": "S25 Ultra Battery level", "device": "abc123", "device_name":
 # "SM-S938B", "device_name_by_user": "s25-ultra", "maker": "samsung", "model": "SM-S938B",
-# "charging": "discharging"}]. Only what Home Assistant has is rendered: whether the state is
+# "charging": "discharging", "app": true}]. Only what Home Assistant has is rendered: whether the state is
 # a level, and in percent, is left to batteries(). A sensor made by a template has no device,
 # so those come out as null. The charging entity is the device's binary_sensor of device class
 # battery_charging if it has one, else its sensor whose id ends in battery_state - the phone has
@@ -332,8 +332,8 @@ class HomeAssistant:
             if _refused(e):
                 if not self._templates_refused:
                     logger.warning(f"Home Assistant won't tell Nova what's in which room ({e.response.status_code}) "
-                                   f"- HA_TOKEN needs to be an administrator's for Nova's room and Claude's lights, "
-                                   f"so until then Nova goes through Assist alone")
+                                   f"- HA_TOKEN needs to be an administrator's for Nova's room, Claude's lights "
+                                   f"and the batteries, so until then Nova goes through Assist alone")
                 self._templates_refused = True
             raise
         if self._templates_refused:
@@ -523,19 +523,22 @@ class HomeAssistant:
         Returns:
             One dict for each sensor of device class battery that reads in percent and
             has a level, with "id" (e.g. "sensor.s25_ultra_battery_level"), "name" (the
-            device's own name for it, else its name, else the sensor's friendly name),
-            "level" (a float), "changed" (when Home Assistant last heard the level, in epoch
-            seconds, even if the level did not move), "device" (its id, or None), "maker" and "model" (or None) and
-            "charging" (its device's charging state as Home Assistant has it, e.g.
-            "discharging", or None) and "app" (whether the sensor belongs to the Home Assistant app, which
-            is how a phone or tablet is told from a sensor or remote). A sensor which is unavailable, unknown, not a number
-            or not in percent is left out - never taken as 0%, which would be a warning
-            for nothing.
+            name the user gave the device, else its own name, else the sensor's friendly
+            name), "level" (a float), "changed" (when Home Assistant last heard the
+            level, in epoch seconds, even if the level did not move), "device" (its id,
+            or None), "maker" and "model" (or None), "charging" (its device's charging
+            state as Home Assistant has it, e.g. "discharging", or None) and "app"
+            (whether the sensor belongs to the Home Assistant app - a Mac's does too, so
+            it doesn't tell a phone from anything else alone). A sensor which is
+            unavailable, unknown, not a number, not in percent or outside 0 to 100 is
+            left out - never taken as 0%, which would be a warning for nothing.
 
         Raises:
             requests.RequestException: If Home Assistant couldn't be asked, or turned
                 the template down - see _template.
-            ValueError: If it didn't answer with the batteries.
+            ValueError: If it didn't answer with JSON. An answer of the wrong shape
+                raises KeyError or TypeError - callers catch batteries.HOME_FAILURES,
+                which has all three.
         """
         found = []
         for state in json.loads(self._template(BATTERIES_TEMPLATE, timeout=timeout)):
@@ -545,8 +548,9 @@ class HomeAssistant:
                 level = float(state["state"])
             except ValueError:
                 continue
-            # float() reads "nan" and "inf", which no battery means.
-            if not math.isfinite(level):
+            # float() reads "nan" and "inf", which no battery means, and some integrations
+            # say -1 or 255 for "don't know" - a -1 would be a warning for nothing.
+            if not math.isfinite(level) or not 0 <= level <= 100:
                 continue
             found.append({"id": state["entity_id"],
                           "name": state["device_name_by_user"] or state["device_name"] or state["friendly_name"]
@@ -571,7 +575,9 @@ class HomeAssistant:
         Raises:
             requests.RequestException: If Home Assistant couldn't be asked, or turned
                 the template down - see _template.
-            ValueError: If it didn't answer with the people.
+            ValueError: If it didn't answer with JSON. An answer of the wrong shape
+                raises KeyError or TypeError - callers catch batteries.HOME_FAILURES,
+                which has all three.
         """
         return [{"id": person["entity_id"], "state": person["state"], "devices": person["devices"]}
                 for person in json.loads(self._template(PEOPLE_TEMPLATE, timeout=timeout))]

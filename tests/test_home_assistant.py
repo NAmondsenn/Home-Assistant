@@ -1042,6 +1042,14 @@ def test_a_decimal_level_is_read_and_other_units_are_left_out(make_home):
     assert [(b["id"], b["level"]) for b in found] == [("sensor.mac", 15.0)]
 
 
+def test_a_level_outside_zero_to_a_hundred_is_left_out(make_home):
+    # Some integrations report -1 for "don't know", and 255 for the same: neither is a level, and -1 would be
+    # a warning for nothing.
+    rows = [_rendered_battery(f"sensor.b{n}", state) for n, state in enumerate(["-1", "255", "100.5", "0", "100"])]
+    found = make_home({"/api/template": FakeResponse(json.dumps(rows))}).batteries()
+    assert [(b["id"], b["level"]) for b in found] == [("sensor.b3", 0.0), ("sensor.b4", 100.0)]
+
+
 def test_a_battery_with_no_device_is_named_by_its_friendly_name(make_home):
     row = _rendered_battery("sensor.spare", "70", friendly_name="Spare", device=None, device_name=None,
                             device_name_by_user=None, maker=None, model=None, charging=None, app=False)
