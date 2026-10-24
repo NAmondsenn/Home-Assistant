@@ -600,6 +600,8 @@ def test_home_now_is_unsure_with_no_person_or_an_error(tmp_path):
 
 def test_a_check_which_fails_doesnt_stop_the_next(tmp_path, caplog):
     rig = Rig(tmp_path, _mac(14))
+    # The thread checks by the real clock, so the reading must be fresh by it.
+    rig.home.found[0]["changed"] = time.time()
     calls = []
     real = rig.watcher.check
 
@@ -645,3 +647,123 @@ def test_stopping_is_prompt_and_leaves_no_thread(tmp_path):
     rig.watcher.stop()
     assert time.time() - started < 2
     assert not [t for t in threading.enumerate() if t.name == "batteries"]
+
+
+def test_a_bug_after_the_read_is_logged_with_its_traceback_not_as_home_assistant_down(tmp_path, caplog):
+    rig = Rig(tmp_path, _mac(14))
+
+    def broken(batteries):
+        raise KeyError("mark")
+
+    rig.choices.due = broken
+    with caplog.at_level(logging.INFO):
+        rig.watcher._pass()
+    assert "didn't answer" not in caplog.text
+    assert [r for r in caplog.records if r.exc_info and r.exc_info[0] is KeyError]
+    assert rig.watcher._down is False
+
+
+def test_a_say_which_raises_is_a_bug_not_home_assistant_down(tmp_path, caplog):
+    rig = _fallen(tmp_path)
+    rig.watcher._say = lambda message: (_ for _ in ()).throw(KeyError("oops"))
+    rig.home.found = [_as_found(_mac(40))]
+    rig.watcher.check(NOW)
+    rig.home.found = [_as_found(_mac(4))]
+    with caplog.at_level(logging.INFO):
+        rig.watcher._pass()
+    assert "didn't answer" not in caplog.text
+    assert [r for r in caplog.records if r.exc_info and r.exc_info[0] is KeyError]
+    assert rig.watcher._down is False
+
+
+def _failing_saves(monkeypatch):
+    def fail(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(storage, "save_json", fail)
+
+
+def test_a_failed_save_of_a_hold_still_holds_it(tmp_path, monkeypatch):
+    choices = _choices(tmp_path)
+    _failing_saves(monkeypatch)
+    choices.hold("sensor.x", 15)
+    assert choices.held() == {"sensor.x": 15}
+
+
+def test_a_failed_save_of_a_release_still_lets_it_go(tmp_path, monkeypatch):
+    choices = _choices(tmp_path)
+    choices.hold("sensor.x", 15)
+    _failing_saves(monkeypatch)
+    choices.release("sensor.x")
+    assert choices.held() == {}
+
+
+def test_a_delivery_which_raises_doesnt_stop_the_next(tmp_path, caplog):
+    rig = Rig(tmp_path, _mac(40))
+    rig.home.found = [_as_found(_mac(40)), _as_found(_tablet(40))]
+    rig.watcher.check(NOW)
+    rig.home.found = [_as_found(_mac(14)), _as_found(_tablet(4))]
+
+    def say(message):
+        if "MacBook" in message:
+            raise RuntimeError("boom")
+        rig.said.append(message)
+        return True
+
+    rig.watcher._say = say
+    with caplog.at_level(logging.WARNING):
+        rig.watcher.check(NOW)
+    assert rig.said == ["Your Tab S11 Ultra's battery is down to 4%."]
+    assert "boom" in caplog.text
+
+
+def test_a_held_step_which_raises_doesnt_stop_the_new_warnings(tmp_path):
+    rig = Rig(tmp_path, _mac(40))
+    rig.home.found = [_as_found(_mac(40)), _as_found(_tablet(40))]
+    rig.watcher.check(NOW)
+    rig.choices.hold(_mac(14).id, 15)
+    rig.home.found = [_as_found(_mac(14)), _as_found(_tablet(4))]
+    real = rig.watcher._say
+
+    def say(message):
+        if "MacBook" in message:
+            raise RuntimeError("boom")
+        return real(message)
+
+    rig.watcher._say = say
+    rig.watcher.check(NOW)
+    assert rig.said == ["Your Tab S11 Ultra's battery is down to 4%."]
+
+
+def test_the_phone_with_its_switch_on_away_is_sent(tmp_path):
+    rig = Rig(tmp_path, _phone(40), state="not_home")
+    rig.choices.set(_phone(40), send_to_phone=True)
+    rig.watcher.check(NOW)
+    rig.fall_to(_phone(4))
+    assert rig.sent == [("Your S25 Ultra's battery is down to 4%.", "Battery low")]
+    assert rig.said == []
+
+
+def test_the_phone_with_its_switch_on_and_a_failed_send_by_day_is_said(tmp_path):
+    rig = Rig(tmp_path, _phone(40), state="not_home", sends=False)
+    rig.choices.set(_phone(40), send_to_phone=True)
+    rig.watcher.check(NOW)
+    rig.fall_to(_phone(4))
+    assert rig.said == ["Your S25 Ultra's battery is down to 4%."]
+
+
+def test_the_phone_with_its_switch_on_and_a_failed_send_at_night_is_held(tmp_path):
+    rig = Rig(tmp_path, _phone(40), state="not_home", sends=False, quiet=True)
+    rig.choices.set(_phone(40), send_to_phone=True)
+    rig.watcher.check(NOW)
+    rig.fall_to(_phone(4))
+    assert rig.choices.held() == {_phone(4).id: 5}
+
+
+def test_a_warning_from_an_old_reading_says_its_age(tmp_path):
+    rig = Rig(tmp_path, _tablet(40))
+    rig.watcher.check(NOW)
+    old = _found("tab-s11-ultra", 4, "d3", "samsung", "SM-X930", "Not Charging", changed=NOW - 3 * 24 * HOUR)
+    rig.home.found = [old]
+    rig.watcher.check(NOW)
+    assert rig.said == ["Your Tab S11 Ultra's battery was down to 4%, 3 days ago."]

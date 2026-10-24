@@ -438,11 +438,11 @@ class BatteryChoices:
             battery_id: The device's sensor id.
             mark: The mark that warned, e.g. 15.
 
-        Raises:
-            OSError: If it couldn't be saved. It is not held then.
+        A failed save still holds it in memory, as due() does for the warned marks, so
+        the warning isn't dropped - only forgotten by a restart.
         """
         with self._lock:
-            self._change(lambda state: state["held"].__setitem__(battery_id, mark))
+            self._keep(lambda state: state["held"].__setitem__(battery_id, mark), "held warning")
 
     def held(self) -> Dict[str, int]:
         """Returns the warnings being held, as each device's sensor id and the mark that warned."""
@@ -453,15 +453,22 @@ class BatteryChoices:
         """
         Lets a held warning go, said or no longer true, and saves.
 
+        A failed save still lets it go in memory, so it isn't said again every pass.
+
         Args:
             battery_id: The device's sensor id. Nothing happens if it has none held.
-
-        Raises:
-            OSError: If it couldn't be saved. It is still held then.
         """
         with self._lock:
             if battery_id in self._state["held"]:
-                self._change(lambda state: state["held"].pop(battery_id))
+                self._keep(lambda state: state["held"].pop(battery_id), "release of a held warning")
+
+    def _keep(self, change, what: str):
+        """Saves a change, or keeps it in memory alone if the save fails."""
+        try:
+            self._change(change)
+        except OSError as e:
+            change(self._state)
+            logger.warning(f"Couldn't save the {what}: {e}")
 
     def _change(self, change):
         """Applies a change to a copy of the state, saves it, and only then keeps it."""
@@ -486,7 +493,7 @@ class BatteryChoices:
 
 # Every way a reading of Home Assistant can fail: it can't be reached, or it answers with
 # something that isn't JSON, or with JSON of the wrong shape.
-_HOME_FAILURES = (requests.RequestException, ValueError, KeyError, TypeError)
+_HOME_FAILURES = (requests.RequestException, ValueError, KeyError, TypeError)  # Only ever caught round a read.
 
 
 class BatteryWatcher:
@@ -571,21 +578,34 @@ class BatteryWatcher:
         Does one pass: reads the batteries, works out the warnings due, and delivers
         them. Once quiet hours are over it also says any held warning which is still true.
 
+        If Home Assistant doesn't answer, that is logged once until it does, and
+        nothing else happens. Any other error is a bug, and is raised.
+
         Args:
             now: The current epoch time.
-
-        Raises:
-            requests.RequestException: If Home Assistant couldn't be asked.
-            ValueError: If it didn't answer with the batteries.
         """
-        batteries = self.read()
+        try:
+            batteries = self.read()
+        except _HOME_FAILURES as e:
+            # A minute-by-minute line for a night of Home Assistant being restarted would bury the log.
+            if not self._down:
+                logger.warning(f"Home Assistant didn't answer, so batteries aren't being watched: {e}")
+            self._down = True
+            return
         if self._down:
             logger.info("Home Assistant answers again, batteries are being watched.")
             self._down = False
         # Held ones go first, so a warning held in this pass isn't also looked at again in it.
-        self._say_held(batteries)
+        # Each step is wrapped, so a bug in one doesn't lose the warnings the others would give.
+        try:
+            self._say_held(batteries, now)
+        except Exception:
+            logger.exception("Saying the held battery warnings failed")
         for warning in self._choices.due(batteries):
-            self._deliver(warning, now)
+            try:
+                self._deliver(warning, now)
+            except Exception:
+                logger.exception(f"Delivering the battery warning for {warning.battery.name} failed")
 
     def start(self):
         """Starts the daemon thread which checks every check_every seconds."""
@@ -609,11 +629,6 @@ class BatteryWatcher:
         """One pass of the thread, in which no error may end the thread."""
         try:
             self.check(time.time())
-        except _HOME_FAILURES as e:
-            # A minute-by-minute line for a night of Home Assistant being restarted would bury the log.
-            if not self._down:
-                logger.warning(f"Home Assistant didn't answer, so batteries aren't being watched: {e}")
-            self._down = True
         except Exception:
             logger.exception("Checking the batteries failed, will try again")
 
@@ -626,7 +641,7 @@ class BatteryWatcher:
             now: The current epoch time.
         """
         battery = warning.battery
-        message = f"Your {battery.name}'s battery is down to {round(battery.level)}%."
+        message = self._message(battery, now)
         title = "Battery low"
         # With no ntfy there is nothing to send to, however the owner chose.
         sending = self._choices.send_to_phone(battery) and self._send is not None
@@ -644,23 +659,26 @@ class BatteryWatcher:
         if sending and self._send(message, title):
             return
 
-        # 5. The phone warns the user about itself, so a warning it couldn't say aloud is dropped.
-        if battery.phone:
+        # 5. The phone warns the user about itself, so a warning it couldn't say aloud is dropped - unless its
+        # "send to my phone" switch is on, which is the user saying it isn't their phone, or to send it anyway.
+        if battery.phone and not self._choices.send_to_phone(battery):
             return
 
         # 4. It should have been sent but couldn't be, or there is no ntfy: say it if anyone can hear it,
         # else hold it, so the night's silence doesn't lose it.
         if quiet or not self._say(message):
-            self._hold(battery, warning.mark)
+            self._choices.hold(battery.id, warning.mark)
 
-    def _hold(self, battery: Battery, mark: int):
-        """Holds a warning until quiet hours end, as far as it can be saved."""
-        try:
-            self._choices.hold(battery.id, mark)
-        except OSError as e:
-            logger.warning(f"Couldn't save the held warning for {battery.name}: {e}")
+    def _message(self, battery: Battery, now: float) -> str:
+        """The warning's words - with the reading's age if it's old, as said() does, so that 4% last heard
+        three days ago isn't taken to be the level now."""
+        level = f"{round(battery.level)}%"
+        age = now - battery.changed
+        if age > self._stale_after:
+            return f"Your {battery.name}'s battery was down to {level}, {format_duration(age)} ago."
+        return f"Your {battery.name}'s battery is down to {level}."
 
-    def _say_held(self, batteries: List[Battery]):
+    def _say_held(self, batteries: List[Battery], now: float):
         """
         Says the held warnings which are still true, once quiet hours are over.
 
@@ -676,9 +694,6 @@ class BatteryWatcher:
             battery = by_id.get(battery_id)
             true = battery is not None and not battery.charging and battery.level < mark \
                 and self._choices.enabled(battery_id)
-            if true and not self._say(f"Your {battery.name}'s battery is down to {round(battery.level)}%."):
+            if true and not self._say(self._message(battery, now)):
                 continue
-            try:
-                self._choices.release(battery_id)
-            except OSError as e:
-                logger.warning(f"Couldn't save the release of a held warning: {e}")
+            self._choices.release(battery_id)

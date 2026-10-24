@@ -21,7 +21,7 @@
   - as well, with the user home and outside ntfy's quiet hours (`Ntfy.quiet()`), it's said on the default satellite;
   - "Also send to my phone when Nova says it" is on by default. Off, a warning Nova says isn't sent as well;
   - a warning which ought to have been sent, but couldn't be (no ntfy, or a failed send), is said instead. In quiet hours it's held until they end, then said only if it's still true;
-  - the phone's own warning is only ever said.
+  - the phone's own warning is only said, unless its "send to my phone" switch is on - then it's treated like any other device.
 - **When marks start over:** the marks a device has warned at start over once it's charging, or once its level is 10 or more points above its highest mark, whatever its charging state says.
   - The second rule is my call, on top of 0007, from Home Assistant's history for 13-23 October. The Mac's `_internal_battery_state` said "Not Charging" while its level fell from 51% to 41%, so "Not Charging" means on battery. But in ten days it never said "Charging", though the Mac charged to about 70% in that time. So its charging state alone can't start the marks over. The same rule covers a remote or sensor with no charging state, when it gets a new battery.
   - The phone's `_battery_state` says `charging`, `discharging` and `full`, as expected.
@@ -170,14 +170,14 @@
   - `start()` and `stop()` - a daemon thread named `batteries`, calling `check` every `check_every` seconds. Every pass is wrapped, so one error is logged and the next pass still runs. Home Assistant being down is logged once until it answers again.
   - `home_now(battery: Battery) -> Optional[bool]` - from `people()`: the person whose `devices` include the battery's device, else the first person. `"home"` → True, any other known state → False, no person or an error → None.
   - Held warnings are kept in `batteries.json` too, so a restart in quiet hours keeps them.
-- The delivery, for one `BatteryWarning` - its message `f"Your {name}'s battery is down to {round(level)}%."`, title `"Battery low"`:
+- The delivery, for one `BatteryWarning` - its message `f"Your {name}'s battery is down to {round(level)}%."`, title `"Battery low"`. A reading older than `stale_after` gives `f"Your {name}'s battery was down to {round(level)}%, {age} ago."` instead, the age from `format_duration` as `said()` has it:
   1. `sending` = the device's "send to my phone" and `send is not None`.
   2. If the user is home (True) and it isn't quiet hours, `say` it. If that worked: send too, if `sending` and `also_send_when_said`. Done.
   3. Otherwise, if `sending`, `send` it. If that worked, done.
-  4. Otherwise - it should have been sent but couldn't be, or there's no ntfy - and it isn't the phone's own:
+  4. Otherwise - it should have been sent but couldn't be, or there's no ntfy - and it isn't the phone's own with its switch off:
      - outside quiet hours, `say` it;
      - in quiet hours, or if saying fails, hold it.
-  5. The phone's own warning, not said in 2, is dropped. The phone warns the user itself.
+  5. The phone's own warning, not said in 2, is dropped while its "send to my phone" switch is off. The phone warns the user itself. With the switch on it is sent like any other, and a failed send goes to 4.
 
 - [ ] **Step 1: Write the failing tests** with a `FakeHome` answering `batteries()` and `people()`, and recording fakes for `say`, `send` and `quiet`. One test per row:
 
