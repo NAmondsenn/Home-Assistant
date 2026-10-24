@@ -127,3 +127,8 @@ def test_a_battery_with_no_device_is_something_else_and_never_charging():
     assert battery.charging is None
     assert battery.device is None
 
+
+
+def test_asking_with_no_batteries_finds_none():
+    assert find([], "phone") == []
+    assert find([], "") == []

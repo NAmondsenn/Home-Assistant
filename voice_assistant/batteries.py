@@ -208,7 +208,7 @@ def find(batteries: List[Battery], asked: str) -> List[Battery]:
             or (word in _KIND_WORDS and _KIND_WORDS[word](battery))
             for word in words
         ))
-    best = max(matches)
+    best = max(matches, default=0)
     return [b for b, count in zip(batteries, matches) if best and count == best]
 
 
