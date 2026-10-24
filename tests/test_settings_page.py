@@ -885,7 +885,7 @@ def test_a_batterys_warnings_can_be_switched_off_and_it_works_straight_away(file
 
 
 @pytest.mark.parametrize("marks, said", [
-    ([150], "needs two marks"), ([5, 5], "must be different"), ([5, 10, 15], "needs two marks"),
+    ([150, 5], "whole number"), ([5, 5], "must be different"), ([5, 10, 15], "needs two marks"),
     ([1.5, 10], "whole number"), ([0, 10], "whole number")])
 def test_marks_which_dont_make_sense_are_refused(files, tmp_path, marks, said):
     page, home, choices = _watched(tmp_path)
@@ -919,7 +919,7 @@ def test_a_battery_change_which_cant_be_understood_or_saved_is_refused(files, tm
 def test_a_battery_home_assistant_doesnt_show_just_now_is_refused(files, tmp_path):
     page, home, choices = _watched(tmp_path)
     result = page.set_battery("sensor.gone_battery_level", LOGIN, enabled=False)
-    assert not result["success"] and "gone_battery_level" not in choices._state["devices"]
+    assert not result["success"] and "sensor.gone_battery_level" not in choices._state["devices"]
     import requests
     home.fails = requests.ConnectionError("down")
     assert not page.set_battery(MAC, LOGIN, enabled=False)["success"]

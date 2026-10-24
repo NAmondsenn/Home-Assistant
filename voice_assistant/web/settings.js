@@ -258,8 +258,9 @@ async function send(path, body) {
   return response.json().catch(() => ({ success: false, message: "Nova didn't answer properly." }));
 }
 
-// Sends a change, says how it went, and shows the page as it is now.
-async function change(path, body) {
+// Sends a change, says how it went, and shows the page as it is now - or, as reload,
+// the part of it which changed.
+async function change(path, body, reload = load) {
   let result;
   try {
     result = await send(path, body);
@@ -267,7 +268,7 @@ async function change(path, body) {
     result = { success: false, message: "Couldn't reach Nova." };
   }
   toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
-  await load();
+  await reload();
   return result;
 }
 
@@ -726,17 +727,13 @@ async function loadBatteries() {
   showBatteries(batteries);
 }
 
-// Sends a change to a battery's warnings, says how it went, and shows the batteries as they are now.
-async function changeBattery(path, body) {
-  let result;
-  try {
-    result = await send(path, body);
-  } catch (error) {
-    result = { success: false, message: "Couldn't reach Nova." };
-  }
-  toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
-  await loadBatteries();
-  return result;
+// Sends a change to a battery's warnings. The rows are drawn again whatever the data
+// says, as a switch which failed to save is still showing what wasn't saved.
+function changeBattery(path, body) {
+  return change(path, body, () => {
+    delete drawn.batteries;
+    return loadBatteries();
+  });
 }
 
 function showBatteries(state) {
@@ -752,8 +749,10 @@ function showBatteries(state) {
   // it differs.
   document.getElementById("also-send-box").checked = state.also_send_when_said;
   drawIfChanged("batteries", state.devices, () => {
-    // Not while a number is being typed, which a redraw would wipe - tried again next time.
-    if (list.contains(document.activeElement)) return false;
+    // Not while a number is being typed, which a redraw would wipe - tried again next
+    // time. A tapped switch or button keeps the focus in Chromium, so only a box counts.
+    const typing = document.activeElement;
+    if (typing && typing.type === "number" && list.contains(typing)) return false;
     list.replaceChildren(...(state.devices.length ? state.devices.map(batteryRow) : [emptyRow("Home Assistant has no batteries.")]));
   });
 }
@@ -791,9 +790,11 @@ function batteryRow(device) {
     Object.assign(box, { type: "number", min: 1, max: 99, step: 1, value: mark });
     box.inputMode = "numeric";
     box.setAttribute("aria-label", `${device.name} warning mark ${i + 1}, in percent`);
-    box.addEventListener("change", () => changeBattery("/api/batteries", {
-      id: device.id, marks: boxes.map((each) => Number(each.value)),
-    }));
+    box.addEventListener("change", () => {
+      // Done typing, so the rows may be drawn again with what comes back.
+      box.blur();
+      changeBattery("/api/batteries", { id: device.id, marks: boxes.map((each) => Number(each.value)) });
+    });
     marks.append(box, element("span", "%"));
     return box;
   });
