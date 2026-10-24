@@ -54,6 +54,22 @@ For the controller, read-only, with the user's OK. `.superpowers/tools/ha_assist
 9. **A script's configuration:** `GET /api/config/script/config/<key>` for goodnight - whether the key is the registry's `unique_id` or the object id, and its shape (`sequence`; each step's `action` or `service`, `target` and `data`).
 10. **The wider shapes are Assist's:** through the debugging, "pause X", "next track on X", "set X volume to 40", "is X on", "run X", "activate X" and "close X" each match an intent, for something that's exposed.
 
+**Results (24 October, read-only, from the brain):**
+1. `websocket-client==1.9.2` (31 August 2026); its `requires_dist` is extras only, so no dependencies.
+2. As expected: `result.results[i]` is `{"intent": {"name"}, "slots", "details", "targets": {entity_id: {"matched": true}}, "match", "sentence_template", "unmatched_slots", "source": "builtin"}`, and an unmatched sentence is `null`. No automation here has a sentence trigger, so that case wasn't seen.
+3. Loose wordings match through the debugging too - "could you please turn the lamp off for me" is `HassTurnOff` on `light.lamp`.
+4. `config/entity_registry/list` has no aliases (1,113 entries). `config/entity_registry/get_entries` gives each `aliases`, and a list can hold `None` - drop those.
+5. As expected. 17 things are exposed (8 switches, 4 to-do lists, 3 media players, 2 lights), and no script - so "run goodnight" and "activate goodnight" match `HassTurnOn` with no targets.
+6. As expected; areas also have `aliases`. Areas today: Bedroom, Home.
+7. HASS.Agent's device has `manufacturer: "HASS.Agent Team"`. Its buttons' `original_name`s are "Shutdown", "Restart", "Sleep", "Monitor Sleep", "Lock" and "Launch HA" - so `button_kind` gives shutdown, restart, sleep, monitorsleep, lock and other. Nova's own MQTT device has a "Restart" and a "Stop" button too.
+8. `proxmoxve`, 332 entities.
+9. The key is the `unique_id`, which is the object id ("goodnight"). The answer is `{"alias", "icon", "mode", "sequence"}`; steps use `action` and `target.entity_id` (a list), and nest under `if`/`then`. Goodnight presses `button.windows_pc_sleep`, a safe kind, so it must stay runnable.
+10. Each wider shape matches its intent with its target: `HassMediaPause`, `HassMediaNext`, `HassSetVolume`, `HassGetState` and `HassTurnOff`.
+
+**The controller's rulings from these:**
+- A HASS.Agent device is one whose `manufacturer` starts "HASS.Agent" - set by HASS.Agent, not the user - rather than "an `mqtt` device with a shutdown button" (Task 1).
+- A match with no targets is never sent on the wider rule, whatever its intent (Task 4). It's how a script that isn't exposed matches, and how "add milk to notes" matches when no list is called notes - which plan 2 then adds to notepad itself.
+
 ---
 
 ### Task 1: Read the registry over the WebSocket
@@ -71,10 +87,10 @@ For the controller, read-only, with the user's OK. `.superpowers/tools/ha_assist
   - `@dataclass(frozen=True) Snapshot`: `entries: Dict[str, Entry]`, `devices: Dict[str, Dict]` (id to `name` - the user's name for it if they gave one - `maker`, `model` and `area_id`), `areas: Dict[str, str]` (id to name) and `read_at: float`. Its methods:
     - `platform(entity_id) -> Optional[str]`, `aliases(entity_id) -> Tuple[str, ...]`, `exposed(entity_id) -> bool` (False if it isn't known) and `area_name(entity_id) -> Optional[str]`;
     - `on_device(device_id) -> List[str]`, the device's entity ids;
-    - `hass_agent_buttons() -> Dict[str, Tuple[str, str]]`, each HASS.Agent button's entity id to its device id and kind. A HASS.Agent device is an `mqtt` device with a button of kind "shutdown" - never one found by the `windows_pc_` prefix, which the user can rename.
+    - `hass_agent_buttons() -> Dict[str, Tuple[str, str]]`, each HASS.Agent button's entity id to its device id and kind. A HASS.Agent device is one whose `manufacturer` starts "HASS.Agent" ("HASS.Agent Team" today) - never one found by the `windows_pc_` prefix, which the user can rename. Nova's own MQTT device, with its "Restart" button, isn't one.
   - `button_kind(entry: Entry) -> str`: "shutdown", "restart", "sleep", "monitorsleep", "lock" or "other". It's read from `original_name`, lower-cased with everything but letters taken out ("MonitorSleep" is "monitorsleep", "Shut down" is "shutdown", "reboot" counts as "restart"), else from the last `_` part of `unique_id`, else it's "other". Also `PC_KINDS = ("shutdown", "restart", "sleep", "monitorsleep", "lock")` and `PC_SAFE = ("sleep", "monitorsleep", "lock")`.
   - `HomeRegistry(socket: HomeSocket, every: float = 300.0, retry: float = 30.0)`:
-    - `read() -> Snapshot` - one `call` with `config/entity_registry/list`, `homeassistant/expose_entity/list`, `config/device_registry/list` and `config/area_registry/list`, then a second with `config/entity_registry/get_entries` for every entity id, for the aliases. It raises `HomeSocketError`, or `ValueError`, `KeyError` or `TypeError` for an answer of the wrong shape;
+    - `read() -> Snapshot` - one `call` with `config/entity_registry/list`, `homeassistant/expose_entity/list`, `config/device_registry/list` and `config/area_registry/list`, then a second with `config/entity_registry/get_entries` for every entity id, for the aliases. A `None` in an entry's `aliases` is dropped. It raises `HomeSocketError`, or `ValueError`, `KeyError` or `TypeError` for an answer of the wrong shape;
     - `refresh() -> bool` - one pass: read and keep the snapshot, or drop it on any failure. A failure is logged once until a read works again, and that's logged too;
     - `snapshot() -> Optional[Snapshot]` - None until a read works, and while the latest one is failing;
     - `start()` and `stop()` - a daemon thread named `ha-registry`, calling `refresh()` straight away, then every `every` seconds, or `retry` seconds after a failure.
@@ -87,11 +103,12 @@ For the controller, read-only, with the user's OK. `.superpowers/tools/ha_assist
   - `test_the_address_is_home_assistants_own_websocket` - `http://homeassistant.local:8123/` gives `ws://homeassistant.local:8123/api/websocket`, and `https://` gives `wss://`;
   - `test_with_no_network_nothing_is_tried`;
   - `test_the_registry_is_read_into_a_snapshot` - `light.bedroom_light` has aliases `("main light",)`, is exposed, and is in "Bedroom" through its device's area; `lock.front_door` has its platform;
-  - `test_hass_agents_buttons_are_found_by_their_device_and_kind` - an `mqtt` device whose buttons' `original_name`s are "Shutdown", "Restart", "Sleep", "MonitorSleep", "Lock" and "LaunchUrl" gives kinds shutdown, restart, sleep, monitorsleep, lock and other, though their entity ids are `button.desk_*`. An `mqtt` device with no shutdown button isn't one;
+  - `test_hass_agents_buttons_are_found_by_their_device_and_kind` - a device with `manufacturer` "HASS.Agent Team" whose buttons' `original_name`s are "Shutdown", "Restart", "Sleep", "Monitor Sleep", "Lock" and "Launch HA" gives kinds shutdown, restart, sleep, monitorsleep, lock and other, though their entity ids are `button.desk_*`. Nova's own device (manufacturer "Nova") with a "Restart" button isn't one;
+  - `test_a_none_alias_is_dropped` - `get_entries` giving `aliases: [None, "main light"]` gives `("main light",)`;
   - `test_no_snapshot_until_a_read_works_and_none_while_reads_fail` - with caplog, two failures in a row log once, and the read that works again logs that it does;
   - `test_the_brain_reads_the_registry_when_home_assistant_is_set_up` - and it's None without Home Assistant.
 - [ ] **Step 2: Run** `bash .superpowers/tools/pi_test.sh tests/test_ha_registry.py`. Expected: they fail, with `ModuleNotFoundError: No module named 'voice_assistant.ha_registry'`.
-- [ ] **Step 3: Implement.** Pin `websocket-client==<live check 1's version>` in `requirements-backend.txt`, in its alphabetical place, and add Home Assistant's WebSocket API to the header's list of what the brain needs. The conftest stand-in has `create_connection = None`, `WebSocketException` and `WebSocketTimeoutException`; tests set `create_connection` with monkeypatch.
+- [ ] **Step 3: Implement.** Pin `websocket-client==1.9.2` (live check 1) in `requirements-backend.txt`, in its alphabetical place, and add Home Assistant's WebSocket API to the header's list of what the brain needs. The conftest stand-in has `create_connection = None`, `WebSocketException` and `WebSocketTimeoutException`; tests set `create_connection` with monkeypatch.
 - [ ] **Step 4: Run them again** - expected: they pass. Then the full suite in both time zones, and ruff.
 - [ ] **Step 5: Commit** - "Read Home Assistant's registry over its WebSocket API".
 
@@ -185,7 +202,7 @@ For the controller, read-only, with the user's OK. `.superpowers/tools/ha_assist
     2. `/api/states`, read afresh, and the snapshot;
     3. if `wider` and there's no snapshot: `{"success": False, "message": "Home Assistant didn't understand that.", "not_understood": True}`, with nothing sent - the wider rule is off;
     4. `_names_guarded`: refused;
-    5. `_assist_targets`. None: a wider request is `not_understood`, as in 3, and a light sentence carries on, with today's checks. Not matched: `not_understood`, without asking Assist to act. Matched with an intent not in `only`, when `only` is given: `not_understood` too - plan 2's lists use it, so a sentence Assist would read as removing an item is never sent. Matched with no targets on the wider rule - as an automation's own sentence trigger is (live check 2) - and an intent not in `only`: `not_understood`, since the guard can't see what it would do (the controller's ruling of 24 October: it fails shut). Any target `_guarded`: refused;
+    5. `_assist_targets`. None: a wider request is `not_understood`, as in 3, and a light sentence carries on, with today's checks. Not matched: `not_understood`, without asking Assist to act. Matched with an intent not in `only`, when `only` is given: `not_understood` too - plan 2's lists use it, so a sentence Assist would read as removing an item is never sent. Matched with no targets on the wider rule, whatever the intent: `not_understood`, since the guard can't see what it would act on - as with a script that isn't exposed ("run goodnight"), an automation's own sentence trigger, or "add milk to notes" with no list called notes (the controller's rulings of 24 October: it fails shut). Any target `_guarded`: refused;
     6. `/api/conversation/process`, as now.
   - "The wider rule is off" is logged once when it goes off - for the registry, or for the debugging - and once when it's back on.
   - `control_home(command, wider=False, on=None, words=None, brightness=None)` passes `wider` on.
@@ -197,7 +214,7 @@ For the controller, read-only, with the user's OK. `.superpowers/tools/ha_assist
   - `test_one_guarded_target_among_many_refuses_the_lot` - targets `light.lamp`, `light.bedroom_light` and `lock.main`;
   - `test_a_sentence_assist_matches_nothing_in_isnt_sent` - `null` gives `not_understood`, and Assist isn't asked to act;
   - `test_only_the_intents_asked_for_are_sent` - with `only=("HassListAddItem",)`, a sentence the debugging reads as `HassListRemoveItem` is `not_understood`, and Assist isn't asked to act;
-  - `test_a_match_with_no_targets_isnt_sent_on_the_wider_rule` - the debugging matches "goodnight everyone" with no targets, as an automation's sentence trigger does: with `wider=True` it's `not_understood`, and Assist isn't asked to act;
+  - `test_a_match_with_no_targets_isnt_sent_on_the_wider_rule` - the debugging matches "run goodnight" as `HassTurnOn` with no targets, as it does for a script that isn't exposed: with `wider=True` it's `not_understood`, and Assist isn't asked to act. So is `HassListAddItem` with no targets, even with `only=("HassListAddItem",)`;
   - `test_the_wider_rule_is_off_without_the_registry` - no snapshot: a wider request is `not_understood` with nothing sent, and "turn on the lamp" still goes to Assist;
   - `test_the_wider_rule_is_off_when_assist_cant_be_asked_what_it_would_do` - the socket raises: the same;
   - `test_the_wider_rule_comes_back_once_both_answer` - off, then on again, with one log line each way (caplog).
