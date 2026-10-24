@@ -95,7 +95,7 @@ For the controller, read-only, with the user's OK. `.superpowers/tools/ha_assist
     - `snapshot() -> Optional[Snapshot]` - None until a read works, and while the latest one is failing;
     - `start()` and `stop()` - a daemon thread named `ha-registry`, calling `refresh()` straight away, then every `every` seconds, or `retry` seconds after a failure.
   - `HomeAssistant.__init__(..., registry: Optional[HomeRegistry] = None)` and `HomeAssistant.from_config(config, token, registry=None)`; `HomeAssistant.socket: HomeSocket`, its own, for Task 4; and `HomeAssistant._snapshot() -> Optional[Snapshot]`.
-  - `Brain.registry: Optional[HomeRegistry]` - made from `self.home.socket` when there's Home Assistant, given to `self.home` and to every session's `HomeAssistant`, started in `run()` and stopped in `_clean_up`.
+  - `Brain.registry: Optional[HomeRegistry]` - made when there's Home Assistant, from a `HomeSocket` of its own with `timeout=30.0` (`REGISTRY_TIMEOUT`; the whole read is over a thousand entities) while `HomeAssistant.socket` keeps 3 s for the voice path, given to `self.home` and to every session's `HomeAssistant`, started in `run()` and stopped in `_clean_up`.
 
 - [ ] **Step 1: Write the failing tests.** Use a fake connection in place of `websocket.create_connection` that answers `auth_required`, then each message by its `type`; and a `FakeSocket` with `call(messages)` for the registry.
   - `test_a_call_signs_in_then_asks_each_thing_in_turn` - it sends `{"type": "auth", "access_token": "token"}`, then messages with ids 1 and 2; it returns the two results in order, and closes;

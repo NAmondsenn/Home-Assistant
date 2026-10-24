@@ -1029,7 +1029,11 @@ def test_the_brain_has_no_battery_watcher_without_home_assistant(make_brain, mon
 def test_the_brain_reads_the_registry_when_home_assistant_is_set_up(make_brain, home_assistant_token, monkeypatch):
     brain = make_brain(home_assistant=HOME_ASSISTANT)
     assert isinstance(brain.registry, HomeRegistry)
-    assert brain.registry._socket is brain.home.socket and brain.home.registry is brain.registry
+    assert brain.home.registry is brain.registry
+    # The registry's whole read gets longer than the voice path's calls do.
+    assert brain.registry._socket is not brain.home.socket
+    assert brain.registry._socket.url == brain.home.socket.url
+    assert brain.registry._socket._timeout == 30.0 and brain.home.socket._timeout == 3.0
     # Not running until run() starts it.
     assert brain.registry._thread is None
 

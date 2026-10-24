@@ -30,7 +30,7 @@ import numpy as np
 from voice_assistant import paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.clock import Clock, spoken_clock_time
-from voice_assistant.ha_registry import HomeRegistry
+from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
@@ -246,7 +246,9 @@ class Brain:
         self.home = HomeAssistant.from_config(config, os.getenv("HA_TOKEN"))
         # What Home Assistant's entities are, read every few minutes and shared with every
         # session's own HomeAssistant - see ha_registry.py.
-        self.registry = HomeRegistry(self.home.socket) if self.home else None
+        # Its own socket, as reading it all takes longer than the voice path's calls may.
+        self.registry = (HomeRegistry(HomeSocket(self.home.url, os.getenv("HA_TOKEN"), timeout=REGISTRY_TIMEOUT))
+                         if self.home else None)
         if self.home:
             self.home.registry = self.registry
         self.batteries = self._make_battery_watcher() if self.home else None

@@ -43,6 +43,11 @@ KIND_NAMES = {"reboot": "restart"}
 HASS_AGENT_MAKER = "HASS.Agent"
 
 
+# Seconds the registry's own socket allows a read, which is a lot of entities (over a
+# thousand, through a proxy) and not what a voice command waits on.
+REGISTRY_TIMEOUT = 30.0
+
+
 class HomeSocketError(Exception):
     """Home Assistant's WebSocket couldn't be used - no network, a refusal or a bad answer."""
 
@@ -56,9 +61,11 @@ class HomeSocket:
             url: Home Assistant's address, e.g. "http://homeassistant.local:8123/" -
                 "https" is reached as "wss".
             token: A long-lived access token.
-            timeout: Seconds to allow a whole call - connecting, signing in and every
-                answer. Closing is never waited for, and a connection still busy when
-                the time is up is cut off.
+            timeout: Seconds to allow once connected - the whole exchange and the close
+                together, counted from before connecting and then the connection is cut off.
+                Connecting itself can't be interrupted, only noticed once it is over:
+                websocket-client allows its own timeout to each step (the TCP connect, TLS
+                and the upgrade reply), and the system's resolver the name lookup.
         """
         scheme, _, rest = url.strip().rstrip("/").partition("://")
         self.url = ("wss" if scheme == "https" else "ws") + "://" + rest + "/api/websocket"
@@ -97,19 +104,21 @@ class HomeSocket:
 
         # An answer trickling in is bounded by no socket timeout, which only limits each
         # read - so at the deadline the connection is aborted, which wakes a blocked read.
-        cut_off = threading.Timer(max(deadline - time.monotonic(), 0), self._abort, args=(connection,))
-        cut_off.daemon = True
-        cut_off.start()
+        cut_off = None
         try:
+            cut_off = threading.Timer(max(deadline - time.monotonic(), 0), self._abort, args=(connection,))
+            cut_off.daemon = True
+            cut_off.start()
             return self._converse(connection, messages, deadline)
         except websocket.WebSocketTimeoutException as error:
             raise HomeSocketError(f"timed out: {error}")
-        except (websocket.WebSocketException, OSError, ValueError) as error:
+        except (websocket.WebSocketException, OSError, ValueError, RuntimeError) as error:
             if time.monotonic() >= deadline:
                 raise HomeSocketError(f"timed out: {error}")
             raise HomeSocketError(f"failed: {error}")
         finally:
-            cut_off.cancel()
+            if cut_off is not None:
+                cut_off.cancel()
             try:
                 # Without waiting for Home Assistant's close frame, which takes up to 3 seconds.
                 connection.close(timeout=0)

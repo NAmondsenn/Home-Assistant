@@ -322,6 +322,37 @@ def test_an_answer_which_never_finishes_is_cut_off_at_the_deadline(connect):
     assert {thread for thread in threading.enumerate() if isinstance(thread, threading.Timer)} <= timers
 
 
+def test_a_call_which_finishes_in_time_cancels_its_cut_off(connect):
+    class Watched(FakeConnection):
+        aborted = False
+
+        def abort(self):
+            self.aborted = True
+
+    watched = Watched()
+    connect(watched)
+    before = {thread for thread in threading.enumerate() if isinstance(thread, threading.Timer)}
+    HomeSocket("http://ha.test:8123", "token", timeout=0.05).call([{"type": "one"}])
+    time.sleep(0.1)
+    assert not watched.aborted
+    for thread in threading.enumerate():
+        if isinstance(thread, threading.Timer) and thread not in before:
+            thread.join(1)
+            assert not thread.is_alive()
+
+
+def test_a_cut_off_which_cant_start_raises_and_closes(connect, monkeypatch):
+    connection = FakeConnection()
+    connect(connection)
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(threading.Timer, "start", refuse)
+    with pytest.raises(HomeSocketError):
+        HomeSocket("http://ha.test:8123", "token").call([{"type": "one"}])
+    assert connection.closed
+
+
 def test_no_snapshot_until_a_read_works_and_none_while_reads_fail(caplog):
     socket = FakeSocket(fail=HomeSocketError("there's no network"))
     registry = HomeRegistry(socket)
