@@ -393,9 +393,10 @@ class BatteryChoices:
             batteries: Every battery Home Assistant shows just now.
 
         Returns:
-            The warnings, at most one for each battery - for the lowest mark it is
-            under that hadn't warned. Every mark it is under counts as warned, so
-            a device first seen at 4% warns once, not for 15% then 5%.
+            The warnings, at most one for each battery - for the lowest mark it is at
+            or under that hadn't warned, as a mark of 15 warns at 15%. Every mark it is
+            at or under counts as warned, so a device first seen at 4% warns once, not
+            for 15% then 5%.
         """
         with self._lock:
             warned = {}
@@ -408,7 +409,7 @@ class BatteryChoices:
                 if battery.charging or battery.level >= start_over:
                     now = set()
                 elif self.enabled(battery.id):
-                    under = {m for m in marks if battery.level < m}
+                    under = {m for m in marks if battery.level <= m}
                     fresh = under - before
                     if fresh:
                         given.append(BatteryWarning(battery, min(fresh)))
@@ -739,7 +740,7 @@ class BatteryWatcher:
         """
         Says the held warnings which are still true, once quiet hours are over.
 
-        A warning is still true while its device is under the mark it warned at and
+        A warning is still true while its device is at or under the mark it warned at and
         isn't charging, and its warnings are on. Any other is let go, and one which
         couldn't be said stays held for the next pass.
         """
@@ -755,7 +756,7 @@ class BatteryWatcher:
                 continue
             gone = (
                 "it's charging" if battery.charging
-                else f"it's no longer down to {mark}%" if battery.level >= mark
+                else f"it's back above {mark}%" if battery.level > mark
                 else "its warnings are switched off" if not self._choices.enabled(battery_id)
                 else None
             )

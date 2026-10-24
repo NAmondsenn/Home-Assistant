@@ -179,9 +179,16 @@ def _marks(choices, *batteries):
 def test_falling_past_a_mark_warns_once(tmp_path):
     choices = _choices(tmp_path)
     assert _marks(choices, _mac(16)) == []
+    # A mark warns when the level reaches it - Home Assistant's levels are whole numbers, so "down to 15%".
+    assert _marks(choices, _mac(15)) == [("MacBook Pro", 15)]
     assert _marks(choices, _mac(15)) == []
-    assert _marks(choices, _mac(14.9)) == [("MacBook Pro", 15)]
     assert _marks(choices, _mac(14.9)) == []
+
+
+def test_a_phone_warns_on_its_mark_itself(tmp_path):
+    choices = _choices(tmp_path)
+    assert _marks(choices, _phone(6)) == []
+    assert _marks(choices, _phone(5)) == [("S25 Ultra", 5)]
 
 
 def test_a_charging_device_below_a_mark_gives_nothing(tmp_path):
@@ -606,6 +613,18 @@ def test_a_held_warning_stays_held_while_its_battery_isnt_listed(tmp_path):
     assert rig.said == [] and rig.choices.held() == {_mac(14).id: 15}
     rig.fall_to(_mac(14))
     assert rig.said == [MAC_MESSAGE] and rig.choices.held() == {}
+
+
+def test_a_held_warning_is_still_true_at_its_mark_and_gone_just_above_it(tmp_path):
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    rig.quiet = False
+    rig.fall_to(_mac(15))
+    assert rig.said == ["Your MacBook Pro's battery is down to 15%."]
+    (tmp_path / "second").mkdir()
+    other = _fallen(tmp_path / "second", state="not_home", sends=False, quiet=True)
+    other.quiet = False
+    other.fall_to(_mac(16))
+    assert other.said == [] and other.choices.held() == {}
 
 
 def test_a_held_warning_which_couldnt_be_said_stays_held(tmp_path):

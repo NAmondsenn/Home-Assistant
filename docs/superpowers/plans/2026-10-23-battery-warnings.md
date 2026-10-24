@@ -134,10 +134,10 @@
   - The rule `due` follows, for each battery:
     - if it's charging, its warned marks are cleared, enabled or not (a charge while it was switched off isn't missed);
     - if its level is at or above its start-over level, `min(highest mark + 10, 100)`, they're cleared too, whatever its charging state;
-    - otherwise, only an enabled battery warns: take the marks it's under (level < mark) which haven't warned. If there are any, there's one `BatteryWarning` for the lowest of them, and all the marks it's under are marked as warned. A switched-off battery's warned marks are left as they are.
+    - otherwise, only an enabled battery warns: take the marks it's at or under (level <= mark, so a mark of 15 warns at 15%, as 0007 says) which haven't warned. If there are any, there's one `BatteryWarning` for the lowest of them, and all the marks it's at or under are marked as warned. A switched-off battery's warned marks are left as they are.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `test_falling_past_a_mark_warns_once`: Mac at 16 then 15 → nothing, then one warning at 15. A third check at 15 gives nothing;
+  - `test_falling_past_a_mark_warns_once`: Mac at 16 then 15 → nothing, then one warning at 15. A third check at 15, and one at 14.9, give nothing;
   - `test_a_wobble_round_a_mark_never_warns_twice`: 15, 16, 14, 16, 14 on battery → one warning;
   - `test_charging_starts_the_marks_over`: warned at 15; then charging at 40; then on battery at 14 → a second warning at 15;
   - `test_first_seen_below_a_mark_warns_once_for_the_lowest`: the Mac first seen at 10 → one warning at 15. The phone unplugged at 4 → one at 5. The Mac at 4 → one at 5, with 15 counted as warned too;
