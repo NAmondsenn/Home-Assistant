@@ -3075,16 +3075,20 @@ def test_status_leaves_out_anything_named_after_an_address(make_home):
 
 
 def test_status_leaves_out_anything_with_a_hardware_address_in_its_id(make_home):
-    # A BLE or Shelly sensor's id carries its device's hardware address, however plain its name.
+    # A BLE or Shelly sensor's id carries its device's hardware address, however plain its
+    # name - run together, or with its colons made underscores.
     things = [_status("sensor.ble_temperature_a4c1381234ab", "Example temperature", "21.5", "°C"),
               _status("sensor.shelly1_c45bbe123456_temperature", "Example temperature", "20.5", "°C"),
+              _status("sensor.x_a4_c1_38_12_34_ab", "Example temperature", "22.5", "°C"),
+              _status("sensor.x_a4_c1_38_ab_12_cd", "Example temperature", "23.5", "°C"),
               _status("sensor.example_temperature", "Example temperature", "19.5", "°C")]
     home = _status_home(make_home, things)
     assert home.status("example temperature", now=STATUS_NOW)["message"] == \
         "Example temperature (sensor.example_temperature): 19.5 °C"
     # While a model's number in an id is no address, nor are twelve digits alone - more
     # likely a count.
-    for entity in ("sensor.pve2_cpu_usage", "sensor.s25_ultra_storage", "sensor.example_500107862016"):
+    for entity in ("sensor.pve2_cpu_usage", "sensor.s25_ultra_storage", "sensor.example_500107862016",
+                   "sensor.nextcloud_cpu_load_last_15_minutes", "sensor.backup_2026_10_25_1230"):
         home = _status_home(make_home, [_status(entity, "Example thing", "31")])
         assert entity in home.status("example thing", now=STATUS_NOW)["message"], entity
 

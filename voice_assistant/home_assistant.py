@@ -1878,11 +1878,12 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
         return True
     # A Ping entity is named after the host it pings, so its name and entity id are
     # looked at as well as its state - and its area, which is a name too. A BLE or Shelly
-    # sensor's id carries its device's hardware address, however plain its name:
-    # sensor.ble_temperature_a4c1381234ab.
+    # sensor's id carries its device's hardware address, however plain its name - run
+    # together, sensor.ble_temperature_a4c1381234ab, or with the colons Home Assistant
+    # makes underscores, sensor.ble_a4_c1_38_ab_12_cd.
     area = snapshot.area_name(entity) if snapshot else None
     if (any(_holds_address(text) for text in (state, str(attributes.get("friendly_name") or ""), area or ""))
-            or IPV4_IN_ID.search(entity) or HARDWARE_ADDRESS.search(entity.replace("_", " "))):
+            or IPV4_IN_ID.search(entity) or HARDWARE_ADDRESS.search(entity.replace("_", ":"))):
         return True
     # Only a sensor's or a text entity's state can be free text - a light's is on or off,
     # whatever the device. A text entity holds whatever was typed into it, on any device.
