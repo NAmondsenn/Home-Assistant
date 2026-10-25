@@ -5,6 +5,7 @@ Claude - using a memory file of the test's own.
 """
 
 import json
+import logging
 
 import pytest
 
@@ -47,6 +48,51 @@ def test_the_closest_fact_is_forgotten(memory):
     assert memory.forget("that I work at tesco")["message"] == "Okay, I've forgotten that you work at Tesco."
     assert memory.facts() == ["Your sister is called Amy."]
     assert memory.forget("my favourite colour")["success"] is False
+
+
+def test_a_forgotten_fact_goes_back_in_its_place(memory):
+    for fact in ("You work at Tesco.", "Your sister is called Amy.", "Your bin day is Thursday."):
+        memory.remember(fact)
+    forgotten = memory.forget("your sister amy")
+    assert forgotten["forgotten"] == "Your sister is called Amy." and forgotten["at"] == 1
+    assert memory.put_back(forgotten["forgotten"], forgotten["at"]) == {"success": True, "message": "Put it back."}
+    assert memory.facts() == ["You work at Tesco.", "Your sister is called Amy.", "Your bin day is Thursday."]
+    # A place past the end, as the others have since been forgotten, is the end.
+    assert memory.put_back("Your cat is called Tom.", 50)["success"]
+    assert memory.facts()[-1] == "Your cat is called Tom."
+
+
+def test_a_fact_remembered_again_meanwhile_isnt_put_back_twice(memory):
+    memory.remember("You work at Tesco.")
+    forgotten = memory.forget("that I work at tesco")
+    memory.remember("you work at tesco")
+    assert memory.put_back(forgotten["forgotten"], forgotten["at"]) == {"success": True, "message": "I already knew that."}
+    assert memory.facts() == ["you work at tesco"]
+
+
+def test_a_full_memory_says_it_cant_put_one_back(memory, monkeypatch):
+    memory.remember("You work at Tesco.")
+    forgotten = memory.forget("that I work at tesco")
+    monkeypatch.setattr(memory_module, "MOST_FACTS", 1)
+    memory.remember("Your sister is called Amy.")
+    assert memory.put_back(forgotten["forgotten"], forgotten["at"]) == {
+        "success": False, "message": "My memory's full, so it can't be put back."}
+    assert memory.facts() == ["Your sister is called Amy."]
+
+
+def test_forgetting_by_voice_tells_claude_nothing_more(memory, caplog):
+    memory.remember("You work at Tesco.")
+    executor = ActionExecutor(memory=memory)
+    with caplog.at_level(logging.INFO):
+        reply = ActionExecutor.forget(executor, "that I work at tesco")
+        memory.remember("You work at Tesco.")
+        result = executor.execute(Action("forget", {"fact": "that I work at tesco"}))
+    # Neither in the tool's answer, nor in the result made from it.
+    assert set(reply) == {"success", "message"}
+    assert result.ok and result.say == "Okay, I've forgotten that you work at Tesco."
+    # The fact is only in what's said back, which the user hears anyway.
+    assert [r for r in caplog.records if r.levelno >= logging.INFO and not getattr(r, "transcript", False)
+            and "Tesco" in r.getMessage()] == []
 
 
 def test_forgetting_everything_keeps_one_copy_in_case_it_was_misheard(memory, tmp_path):

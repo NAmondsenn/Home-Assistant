@@ -1200,7 +1200,10 @@ class ActionExecutor:
         fact={"type": "string", "description": "What to forget, roughly as the user put it."},
     )
     def forget(self, fact: Optional[str] = None):
-        return self.memory.forget(fact)
+        # What was forgotten, and where, are for the settings page's Undo. Left in, they'd
+        # go back to Claude as the tool's answer, and into the history and the logs.
+        result = self.memory.forget(fact)
+        return {key: value for key, value in result.items() if key not in ("forgotten", "at")}
 
     @tool(
         "Forget everything remembered about the user - only when they clearly ask for "

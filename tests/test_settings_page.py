@@ -82,8 +82,13 @@ class FakeMemory:
         return list(self.known)
 
     def forget(self, what):
+        at = self.known.index(what)
         self.known.remove(what)
-        return {"success": True, "message": "Forgotten."}
+        return {"success": True, "message": "Forgotten.", "forgotten": what, "at": at}
+
+    def put_back(self, fact, at):
+        self.known.insert(at, fact)
+        return {"success": True, "message": "Put it back."}
 
 
 @pytest.fixture
@@ -867,6 +872,21 @@ def test_removing_on_the_page_offers_an_undo(files, monkeypatch, caplog):
         assert change("/api/remove", {"kind": "timer", "id": 9}) == {"success": False, "message": "That's already gone."}
     finally:
         page.stop()
+
+
+def test_forgetting_on_the_page_offers_an_undo(caplog):
+    page = _page()
+    page.brain.memory.known = ["You work at Tesco.", "Your sister is called Amy.", "Your bin day is Thursday."]
+    with caplog.at_level(logging.INFO):
+        forgotten = page.forget("Your sister is called Amy.", LOGIN)
+    # Only what's said and the token - never the fact or its place, nor in the log.
+    assert set(forgotten) == {"success", "message", "undo"}
+    assert "Amy" not in caplog.text and forgotten["undo"] not in caplog.text
+    assert page.brain.memory.known == ["You work at Tesco.", "Your bin day is Thursday."]
+
+    assert page.undo(forgotten["undo"], LOGIN) == {"success": True, "message": "Put it back."}
+    assert page.brain.memory.known == ["You work at Tesco.", "Your sister is called Amy.", "Your bin day is Thursday."]
+    assert page.undo(forgotten["undo"], LOGIN) == {"success": False, "message": "That can't be undone now."}
 
 
 def _undoable(files, monkeypatch):

@@ -654,7 +654,10 @@ class SettingsPage:
         Returns:
             Dict with 'success' and a 'message'.
         """
-        def put_back(kind: str, item: Dict) -> Dict:
+        def put_back(kind: str, item) -> Dict:
+            if kind == "fact":
+                logger.info(f"Settings page: {who} undid forgetting something")
+                return self.brain.memory.put_back(*item)
             logger.info(f"Settings page: {who} undid removing {kind} {item['id']}")
             # Put back for a satellite the brain no longer lets in, it would ring
             # nowhere - a missed wake-up.
@@ -666,8 +669,23 @@ class SettingsPage:
         return answer if answer is not None else {"success": False, "message": "That can't be undone now."}
 
     def forget(self, fact: str, who: str) -> Dict:
+        """
+        Forgets a fact, keeping it a minute so it can be put back - see undo.
+
+        Args:
+            fact: The fact, as the page lists it.
+            who: The Tailscale login forgetting it, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message' - and once forgotten, 'undo', the token
+            which puts it back. Never the fact, which stays on the brain.
+        """
         logger.info(f"Settings page: {who} had something forgotten")
-        return self.brain.memory.forget(fact)
+        result = self.brain.memory.forget(fact)
+        answer = {"success": result["success"], "message": result["message"]}
+        if result.get("forgotten") is not None:
+            answer["undo"] = self._undo.put("fact", (result["forgotten"], result["at"]))
+        return answer
 
     def set_key(self, name: str, value: str, who: str) -> Dict:
         """
