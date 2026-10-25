@@ -592,15 +592,27 @@ class GoogleCalendar:
                 found.setdefault(word, calendar)
         return found
 
-    def is_activity(self, calendar: Dict) -> bool:
+    def is_activity(self, calendar: Dict) -> Optional[bool]:
         """
-        Whether a calendar is chosen as an activity, or is one by itself - see
-        activity_calendars - for the settings page's switch.
+        Whether a calendar is an activity, for the settings page's switch - as
+        activity_calendars has it, so the switch is never on for one that's never heard.
 
         Args:
             calendar: A calendar, as calendars gives it.
+
+        Returns:
+            True or False, or None for one that can't be an activity just now: one with
+            no name, or a name an activity listed before it has.
         """
-        return self._is_activity(calendar, self._chosen("activities"))
+        activities = self.activity_calendars()
+        if any(each["id"] == calendar["id"] for each in activities.values()):
+            return True
+        word = spoken_name(calendar).strip().lower()
+        heard = activities.get(word)
+        place = {each["id"]: i for i, each in enumerate(self.known())}
+        # Switched on, one listed after the activity of its name still wouldn't be the one heard.
+        taken = heard is not None and place.get(heard["id"], -1) < place.get(calendar["id"], len(place))
+        return None if not word or taken else False
 
     @staticmethod
     def _is_activity(calendar: Dict, chosen: Dict) -> bool:
@@ -627,7 +639,8 @@ class GoogleCalendar:
         stops listing for a while is as it was chosen when it's back.
 
         Args:
-            calendar_id: One of the calendars Google listed last.
+            calendar_id: One of the calendars Google listed last - read it first with
+                calendars, as nothing's known of it after a restart until then.
             whats_on: Whether it's read for what's on and looking something up, or None to leave it.
             activity: Whether it's an activity, or None to leave it.
 
@@ -656,7 +669,8 @@ class GoogleCalendar:
         Chooses the calendar new events go to, from the next one added.
 
         Args:
-            calendar_id: One of the user's own calendars Google listed last.
+            calendar_id: One of the user's own calendars Google listed last - read it first
+                with calendars, as for choose.
 
         Raises:
             ValueError: If Google isn't listing it, or Nova can't add to it.

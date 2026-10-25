@@ -882,7 +882,8 @@ async function loadCalendars() {
 }
 
 // Until Google's keys are set, the section says so, and offers no sign-in. Once signed
-// in, it has each calendar and where new events go - or why it hasn't, as Google's out of reach.
+// in, it has each calendar and where new events go - or why it hasn't: Google out of
+// reach, or no longer taking the sign-in, when the sign-in's button is offered again.
 function showCalendars() {
   const missing = document.getElementById("calendars-missing");
   missing.hidden = calendars.available;
@@ -892,9 +893,9 @@ function showCalendars() {
   const list = document.getElementById("calendars");
   const newEvents = document.getElementById("new-events");
   const signedIn = Boolean(calendars.available && calendars.signed_in);
-  list.hidden = !signedIn;
+  list.hidden = !calendars.available || (!signedIn && !calendars.message);
   newEvents.hidden = !signedIn || Boolean(calendars.message);
-  if (!signedIn) return;
+  if (list.hidden) return;
   if (calendars.message) {
     drawIfChanged("calendars", calendars.message, () => list.replaceChildren(emptyRow(calendars.message)));
     return;
@@ -911,7 +912,14 @@ function showCalendars() {
       option.value = each.id;
       return option;
     }));
-    select.value = calendars.new_events;
+    // With no primary in Google's list, new events still go to Google's own primary.
+    if (!calendars.new_events) {
+      const primary = element("option", "Your main calendar");
+      primary.value = "";
+      primary.disabled = true;
+      select.prepend(primary);
+    }
+    select.value = calendars.new_events || "";
   });
 }
 
@@ -935,6 +943,7 @@ function calendarRow(calendar, index) {
   what.append(element("span", calendar.name || "No name", "name"));
   if (calendar.primary) what.append(element("span", "Your own", "sub"));
   else if (!calendar.writable) what.append(element("span", "Nova can read it, but not add to it", "sub"));
+  if (calendar.activity === null) what.append(element("span", "Can't be an activity - it has no name, or one listed before it has the same name", "sub"));
   top.append(icon("i-calendar"), what);
   row.append(top);
 
@@ -944,7 +953,8 @@ function calendarRow(calendar, index) {
     const name = element("label", label);
     name.htmlFor = id;
     const box = element("input");
-    Object.assign(box, { type: "checkbox", id, checked });
+    // Null for an activity it can't be, which is off, and can't be switched on.
+    Object.assign(box, { type: "checkbox", id, checked: checked === true, disabled: checked === null });
     box.setAttribute("role", "switch");
     box.addEventListener("change", () => changeCalendar("/api/calendars", { id: calendar.id, [key]: box.checked }));
     field.append(name, box);

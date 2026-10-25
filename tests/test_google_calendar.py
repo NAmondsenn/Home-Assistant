@@ -28,6 +28,7 @@ import requests
 import urllib3
 
 from voice_assistant import google_calendar, storage
+from voice_assistant.actions import Action, ActionExecutor
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.google_calendar import (CANT_REACH_GOOGLE, NEEDS_SIGN_IN, ClientRefused, GoogleCalendar,
                                              GoogleSignIn, GoogleSignInError, SignInNeeded, describe_agenda,
@@ -854,6 +855,33 @@ def test_an_activity_chosen_on_the_page_is_heard_at_the_next_request(make_calend
     with pytest.raises(ValueError, match="^Google isn't showing that calendar just now.$"):
         calendar.choose("calendar-made-up", activity=True)
     assert "calendar-made-up" not in calendar.choices.get("activities")
+
+
+def test_a_calendar_out_of_whats_on_is_out_of_a_briefing_too(make_calendar):
+    # A routine's briefing, and Claude, ask through get_calendar - which is the agenda.
+    calendar = make_calendar(calendars={"calendar-personal": [DENTIST], "calendar-work": [SHIFT]},
+                             whats_on={"calendar-work": False})
+    result = ActionExecutor(calendar=calendar).execute(Action("get_calendar", {"start": "2026-10-22", "days": 1}))
+    assert "Dentist" in result.say and "work" not in result.say.lower()
+    assert [calendar_id for calendar_id, _ in _read(calendar)] == ["calendar-personal"]
+
+
+def test_an_activity_switch_is_never_on_for_a_calendar_that_cant_be_one(make_calendar):
+    # One with no name, or a name another calendar listed first has, is never heard or
+    # told to Claude - so the page's switch for it isn't "on", whatever's chosen.
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": []},
+                             activities={"calendar-blank": True, "calendar-work-too": True})
+    calendar._session.answers[LIST] = [_calendar_list(
+        _entry("calendar-personal", "Personal", primary=True), _entry("calendar-work", "Work"),
+        _entry("calendar-work-too", "Work"), _entry("calendar-blank", ""), _entry("calendar-gym", "Gym"))]
+    listed = {each["id"]: each for each in calendar.calendars()}
+    assert {calendar_id: calendar.is_activity(each) for calendar_id, each in listed.items()} == {
+        "calendar-personal": False, "calendar-work": True, "calendar-work-too": None, "calendar-blank": None,
+        "calendar-gym": True}
+    # With the first switched off, the second of the name is the one heard.
+    calendar.choose("calendar-work", activity=False)
+    assert calendar.is_activity(listed["calendar-work"]) is False
+    assert calendar.is_activity(listed["calendar-work-too"]) is True
 
 
 def test_an_event_without_a_name_in_words_is_still_said(make_calendar):

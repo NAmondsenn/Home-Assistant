@@ -115,6 +115,10 @@ OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}
 # Said in Calendars and lists, and to a sign-in, until Nova has Google's keys - read as it
 # starts, as the calendar is made then.
 NO_GOOGLE = "Google's client ID and secret go under Keys, then restart Nova."
+# What the page says when Google no longer takes Nova's sign-in, or its client.
+SIGN_IN_AGAIN = "Nova needs signing in to Google again."
+CHECK_GOOGLES_KEYS = "Google didn't accept the client ID or secret - check both under Keys."
+GOOGLE_OUT_OF_REACH = "Nova can't reach Google just now."
 
 # The most a request may send, in bytes.
 MOST_BODY = 64 * 1024
@@ -577,21 +581,21 @@ class SettingsPage:
         Returns:
             {"available": True, "signed_in": True, "calendars": [{"id", "name", "primary",
             "writable", "whats_on", "activity"}], "new_events": the id of the calendar new
-            events go to}, or {"available": True, "signed_in": True, "message": ...} with
-            Google out of reach; {"available": True, "signed_in": False} before the sign-in;
-            or {"available": False, "message": ...} until Google's keys are set and Nova restarted.
+            events go to} - "activity" None for one that can't be one, see
+            GoogleCalendar.is_activity - or {"available": True, "signed_in": True, "message": ...}
+            with Google out of reach; {"available": True, "signed_in": False} before the
+            sign-in, with a "message" once Google no longer takes it; or {"available": False,
+            "message": ...} until Google's keys are set and Nova restarted.
         """
         calendar = self.brain.calendar
         if calendar is None:
             return {"available": False, "message": NO_GOOGLE}
         if not calendar.sign_in.signed_in():
             return {"available": True, "signed_in": False}
-        try:
-            listed = calendar.calendars()
-        except READ_FAILURES as e:
-            # Only the kind of failure - a requests error names the address, with a calendar's id in it.
-            logger.warning(f"Settings page: couldn't read the calendars from Google: {type(e).__name__}")
-            return {"available": True, "signed_in": True, "message": "Nova can't reach Google just now."}
+        listed = self._read_calendars(calendar)
+        if isinstance(listed, str):
+            # Never "Signed in" beside a sign-in Google no longer takes - the sign-in's button is the way back.
+            return {"available": True, "signed_in": listed == GOOGLE_OUT_OF_REACH, "message": listed}
         left_out = calendar.left_out()
         new_events = calendar.new_events_calendar(listed)
         return {"available": True, "signed_in": True, "new_events": new_events["id"] if new_events else None,
@@ -1083,8 +1087,7 @@ class SettingsPage:
         except ClientRefused:
             # Mistyped at first setup, or the client deleted or its secret made anew - trying again won't help.
             logger.warning(f"Settings page: Google didn't accept the client ID or secret for {who}'s sign-in")
-            return {"success": False,
-                    "message": "Google didn't accept the client ID or secret - check both under Keys."}
+            return {"success": False, "message": CHECK_GOOGLES_KEYS}
         except SignInNeeded:
             logger.info(f"Settings page: Google didn't accept {who}'s sign-in")
             return {"success": False, "message": "Google didn't accept that sign-in - start again."}
@@ -1113,7 +1116,7 @@ class SettingsPage:
         Returns:
             {"success": ..., "message": ...}
         """
-        if not isinstance(calendar_id, str) or any(
+        if not isinstance(calendar_id, str) or (whats_on is None and activity is None) or any(
                 value is not None and not isinstance(value, bool) for value in (whats_on, activity)):
             return {"success": False, "message": "That didn't make sense."}
         return self._calendar_change(lambda calendar: calendar.choose(calendar_id, whats_on=whats_on,
@@ -1139,12 +1142,17 @@ class SettingsPage:
 
     def _calendar_change(self, change: Callable[[Any], None], logged: str) -> Dict:
         """
-        Makes a change to the calendars' choices, saying how it went. What's logged never
-        names the calendar, as its id or its name can be an email address.
+        Makes a change to the calendars' choices, saying how it went. Google's list is read
+        first - after a restart nothing's known of it - and before _saving is held, so a
+        slow Google never holds up every other save. What's logged never names the
+        calendar, as its id or its name can be an email address.
         """
         calendar = self.brain.calendar
         if calendar is None:
             return {"success": False, "message": NO_GOOGLE}
+        listed = self._read_calendars(calendar)
+        if isinstance(listed, str):
+            return {"success": False, "message": listed}
         with self._saving:
             try:
                 change(calendar)
@@ -1155,6 +1163,25 @@ class SettingsPage:
                 return {"success": False, "message": "Couldn't save that."}
         logger.info(logged)
         return {"success": True, "message": "Saved. It's used straight away."}
+
+    @staticmethod
+    def _read_calendars(calendar) -> Union[List[Dict], str]:
+        """
+        Google's list of the calendars - see GoogleCalendar.calendars - or what to say
+        when it can't be had.
+        """
+        try:
+            return calendar.calendars()
+        except ClientRefused:
+            logger.warning("Settings page: Google didn't accept the client ID or secret for the calendars")
+            return CHECK_GOOGLES_KEYS
+        except SignInNeeded:
+            logger.info("Settings page: Google no longer accepts Nova's sign-in for the calendars")
+            return SIGN_IN_AGAIN
+        except READ_FAILURES as e:
+            # Only the kind of failure - a requests error names the address, with a calendar's id in it.
+            logger.warning(f"Settings page: couldn't read the calendars from Google: {type(e).__name__}")
+            return GOOGLE_OUT_OF_REACH
 
     def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
                   hue=None, saturation=None, kelvin=None, satellite: Optional[str] = None) -> Dict:

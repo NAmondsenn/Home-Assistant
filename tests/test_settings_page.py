@@ -809,8 +809,9 @@ def test_the_page_shows_each_calendar_with_its_choices(signed_in, monkeypatch, c
         assert _ask(page, "/api/calendars", {"id": "calendar-uni", "whats_on": True})[0] == 403
 
         nonsense = {"success": False, "message": "That didn't make sense."}
+        # One with neither switch would be "Saved." for nothing.
         for body in ({"id": "calendar-uni", "whats_on": "true"}, {"id": "calendar-uni", "activity": 1},
-                     {"id": ["calendar-uni"], "whats_on": True}, {"whats_on": True}):
+                     {"id": ["calendar-uni"], "whats_on": True}, {"whats_on": True}, {"id": "calendar-uni"}):
             assert change("/api/calendars", body) == nonsense, body
         for body in ({"id": 7}, {}):
             assert change("/api/calendars/new-events", body) == nonsense, body
@@ -856,6 +857,48 @@ def test_a_calendar_google_no_longer_lists_keeps_its_choice(signed_in):
     assert state["calendars"][1] == _calendar_row("calendar-work", "Work", writable=True, whats_on=False,
                                                   activity=True)
     assert state["new_events"] == "calendar-work"
+
+
+def test_the_first_choice_after_a_restart_reads_googles_list_first(signed_in):
+    # Nothing's known of Google's list until it's read - the page open across a restart
+    # said "Google isn't showing that calendar just now." at the first tap.
+    page = _page(calendar=signed_in)
+    read = signed_in.calendars
+    held = []
+
+    def calendars(*args, **kwargs):
+        # Never while every other save waits on it.
+        held.append(page._saving.locked())
+        return read(*args, **kwargs)
+
+    signed_in.calendars = calendars
+    saved = {"success": True, "message": "Saved. It's used straight away."}
+    assert signed_in.known() == []
+    assert page.choose_calendar("calendar-work", LOGIN, whats_on=False) == saved
+    signed_in._known, signed_in._known_at = [], None
+    assert page.set_new_events("calendar-work", LOGIN) == saved
+    assert held and not any(held)
+    assert signed_in.left_out() == {"calendar-work"} and signed_in.choices.get("new_events") == "calendar-work"
+    # Only one Google really hasn't got is turned away.
+    assert page.choose_calendar("calendar-made-up", LOGIN, activity=True) == {
+        "success": False, "message": "Google isn't showing that calendar just now."}
+
+
+@pytest.mark.parametrize("answer, said", [
+    # Removed in the Google account, or a week on while the client's in Testing.
+    (FakeTokenAnswer(400, {"error": "invalid_grant", "error_description": "Bad Request"}),
+     "Nova needs signing in to Google again."),
+    (FakeTokenAnswer(401, {"error": "invalid_client", "error_description": "Unauthorized"}),
+     "Google didn't accept the client ID or secret - check both under Keys."),
+])
+def test_a_sign_in_google_no_longer_takes_is_never_shown_as_signed_in(signed_in, answer, said):
+    # Shown as signed in, beside "Nova can't reach Google just now.", it sent the user to the network.
+    signed_in.sign_in._session.answers = [answer, answer, answer]
+    page = _page(calendar=signed_in)
+    assert page.calendars_state() == {"available": True, "signed_in": False, "message": said}
+    assert page.choose_calendar("calendar-work", LOGIN, whats_on=False) == {"success": False, "message": said}
+    assert page.set_new_events("calendar-work", LOGIN) == {"success": False, "message": said}
+    assert signed_in.left_out() == set()
 
 
 def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files):
