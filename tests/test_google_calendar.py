@@ -1257,6 +1257,18 @@ def test_a_calendar_named_is_used(for_adding):
     assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-work"]
 
 
+def test_a_calendar_whose_name_is_no_words_is_never_the_one_named(for_adding):
+    # "My calendar" is "" once "my" and "calendar" are taken off, as is a name of emoji
+    # alone - so "add it to my calendar" went to the party calendar, and said "to 🎉".
+    for named in ("my calendar", "calendar", "the calendar"):
+        calendar = for_adding()
+        calendar._session.answers[LIST] = [_calendar_list(
+            _entry("calendar-personal", "Personal", primary=True), _entry("calendar-party", "🎉"))]
+        assert calendar.add("Dentist", "2026-10-29 15:00", calendar=named, today=SATURDAY)["message"] == \
+            "Added Dentist, Thursday the 29th at 3 PM.", named
+        assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal"], named
+
+
 def test_the_chosen_calendar_is_used_until_its_gone(for_adding):
     calendar = for_adding(new_events="calendar-work")
     assert calendar.add("Shift", "2026-10-31 09:00", today=SATURDAY)["message"] == \

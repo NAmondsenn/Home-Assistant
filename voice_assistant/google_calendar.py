@@ -750,7 +750,9 @@ class GoogleCalendar:
         said = _as_said(named)
         # "My work calendar" is Work, and "my calendar" the user's own.
         bare = re.sub(r"(?:^| )calendar$", "", re.sub(r"^(?:my|the) ", "", said)).strip()
-        matches = [each for each in calendars if _as_said(each["name"]) in (said, bare)]
+        # A name of no words - emoji alone - is never the one named, or "my calendar", which
+        # is "" here, would be it.
+        matches = [each for each in calendars if (tidied := _as_said(each["name"])) and tidied in (said, bare)]
         words = self.activity_words()
         word = words.get(said) or words.get(bare)
         if not matches and word is not None:
