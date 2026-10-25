@@ -1002,6 +1002,31 @@ def test_music_and_home_assistant_changes_reach_them(served):
     assert bedroom.home.changed == [("light.kitchen", None, 70), ("scene.relax", "run", None)]
 
 
+def test_a_script_runs_only_with_a_yes(served):
+    bedroom = _bedroom(served)
+    bedroom.home = FakeHome()
+    refused = {"success": False, "message": "A script only runs once you've said yes."}
+
+    def run(body):
+        return json.loads(_ask(served, "/api/run", body, X_Nova="page")[2])
+
+    # A stray POST, an old tab or a yes that's only truthy never reaches Home Assistant.
+    assert run({"id": "script.movie_night"}) == refused
+    assert run({"id": "script.movie_night", "confirmed": "true"}) == refused
+    assert run({"id": "script.movie_night", "confirmed": 1}) == refused
+    assert served.run("script.movie_night", LOGIN) == refused
+    assert bedroom.home.changed == []
+    assert run({"id": "script.movie_night", "confirmed": True})["success"]
+    assert bedroom.home.changed == [("script.movie_night", "run", None)]
+
+
+def test_a_scene_still_runs_with_one_tap(served):
+    bedroom = _bedroom(served)
+    bedroom.home = FakeHome()
+    assert json.loads(_ask(served, "/api/run", {"id": "scene.relax"}, X_Nova="page")[2])["success"]
+    assert bedroom.home.changed == [("scene.relax", "run", None)]
+
+
 def test_the_settings_page_shows_and_changes_mute(served):
     def state():
         return json.loads(_ask(served, "/api/state")[2])

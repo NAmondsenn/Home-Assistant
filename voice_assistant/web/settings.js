@@ -1095,13 +1095,19 @@ function showRoutines(routines) {
     start.type = "button";
     start.setAttribute("aria-label", `${scene ? "Set" : "Start"} ${routine.name}`);
     start.addEventListener("click", async () => {
+      // A script can do a lot at once, so it's asked about first - and only a yes sends
+      // confirmed, without which the brain won't run it. A scene is one tap.
+      if (!scene && !confirm(`Run ${routine.name}?`)) return;
       start.disabled = true;
-      await change("/api/run", { id: routine.id });
+      await change("/api/run", scene ? { id: routine.id } : { id: routine.id, confirmed: true });
       start.disabled = false;
       // A scene changes the lights, and Home Assistant takes a moment to say so.
       setTimeout(loadHome, 900);
     });
-    row.append(icon(scene ? "i-scene" : "i-routine"), element("span", routine.name, "what"), start);
+    row.append(icon(scene ? "i-scene" : "i-routine"), element("span", routine.name, "what"));
+    // Exposed to Assist, as the registry says at this draw, so Nova runs it when asked aloud.
+    if (!scene && routine.by_voice) row.append(element("span", "By voice", "when"));
+    row.append(start);
     return row;
   });
   document.getElementById("ha-routines").replaceChildren(

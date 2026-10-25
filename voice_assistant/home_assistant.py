@@ -748,7 +748,9 @@ class HomeAssistant:
             Dict with 'success', and 'lights' and 'routines', or a 'message'. Each light
             is as lights() has it - in no area if Home Assistant won't say, without an
             administrator's token - and 'dimmable' as well: whether it does more than
-            switch on and off.
+            switch on and off. Each routine has 'id', 'name', 'kind' ("script" or
+            "scene") and 'by_voice': whether it's exposed to Assist, as the registry
+            has it - False without the registry.
         """
         try:
             states = self._states()
@@ -782,7 +784,10 @@ class HomeAssistant:
             # Only what run() would run, so the page never offers a button which can't work -
             # and none without the registry, which has the key to each script's contents.
             if not self.works_guarded(entity, states, snapshot, scripts=scripts):
-                routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
+                # Exposed as the registry has it now, not a list kept by hand - so the
+                # page says "By voice" of just what the user has given Assist.
+                routines.append({"id": entity, "name": name, "kind": entity.split(".")[0],
+                                 "by_voice": snapshot.exposed(entity) if snapshot is not None else False})
         return {"success": True,
                 "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
                            for light in self._in_order(lights)],

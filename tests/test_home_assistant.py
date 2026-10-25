@@ -1157,8 +1157,9 @@ def test_the_page_is_shown_the_lights_and_only_whats_safe_to_run(make_home):
     assert not overview["lights"][0]["dimmable"] and not overview["lights"][2]["reachable"]
     # A light can't let anyone in, whatever it's called; a script or scene might, and
     # nothing else is offered at all.
-    assert overview["routines"] == [{"id": "script.movie_night", "name": "Movie night", "kind": "script"},
-                                    {"id": "scene.relax", "name": "Relax", "kind": "scene"}]
+    assert overview["routines"] == [
+        {"id": "script.movie_night", "name": "Movie night", "kind": "script", "by_voice": True},
+        {"id": "scene.relax", "name": "Relax", "kind": "scene", "by_voice": True}]
 
 
 def test_the_page_lists_novas_own_room_first_then_the_rest_by_room_and_name(make_home):
@@ -1687,6 +1688,33 @@ def test_the_page_only_lists_the_scripts_and_scenes_it_can_run(make_home):
     home.registry.read = None
     overview = home.overview()
     assert overview["success"] and overview["routines"] == []
+
+
+def test_each_script_says_whether_nova_runs_it_by_voice(make_home):
+    bedtime = _config("Bedtime", _step("light.turn_off", entity_id="light.lamp"))
+    reading = _config("Reading", _step("light.turn_on", entity_id="light.lamp"))
+    home = _scripted(make_home, {"script.bedtime": ("Bedtime", bedtime), "script.reading": ("Reading", reading)},
+                     _scene("scene.relax", "Relax", ["light.lamp"]), LAMP,
+                     entries=[_entry("script.reading", exposed=False)])
+    assert [(routine["id"], routine["by_voice"]) for routine in home.overview()["routines"]] == [
+        ("script.bedtime", True), ("script.reading", False), ("scene.relax", True)]
+    # Without the registry nothing's offered at all - but were the guard ever to let one
+    # through, nothing could say it's exposed, so none is said to run by voice.
+    home.registry.read = None
+    home.works_guarded = lambda *_, **__: False
+    routines = home.overview()["routines"]
+    assert [routine["id"] for routine in routines] == ["script.bedtime", "script.reading", "scene.relax"]
+    assert not any(routine["by_voice"] for routine in routines)
+
+
+def test_a_guarded_script_is_still_never_offered(make_home):
+    # Exposed to Assist, and asked for with the page's yes - but it unlocks, so the page
+    # never shows it, and a run of it from an old tab is refused before Home Assistant's asked.
+    home = _scripted(make_home, {"script.evening": ("Evening", UNLOCKS)}, FRONT_DOOR)
+    assert home.overview()["routines"] == []
+    assert home.run("script.evening") == {"success": False,
+                                          "message": "Nova doesn't run anything which locks, unlocks or opens."}
+    assert _ran(home) == []
 
 
 def test_a_script_that_cant_be_read_is_said_once(make_home, caplog):

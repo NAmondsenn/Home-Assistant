@@ -977,8 +977,25 @@ class SettingsPage:
         logger.info(f"Settings page: {who} {'switched on' if on else 'switched off'} sending what Nova says about batteries")
         return {"success": True, "message": "Saved. It's used straight away."}
 
-    def run(self, entity_id: str, who: str, satellite: Optional[str] = None) -> Dict:
-        """Runs a script or sets a scene - see HomeAssistant.run."""
+    def run(self, entity_id: str, who: str, satellite: Optional[str] = None, confirmed: bool = False) -> Dict:
+        """
+        Runs a script or sets a scene - see HomeAssistant.run, whose guard still decides.
+        A script only with the page's yes, as one can do a lot at once; a scene is one tap.
+
+        Args:
+            entity_id: e.g. "script.movie_night" or "scene.relax".
+            who: The Tailscale login, for the log.
+            satellite: The satellite whose Home Assistant it is, or None for the default.
+            confirmed: Whether the user said yes to running it - only True itself counts.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        # Only the page's own confirm() sends True, so a stray POST or an old tab's - or a
+        # "true" that's merely truthy - is turned down before Home Assistant is asked.
+        if str(entity_id).startswith("script.") and confirmed is not True:
+            logger.warning(f"Settings page: refused running {entity_id} for {who} without a yes")
+            return {"success": False, "message": "A script only runs once you've said yes."}
         session, name = self._session(satellite)
         if session is None:
             return self._not_connected(name)
@@ -1038,7 +1055,8 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/batteries": lambda page, body, who: page.set_battery(
         body["id"], who, body.get("enabled"), body.get("marks"), body.get("send_to_phone"), body.get("reset", False)),
     "/api/batteries/also": lambda page, body, who: page.set_battery_also_send(body["on"], who),
-    "/api/run": lambda page, body, who: page.run(body["id"], who, body.get("satellite")),
+    "/api/run": lambda page, body, who: page.run(
+        body["id"], who, body.get("satellite"), body.get("confirmed", False)),
     "/api/routines": lambda page, body, who: page.save_routine(body["routine"], who),
     "/api/routines/remove": lambda page, body, who: page.remove_routine(body["id"], who),
     "/api/routines/run": lambda page, body, who: page.start_routine(body["id"], who),
