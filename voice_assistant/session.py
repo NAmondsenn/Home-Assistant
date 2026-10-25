@@ -68,6 +68,10 @@ PLAYBACK_CHECK = 0.1
 DEVICE_LOOKUP = 30
 DEVICE_LOOKUP_FOUND = 300
 
+# What the settings page's "Hear it" says, at the speed on its slider. Always this,
+# so the page can never have Nova say anything else.
+HEAR_IT = "This is how fast I'll talk."
+
 
 def _kept_for(what: str, satellite: str) -> str:
     """
@@ -905,6 +909,25 @@ class Session:
             if self._last_boop is not None:
                 self._last_boop.stop()
             self._last_boop = self.speaker.play_file(str(self.brain.sounds_folder / "volume_beep.wav"), volume=level)
+
+    def hear_voice(self, speed: float) -> bool:
+        """
+        Says HEAR_IT on the satellite at a speed, for the settings page's "Hear it" -
+        played as a reply is, but with nothing listened for after it, and not waited
+        for, as the page is.
+
+        Args:
+            speed: How fast, e.g. 1.25 - the slider's, saved or not.
+
+        Returns:
+            Whether it's being said - False while Nova's in a conversation, which it
+            would talk over.
+        """
+        if not self._idle.is_set():
+            return False
+        tts = self.brain.tts
+        self.speaker.play_stream(tts.stream(HEAR_IT, speed=speed), tts.sample_rate, volume=self.volume.get("general"))
+        return True
 
     def _device_controls(self) -> DeviceControls:
         """What Home Assistant sees and does of the satellite - see ha_device.py."""

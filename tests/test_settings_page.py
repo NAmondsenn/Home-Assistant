@@ -166,9 +166,18 @@ class FakeSession:
         self.activity = activity
         self.muted = False
         self.booped = []
+        # The speeds "Hear it" was said at, and whether it's in a conversation, so can't be.
+        self.heard = []
+        self.busy = False
 
     def set_muted(self, muted):
         self.muted = muted
+
+    def hear_voice(self, speed):
+        if self.busy:
+            return False
+        self.heard.append(speed)
+        return True
 
     def boop(self, level):
         self.booped.append(level)
@@ -864,6 +873,37 @@ def test_a_light_is_never_set_to_something_which_isnt_a_number(files, sent):
 def _two_satellites(**kitchen):
     """The bedroom and the kitchen, both connected."""
     return {"bedroom": FakeSession(activity="speaking"), "kitchen": FakeSession(**kitchen)}
+
+
+def test_hear_it_is_said_on_the_satellite_looked_after(files, monkeypatch):
+    # Through the page's own actions, so it's kept to the page as every change is - and
+    # only ever the speed is sent, never anything for Nova to say.
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _page(sessions=_two_satellites())
+    page.start()
+    try:
+        hear = {"speed": 1.25, "satellite": "kitchen"}
+        assert _ask(page, "/api/voice/hear", hear)[0] == 403
+        assert json.loads(_ask(page, "/api/voice/hear", hear, X_Nova="page")[2]) == {
+            "success": True, "message": "That's being said on kitchen."}
+        assert page.brain.sessions["kitchen"].heard == [1.25] and not page.brain.sessions["bedroom"].heard
+
+        page.brain.sessions["kitchen"].busy = True
+        assert json.loads(_ask(page, "/api/voice/hear", hear, X_Nova="page")[2]) == {
+            "success": False, "message": "kitchen is busy just now - try again in a moment."}
+    finally:
+        page.stop()
+
+
+def test_hear_it_refuses_a_speed_out_of_range(files):
+    page = _page()
+    for speed in (2, 0.5, "fast", float("inf"), True, None):
+        assert page.hear_voice(speed, LOGIN) == {
+            "success": False, "message": "Speaking speed should be from 0.75 to 1.5."}
+    assert not _bedroom(page).heard
+    # And it's a setting on the page, used straight away.
+    shown = {setting["key"]: setting["used"] for setting in page.state()["settings"]}
+    assert shown["voice.speed"] == NOW
 
 
 def test_the_page_lists_each_satellite(files):

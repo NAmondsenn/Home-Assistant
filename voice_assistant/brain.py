@@ -210,6 +210,9 @@ class Brain:
         # Held while a satellite's copy of the timers and alarms is made and sent, so
         # an older copy can't reach it after a newer one.
         self._sending_alarms = threading.Lock()
+        # The same for the phrase, made again when the speaking speed changes - see
+        # apply_settings - so one at the old speed can't reach a satellite after it.
+        self._sending_phrase = threading.Lock()
         # The satellites connected which have said what happened while they were
         # away, so can be told what came due while the brain was off - see
         # Clock.can_hear, which reads it without the lock.
@@ -353,7 +356,37 @@ class Brain:
             except Exception:
                 logger.exception("Keeping what's said in the logs couldn't be changed until Nova restarts")
                 unused.append(("logging", "log_transcripts"))
+        if ("voice", "speed") in changes:
+            try:
+                self._change_speed(changes[("voice", "speed")])
+            except Exception:
+                logger.exception("Piper couldn't be told of the new speaking speed, so it's used once Nova restarts")
+                unused.append(("voice", "speed"))
         return unused
+
+    def _change_speed(self, speed: float):
+        """
+        Has Piper speak at a new speed from the next reply, and makes the phrase each
+        satellite says while it can't reach the brain again at it, sending it to each
+        connected - so Nova sounds the same either way.
+
+        Args:
+            speed: How fast, e.g. 1.25.
+        """
+        self.tts.set_speed(speed)
+        # Made before the lock is taken, as Piper takes a moment over it.
+        phrase = self._make_phrase()
+        # Which are connected is seen with the lock held, so one just connecting either
+        # is sent it here or is caught up after, with it - see _catch_up.
+        with self._sending_phrase:
+            self.phrase = phrase
+            if phrase is None:
+                return
+            with self._lock:
+                satellites = [session.satellite for session in self.sessions.values()]
+            for satellite in satellites:
+                if satellite.connected:
+                    satellite.send_phrase(*phrase)
 
     # The satellites
 
@@ -631,8 +664,9 @@ class Brain:
         # while it was away would come back unmuted.
         session.send_state()
         self._send_alarms_to(satellite)
-        if self.phrase is not None:
-            satellite.send_phrase(*self.phrase)
+        with self._sending_phrase:
+            if self.phrase is not None:
+                satellite.send_phrase(*self.phrase)
         # What rang and what was dismissed on it while it couldn't reach the brain, so
         # nothing dismissed there rings again here, nor is said to have been missed -
         # and what it was still ringing, which rings on here.

@@ -63,8 +63,12 @@ class FakePiper:
     def __init__(self):
         self.said = []
         self.closed = False
+        self.speed = 1.0
 
-    def stream(self, message, on_start=None, remember=True):
+    def set_speed(self, speed):
+        self.speed = speed
+
+    def stream(self, message, on_start=None, remember=True, speed=None):
         self.said.append(message)
 
         def pieces():
@@ -1203,6 +1207,19 @@ def test_a_phone_topic_set_on_the_page_gets_battery_warnings_straight_away(make_
     assert brain.apply_settings({("ntfy", "phone"): ""}) == []
     assert brain.batteries._send("It's low.", "Battery low") is False
     assert len(posted) == 1
+
+
+def test_the_cant_reach_phrase_is_made_again_at_the_new_speed(brain, connect):
+    # Each satellite says it while it can't reach the brain, so it should sound as Nova now does.
+    serving(brain)
+    bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: len(bedroom.messages("phrase")) == len(kitchen.messages("phrase")) == 1)
+
+    assert brain.apply_settings({("voice", "speed"): 1.25}) == []
+    assert brain.tts.speed == 1.25 and brain.tts.said.count(brain_module.FALLBACK_PHRASE) == 2
+    assert wait_for(lambda: len(bedroom.messages("phrase")) == len(kitchen.messages("phrase")) == 2)
 
 
 def test_the_battery_watcher_runs_while_the_brain_does_and_stops_with_it(brain, home_assistant_token, make_brain):

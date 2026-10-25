@@ -97,6 +97,9 @@ class TextToSpeech:
 
         # The voice's own rate, from the settings file which comes with it.
         self.sample_rate = self._voice_rate(self.model_path + ".json")
+        # How fast it speaks, where 1.25 is a quarter faster than the voice's own pace.
+        # Changed on the settings page with set_speed, which is why it's kept here.
+        self.speed = float(self.config.section("voice").get("speed", 1.0))
 
         self._lock = threading.Lock()
         # A Piper process with its voice loaded, waiting for something to say.
@@ -139,21 +142,42 @@ class TextToSpeech:
         else:
             logger.warning("Warmup failed: Piper said nothing")
 
-    def _start_piper(self) -> subprocess.Popen:
-        """Starts a Piper process, which loads its voice and then waits for text."""
+    def _start_piper(self, speed: Optional[float] = None) -> subprocess.Popen:
+        """
+        Starts a Piper process, which loads its voice and then waits for text.
+
+        Args:
+            speed: How fast it speaks, or None for self.speed.
+
+        Returns:
+            The process.
+        """
+        speed = self.speed if speed is None else speed
+        # Piper's flag is how long each sound lasts, so 1.25 times as fast is 0.8.
         return subprocess.Popen(
-            [self.piper_path, "--model", self.model_path, "--output_raw", "--quiet"],
+            [self.piper_path, "--model", self.model_path, "--output_raw", "--quiet",
+             "--length_scale", str(round(1 / speed, 4))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    def _take_piper(self) -> subprocess.Popen:
+    def _take_piper(self, speed: float) -> subprocess.Popen:
         """
         A Piper process ready for some text: the one already loaded and waiting if
-        there is one, or a fresh one if two things are being said at once.
+        there is one at that speed, or a fresh one if two things are being said at
+        once, or the speed is another.
+
+        Args:
+            speed: How fast it's to speak.
+
+        Returns:
+            The process.
         """
+        process = None
         with self._lock:
-            process, self._waiting = self._waiting, None
+            # The one waiting is always at self.speed - see set_speed.
+            if speed == self.speed:
+                process, self._waiting = self._waiting, None
         if process is None or process.poll() is not None:
-            process = self._start_piper()
+            process = self._start_piper(speed)
         return process
 
     def _prepare_next(self):
@@ -172,7 +196,7 @@ class TextToSpeech:
                 self._waiting = None
 
     def stream(self, text: str, on_start: Optional[Callable[[], None]] = None,
-               remember: bool = True) -> Iterator[np.ndarray]:
+               remember: bool = True, speed: Optional[float] = None) -> Iterator[np.ndarray]:
         """
         Synthesises text, a sentence at a time, as Piper works through it.
 
@@ -180,6 +204,9 @@ class TextToSpeech:
             text: What to say.
             on_start: Called once the first of the audio is ready, e.g. to time it.
             remember: Keep it in case the same is said again soon - see RECENT_PHRASES.
+            speed: How fast to say it, or None for self.speed. Another speed - the
+                settings page's "Hear it", at a speed not yet saved - has a Piper of
+                its own, and nothing it says is kept.
 
         Yields:
             The audio, as float32 samples at self.sample_rate. Nothing if synthesis
@@ -192,8 +219,11 @@ class TextToSpeech:
             logger.warning("No text provided.")
             return
 
+        # Read once, so what's said is all at the one speed even if it's changed meanwhile.
+        made_at = self.speed if speed is None else speed
         with self._lock:
-            recent = self._recent.get(text)
+            one_off = made_at != self.speed
+            recent = None if one_off else self._recent.get(text)
             if recent is not None:
                 self._recent.move_to_end(text)
         if recent is not None:
@@ -206,7 +236,7 @@ class TextToSpeech:
         process = None
         pieces = []
         try:
-            process = self._take_piper()
+            process = self._take_piper(made_at)
             # Passed on stdin rather than as an argument or through a shell, so
             # nothing in a reply can ever be run as a command.
             process.stdin.write(text.encode("utf-8") + b"\n")
@@ -238,8 +268,8 @@ class TextToSpeech:
                 return
             audio = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
             logger.info(f"Generated {len(audio) / self.sample_rate:.2f}s of audio")
-            if remember and len(audio):
-                self._remember(text, audio)
+            if remember and not one_off and len(audio):
+                self._remember(text, audio, made_at)
         except Exception as e:
             logger.error(f"TTS error: {e}")
         finally:
@@ -253,13 +283,52 @@ class TextToSpeech:
                     pipe.close()
             self._prepare_next()
 
-    def _remember(self, text: str, audio: np.ndarray):
-        """Keeps something just said, dropping the least recently said once full."""
+    def _remember(self, text: str, audio: np.ndarray, speed: float):
+        """
+        Keeps something just said, dropping the least recently said once full.
+
+        Args:
+            text: What was said.
+            audio: It, as stream yielded it.
+            speed: The speed it was said at. Kept only if that's still self.speed, so a
+                reply under way as the speed changed isn't said again at the old one.
+        """
         with self._lock:
+            if speed != self.speed:
+                return
             self._recent[text] = audio
             self._recent.move_to_end(text)
             while len(self._recent) > RECENT_PHRASES:
                 self._recent.popitem(last=False)
+
+    def set_speed(self, speed: float):
+        """
+        Changes how fast Nova speaks, from the next thing said - with the next Piper
+        started at once, so it's loaded by the time there's something to say.
+
+        Args:
+            speed: How fast, e.g. 1.25 for a quarter faster than the voice's own pace.
+        """
+        # All together under the lock, so nothing is kept or left waiting at the old
+        # speed - see _take_piper and _remember.
+        with self._lock:
+            self.speed = speed
+            self._recent.clear()
+            process, self._waiting = self._waiting, None
+        # With the lock let go, as _prepare_next takes it too.
+        self._stop(process)
+        self._prepare_next()
+
+    @staticmethod
+    def _stop(process: Optional[subprocess.Popen]):
+        """Stops a Piper process left waiting for something to say, if there is one."""
+        if process is None:
+            return
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            pipe.close()
 
     def synthesise(self, text, output_file):
         """
@@ -288,9 +357,7 @@ class TextToSpeech:
         """Stops the Piper process waiting for something to say."""
         with self._lock:
             process, self._waiting = self._waiting, None
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait()
+        self._stop(process)
 
 
 def main():

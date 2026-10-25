@@ -91,6 +91,7 @@ EDITABLE = [
     ("web_search", "enabled", "Search the web when asked to", "now"),
     ("conversation", "history_max_age", "Seconds a conversation's thread is kept", "now"),
     ("spotify", "pause_while_speaking", "Pause Spotify while Nova talks", "now"),
+    ("voice", "speed", "Speaking speed", "now"),
     ("mqtt", "host", "Home Assistant's MQTT host", "restart"),
     ("mqtt", "port", "Its port", "restart"),
     ("mqtt", "username", "Nova's MQTT user", "restart"),
@@ -560,6 +561,31 @@ class SettingsPage:
         logger.info(f"Settings page: {who} set the {name} satellite's {category} volume to {percent}%")
         return result
 
+    def hear_voice(self, speed, who: str, satellite: Optional[str] = None) -> Dict:
+        """
+        Says a sample on a satellite at the speaking speed on the slider - before it's
+        saved, so the user hears it first. Only the speed comes from the page, never
+        what's said - see Session.hear_voice.
+
+        Args:
+            speed: How fast, as the page sent it.
+            who: The Tailscale login asking, for the log.
+            satellite: Which satellite, or None for the default.
+
+        Returns:
+            Dict with 'success' and a 'message' saying where it's said, or why not.
+        """
+        problem = limit_problem("voice", "speed", speed)
+        if problem:
+            return {"success": False, "message": f"Speaking speed {problem}."}
+        session, name = self._session(satellite)
+        if session is None:
+            return self._not_connected(name)
+        if not session.hear_voice(float(speed)):
+            return {"success": False, "message": f"{name} is busy just now - try again in a moment."}
+        logger.info(f"Settings page: {who} heard the speaking speed {speed:g} on the {name} satellite")
+        return {"success": True, "message": f"That's being said on {name}."}
+
     def set_muted(self, muted: bool, who: str, satellite: Optional[str] = None) -> Dict:
         """Mutes or unmutes a satellite's microphone - see Session.set_muted."""
         if not isinstance(muted, bool):
@@ -911,6 +937,7 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/settings": lambda page, body, who: page.save_settings(body["changes"], who),
     "/api/restart": lambda page, body, who: page.restart(who),
     "/api/mute": lambda page, body, who: page.set_muted(body["muted"], who, body.get("satellite")),
+    "/api/voice/hear": lambda page, body, who: page.hear_voice(body["speed"], who, body.get("satellite")),
     "/api/music": lambda page, body, who: page.play(
         body["action"], who, body.get("query", ""), body.get("playlist", ""), body.get("satellite")),
     "/api/light": lambda page, body, who: page.set_light(

@@ -166,9 +166,12 @@ class FakePiper:
 
     def __init__(self):
         self.said = []
+        # The speed each was said at, None for Nova's own.
+        self.speeds = []
 
-    def stream(self, message, on_start=None):
+    def stream(self, message, on_start=None, speed=None):
         self.said.append(message)
+        self.speeds.append(speed)
 
         def pieces():
             if on_start:
@@ -804,6 +807,21 @@ def test_a_volume_beep_from_the_settings_page_stops_the_last_one(make_session):
 
     assert [beep.level for beep in played] == [0.3, 0.6]
     assert played[0].stopped and not played[1].stopped
+
+
+def test_hear_it_is_said_at_the_speed_given_unless_nova_is_in_a_conversation(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    assert session.hear_voice(1.25)
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert brain.tts.said == [session_module.HEAR_IT] and brain.tts.speeds == [1.25]
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["reply"]
+    # Nothing is listened for after it, as it isn't a question.
+    assert not pi.messages("listen")
+
+    session._idle.clear()
+    assert not session.hear_voice(1.0)
+    assert brain.tts.said == [session_module.HEAR_IT]
 
 
 def test_what_nova_is_doing_is_kept_for_the_settings_page(brain, make_session, monkeypatch):
