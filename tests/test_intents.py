@@ -387,6 +387,30 @@ def test_what_the_find_device_rules_mustnt_catch_is_left_alone(text):
     assert not actions or all(action.tool != "find_device" for action in actions)
 
 
+@pytest.mark.parametrize("text, device", [
+    ("Send that to my Mac.", "mac"), ("Put it on the tablet.", "tablet"), ("Text this to my laptop", "laptop"),
+    ("Send it to my MacBook.", "macbook"), ("Put that on my iPad please.", "ipad"),
+])
+def test_sending_to_the_mac_and_tablet_is_done_without_claude(text, device):
+    assert _actions(text) == [Action("send_to_phone", {"device": device})]
+    # Without Home Assistant there is nothing to send it through.
+    assert _actions(text, home=None) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Send that to my Mac mini in the loft",
+    "Put it on my iPad's list",
+    "Put it on the tablet in the kitchen",
+    "Send that to my mum",
+    "Send the photo to my Mac",
+    "Put a film on the tablet",
+    "Send that to my Mac and my phone",
+])
+def test_what_the_send_to_device_rule_mustnt_catch_is_left_alone(text):
+    actions = _actions(text)
+    assert not actions or all(action.tool != "send_to_phone" for action in actions)
+
+
 def test_the_find_device_rules_come_before_assists_shapes():
     # So "find my phone" is never a thing of Home Assistant's, should Assist ever learn a "find" shape.
     rules = LocalIntents(home=HOME)._rules

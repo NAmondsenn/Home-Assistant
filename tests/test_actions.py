@@ -634,6 +634,7 @@ class FakeAppHome:
         self.devices = devices
         self.notify_fails = notify_fails
         self.sent = []
+        self.titles = []
 
     def app_devices(self):
         return self.devices
@@ -642,6 +643,7 @@ class FakeAppHome:
         if self.notify_fails is not None:
             raise self.notify_fails
         self.sent.append((service, message, data))
+        self.titles.append(title)
 
 
 def _app_device(name="s25-ultra", maker="samsung", model="SM-S938B", notify="mobile_app_s25_ultra",
@@ -707,6 +709,78 @@ def test_find_device_is_offered_with_home_assistant():
     assert ActionExecutor.private_tools() == ["find_device"]
     # What it finds is said, never read back to Claude.
     assert "find_device" not in ActionExecutor().read_tools()
+
+
+# Sending to the Mac or the tablet - see devices.py
+
+def _mac(notify="mobile_app_macbook_pro"):
+    return _app_device("macbook-pro", "Apple", "Mac16,8", notify=notify, tracker="home")
+
+
+def test_send_that_to_my_mac_goes_through_its_notify_service():
+    home = FakeAppHome([_app_device(), _mac()])
+    ntfy = FakeNtfy()
+    executor = ActionExecutor(home=home, ntfy=ntfy)
+    executor.last_answer = ("What's the recipe for pancakes?", "Mix flour, eggs and milk, then fry them.")
+    result = executor.execute(Action("send_to_phone", {"device": "mac"}))
+
+    assert (result.ok, result.confirm) == (True, "chime")
+    assert home.sent == [("mobile_app_macbook_pro", "Mix flour, eggs and milk, then fry them.", None)]
+    assert home.titles == ["What's the recipe for pancakes?"]
+    assert ntfy.sent == []
+
+
+def test_the_phone_still_goes_through_ntfy():
+    home = FakeAppHome([_app_device(), _mac()])
+    ntfy = FakeNtfy()
+    executor = ActionExecutor(home=home, ntfy=ntfy)
+    executor.last_answer = ("asked", "said")
+    for params in ({}, {"device": "phone"}):
+        assert executor.execute(Action("send_to_phone", params)).say == "Sent."
+    assert len(ntfy.sent) == 2
+    assert home.sent == []
+
+
+def test_sent_is_only_said_once_home_assistant_took_it():
+    failure = requests.HTTPError("500", response=SimpleNamespace(status_code=500))
+    executor = ActionExecutor(home=FakeAppHome([_mac()], notify_fails=failure))
+    executor.last_answer = ("asked", "said")
+    result = executor.execute(Action("send_to_phone", {"device": "mac"}))
+    assert (result.ok, result.say) == (False, "I couldn't send that to your MacBook Pro.")
+
+    # Unanswered, it may well have been sent.
+    executor = ActionExecutor(home=FakeAppHome([_mac()], notify_fails=requests.Timeout("slow")))
+    executor.last_answer = ("asked", "said")
+    result = executor.execute(Action("send_to_phone", {"device": "mac"}))
+    assert (result.ok, result.say) == (False, "Home Assistant didn't answer in time, so I can't tell whether that "
+                                              "was sent to your MacBook Pro.")
+
+
+def test_a_device_with_no_notify_service_says_so():
+    executor = ActionExecutor(home=FakeAppHome([_mac(notify=None)]))
+    executor.last_answer = ("asked", "said")
+    result = executor.execute(Action("send_to_phone", {"device": "mac"}))
+    assert (result.ok, result.say) == (False, "Your MacBook Pro hasn't got the Home Assistant app's notifications.")
+    # Nor is there a device called that, or Home Assistant to ask.
+    assert executor.execute(Action("send_to_phone", {"device": "kettle"})).say == "I haven't got a device called that."
+    lonely = ActionExecutor(ntfy=FakeNtfy())
+    lonely.last_answer = ("asked", "said")
+    assert lonely.execute(Action("send_to_phone", {"device": "mac"})).say == "Sending to your Mac needs Home Assistant."
+
+
+def test_send_to_phone_is_offered_with_ntfy_or_home_assistant():
+    def offered(executor):
+        return {s["name"]: s for s in executor.tool_schemas()}
+
+    assert "send_to_phone" in offered(ActionExecutor(ntfy=FakeNtfy()))
+    schema = offered(ActionExecutor(home=object()))["send_to_phone"]
+    assert schema["description"].endswith(
+        "Give device only when the user names one other than their phone, e.g. 'mac' or 'tablet'.")
+    assert "send_to_phone" not in offered(ActionExecutor())
+    assert ActionExecutor().execute(Action("send_to_phone")).say == "Notifications aren't set up yet."
+    # With only Home Assistant, the phone has no ntfy to go by.
+    assert ActionExecutor(home=FakeAppHome([])).execute(Action("send_to_phone")).say == (
+        "Notifications aren't set up yet.")
 
 
 def test_a_private_reply_is_kept_private():

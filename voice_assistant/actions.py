@@ -20,7 +20,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import requests
 
@@ -195,15 +195,17 @@ def bare_acknowledgement(text: str) -> bool:
     return _words(text) in BARE_ACKNOWLEDGEMENTS
 
 
-def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (), for_model: bool = True,
+def tool(description: str, needs: Union[str, Tuple[str, ...], None] = None, required: Sequence[str] = (), for_model: bool = True,
          reads: bool = False, private: bool = False, **parameters: Dict[str, Any]) -> Callable:
     """
     Declares an ActionExecutor method as a tool the model can call.
 
     Args:
         description: What the model is told the tool is for, and when to use it.
-        needs: The ActionExecutor attribute it can't work without, e.g. "music". The
-            tool isn't offered while that isn't set up.
+        needs: The ActionExecutor attribute it can't work without, e.g. "music", or a
+            tuple of them if any one will do, e.g. ("ntfy", "home"). The tool isn't
+            offered while that isn't set up (or none of them is), and what's said then
+            is the first's.
         required: The parameters it must always be given.
         for_model: Whether the model is offered it at all. False for one which only
             a local command or the offline keyword fallback may run - the model has a
@@ -305,7 +307,9 @@ class ActionExecutor:
 
     def _available(self, method: Callable) -> bool:
         needs = method.tool["needs"]
-        return needs is None or getattr(self, needs) is not None
+        if needs is None:
+            return True
+        return any(getattr(self, name) is not None for name in ((needs,) if isinstance(needs, str) else needs))
 
     def execute(self, action: Optional[Action]) -> ActionResult:
         """
@@ -332,7 +336,8 @@ class ActionExecutor:
             logger.warning(f"Refused {action.tool}, which the model isn't offered")
             return ActionResult(False, "Sorry, I can't do that.")
         if not self._available(method):
-            return ActionResult(False, UNAVAILABLE[method.tool["needs"]])
+            needs = method.tool["needs"]
+            return ActionResult(False, UNAVAILABLE[needs if isinstance(needs, str) else needs[0]])
 
         # Only the parameters the tool takes are passed on, so a stray one the model
         # made up can't stop it running.
@@ -1265,22 +1270,74 @@ class ActionExecutor:
         "Send something to the user's phone, as a notification - for 'send that to my phone', "
         "'text me the recipe', 'put the shopping list on my phone'. Write out in full what "
         "they'd want to read there: it isn't said out loud, so it can be longer and more "
-        "detailed than a spoken reply. Leave text out to send exactly what you last said.",
-        needs="ntfy",
+        "detailed than a spoken reply. Leave text out to send exactly what you last said. "
+        "Give device only when the user names one other than their phone, e.g. 'mac' or 'tablet'.",
+        needs=("ntfy", "home"),
         text={"type": "string", "description": "What to send, written to be read."},
         title={"type": "string", "description": "A few words saying what it is, e.g. 'Pancake recipe'."},
+        device={"type": "string", "description": "Which device, if not their phone, e.g. 'mac' or 'tablet'."},
     )
-    def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None):
-        if not self.ntfy.phone:
+    def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None, device: Optional[str] = None):
+        found = []
+        if device:
+            if self.home is None:
+                return {"success": False, "message": "Sending to your Mac needs Home Assistant."}
+            try:
+                found = find([AppDevice.from_home(app) for app in self.home.app_devices()], device)
+            except HOME_FAILURES as e:
+                logger.warning(f"Couldn't read the Home Assistant app's devices: {e}")
+                return {"success": False, "message": CANT_REACH}
+            if not found:
+                return {"success": False, "message": "I haven't got a device called that."}
+        # Only the phone itself goes by ntfy, as it always has.
+        by_ntfy = not found or all(app_device.phone for app_device in found)
+        if by_ntfy and self.ntfy is None:
+            return {"success": False, "message": UNAVAILABLE["ntfy"]}
+        if by_ntfy and not self.ntfy.phone:
             return {"success": False, "message": "There's nowhere set up to send things to your phone."}
         if not text:
             if self.last_answer is None:
                 return {"success": False, "message": "There's nothing to send yet."}
             asked, text = self.last_answer
             title = title or asked
-        if self.ntfy.send(self.ntfy.phone, text, title=(title or "From Nova")[:100]):
-            return {"success": True, "message": "Sent.", "chime": True}
-        return {"success": False, "message": "I couldn't reach your notifications."}
+        title = (title or "From Nova")[:100]
+        if by_ntfy:
+            if self.ntfy.send(self.ntfy.phone, text, title=title):
+                return {"success": True, "message": "Sent.", "chime": True}
+            return {"success": False, "message": "I couldn't reach your notifications."}
+
+        failed = [message for message in (self._send_to(app_device, text, title) for app_device in found)
+                  if message]
+        if failed:
+            return {"success": False, "message": " ".join(failed)}
+        return {"success": True, "message": "Sent.", "chime": True}
+
+    def _send_to(self, device: AppDevice, text: str, title: str) -> Optional[str]:
+        """
+        Sends a notification to a device through its notify service.
+
+        Args:
+            device: The device.
+            text: What to send.
+            title: A few words saying what it is.
+
+        Returns:
+            None once Home Assistant took it, else what to say of why not.
+        """
+        if device.notify is None:
+            return f"Your {device.name} hasn't got the Home Assistant app's notifications."
+        try:
+            self.home.notify(device.notify, text, title=title)
+        except requests.Timeout as e:
+            # Sent, but unanswered - so it may well have arrived.
+            logger.warning(f"Home Assistant didn't answer in time sending to the {device.name}: {e}")
+            return f"{NO_ANSWER}, so I can't tell whether that was sent to your {device.name}."
+        except (requests.RequestException, NotAllowed) as e:
+            logger.warning(f"Couldn't send to the {device.name}: {e}")
+            return f"I couldn't send that to your {device.name}."
+        # Never the words, which may be the user's alone.
+        logger.info(f"Sent a notification to the {device.name}")
+        return None
 
     @tool(
         "Read out the notifications which came in without being said - at night, or while "

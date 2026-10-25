@@ -296,6 +296,10 @@ class LocalIntents:
             (rf"(?:find|ring) (?:my |the )(?P<device>{FOUND_DEVICE})", self._find_device(True)),
             (r"(?:send|text) (?:that|it|this) to (?:my phone|me)|text me (?:that|it)"
              r"|(?:send|put) (?:that|it|this) on my phone", self._send_to_phone),
+            # The Mac or the tablet, through the Home Assistant app - only the device itself, said
+            # plainly, so "put it on my iPad's list" is left alone.
+            (r"(?:send|text|put) (?:that|it|this) (?:to|on) (?:my |the )(?P<device>mac|macbook|laptop|tablet|ipad)",
+             self._send_to_device),
             # The to-do lists - see lists.py. Assist is asked first for the adding and
             # ticking off, but only with its own list intents (see ActionExecutor), so
             # "take milk off my shopping list", which Assist reads as removing it, is only
@@ -510,6 +514,9 @@ class LocalIntents:
         if not self.ntfy or not self.ntfy.just_said():
             return None
         return self._result("Okay.", [Action("tell_me_more")])
+
+    def _send_to_device(self, found) -> Optional[Dict]:
+        return self._result("Okay.", [Action("send_to_phone", {"device": found["device"]})]) if self.home else None
 
     def _send_to_phone(self, found) -> Optional[Dict]:
         return self._result("Okay.", [Action("send_to_phone")]) if self.ntfy else None
