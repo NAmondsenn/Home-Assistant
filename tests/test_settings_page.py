@@ -804,7 +804,9 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert headers[name] == value
     if path == "/settings.js":
         assert b'"/api/voice/hear"' in body and b'"restart-now"' in body and b'"/api/stop"' in body
-        assert b'"/api/undo"' in body
+        assert b'"/api/undo"' in body and b'getElementById("undos")' in body
+        # Where each removal's Undo is stacked.
+        assert b'id="undos"' in _ask(served, "/")[2]
 
 
 def test_a_change_has_to_come_from_the_page_itself(served):
@@ -865,6 +867,63 @@ def test_removing_on_the_page_offers_an_undo(files, monkeypatch, caplog):
         assert change("/api/remove", {"kind": "timer", "id": 9}) == {"success": False, "message": "That's already gone."}
     finally:
         page.stop()
+
+
+def _undoable(files, monkeypatch):
+    """A page over a real clock, with a weekday 7am alarm on the bedroom."""
+    monkeypatch.setattr(clock_module, "TIMERS_FILE", str(files / "timers.json"))
+    monkeypatch.setattr(clock_module, "ALARMS_FILE", str(files / "alarms.json"))
+    clock = Clock(start=False)
+    clock.set_alarm(7, 0, repeat="weekdays", satellite="bedroom")
+    return _page(clock=clock), clock
+
+
+def test_an_undo_for_a_satellite_since_gone_isnt_put_back(files, monkeypatch):
+    page, clock = _undoable(files, monkeypatch)
+    token = page.remove("alarm", 1, LOGIN)["undo"]
+    page.brain.known = ["kitchen"]
+    assert page.undo(token, LOGIN) == {"success": False, "message": "That satellite's gone, so it can't ring there."}
+    assert clock._alarms == {}
+    # Back again within the minute, it can be.
+    page.brain.known = ["bedroom", "kitchen"]
+    assert page.undo(token, LOGIN)["success"] and clock._alarms[1]["satellite"] == "bedroom"
+
+
+def test_an_undo_refused_for_a_clash_works_once_the_clash_is_gone(files, monkeypatch):
+    page, clock = _undoable(files, monkeypatch)
+    token = page.remove("alarm", 1, LOGIN)["undo"]
+    clock.set_alarm(7, 0, repeat="daily", satellite="bedroom")
+    assert page.undo(token, LOGIN) == {"success": False, "message": "You already have a 7:00 AM alarm, every day."}
+    page.remove("alarm", 2, LOGIN)
+    assert page.undo(token, LOGIN) == {"success": True, "message": "Put back the 7:00 AM alarm, every weekday."}
+    assert page.undo(token, LOGIN) == {"success": False, "message": "That can't be undone now."}
+
+
+def test_two_undo_taps_at_once_put_back_one_alarm(files, monkeypatch):
+    page, clock = _undoable(files, monkeypatch)
+    token = page.remove("alarm", 1, LOGIN)["undo"]
+    both = threading.Barrier(2)
+    put_back = clock.put_back
+
+    def slowly(kind, item, now=None):
+        # Long enough for the other tap to come in meanwhile.
+        time.sleep(0.2)
+        return put_back(kind, item, now)
+
+    clock.put_back = slowly
+    answers = []
+
+    def tap():
+        both.wait()
+        answers.append(page.undo(token, LOGIN)["message"])
+
+    taps = [threading.Thread(target=tap) for _ in range(2)]
+    for each in taps:
+        each.start()
+    for each in taps:
+        each.join()
+    assert sorted(answers) == ["Put back the 7:00 AM alarm, every weekday.", "That can't be undone now."]
+    assert list(clock._alarms) == [1]
 
 
 def test_its_typeface_icon_and_what_nova_is_doing_are_served(served):

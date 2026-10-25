@@ -644,7 +644,8 @@ class SettingsPage:
     def undo(self, token, who: str) -> Dict:
         """
         Puts back what was just removed, as the toast's Undo asks - once, and only for
-        UNDO_KEPT seconds after.
+        UNDO_KEPT seconds after. One refused - for a clash, or a satellite gone - can
+        be tried again meanwhile.
 
         Args:
             token: The token remove answered with, as the page sent it.
@@ -653,12 +654,16 @@ class SettingsPage:
         Returns:
             Dict with 'success' and a 'message'.
         """
-        taken = self._undo.take(token)
-        if taken is None:
-            return {"success": False, "message": "That can't be undone now."}
-        kind, item = taken
-        logger.info(f"Settings page: {who} undid removing {kind} {item['id']}")
-        return self.brain.clock.put_back(kind, item)
+        def put_back(kind: str, item: Dict) -> Dict:
+            logger.info(f"Settings page: {who} undid removing {kind} {item['id']}")
+            # Put back for a satellite the brain no longer lets in, it would ring
+            # nowhere - a missed wake-up.
+            if item.get("satellite") and item["satellite"] not in self.brain.satellites():
+                return {"success": False, "message": "That satellite's gone, so it can't ring there."}
+            return self.brain.clock.put_back(kind, item)
+
+        answer = self._undo.use(token, put_back)
+        return answer if answer is not None else {"success": False, "message": "That can't be undone now."}
 
     def forget(self, fact: str, who: str) -> Dict:
         logger.info(f"Settings page: {who} had something forgotten")

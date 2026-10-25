@@ -1297,15 +1297,39 @@ input[type="range"].warmth::-moz-range-progress { background: transparent; }
 
 .toast.bad::before { background: var(--ember); }
 
-/* Undo, while what was just removed can still be put back - the only time the toast
-   takes a tap, as otherwise it would catch those meant for what's under it. */
-.toast.undoable {
+/* What was just removed, each with its Undo, stacked above the toast for everything
+   else - newest at the bottom. Only an Undo's own toast takes a tap, as otherwise the
+   stack would catch those meant for what's under it. */
+.undos {
+  position: fixed;
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 60px);
+  left: 50%;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.undos .toast {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  max-width: 100%;
   padding-top: 6px;
   padding-right: 6px;
   padding-bottom: 6px;
+  transform: none;
 }
 
-.toast.show.undoable { pointer-events: auto; }
+.undos .toast.show {
+  transform: none;
+  pointer-events: auto;
+}
 
 .toast .button { min-height: 44px; }
 

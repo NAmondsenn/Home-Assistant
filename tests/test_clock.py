@@ -874,7 +874,11 @@ def test_undo_puts_back_the_same_timer_or_reminder(make_clock):
         removed = clock.remove("timer", timer["id"])["removed"]
         assert clock.put_back("timer", removed)["success"]
         assert clock._timers[timer["id"]] == before
-    assert clock.put_back("timer", removed)["success"] is False
+    # Put back a second time, the reminder would be two of the same name due in the
+    # same minute - so it clashes with itself, rather than being there twice.
+    result = clock.put_back("timer", removed)
+    assert not result["success"] and result["message"].startswith("You already have a take the pizza out reminder for ")
+    assert len(clock._timers) == 2
 
 
 def test_a_timer_whose_time_has_passed_isnt_put_back(make_clock):

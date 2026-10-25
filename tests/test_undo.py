@@ -4,7 +4,10 @@ Checks what was removed on the settings page can be taken back once, and only fo
 minute - with a clock of the test's own, so nothing here waits.
 """
 
-from voice_assistant.undo import UNDO_KEPT, UndoShelf
+import threading
+import time
+
+from voice_assistant.undo import MOST_KEPT, UNDO_KEPT, UndoShelf
 
 
 def test_an_undo_works_once_and_not_after_a_minute():
@@ -36,6 +39,58 @@ def test_the_old_ones_go_as_new_ones_are_put():
     now[0] += UNDO_KEPT + 1
     shelf.put("timer", {"id": 2})
     assert len(shelf._kept) == 1
+
+    # However many come at once, only the latest MOST_KEPT are kept.
+    tokens = []
+    for number in range(MOST_KEPT + 10):
+        now[0] += 0.01
+        tokens.append(shelf.put("timer", {"id": number}))
+    assert len(shelf._kept) == MOST_KEPT
+    assert shelf.take(tokens[9]) is None and shelf.take(tokens[10]) == ("timer", {"id": 10})
     # Each token is new, and long enough not to be guessed.
     assert len({shelf.put("timer", {"id": 3}) for _ in range(20)}) == 20
     assert len(shelf.put("timer", {"id": 4})) >= 20
+
+
+def test_an_undo_refused_can_be_tried_again_until_its_minute_is_up():
+    now = [1000.0]
+    shelf = UndoShelf(clock=lambda: now[0])
+    token = shelf.put("alarm", {"id": 3})
+    clash = {"success": False, "message": "You already have a 7:00 AM alarm."}
+    done = {"success": True, "message": "Put back the 7:00 AM alarm."}
+
+    assert shelf.use(token, lambda kind, item: clash) == clash
+    assert shelf.use(token, lambda kind, item: done) == done
+    # Only once it's worked is it used up.
+    assert shelf.use(token, lambda kind, item: done) is None
+
+    late = shelf.put("alarm", {"id": 4})
+    now[0] += UNDO_KEPT - 1
+    assert shelf.use(late, lambda kind, item: clash) == clash
+    now[0] += 2
+    assert shelf.use(late, lambda kind, item: done) is None
+
+
+def test_two_undos_at_once_put_back_once():
+    shelf = UndoShelf()
+    token = shelf.put("alarm", {"id": 3})
+    both = threading.Barrier(2)
+    put_back, answers = [], []
+
+    def slowly(kind, item):
+        put_back.append(item)
+        # Long enough for the other tap to come in meanwhile.
+        time.sleep(0.2)
+        return {"success": True, "message": "Put back."}
+
+    def tap():
+        both.wait()
+        answers.append(shelf.use(token, slowly))
+
+    taps = [threading.Thread(target=tap) for _ in range(2)]
+    for each in taps:
+        each.start()
+    for each in taps:
+        each.join()
+    assert put_back == [{"id": 3}]
+    assert sorted(answers, key=lambda answer: answer is None) == [{"success": True, "message": "Put back."}, None]

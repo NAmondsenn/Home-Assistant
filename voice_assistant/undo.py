@@ -4,8 +4,10 @@ Undo Module.
 What was just removed on the settings page - an alarm, a timer or a reminder - kept
 for a minute, so the page's Undo can put it back (see 0009, decision 4). Each is
 kept behind a token of its own, which the page is given in place of what was
-removed, and which works once. The page offers Undo for ten seconds (UNDO_SHOWN, in
-web/settings.js), and the brain keeps each for UNDO_KEPT.
+removed, and which works once it has put it back - one refused, as it would clash
+with something set since, can be tried again until its time is up. The page offers
+Undo for ten seconds (UNDO_SHOWN, in web/settings.js), and the brain keeps each for
+UNDO_KEPT.
 
 Kept in memory only, never written down, so a restart forgets it all - what was
 removed before it stays removed.
@@ -18,6 +20,9 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 # How long what was removed can be put back, in seconds.
 UNDO_KEPT = 60.0
+# The most kept at once - far more than anyone removes in a minute, but a limit, so the
+# page can't grow it without end.
+MOST_KEPT = 50
 
 
 class UndoShelf:
@@ -54,6 +59,8 @@ class UndoShelf:
             now = self._clock()
             self._kept = {kept: entry for kept, entry in self._kept.items() if now - entry[2] <= self.keep_for}
             self._kept[token] = (kind, item, now)
+            while len(self._kept) > MOST_KEPT:
+                del self._kept[min(self._kept, key=lambda kept: self._kept[kept][2])]
         return token
 
     def take(self, token: Any) -> Optional[Tuple[str, Any]]:
@@ -66,6 +73,39 @@ class UndoShelf:
         Returns:
             (kind, item), or None if the token isn't one, has been used, or is too old.
         """
+        claimed = self._claim(token)
+        return None if claimed is None else claimed[:2]
+
+    def use(self, token: Any, undo: Callable[[str, Any], Dict]) -> Optional[Dict]:
+        """
+        Puts back what a token keeps, with undo - using the token up only if that
+        worked. Meanwhile it's taken off the shelf, so a second tap at the same moment
+        finds nothing rather than putting it back twice.
+
+        Args:
+            token: As the page sent it - anything at all.
+            undo: Called with the kind and the item, answering with 'success' and a
+                'message'.
+
+        Returns:
+            What undo answered, or None if the token isn't one, has been used, or is
+            too old.
+        """
+        claimed = self._claim(token)
+        if claimed is None:
+            return None
+        answer = None
+        try:
+            answer = undo(claimed[0], claimed[1])
+            return answer
+        finally:
+            if not (answer and answer.get("success")):
+                with self._lock:
+                    if self._clock() - claimed[2] <= self.keep_for:
+                        self._kept[token] = claimed
+
+    def _claim(self, token: Any) -> Optional[Tuple[str, Any, float]]:
+        """Takes a token's entry off the shelf, if it has one still in time."""
         if not isinstance(token, str):
             return None
         given = token.encode()
@@ -78,7 +118,7 @@ class UndoShelf:
                     found = kept
             if found is None:
                 return None
-            kind, item, put_at = self._kept.pop(found)
-            if self._clock() - put_at > self.keep_for:
+            entry = self._kept.pop(found)
+            if self._clock() - entry[2] > self.keep_for:
                 return None
-            return kind, item
+            return entry

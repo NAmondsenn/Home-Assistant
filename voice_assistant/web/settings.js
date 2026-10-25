@@ -247,26 +247,42 @@ function tick() {
 
 // Talking to Nova
 
-// Says how a change went, for a few seconds. With undo - the token Nova answers a
-// removal with - it offers Undo for longer, which sends the token back. Whatever's
-// said next takes the button away, so it can only be pressed once.
-function toast(message, ok, undo) {
+// Says how a change went, for a few seconds.
+function toast(message, ok) {
   const shown = document.getElementById("toast");
   shown.textContent = message;
   shown.classList.toggle("bad", ok === false);
-  shown.classList.toggle("undoable", Boolean(undo));
-  if (undo) {
-    const button = element("button", "Undo", "button quiet");
-    button.type = "button";
-    button.addEventListener("click", () => {
-      button.disabled = true;
-      change("/api/undo", { token: undo });
-    });
-    shown.append(button);
-  }
   shown.classList.add("show");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => shown.classList.remove("show"), undo ? UNDO_SHOWN : 4000);
+  toast.timer = setTimeout(() => shown.classList.remove("show"), 4000);
+}
+
+// Says something was removed, with Undo, which sends back the token Nova answered
+// with. Each removal has a toast of its own, stacked above the one for everything
+// else, so a second removal doesn't take away the first's Undo. It goes once it's
+// worked, or after UNDO_SHOWN - one refused, as it would clash with an alarm set
+// since, can be tried again meanwhile.
+function undoToast(message, token) {
+  const shown = element("div", message, "toast undoable");
+  shown.setAttribute("role", "status");
+  const button = element("button", "Undo", "button quiet");
+  button.type = "button";
+  let timer;
+  const gone = () => {
+    clearTimeout(timer);
+    shown.remove();
+  };
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const result = await change("/api/undo", { token });
+    if (result.success) gone();
+    else button.disabled = false;
+  });
+  shown.append(button);
+  document.getElementById("undos").append(shown);
+  // Shown a frame after it's in the page, so it can fade in as the other toast does.
+  requestAnimationFrame(() => shown.classList.add("show"));
+  timer = setTimeout(gone, UNDO_SHOWN);
 }
 
 // A path which asks after the chosen satellite, if there is one.
@@ -295,7 +311,9 @@ async function change(path, body, reload = load) {
   } catch (error) {
     result = { success: false, message: "Couldn't reach Nova." };
   }
-  toast(result.message || (result.success ? "Done." : "That didn't work."), result.success, result.undo);
+  const message = result.message || (result.success ? "Done." : "That didn't work.");
+  if (result.undo) undoToast(message, result.undo);
+  else toast(message, result.success);
   await reload();
   return result;
 }
