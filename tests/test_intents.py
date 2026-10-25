@@ -480,9 +480,13 @@ def test_what_the_list_rules_mustnt_catch_is_left_alone(text, tool):
     ("Tick off milk on my shopping list.", Action("tick_off_list", {
         "item": "milk", "list": "my shopping list", "command": "tick off milk on my shopping list"})),
     ("Take milk off my shopping list.", Action("tick_off_list", {
-        "item": "milk", "list": "my shopping list", "command": "take milk off my shopping list"})),
+        "item": "milk", "list": "my shopping list", "command": "take milk off my shopping list", "exact": False})),
     ("Cross the eggs off the shopping list.", Action("tick_off_list", {
-        "item": "the eggs", "list": "the shopping list", "command": "cross the eggs off the shopping list"})),
+        "item": "the eggs", "list": "the shopping list", "command": "cross the eggs off the shopping list",
+        "exact": False})),
+    # Without the word "list", only the thing itself - "take the day off work" is about the world.
+    ("Take the day off work.", Action("tick_off_list", {
+        "item": "the day", "list": "work", "command": "take the day off work", "exact": True})),
     ("I've got the milk.", Action("tick_off_list", {"item": "milk", "list": None, "exact": True})),
 ])
 def test_a_list_is_read_and_things_ticked_off_without_claude(text, action):

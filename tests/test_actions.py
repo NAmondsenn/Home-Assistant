@@ -1065,6 +1065,25 @@ def test_ive_got_ticks_off_only_an_exact_fit(make_lists_executor, said, on_list)
     assert (result.ok, result.say) == (True, f"Ticked off {said} on your shopping list.")
 
 
+@pytest.mark.parametrize("text, lists, ticked", [
+    # "Take the day off work" is about the world, never "Day rota" ticked off by its one word.
+    ("Take the day off work.", {"todo.work": ("Work", ("Day rota",))}, []),
+    ("Cross the day off work.", {"todo.work": ("Work", ("Day rota",))}, []),
+    # The word "list" says it's the list, so "milk" is still the oat milk.
+    ("Take the milk off my shopping list.", {"todo.shopping_list": ("Shopping list", ("oat milk",))},
+     [{"entity_id": "todo.shopping_list", "item": "uid-oat milk", "status": "completed"}]),
+])
+def test_taking_off_a_list_not_named_as_one_ticks_off_only_an_exact_fit(make_lists_executor, text, lists, ticked):
+    from voice_assistant.intents import LocalIntents
+
+    executor, sent = make_lists_executor(None, lists=lists)
+    actions = LocalIntents(home=executor.home).match(text)["actions"]
+    # Assist is still asked first.
+    assert actions[0].params["command"] == text.lower().rstrip(".")
+    result = executor.execute(actions[0])
+    assert result.understood == bool(ticked) and _ticked(sent) == ticked
+
+
 def test_a_list_named_without_the_word_list_and_nothing_fitting_goes_to_claude(make_lists_executor):
     executor, sent = make_lists_executor(None, lists={"todo.work": ("Work", ("Send the report",))})
     result = executor.execute(Action("tick_off_list", {"item": "friday", "list": "work",

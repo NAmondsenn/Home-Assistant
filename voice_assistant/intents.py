@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from voice_assistant.actions import Action
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.lists import names_list
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -321,7 +322,7 @@ class LocalIntents:
             (rf"read (?:me )?(?P<list>{LISTWORDS} list)", self._read_list),
             (rf"tick (?!off )(?P<item>.+) off (?P<list>{LISTWORDS})", self._tick_off_list),
             (rf"tick (?:off )?(?P<item>.+?)(?: off)?(?: (?:on|from) (?P<list>{LISTWORDS}))?", self._tick_off_list),
-            (rf"(?:take|cross) (?P<item>.+?) off (?P<list>{LISTWORDS})", self._tick_off_list),
+            (rf"(?:take|cross) (?P<item>.+?) off (?P<list>{LISTWORDS})", self._take_off_list),
             # "I've got the milk" - and "I've got the flu", which only ticks off "flu" itself,
             # so a sentence about the world reaches Claude. Assist has no sentence like it.
             (r"i(?:'ve| have) got (?:the |some )?(?P<item>.+)", self._got),
@@ -474,12 +475,17 @@ class LocalIntents:
     def _read_list(self, found) -> Optional[Dict]:
         return self._listed(found, "read_list")
 
-    def _tick_off_list(self, found) -> Optional[Dict]:
+    def _tick_off_list(self, found, **params) -> Optional[Dict]:
         # "Tick milk off my calendar" is the shape before, which named no list - not a
         # thing called "milk off my calendar".
         if "off" in found["item"].split():
             return None
-        return self._listed(found, "tick_off_list", found["item"])
+        return self._listed(found, "tick_off_list", found["item"], **params)
+
+    def _take_off_list(self, found) -> Optional[Dict]:
+        # "Take the day off work" is as everyday as "I've got the flu", so unless the words say
+        # it's a list, only the thing itself is ticked off - never "Day rota" on a Work list.
+        return self._tick_off_list(found, command=found.string, exact=not names_list(found["list"]))
 
     def _got(self, found) -> Optional[Dict]:
         return self._listed(found, "tick_off_list", found["item"], list=None, exact=True)
