@@ -571,7 +571,7 @@ def test_a_mixed_save_whose_straight_away_part_fails_says_it_waits(files):
     page.brain.ntfy.retopic = _unreachable
     result = page.save_settings({"ntfy.quiet_from": "22:00", "thresholds.silence_duration": 1.2}, LOGIN)
 
-    assert result["message"] == ("Saved. Night starts at, as 23:00 is used once Nova restarts, and the rest "
+    assert result["message"] == ("Saved. Night starts at is used once Nova restarts, and the rest "
                                  "straight away. Some of it couldn't be used straight away.")
     assert result["restart_needed"]
 
@@ -635,6 +635,8 @@ def test_each_setting_says_how_its_used_and_its_limits(files):
 
     assert silence["used"] == "Used straight away" and (silence["min"], silence["max"]) == (0.2, 3)
     assert night["used"] == "Used straight away" and night["form"] == "time"
+    # A time picker, so no "as 23:00" for typing it - which a save's message would say too.
+    assert (night["label"], settings["ntfy.quiet_until"]["label"]) == ("Night starts at", "Night ends at")
     assert settings["music.player"]["used"] == "Used once Nova restarts"
 
 
