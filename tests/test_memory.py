@@ -6,6 +6,7 @@ Claude - using a memory file of the test's own.
 
 import json
 import logging
+import threading
 
 import pytest
 
@@ -70,6 +71,28 @@ def test_a_fact_remembered_again_meanwhile_isnt_put_back_twice(memory):
     assert memory.facts() == ["you work at tesco"]
 
 
+def test_putting_back_and_remembering_at_once_keep_every_fact(memory):
+    memory.remember("You work at Tesco.")
+    forgotten = memory.forget("that I work at tesco")
+    facts = [f"Fact number {n}." for n in range(20)]
+    start = threading.Barrier(2)
+
+    def remember_them():
+        start.wait()
+        for fact in facts:
+            memory.remember(fact)
+
+    thread = threading.Thread(target=remember_them)
+    thread.start()
+    start.wait()
+    memory.put_back(forgotten["forgotten"], forgotten["at"])
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    # Both take the same lock, so neither's write overwrote the other's.
+    assert sorted(memory.facts()) == sorted(facts + ["You work at Tesco."])
+    assert Memory(path=memory.path).facts() == memory.facts()
+
+
 def test_a_full_memory_says_it_cant_put_one_back(memory, monkeypatch):
     memory.remember("You work at Tesco.")
     forgotten = memory.forget("that I work at tesco")
@@ -87,9 +110,10 @@ def test_forgetting_by_voice_tells_claude_nothing_more(memory, caplog):
         reply = ActionExecutor.forget(executor, "that I work at tesco")
         memory.remember("You work at Tesco.")
         result = executor.execute(Action("forget", {"fact": "that I work at tesco"}))
-    # Neither in the tool's answer, nor in the result made from it.
+    # The result only ever reads the answer's message, so it is the answer's keys which
+    # would catch a leak of the fact or its place - and what's said is just that message.
     assert set(reply) == {"success", "message"}
-    assert result.ok and result.say == "Okay, I've forgotten that you work at Tesco."
+    assert result.ok and result.say == reply["message"] == "Okay, I've forgotten that you work at Tesco."
     # The fact is only in what's said back, which the user hears anyway.
     assert [r for r in caplog.records if r.levelno >= logging.INFO and not getattr(r, "transcript", False)
             and "Tesco" in r.getMessage()] == []
