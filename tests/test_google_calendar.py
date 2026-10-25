@@ -147,7 +147,7 @@ def test_a_sign_in_finished_from_another_address_is_refused(token_file, started)
     if started:
         sign_in.start()
 
-    with pytest.raises(ValueError, match="That address isn't from this sign-in."):
+    with pytest.raises(ValueError, match="That address isn't from this sign-in - start again."):
         sign_in.finish(_pasted("another-sign-ins-state"))
 
     assert google.asked == [] and not os.path.exists(token_file)
@@ -159,7 +159,7 @@ def test_a_pasted_state_that_isnt_plain_ascii_is_refused_as_another_sign_ins(tok
     sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
     sign_in.start()
 
-    with pytest.raises(ValueError, match="That address isn't from this sign-in."):
+    with pytest.raises(ValueError, match="That address isn't from this sign-in - start again."):
         sign_in.finish(_pasted("\u00e9"))
 
     assert google.asked == [] and not os.path.exists(token_file)
@@ -175,7 +175,7 @@ def test_an_address_without_googles_code_is_refused(token_file):
 
     assert google.asked == [] and not os.path.exists(token_file)
     # The state is used once, so the same address can't finish it afterwards either.
-    with pytest.raises(ValueError, match="That address isn't from this sign-in."):
+    with pytest.raises(ValueError, match="That address isn't from this sign-in - start again."):
         sign_in.finish(_pasted(state))
 
 
@@ -201,7 +201,7 @@ def test_finishing_saves_the_sign_in_for_novas_user_only(token_file):
     assert saved == {"refresh_token": REFRESH_TOKEN, "scope": " ".join(google_calendar.SCOPES)}
     assert sign_in.signed_in()
     # The state and verifier are used once.
-    with pytest.raises(ValueError, match="That address isn't from this sign-in."):
+    with pytest.raises(ValueError, match="That address isn't from this sign-in - start again."):
         sign_in.finish(_pasted(fields["state"]))
 
 
@@ -283,7 +283,8 @@ def test_a_sign_in_without_every_permission_isnt_kept(token_file):
     # Google." - and adding an event would only have failed later, by voice.
     answer = _token_answer()
     answer.body["scope"] = " ".join(google_calendar.SCOPES[:2])
-    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=FakeGoogle(**{google_calendar.TOKEN: [answer]}))
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file,
+                           session=FakeGoogle(**{google_calendar.TOKEN: [answer]}))
     state = _query(sign_in.start())["state"]
 
     with pytest.raises(GoogleSignInError) as refused:
@@ -360,6 +361,120 @@ def test_urllib3_never_logs_googles_addresses_whatever_novas_level():
                                "assert not logging.getLogger('urllib3.connectionpool').isEnabledFor(logging.INFO)"],
         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), capture_output=True, text=True)
     assert checked.returncode == 0, checked.stderr
+
+
+def test_a_started_sign_in_runs_out(token_file, monkeypatch):
+    # Kept for ever, a sign-in started and left would still take its address days later.
+    now = [1000.0]
+    monkeypatch.setattr(google_calendar.time, "monotonic", lambda: now[0])
+    google = FakeGoogle(**{google_calendar.TOKEN: [_token_answer()]})
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+
+    state = _query(sign_in.start())["state"]
+    now[0] += 601
+    with pytest.raises(GoogleSignInError, match="That sign-in ran out - start again."):
+        sign_in.finish(_pasted(state))
+    assert google.asked == [] and not os.path.exists(token_file)
+
+    # Just within the ten minutes, it's taken.
+    state = _query(sign_in.start())["state"]
+    now[0] += 599
+    sign_in.finish(_pasted(state))
+    assert sign_in.signed_in()
+
+
+@pytest.mark.parametrize("answer, code", [
+    (FakeResponse(400, {"error": "redirect_uri_mismatch", "error_description": "Not what the client lists"}),
+     "redirect_uri_mismatch"),
+    (FakeResponse(403, {"error": "access_denied", "error_description": "The project's off"}), "access_denied"),
+    # Anything but a plain error code is only its status - the answer's own words never.
+    (FakeResponse(400, {"error": "<b>made-up</b>", "error_description": "Words"}), "HTTP 400"),
+    (FakeResponse(404, ["not", "an", "error"]), "HTTP 404"),
+])
+def test_google_refusing_the_sign_in_otherwise_names_its_error(token_file, caplog, answer, code):
+    # Said as Google out of reach, a client set up wrongly sent the user the wrong way.
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file,
+                           session=FakeGoogle(**{google_calendar.TOKEN: [answer]}))
+    state = _query(sign_in.start())["state"]
+
+    with pytest.raises(GoogleSignInError) as refused:
+        sign_in.finish(_pasted(state))
+
+    assert str(refused.value) == f"Google refused the sign-in ({code}) - check the client in Google Cloud."
+    assert not os.path.exists(token_file)
+    for words in ("Not what the client lists", "The project's off", "<b>", "Words"):
+        assert words not in caplog.text
+
+
+@pytest.mark.parametrize("changed", [
+    {"access_token": None},
+    {"access_token": ""},
+    {"refresh_token": None},
+    {"scope": ["https://www.googleapis.com/auth/calendar.events.owned"]},
+    {"token_type": "mac"},
+    {"token_type": None},
+])
+def test_an_answer_from_google_that_isnt_a_whole_sign_in_isnt_kept(token_file, changed):
+    # Saved without an access token, the page said "Couldn't reach Google" for a sign-in it
+    # had kept - and one with no scope as text didn't answer at all.
+    answer = _token_answer()
+    for name, value in changed.items():
+        if value is None:
+            answer.body.pop(name, None)
+        else:
+            answer.body[name] = value
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file,
+                           session=FakeGoogle(**{google_calendar.TOKEN: [answer]}))
+    state = _query(sign_in.start())["state"]
+
+    with pytest.raises(GoogleSignInError, match="Google didn't give Nova a sign-in to keep - try again."):
+        sign_in.finish(_pasted(state))
+
+    assert not os.path.exists(token_file) and sign_in._access is None
+
+
+class RunsAtOnce:
+    """Stands in for threading.Thread, doing its work as it's started."""
+
+    def __init__(self, target, **kwargs):
+        self.target = target
+
+    def start(self):
+        self.target()
+
+
+def test_a_sign_in_reads_the_list_again_at_once(make_calendar, monkeypatch):
+    calendar = make_calendar()
+    calendar.calendars()
+    calendar._session.answers[LIST] = [_calendar_list(_entry("calendar-gym", "Gym"))]
+    monkeypatch.setattr(google_calendar.threading, "Thread", RunsAtOnce)
+
+    calendar.read_list_again()
+
+    assert [each["id"] for each in calendar.known()] == ["calendar-gym"]
+    assert "gym" in calendar.activity_words()
+
+
+def test_a_list_read_under_way_cant_put_the_last_accounts_list_back(make_calendar, monkeypatch):
+    # A read begun with the account before's sign-in, which answers once the new account's
+    # read - started by its sign-in - has finished.
+    calendar = make_calendar()
+    google = calendar._session
+    google.answers[LIST] = [_calendar_list(_entry("calendar-old", "Old", primary=True)),
+                            _calendar_list(_entry("calendar-new", "New", primary=True))]
+    monkeypatch.setattr(google_calendar.threading, "Thread", RunsAtOnce)
+    asked = google.get
+
+    def get(url, *args, **kwargs):
+        answer = asked(url, *args, **kwargs)
+        if url == LIST and len([each for each in google.asked if each[0] == LIST]) == 1:
+            calendar.read_list_again()
+        return answer
+
+    monkeypatch.setattr(google, "get", get)
+    calendar.calendars()
+
+    assert [each["id"] for each in calendar.known()] == ["calendar-new"]
 
 
 def test_nova_says_google_is_signed_in_to_on_the_settings_page():

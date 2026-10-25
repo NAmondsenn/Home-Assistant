@@ -582,11 +582,20 @@ class FakeTokenAnswer:
 
 
 class FakeGoogle:
-    """Stands in for Google's token address - all a sign-in asks it - so nothing reaches Google."""
+    """
+    Stands in for Google's token address, and the list of calendars a sign-in reads at
+    once, so nothing reaches Google.
+    """
 
     def __init__(self, *answers):
         self.answers = list(answers)
         self.asked = []
+        # Google's list of calendars, as the new sign-in reads it.
+        self.listed = {"items": [{"id": "calendar-gym", "summary": "Gym", "accessRole": "owner"}]}
+
+    def get(self, url, params=None, headers=None, timeout=None, **kwargs):
+        assert url == google_calendar.CALENDAR_LIST
+        return FakeTokenAnswer(200, self.listed)
 
     def post(self, url, data=None, timeout=None, **kwargs):
         assert url == google_calendar.TOKEN
@@ -602,8 +611,9 @@ GOOGLE_TOKENS = {"access_token": "the-google-access-token", "refresh_token": "th
 
 
 @pytest.fixture
-def calendar(files):
-    """Nova's calendar, its keys set as Nova started - with Google's token address a fake."""
+def calendar(files, monkeypatch):
+    """Nova's calendar, its keys set as Nova started - with Google a fake, and always online."""
+    monkeypatch.setattr(google_calendar.network, "online", lambda: True)
     google = FakeGoogle(FakeTokenAnswer(200, GOOGLE_TOKENS))
     sign_in = google_calendar.GoogleSignIn("the-google-client-id", "the-google-client-secret",
                                            str(files / "google_token.json"), session=google)
@@ -644,18 +654,20 @@ def test_the_page_signs_in_to_google(calendar, monkeypatch, caplog):
         started = change("/api/google/start", {})
         assert started["success"] and started["url"].startswith(google_calendar.AUTHORISE + "?")
         address = _google_address(started)
-        # A list of calendars from before - another account's, maybe - is read again.
-        calendar._known_at = time.monotonic()
         finished = change("/api/google/finish", {"address": address})
         assert finished == {"success": True, "message": "Signed in to Google."}
         assert shown() == {"available": True, "signed_in": True}
-        assert calendar._known_at is None
+        # Google's list of calendars - another account's, maybe - is read again at once.
+        waited = time.monotonic() + 5
+        while not calendar.known() and time.monotonic() < waited:
+            time.sleep(0.01)
+        assert [each["id"] for each in calendar.known()] == ["calendar-gym"]
         [asked] = calendar.sign_in._session.asked
         assert asked["code"] == "the-google-code"
 
         # Used once.
         assert change("/api/google/finish", {"address": address}) == {
-            "success": False, "message": "That address isn't from this sign-in."}
+            "success": False, "message": "That address isn't from this sign-in - start again."}
 
         state = parse_qs(urlsplit(started["url"]).query)["state"][0]
         said = json.dumps([finished, shown()])
@@ -673,10 +685,20 @@ def test_a_google_address_from_another_sign_in_is_refused(calendar, started):
     if started:
         page.start_google_sign_in(LOGIN)
     address = f"{google_calendar.REDIRECT}?state=another-sign-ins-state&code=the-google-code"
-    assert page.finish_google_sign_in(address, LOGIN) == {"success": False,
-                                                          "message": "That address isn't from this sign-in."}
+    assert page.finish_google_sign_in(address, LOGIN) == {
+        "success": False, "message": "That address isn't from this sign-in - start again."}
     assert calendar.sign_in._session.asked == []
     assert page.calendars_state() == {"available": True, "signed_in": False}
+
+
+def test_a_second_google_start_refuses_the_first_starts_address(calendar):
+    # The button tapped twice: only the newest sign-in's address is taken.
+    page = _page(calendar=calendar)
+    first = page.start_google_sign_in(LOGIN)
+    page.start_google_sign_in(LOGIN)
+    assert page.finish_google_sign_in(_google_address(first), LOGIN) == {
+        "success": False, "message": "That address isn't from this sign-in - start again."}
+    assert calendar.sign_in._session.asked == []
 
 
 @pytest.mark.parametrize("answer, said", [
@@ -685,6 +707,9 @@ def test_a_google_address_from_another_sign_in_is_refused(calendar, started):
     (FakeTokenAnswer(400, {"error": "invalid_grant", "error_description": "Bad Request"}),
      "Google didn't accept that sign-in - start again."),
     (requests.ConnectionError("oauth2.googleapis.com unreachable"), "Couldn't reach Google - try again."),
+    # Set up wrongly in Google Cloud - only its error code is said.
+    (FakeTokenAnswer(400, {"error": "redirect_uri_mismatch", "error_description": "unreachable"}),
+     "Google refused the sign-in (redirect_uri_mismatch) - check the client in Google Cloud."),
 ])
 def test_each_google_failure_is_said_plainly(calendar, caplog, answer, said):
     calendar.sign_in._session.answers = [answer]

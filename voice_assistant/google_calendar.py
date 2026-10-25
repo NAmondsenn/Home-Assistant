@@ -84,6 +84,14 @@ REQUEST_TIMEOUT = 10
 # one that's nearly done isn't sent with a request which then arrives too late.
 REFRESH_EARLY = 60
 
+# How long a sign-in started on the page waits for its address, in seconds - long enough
+# to sign in to Google, but not left to be taken days later.
+SIGN_IN_LASTS = 10 * 60
+
+# An OAuth error code as Google gives one, such as redirect_uri_mismatch - only that is
+# said of a refusal, never the words Google answers with.
+ERROR_CODE = re.compile(r"[a-z_]{1,40}")
+
 CALENDARS = "https://www.googleapis.com/calendar/v3/calendars"
 CALENDAR_LIST = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
 
@@ -191,6 +199,7 @@ class GoogleSignIn:
         # The sign-in under way, kept in memory only and used once.
         self._state: Optional[str] = None
         self._verifier: Optional[str] = None
+        self._started_at = 0.0
         # Each request to the page has a thread of its own, so two finishes at once, or a
         # start between a finish's read and its clear, could otherwise share a state. Not
         # the access token's lock, which is held while Google's asked for one.
@@ -209,7 +218,7 @@ class GoogleSignIn:
         """
         state, verifier = secrets.token_urlsafe(), secrets.token_urlsafe(64)
         with self._signing:
-            self._state, self._verifier = state, verifier
+            self._state, self._verifier, self._started_at = state, verifier, time.monotonic()
         fields = {
             "client_id": self.client_id,
             "redirect_uri": REDIRECT,
@@ -237,16 +246,17 @@ class GoogleSignIn:
 
         Raises:
             GoogleSignInError: If the address isn't from the sign-in started, or none
-                was, or it hasn't got Google's code in it - nothing is asked or saved -
-                or if Google wasn't given everything Nova asks for, or gave no sign-in
-                to keep - nothing is saved - or the sign-in couldn't be saved.
+                was, or it ran out, or it hasn't got Google's code in it - nothing is
+                asked or saved - or if Google refused the code for the client's set-up,
+                wasn't given everything Nova asks for, or gave no whole sign-in to keep -
+                nothing is saved - or the sign-in couldn't be saved.
             ValueError: If the address couldn't be read at all, such as "http://[x".
             SignInNeeded: If Google turned the code down, or ClientRefused, if it
                 doesn't know the client.
-            requests.RequestException: If Google couldn't be reached, or refused the code.
+            requests.RequestException: If Google couldn't be reached, or had trouble.
         """
         with self._signing:
-            state, verifier = self._state, self._verifier
+            state, verifier, started_at = self._state, self._verifier, self._started_at
             self._state = self._verifier = None
         fields = {name: values[0] for name, values in parse_qs(urlsplit(str(pasted).strip()).query).items()}
         # Compared in constant time, so how much of it matched can't be timed - as bytes,
@@ -254,14 +264,32 @@ class GoogleSignIn:
         # could have anything.
         if state is None or not secrets.compare_digest(fields.get("state", "").encode("utf-8"),
                                                        state.encode("ascii")):
-            raise GoogleSignInError("That address isn't from this sign-in.")
+            raise GoogleSignInError("That address isn't from this sign-in - start again.")
+        if time.monotonic() - started_at > SIGN_IN_LASTS:
+            raise GoogleSignInError("That sign-in ran out - start again.")
         if not fields.get("code"):
             raise GoogleSignInError("That address hasn't got Google's code in it.")
 
-        answer = self._ask_for_token({"grant_type": "authorization_code", "code": fields["code"],
-                                      "code_verifier": verifier, "redirect_uri": REDIRECT})
-        # One that isn't text would be saved, but never read back as a sign-in.
-        if not isinstance(answer.get("refresh_token"), str) or not answer["refresh_token"]:
+        try:
+            answer = self._ask_for_token({"grant_type": "authorization_code", "code": fields["code"],
+                                          "code_verifier": verifier, "redirect_uri": REDIRECT})
+        except requests.HTTPError as e:
+            response = e.response
+            if response is None or not 400 <= response.status_code < 500:
+                raise
+            # A client set up wrongly in Google Cloud - a redirect it doesn't allow, the
+            # API switched off - which trying again, or Google being out of reach, isn't.
+            code = self._error(response)
+            said = code if isinstance(code, str) and ERROR_CODE.fullmatch(code) else f"HTTP {response.status_code}"
+            logger.warning(f"Google refused the sign-in: {said}")
+            raise GoogleSignInError(f"Google refused the sign-in ({said}) - "
+                                    f"check the client in Google Cloud.") from None
+        # Checked whole before anything's kept: a refresh token that isn't text would be
+        # saved but never read back, and without an access token the sign-in would be
+        # saved and then said not to have worked.
+        tokens = [answer.get("refresh_token"), answer.get("access_token")]
+        if not all(isinstance(token, str) and token for token in tokens) or \
+                not isinstance(answer.get("scope", ""), str) or str(answer.get("token_type")).lower() != "bearer":
             raise GoogleSignInError("Google didn't give Nova a sign-in to keep - try again.")
         # Google lets each box on its page be unticked. A sign-in without adding would only
         # have failed later, by voice.
@@ -403,6 +431,10 @@ class GoogleCalendar:
         # Google's list of the user's calendars, and when it was read, by time.monotonic().
         self._known: List[Dict] = []
         self._known_at: Optional[float] = None
+        # Goes up at each sign-in, so a read of the list begun before one - with the account
+        # before's access token - can't keep its list once the new account's is read.
+        self._generation = 0
+        self._reading = threading.Lock()
 
     @classmethod
     def from_env(cls, config) -> Optional["GoogleCalendar"]:
@@ -497,24 +529,38 @@ class GoogleCalendar:
             requests.RequestException: If Google couldn't be reached, or refused.
             ValueError: If its answer wasn't a list of calendars.
         """
-        if self._known_at is not None and time.monotonic() - self._known_at < max_age:
-            return list(self._known)
+        with self._reading:
+            if self._known_at is not None and time.monotonic() - self._known_at < max_age:
+                return list(self._known)
+            generation = self._generation
         listed = []
         for entry in self._pages(CALENDAR_LIST, {}):
             if not isinstance(entry.get("id"), str):
                 raise ValueError("A calendar in Google's list has no id")
             listed.append({"id": entry["id"], "name": entry.get("summaryOverride") or entry.get("summary") or "",
                            "primary": entry.get("primary") is True, "writable": entry.get("accessRole") == "owner"})
-        self._known, self._known_at = listed, time.monotonic()
+        with self._reading:
+            if generation == self._generation:
+                self._known, self._known_at = listed, time.monotonic()
         return list(listed)
 
     def read_list_again(self):
         """
-        Has Google's list of the calendars read afresh when it's next wanted - after a
-        sign-in, which may be another account's. Until then, the activities heard are
-        the last list's.
+        Reads Google's list of the calendars afresh, straight away but not waited for -
+        after a sign-in, which may be another account's. Until it's read, the activities
+        heard are the last list's, and if it can't be, it's read when next wanted.
         """
-        self._known_at = None
+        with self._reading:
+            self._generation += 1
+            self._known_at = None
+        threading.Thread(target=self._read_list, daemon=True, name="calendars").start()
+
+    def _read_list(self):
+        try:
+            self.calendars()
+        except READ_FAILURES as e:
+            # Only the kind of failure - a requests error names the address.
+            logger.warning(f"Couldn't read the calendars from Google after the sign-in: {type(e).__name__}")
 
     def known(self) -> List[Dict]:
         """The calendars Google listed last, without asking it - none until it's been asked."""
