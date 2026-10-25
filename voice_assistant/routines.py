@@ -97,8 +97,8 @@ def _checked(given: Dict) -> Dict:
     if any(len(step) > LONGEST_STEP for step in steps):
         raise ValueError("One of those steps is too long.")
 
-    # The satellite it runs on at its time, by name - or None for the default one, the
-    # first added (see SatellitePasswords).
+    # The satellite it runs on at its time, by name - or None for the default one (see
+    # SatellitePasswords).
     satellite = str(given.get("satellite") or "").strip()
     if len(satellite) > LONGEST_NAME:
         raise ValueError("That satellite's name is too long.")

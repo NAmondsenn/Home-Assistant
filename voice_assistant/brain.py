@@ -195,7 +195,7 @@ class Brain:
         self.name = config.section("assistant").get("name", "Assistant")
         # Where it listens. 0 is any free port, which this becomes once serve() is listening.
         self.port = config.section("backend").get("port", 10400)
-        # The satellites it lets in, in the order they were added - see default_satellite.
+        # The satellites it lets in, the default first - see default_satellite.
         self.passwords = SatellitePasswords()
         # How the passwords' file looked when it was last read for who's still let in,
         # and the satellites it had then - see _shut_out_removed.
@@ -435,7 +435,7 @@ class Brain:
     def satellites(self) -> List[str]:
         """
         Returns:
-            Every satellite which may connect, in the order they were added - connected or not.
+            Every satellite which may connect, the default first - connected or not.
         """
         return self.passwords.names()
 
@@ -445,7 +445,8 @@ class Brain:
         doesn't say, and what rang before there were satellites.
 
         Returns:
-            The first satellite added, or None if there are none.
+            The first in the passwords' file - the first added, unless another has
+            been made the default - or None if there are none.
         """
         names = self.passwords.names()
         return names[0] if names else None
@@ -565,7 +566,7 @@ class Brain:
         """
         Returns:
             Each connected satellite with something ringing on it, or its Nova
-            talking, and its session - in the order the satellites were added.
+            talking, and its session - the default first.
         """
         found = []
         for name in self.satellites():

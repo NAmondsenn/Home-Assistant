@@ -76,7 +76,7 @@ cd /home/nova/Home-Assistant
 runuser -u nova -- venv/bin/python backend.py add-satellite kitchen
 ```
 
-`remove-satellite NAME` stops letting one in, run the same way, and lets it go straight away if it's connected.
+`remove-satellite NAME` stops letting one in, run the same way, and lets it go straight away if it's connected - as Remove does, under Satellites on the settings page. Its timers, alarms and routines move to the default satellite (the first added, unless another is made the default on the page), and its copy of the alarms is emptied if it's connected. One that isn't keeps its copy for a week, so wipe it or connect it before switching it on.
 
 From here on, anything this README has you run on the brain which reads or writes its settings, keys or data - a `venv/bin/...` command, or a file in `~/.config/nova` or `~/.local/share/nova` - is for the brain's user, not root, whose own folders the service never looks in. Run commands with `runuser -u nova -- `, as above, and edit its files as that user, e.g. `runuser -u nova -- nano /home/nova/.config/nova/.env`. Only `systemctl`, `journalctl`, `tailscale` and the setup and update scripts are for root. Put the brain on your tailnet, where it's reached by its name and port 10400, as `nova:10400` - as root:
 
@@ -110,7 +110,7 @@ In order, it:
 8. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.
 9. Sets the satellite to start at boot, as the `voice-assistant` user service, and starts it.
 
-Each satellite is named by its own machine's name, which the brain knows its password by - the same name given to `add-satellite`. Set `backend.satellite` in `config.yaml` to use another.
+Each satellite is named by its own machine's name, which the brain knows its password by - the same name given to `add-satellite`. Set `backend.satellite` in `config.yaml` to use another. Either way, it must fit the rule `add-satellite` and the settings page keep to: lower-case letters, digits and hyphens, not starting or ending with a hyphen.
 
 `bash setup.sh --yes` asks nothing, taking what it finds and the defaults; `--no-spotify` leaves Spotify out, and `--no-service` doesn't start Nova at boot. `--brain` and `--satellite` choose the role; without one, an existing install keeps its own.
 

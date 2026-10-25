@@ -25,9 +25,9 @@ The satellite says "Sorry, I can't reach my server right now" when it can't reac
 
 - **The satellite's log says `Can't connect to the brain at nova (...)`** - check the brain is running (`systemctl status nova-backend`, on the brain, as root), that Tailscale passes port 10400 on to it (`tailscale serve status`, on the brain, as root - see the README for the `tailscale serve` command), and the brain's address in the satellite's `~/.config/nova/config.yaml` (`backend.address`, `nova:10400`).
 - **The brain's log says `Refused a satellite: No satellite called ...`** - the brain doesn't know it. It's known by the satellite's machine's name, unless `backend.satellite` in the satellite's settings gives another: on the brain, `runuser -u nova -- venv/bin/python backend.py add-satellite NAME`, and put the password it prints in the satellite's `~/.config/nova/.env`, as `NOVA_BACKEND_TOKEN=...`. Then restart the satellite: `systemctl --user restart voice-assistant`.
-- **The brain's log says the satellite `hung up part way through the handshake`** - most likely its password isn't the one the brain has for it. Make it a new one on the brain, with `remove-satellite NAME` and then `add-satellite NAME`, run as above, and put that in the satellite's `.env`.
+- **The brain's log says the satellite `hung up part way through the handshake`** - most likely its password isn't the one the brain has for it. Give it a new one on the settings page, under Satellites > New password, and put that in the satellite's `.env` as the panel says. Don't use `remove-satellite` and then `add-satellite` for this: removing it moves its timers, alarms and routines to the default satellite, and empties its copy if it's connected, and adding it again doesn't bring them back.
 - **The satellite won't start at all, and its log says it `needs its brain's address ... and its password`** - setup was left without the password. Add it as above.
-- **A satellite removed on the brain** is let go straight away, and turned away from then on - `remove-satellite` is how one is shut out.
+- **A satellite removed on the brain** is let go straight away, and turned away from then on - Remove on the settings page, or `remove-satellite`, is how one is shut out. Its timers, alarms and routines go to the default satellite.
 
 ## Nova doesn't make a sound
 
@@ -129,7 +129,7 @@ On the brain, which watches the batteries for every satellite:
 - **The device's warnings are off** - on the settings page's Batteries section, each device has a "Warn me" switch. Turned off, it warns about nothing, though "battery levels" still tells its level.
 - **It wasn't sent to the phone** - each device also has "Send to my phone". It's off for the phone itself, which warns you on its own, and on for everything else. The settings page also has one switch for whether a warning that was said out loud is sent as well.
 - **A mark already warned** - each mark warns once as the level falls. It starts again once the device has charged, or its level is 10 points above its highest mark. What has warned is kept in `batteries.json` in the brain's `~/.local/share/nova`.
-- **Nothing is said out loud** - the default satellite (the first added) has to be connected. The brain's log says `A battery warning wasn't said, as the default satellite isn't connected`.
+- **Nothing is said out loud** - the default satellite (the first added, unless another is made the default on the settings page) has to be connected. The brain's log says `A battery warning wasn't said, as the default satellite isn't connected`.
 
 ## A timer or alarm didn't go off
 

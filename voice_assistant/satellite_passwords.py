@@ -3,8 +3,8 @@ Satellite Passwords Module.
 
 The brain keeps one password for each satellite, so one satellite's can be changed or
 taken away without touching the others. They are kept in satellites.json in Nova's
-config folder, readable by this user only, in the order they were added - the first
-satellite is the default one.
+config folder, readable by this user only. The first is the default satellite: the
+first added, until another is made the default.
 """
 
 import fcntl
@@ -176,7 +176,8 @@ class SatellitePasswords:
                 moved by hand, or the wrong config folder, does.
 
         Returns:
-            The satellites, in the order they were added. The first is the default.
+            The satellites. The first is the default - see make_default - and the
+            rest are in the order they were added.
 
         Raises:
             FileNotFoundError: If there's no file, and missing_ok is False.
