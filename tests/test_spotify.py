@@ -289,6 +289,37 @@ def test_a_refusals_error_is_logged_only_as_an_error_code(tmp_path, caplog, refu
         assert "forged" not in caplog.text
 
 
+def test_a_second_spotify_start_refuses_the_first_starts_address(tmp_path):
+    # The button tapped twice: only the newest sign-in's address is taken.
+    oauth = FakeSignInOAuth(tmp_path / "spotify_token.json")
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+    first = _state(sign_in.start())
+    sign_in.start()
+    with pytest.raises(ValueError, match="That address isn't from the sign-in this page started - start again."):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state={first}")
+    assert oauth.asked == []
+
+
+def test_a_started_spotify_sign_in_runs_out(tmp_path, monkeypatch):
+    # Kept for ever, a sign-in started and left would still take its address days later.
+    now = [1000.0]
+    monkeypatch.setattr(spotify_controller.time, "monotonic", lambda: now[0])
+    oauth = FakeSignInOAuth(tmp_path / "spotify_token.json")
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+
+    state = _state(sign_in.start())
+    now[0] += 601
+    with pytest.raises(ValueError, match="That sign-in ran out - start again."):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+    assert oauth.asked == [] and not sign_in.signed_in()
+
+    # Just inside the ten minutes, it's taken.
+    state = _state(sign_in.start())
+    now[0] += 599
+    sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+    assert sign_in.signed_in()
+
+
 def test_a_sign_in_that_couldnt_be_kept_isnt_said_to_have_worked(tmp_path):
     cache = tmp_path / "spotify_token.json"
     oauth = FakeSignInOAuth(cache)

@@ -22,7 +22,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 
 from voice_assistant import paths
-from voice_assistant.google_calendar import logged_error
+from voice_assistant.google_calendar import SIGN_IN_LASTS, logged_error
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.music import means_liked_songs
 
@@ -131,6 +131,9 @@ class SpotifySignIn:
         """
         self.oauth = oauth
         self._state: Optional[str] = None
+        # When it was started, by time.monotonic() - it runs out after SIGN_IN_LASTS, as
+        # Google's does.
+        self._started_at = 0.0
         # Each request to the page has a thread of its own, so two finishes at once, or a
         # start between a finish's read and its clear, could otherwise share a state.
         self._lock = threading.Lock()
@@ -144,7 +147,7 @@ class SpotifySignIn:
         """
         state = secrets.token_urlsafe()
         with self._lock:
-            self._state = state
+            self._state, self._started_at = state, time.monotonic()
         return self.oauth.get_authorize_url(state=state)
 
     def finish(self, pasted: str):
@@ -160,14 +163,14 @@ class SpotifySignIn:
 
         Raises:
             SpotifySignInError: If the address isn't from the sign-in started, or none
-                was, or it hasn't got Spotify's code in it - nothing is sent to Spotify -
-                or if Spotify turned the sign-in down, as it does once Cancel's pressed,
+                was, or it ran out, or it hasn't got Spotify's code in it - nothing is
+                sent to Spotify - or if Spotify turned the sign-in down, as it does once Cancel's pressed,
                 or the token couldn't be kept.
             requests.RequestException: If Spotify couldn't be reached.
         """
         global _sign_ins
         with self._lock:
-            state, self._state = self._state, None
+            state, started_at, self._state = self._state, self._started_at, None
         try:
             given, code = self.oauth.parse_auth_response_url(str(pasted).strip())
         except SpotifyOauthError as e:
@@ -178,6 +181,8 @@ class SpotifySignIn:
         # compare_digest won't take a string with "é" in it.
         if state is None or not secrets.compare_digest((given or "").encode("utf-8"), state.encode("ascii")):
             raise SpotifySignInError("That address isn't from the sign-in this page started - start again.")
+        if time.monotonic() - started_at > SIGN_IN_LASTS:
+            raise SpotifySignInError("That sign-in ran out - start again.")
         if not code:
             raise SpotifySignInError("That address hasn't got Spotify's code in it - copy all of it.")
         try:
