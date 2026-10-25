@@ -1206,7 +1206,10 @@ function settingField(setting) {
   const input = setting.choices ? choiceInput(setting) : valueInput(setting);
   input.id = id;
   input.name = setting.key;
-  input.dataset.saved = valueOf(input);
+  // The slider moves a speed between its steps to the nearest - 1.12 typed into the
+  // file becoming 1.1 - so it's what's saved that it's compared with, and the moved one
+  // shows as a change rather than as what the file says.
+  input.dataset.saved = input.type === "range" ? String(setting.value) : valueOf(input);
   input.setAttribute("aria-describedby", used.id);
   field.append(about, setting.choices ? selectBox(input) : input.type === "range" ? speedControl(input) : input);
   // Under the second of the night's two, so it's said once.
