@@ -1244,7 +1244,8 @@ class HomeAssistant:
                 outside its own domain, or nothing to act on - or, for one in UNTARGETED,
                 any target at all, notify's own "target" included, at the top or in its
                 data - or returns doesn't match whether RETURNS has it - or, for a button,
-                anything but one of the PC's, one at a time (see _pressable).
+                anything but one of the PC's, one at a time (see _pressable) - or, for
+                todo.update_item, anything but marking a thing completed.
             requests.RequestException: If Home Assistant couldn't be asked.
         """
         entities = data.get("entity_id")
@@ -1263,7 +1264,10 @@ class HomeAssistant:
                 or returns != ((domain, service) in RETURNS)
                 or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
                            for entity in entities)
-                or (domain == "button" and not (len(entities) == 1 and self._pressable(entities[0])))):
+                or (domain == "button" and not (len(entities) == 1 and self._pressable(entities[0])))
+                # Only ever completing a thing - never renaming it or putting it back to do.
+                or ((domain, service) == ("todo", "update_item")
+                    and not (set(data) <= {"entity_id", "item", "status"} and data.get("status") == "completed"))):
             logger.warning(f"Refused to call {domain}.{service} with {data}")
             raise NotAllowed(f"{domain}.{service}")
         response = self._request("POST", f"/api/services/{domain}/{service}" + ("?return_response" if returns else ""),

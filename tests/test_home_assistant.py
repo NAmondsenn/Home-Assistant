@@ -1008,6 +1008,18 @@ def test_a_thing_is_ticked_off_not_deleted(make_home):
     assert len(home._session.requests) == 1
 
 
+@pytest.mark.parametrize("data", [
+    {"rename": "beer"}, {"status": "needs_action"}, {}, {"status": "completed", "rename": "beer"},
+    {"status": "completed", "description": "and some bread"}, {"status": "completed", "due_date": "2026-10-25"},
+])
+def test_updating_a_thing_only_ever_ticks_it_off(make_home, data):
+    # Renaming it or putting it back to do is never Nova's - only completing it.
+    home = make_home({"/api/services/todo/update_item": []})
+    with pytest.raises(NotAllowed):
+        home._call_service("todo", "update_item", {"entity_id": "todo.shopping_list", "item": "a1", **data})
+    assert home._session.requests == []
+
+
 @pytest.mark.parametrize("failure, said", [
     (requests.ConnectionError("refused"), "I can't reach Home Assistant right now."),
     (FakeResponse({}, status=401), "HA_TOKEN in the .env file needs checking"),
