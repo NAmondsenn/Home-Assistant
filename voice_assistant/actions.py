@@ -1346,9 +1346,11 @@ class ActionExecutor:
     )
     def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None,
                       device: Optional[str] = None):
-        asked = (device or "").strip().lower()
+        # Claude's "my mac" or "the phone" is the device itself, so it's "your mac", and the
+        # phone is still the phone.
+        asked = re.sub(r"^(?:my|the) ", "", (device or "").strip().lower())
         # The phone is ntfy whatever Home Assistant is doing, so it's never looked up.
-        phone_only = asked in ("", "phone", "my phone", "mobile")
+        phone_only = asked in ("", "phone", "mobile")
         found = []
         if not phone_only:
             if self.home is None:

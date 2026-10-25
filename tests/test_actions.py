@@ -766,9 +766,11 @@ def test_a_device_with_no_notify_service_says_so():
     lonely = ActionExecutor(ntfy=FakeNtfy())
     lonely.last_answer = ("asked", "said")
     assert lonely.execute(Action("send_to_phone", {"device": "mac"})).say == "Sending to your mac needs Home Assistant."
+    # Claude's "my mac" is still "your mac".
+    assert lonely.execute(Action("send_to_phone", {"device": "my mac"})).say == "Sending to your mac needs Home Assistant."
 
 
-@pytest.mark.parametrize("word", ["phone", "my phone", "Mobile"])
+@pytest.mark.parametrize("word", ["phone", "my phone", "Mobile", "the phone", "my mobile", "The Phone"])
 def test_the_phone_is_ntfy_without_asking_home_assistant(word):
     class Down(FakeAppHome):
         def app_devices(self):
