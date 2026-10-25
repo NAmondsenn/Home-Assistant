@@ -573,8 +573,14 @@ def test_the_pc_is_worked_without_claude(text, action):
     assert _actions(text, home=None) == [Action("pc_power", {"action": action})]
 
 
-@pytest.mark.parametrize("text", ["Turn on the PC lights.", "Turn off my phone.", "Restart the music.",
-                                  "Shut down the PC and play Drake.", "Is my PC's battery on?"])
-def test_what_the_pc_rules_mustnt_catch_is_left_alone(text):
-    assert not any(action.tool == "pc_power" for action in _actions(text) or [])
-    assert _actions("Turn on the PC lights.")[0].tool == "control_home"
+@pytest.mark.parametrize("text, tools", [
+    # Still the lights, and Assist's phone.
+    ("Turn on the PC lights.", ["control_home"]), ("Turn off my phone.", ["control_home"]),
+    # Claude's - the music, two requests at once, a delay, an alarm, a battery or unlocking.
+    ("Restart the music.", None), ("Shut down the PC and play Drake.", None),
+    ("Shut down my PC in ten minutes.", None), ("Wake me up at 7.", None), ("Is my PC's battery on?", None),
+    ("Is my PC on charge?", None), ("Unlock my PC.", None),
+])
+def test_what_the_pc_rules_mustnt_catch_is_left_alone(text, tools):
+    actions = _actions(text)
+    assert (None if actions is None else [action.tool for action in actions]) == tools

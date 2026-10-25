@@ -9,8 +9,8 @@ each does (see ha_registry.button_kind), and only those in PC_KINDS are ever pre
 its launchurl, which opens any web address. It's woken by the Wake-on-LAN integration's
 button: the only one, with one PC and one button, else the one chosen for it on the page.
 
-Whether it's on is whether any of its entities is available: while it's off, every one of
-HASS.Agent's reads "unavailable" (live check 5).
+Whether it's on is whether any of HASS.Agent's own entities on it is available: while it's
+off, every one of them reads "unavailable" (live check 5).
 
 Shutting down and restarting ask first - "Shut down the PC?" - and only a yes said next, in
 the same conversation, does it (see Conversation.handle). The yes runs press_pc_button,
@@ -50,6 +50,11 @@ PRESSED = {"sleep": "Putting your PC to sleep.", "screen_off": "Turning your PC'
 KIND_SAID = {"shutdown": "shutdown", "restart": "restart", "sleep": "sleep", "monitorsleep": "monitor sleep",
              "lock": "lock"}
 
+# The integration HASS.Agent's own entities come from. Only they say whether the PC is on:
+# Home Assistant can merge another's onto its device by the hardware address - Wake-on-LAN's
+# button, whose state is when it was last pressed, is never unavailable.
+HASS_AGENT_PLATFORM = "mqtt"
+
 # The words which say nothing of which PC was meant - "my PC" is any of them.
 NAME_FILLER = {"my", "the", "pc", "computer"}
 
@@ -62,7 +67,7 @@ class PC:
     Attributes:
         device: Its Home Assistant device id.
         name: Its name, as it's said, e.g. "Desk PC".
-        on: Whether any of its entities is available.
+        on: Whether any of HASS.Agent's own entities on it is available.
         buttons: Its buttons in PC_KINDS, by kind, e.g. {"shutdown": "button.desk_pc_shutdown"}.
         wake: The Wake-on-LAN button which wakes it, or None if that isn't known.
     """
@@ -92,7 +97,8 @@ def find_pcs(states: List[Dict], snapshot: Snapshot, wake: Dict[str, str]) -> Li
     wake_buttons = snapshot.wake_buttons()
     pcs = []
     for device in devices:
-        entities = snapshot.on_device(device)
+        entities = [entity for entity in snapshot.on_device(device)
+                    if snapshot.platform(entity) == HASS_AGENT_PLATFORM]
         chosen = wake.get(device)
         if len(devices) == 1 and len(wake_buttons) == 1:
             woken_by = wake_buttons[0]
@@ -240,6 +246,10 @@ class PCPower:
         """
         try:
             self.home.press(entity_id)
+        except requests.ConnectTimeout:
+            # Never sent, so certainly not pressed.
+            logger.warning(f"Couldn't reach Home Assistant to press the PC's {kind} button")
+            return {"success": False, "message": CANT_REACH}
         except requests.Timeout:
             # Sent, but unanswered - so it may well have been pressed.
             logger.warning(f"Home Assistant didn't answer in time pressing the PC's {kind} button")

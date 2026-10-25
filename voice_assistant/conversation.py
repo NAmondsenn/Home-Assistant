@@ -15,6 +15,7 @@ here, in plain Python: text in, Reply out.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -34,6 +35,16 @@ NOTHING_RINGING = {"insistent": False, "insistent_entries": [], "reminder": None
 # cost roughly this much at most, rather than the five seconds anything else waits -
 # "what's the weather" shouldn't take longer because the lights couldn't be read.
 LIGHTS_TIMEOUT = 1.5
+
+# The whole of what may be said back to "Shut down the PC?" to do it, and to leave it. Not
+# Clock.answer_to_offer, which takes "stop", "cancel" or "thanks" for a yes - harmless for a
+# reminder, but here it'd shut a PC down - and "yes" with a request after it ("yes, play
+# music") for one too. Anything else is a fresh request, and nothing is pressed.
+AGREED = {"yes", "yeah", "yep", "yup", "yes please", "do it", "go ahead", "go on", "sure", "ok do it",
+          "okay do it"}
+DECLINED = {"no", "nope", "nah", "no thanks", "no thank you", "don't", "dont", "don't do it", "no don't",
+            "stop", "cancel", "cancel that", "cancel it", "leave it", "no leave it", "never mind", "nevermind",
+            "not now", "no not now"}
 
 
 @dataclass
@@ -138,7 +149,7 @@ class Conversation:
         # Only a yes runs it, and as Nova's own action, never the model's.
         asked_first, self.asked_first = self.asked_first, None
         if asked_first is not None:
-            answer = self.clock.answer_to_offer(text) if follow_up else None
+            answer = agreed(text) if follow_up else None
             if answer is not None:
                 timeline.note(outcome="asked_first_answer")
                 said = (self._run([Action(asked_first.tool, asked_first.params)])[0].say if answer
@@ -304,8 +315,7 @@ class Conversation:
             # nobody's listening for an answer to, nor one asked in a routine, whose next step
             # would be taken for the answer.
             if not in_routine:
-                self.asked_first = next((action_result.ask_first for action_result in action_results
-                                         if action_result.ok and action_result.ask_first), None)
+                self.asked_first = _only_question(response_text, action_results)
         return Reply(say=response_text, sounds=sounds, listen_again=listen_again)
 
     def _ask_claude(self, text: str) -> Dict:
@@ -374,6 +384,51 @@ class Conversation:
         if self.chime_enabled:
             return Reply(sounds=[("success_chime.wav", "general")])
         return Reply(shown=message)
+
+
+def agreed(text: str) -> Optional[bool]:
+    """
+    Whether what was said back to a question that asks first - "Shut down the PC?" - agreed.
+
+    Args:
+        text: What the user said, e.g. "Nova, yes please."
+
+    Returns:
+        True for the whole of it a plain yes (AGREED), False for a plain no (DECLINED), else
+        None - after its punctuation, a "nova" at the start and a "please" at the end are
+        taken off.
+    """
+    words = re.sub(r"[^a-z' ]", " ", text.lower().replace("\u2019", "'")).split()
+    if words[:1] == ["nova"]:
+        words = words[1:]
+    if words[-1:] == ["please"]:
+        words = words[:-1]
+    said = " ".join(words)
+    if said in AGREED:
+        return True
+    if said in DECLINED:
+        return False
+    return None
+
+
+def _only_question(reply: str, results: List[ActionResult]) -> Optional[Action]:
+    """
+    What a yes to the reply would do - only when exactly one result asks first and its
+    question is the whole of what's asked: the reply's last sentence, with no other ending
+    "?". "Shut down the PC? Which light?" asks two things, so a yes does neither.
+
+    Args:
+        reply: The whole reply, as it's said.
+        results: What each of the turn's actions said.
+
+    Returns:
+        The Action to run on a yes, or None.
+    """
+    asking = [result for result in results if result.ok and result.ask_first]
+    reply = reply.rstrip()
+    if len(asking) != 1 or not asking[0].say or not reply.endswith(asking[0].say):
+        return None
+    return None if "?" in reply[:-len(asking[0].say)] else asking[0].ask_first
 
 
 def _stand_ins(actions: List[Action], results: List[ActionResult]) -> Dict[int, str]:

@@ -6,6 +6,8 @@ ever pressed on a real machine. The Wake-on-LAN buttons' ids are made up: a real
 the PC's hardware address.
 """
 
+import requests
+
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.pc import PC, PCPower, find_pcs
@@ -58,6 +60,8 @@ class FakeHome:
         self.snapshot = snapshot
         self.states = _states(snapshot, on) if snapshot else []
         self.pressed = []
+        # What pressing raises, or None.
+        self.fails = None
 
     def _snapshot(self):
         return self.snapshot
@@ -66,6 +70,8 @@ class FakeHome:
         return self.states
 
     def press(self, entity_id):
+        if isinstance(self.fails, Exception):
+            raise self.fails
         self.pressed.append(entity_id)
 
 
@@ -183,3 +189,30 @@ def test_with_several_pcs_the_one_named_is_used(tmp_path):
     assert power.act("off", "gaming")["ask_first"].params == {"action": "off", "name": "gaming"}
     assert power.press("off", "gaming")["success"]
     assert home.pressed == ["button.gaming_locked", "button.gaming_off"]
+
+
+def test_only_hass_agents_own_entities_say_whether_the_pc_is_on(tmp_path):
+    # Home Assistant can merge Wake-on-LAN's button, or another integration's entity, onto
+    # HASS.Agent's device by its hardware address - and neither is ever unavailable.
+    entries, device = _pc()
+    merged = [_entry("button.wake_desk_pc", platform="wake_on_lan", device="desk"),
+              _entry("sensor.desk_ping", platform="ping", device="desk")]
+    snapshot = _snapshot((entries + merged, device), wake=())
+    states = [{**state, "state": "2026-10-25T09:00:00+00:00" if state["entity_id"] in (
+        "button.wake_desk_pc", "sensor.desk_ping") else "unavailable"} for state in _states(snapshot)]
+    pcs = find_pcs(states, snapshot, {})
+    assert [(pc.on, pc.wake) for pc in pcs] == [(False, "button.wake_desk_pc")]
+    power, home = _power(tmp_path, snapshot)
+    home.states = states
+    assert power.act("on") == {"success": True, "message": "Turning your PC on."}
+    assert power.act("off") == {"success": False, "message": "Your PC's already off."}
+
+
+def test_a_press_that_never_reached_home_assistant_says_so(tmp_path):
+    power, home = _power(tmp_path, _snapshot(_pc()))
+    home.fails = requests.ConnectTimeout("connect timed out")
+    assert power.act("lock") == {"success": False, "message": "I can't reach Home Assistant right now."}
+    # Sent, but unanswered, it may have been pressed.
+    home.fails = requests.ReadTimeout("read timed out")
+    assert power.act("lock") == {"success": False, "message": (
+        "Home Assistant didn't answer in time, so I can't tell whether your PC heard.")}

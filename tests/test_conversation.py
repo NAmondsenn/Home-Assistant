@@ -5,6 +5,8 @@ Whisper or Claude - using fakes for the clock, local commands, Claude and the
 actions, so each rule can be checked on its own.
 """
 
+import pytest
+
 from voice_assistant.actions import Action, ActionExecutor, ActionResult
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
@@ -558,10 +560,22 @@ class FakePCHome:
         return ""
 
 
+class AskingActions(ActionExecutor):
+    """The real actions, bar dim_lights, which asks "Which light?"."""
+
+    # The tools are looked up on the class itself.
+    tools = ActionExecutor.tools
+
+    def execute(self, action):
+        if action.tool == "dim_lights":
+            return ActionResult(False, "Which light?")
+        return super().execute(action)
+
+
 def _pc_conversation(tmp_path, *replies):
     """A conversation with the real local rules and actions, and the PC on a fake Home Assistant."""
     home = FakePCHome()
-    actions = ActionExecutor(home=home, pc=PCPower(home, ChoiceStore(str(tmp_path / "pcs.json"), {"wake": {}})))
+    actions = AskingActions(home=home, pc=PCPower(home, ChoiceStore(str(tmp_path / "pcs.json"), {"wake": {}})))
     llm = FakeLLM(*replies)
     return _conversation(intents=LocalIntents(), llm=llm, actions=actions), home, llm
 
@@ -596,7 +610,7 @@ def test_claudes_shutdown_asks_first_too(tmp_path):
         tmp_path, _answer("Okay.", Action("pc_power", {"action": "restart"}, from_model=True)))
     assert conversation.handle("could you reboot the thing on my desk").say == "Restart the PC?"
     assert home.pressed == []
-    assert conversation.handle("yeah go on", follow_up=True).say == "Restarting the PC."
+    assert conversation.handle("go on", follow_up=True).say == "Restarting the PC."
     assert home.pressed == ["button.desk_again"]
 
 
@@ -619,3 +633,48 @@ def test_a_yes_in_a_new_conversation_presses_nothing(tmp_path):
     assert not conversation.handle("Shut down the PC.").listen_again
     conversation.handle("yes")
     assert home.pressed == []
+
+
+@pytest.mark.parametrize("answer", ["yes", "Yes please.", "Nova, yeah.", "yep", "go ahead", "Go on.", "sure",
+                                    "Do it.", "Okay, do it.", "ok do it please"])
+def test_only_a_plain_yes_shuts_the_pc_down(tmp_path, answer):
+    conversation, home, llm = _pc_conversation(tmp_path)
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle(answer, follow_up=True).say == "Shutting down the PC."
+    assert home.pressed == ["button.desk_off"]
+
+
+@pytest.mark.parametrize("answer, said", [
+    # Backing out - "stop" and "cancel" most of all, which a reminder's offer takes for a yes.
+    ("stop", "Okay, I'll leave it."), ("Cancel.", "Okay, I'll leave it."), ("no thanks", "Okay, I'll leave it."),
+    ("Never mind.", "Okay, I'll leave it."), ("don't", "Okay, I'll leave it."), ("Nope.", "Okay, I'll leave it."),
+    ("leave it", "Okay, I'll leave it."),
+    # Neither, so a fresh request, Claude's - nor a yes with more said after it.
+    ("shut up", "Okay."), ("thanks", "Okay."), ("fine", "Okay."), ("okay thanks", "Okay."),
+    ("yes, play music", "Okay."), ("yes in a minute", "Okay."), ("absolutely", "Okay."),
+])
+def test_no_or_anything_else_said_back_presses_nothing(tmp_path, answer, said):
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay."), _answer("Okay."))
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle(answer, follow_up=True).say == said
+    assert home.pressed == []
+    assert llm.asked == ([] if said.startswith("Okay, I'll") else [answer])
+    # Either way, it's gone.
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == []
+
+
+@pytest.mark.parametrize("actions", [
+    # The PC's question isn't the whole reply...
+    [Action("pc_power", {"action": "off"}, from_model=True), Action("dim_lights", {}, from_model=True)],
+    [Action("dim_lights", {}, from_model=True), Action("pc_power", {"action": "off"}, from_model=True)],
+    # ...or there are two to answer.
+    [Action("pc_power", {"action": "off"}, from_model=True),
+     Action("pc_power", {"action": "restart"}, from_model=True)],
+])
+def test_a_yes_to_more_than_the_pcs_question_presses_nothing(tmp_path, actions):
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay.", *actions), _answer("Okay."))
+    reply = conversation.handle("shut it all down")
+    assert reply.listen_again and reply.say.count("?") == 2
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == [] and llm.asked == ["shut it all down", "yes"]
