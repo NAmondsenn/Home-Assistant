@@ -893,10 +893,9 @@ class HomeAssistant:
 
         Returns:
             The lights named, whether by name or by another name - only those in Nova's
-            room, if some of them are; else, for "lights" or
-            "lamp" alone, those in Nova's room - none if that isn't known; else those in
-            the room named, e.g. "bedroom lights". None if the words mean nothing Nova
-            knows.
+            room, if some of them are; else, for "lights" or "lamp" alone, those in Nova's
+            room - none if that isn't known; else those in the room named, e.g. "bedroom
+            lights". None if the words mean nothing Nova knows.
         """
         said = _plain(words)
         while said.split(" ")[0] in ("all", "the", "my") and " " in said:

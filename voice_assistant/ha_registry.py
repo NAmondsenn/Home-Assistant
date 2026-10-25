@@ -44,8 +44,9 @@ KIND_NAMES = {"reboot": "restart"}
 HASS_AGENT_MAKER = "HASS.Agent"
 
 
-# Seconds the registry's own socket allows a read, which is a lot of entities (over a
-# thousand, through a proxy) and not what a voice command waits on.
+# Seconds the registry's own socket allows each of a read's two calls - the lists, then
+# every entity in full - which are a lot of entities (over a thousand, through a proxy)
+# and not what a voice command waits on.
 REGISTRY_TIMEOUT = 30.0
 
 
