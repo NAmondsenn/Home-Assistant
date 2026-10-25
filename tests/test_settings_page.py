@@ -410,7 +410,6 @@ def test_the_page_is_told_whats_playing_and_the_playlists_are_kept_a_while(files
     assert state["player"] == "Navidrome" and state["now"]["track"] == "Gooba" and state["playlists"] == ["Chill", "Workout"]
     page.music_state()
     assert player.asked_for_playlists == 1
-    assert _page().music_state() == {"available": False}
 
 
 class FakeSpotifyOAuth:
@@ -474,6 +473,15 @@ def test_the_page_says_why_theres_no_music(spotify, make_config, monkeypatch):
     # the player is, as it is whether or not it's signed in.
     shown = _page(running=spotify, sessions={"bedroom": FakeSession(music=FakePlayer())}).music_state()
     assert shown["available"] and "why" not in shown and shown["spotify"] == {"signed_in": False}
+
+
+def test_without_novas_config_the_page_says_theres_no_player_the_same_way_everywhere():
+    # Nothing's known of what should have played, so neither player is blamed - and the
+    # page's own words, the music section's and a button's, are the same sentence.
+    page = _page()
+    said = "Nova has no music player set up. Choose one in Settings, under Music."
+    assert page.music_state() == {"available": False, "why": said}
+    assert page.play("pause", LOGIN) == {"success": False, "message": said}
 
 
 def test_the_page_tells_a_satellite_which_is_away_from_one_which_doesnt_exist(spotify):

@@ -116,6 +116,9 @@ OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}
 # Said in Calendars and lists, and to a sign-in, until Nova has Google's keys - read as it
 # starts, as the calendar is made then.
 NO_GOOGLE = "Google's client ID and secret go under Keys, then restart Nova."
+# Said of the music when Nova's config isn't known, so neither player can be blamed - the
+# page's own words for it, in settings.js.
+NO_PLAYER = "Nova has no music player set up. Choose one in Settings, under Music."
 # What the page says of the parts which need Home Assistant, before it is set up.
 NO_HOME = "Nova isn't connected to Home Assistant. Add its address in Settings, and its token in Keys."
 CANT_REACH_HOME = "Nova can't reach Home Assistant just now."
@@ -492,9 +495,7 @@ class SettingsPage:
             else:
                 shown = {"available": False, "why": "No satellite is connected just now."}
         elif music is None:
-            shown = {"available": False}
-            if self.running is not None:
-                shown["why"] = why_no_player(self.running)
+            shown = {"available": False, "why": self._why_no_player()}
         else:
             shown = {"available": True, "player": getattr(music, "name", "Music"), "now": music.now_playing(),
                      "playlists": self._user_playlists(name, music)}
@@ -505,7 +506,7 @@ class SettingsPage:
 
     def _why_no_player(self) -> str:
         """Why the satellite has no player, or - with Nova's config not known - that it hasn't."""
-        return why_no_player(self.running) if self.running is not None else "Nova has no music player set up."
+        return why_no_player(self.running) if self.running is not None else NO_PLAYER
 
     def _user_playlists(self, name: str, music) -> List[str]:
         kept = self._playlists.get(name)
