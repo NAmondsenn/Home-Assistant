@@ -653,6 +653,21 @@ def test_a_button_the_registry_cant_vouch_for_is_refused(make_home):
     assert home.command("turn on the hall chime") == REFUSED
 
 
+@pytest.mark.parametrize("entity", ["switch.pve3_vm_101", "update.pve3", "light.desk_pc_restart", "cover.new",
+                                    "siren.desk_pc_shutdown", "number.new", "select.new"])
+def test_anything_acting_the_registry_cant_vouch_for_is_refused(make_home, entity):
+    # Ruling 104, widened: whatever Proxmox or HASS.Agent adds is in the states at once,
+    # but in the registry only up to five minutes later - and either can act through a
+    # switch or an update as well as a button.
+    home = _assisted(make_home, [_thing(entity, "New"), _thing("sensor.new", "New")], [],
+                     _match("HassTurnOn", entity))
+    assert home.command("turn on new", wider=True) == REFUSED
+    assert "/api/conversation/process" not in _paths(home)
+    # What only says how something is can still be asked about.
+    home.socket.answer = _debugged(_match("HassGetState", "sensor.new"))
+    assert home.command("is new on", wider=True)["success"]
+
+
 @pytest.mark.parametrize("wider", [True, False])
 def test_a_sentence_assist_matches_nothing_in_isnt_sent(make_home, wider):
     home = _assisted(make_home, [LAMP], [_entry("light.lamp")], None)
@@ -747,6 +762,13 @@ def test_the_wider_rule_is_off_without_the_registry(make_home):
     home.registry.read = None
     assert home.command("turn off the TV", wider=True) == DIDNT_UNDERSTAND
     assert _paths(home) == ["/api/states"] and home.socket.calls == []
+    # Nor is a light sentence given Assist to act on anything, as without the registry
+    # nothing which acts is vouched for - Nova's own lights do it instead (see
+    # test_a_refused_light_sentence_is_done_by_novas_own_lights).
+    assert home.command("turn on the lamp") == REFUSED
+    # With the debugging not answering either, there's nothing it would act on to vouch
+    # for, and a light sentence goes to Assist with the checks of what it names.
+    home.socket.answer = HomeSocketError("not answering")
     assert home.command("turn on the lamp")["success"] and _asked(home)["text"] == "turn on the lamp"
 
 
@@ -945,6 +967,7 @@ def test_without_an_administrators_token_the_page_still_has_the_lights(make_home
                               "color_mode": "color_temp", "color_temp_kelvin": 3000, "min_color_temp_kelvin": 2500,
                               "max_color_temp_kelvin": 6500, "icon": "mdi:ceiling-light"}}
     home = _page_house(make_home, {"/api/states": STATES + [kitchen], "/api/template": FakeResponse({}, status=status)})
+    home.registry.read = _registry(*home.registry.read.entries.values(), _entry("light.kitchen"))
     overview = home.overview()
 
     assert overview["lights"] == [{"id": "light.kitchen", "name": "Kitchen", "area": None, "on": True,

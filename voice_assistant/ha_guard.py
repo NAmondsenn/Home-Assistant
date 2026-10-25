@@ -26,10 +26,12 @@ which only ever work lights, rather than refused for a lock nobody asked about.
 
 Nor is anything passed on before Assist's own sentence debugging has said what it would
 act on (see home_assistant.HomeAssistant._assist_targets). A request is refused if
-any of that is guarded, and isn't sent at all if Assist would act on nothing the guard
-can see. Without the registry or the debugging, only Nova's own light sentences go to
-Assist, with the checks of what they name - decision 2's wider rule is off until both
-answer again.
+any of that is guarded, or acts and isn't in the registry - which is up to five minutes
+behind what Proxmox or HASS.Agent add - and isn't sent at all if Assist would act on
+nothing the guard can see. Without the registry or the debugging, only Nova's own light
+sentences go to Assist, with the checks of what they name - decision 2's wider rule is
+off until both answer again - and without the registry, nothing the debugging says
+they'd act on is vouched for, so Nova's own lights do them instead.
 
 Nor is a script or scene run - by Assist, by Claude (see
 home_assistant.HomeAssistant.run_script) or from the settings page - before what it does
@@ -283,15 +285,16 @@ def target_refused(entity_id: str, state: Optional[Dict], snapshot: Optional[Sna
 
     Returns:
         True for anything guarded, anything that wasn't there a moment ago to be checked,
-        and a button the registry can't vouch for.
+        and anything which acts that the registry can't vouch for.
     """
     if state is None:
         return True
     if guarded(entity_id, state.get("attributes") or {}, snapshot) is not None:
         return True
-    # A new Proxmox or HASS.Agent button is in the states at once, but in the registry
-    # only up to five minutes later - and both only ever act through buttons.
-    return entity_id.partition(".")[0] == "button" and (snapshot is None or snapshot.platform(entity_id) is None)
+    # Whatever Proxmox or HASS.Agent adds is in the states at once, but in the registry
+    # only up to five minutes later - and either can act through a switch, an update or a
+    # light as well as a button. Only a sensor's or a binary sensor's never acts.
+    return entity_id.partition(".")[0] not in NOT_ACTING and (snapshot is None or snapshot.platform(entity_id) is None)
 
 
 def _worst(reasons: Iterable[Optional[str]]) -> Optional[str]:
@@ -498,7 +501,7 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
             # something walked already.
             continue
         elif target_refused(entity, state, snapshot):
-            # A button the registry hasn't caught up with yet, which could be Proxmox's.
+            # Something the registry hasn't caught up with yet, which could be Proxmox's.
             found.append(UNSEEN)
         else:
             # A scene's members, or a group's, are its entity_id attribute. A scene with

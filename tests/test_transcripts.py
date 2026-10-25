@@ -17,6 +17,7 @@ from voice_assistant import logging_setup, network, spotify_controller
 from voice_assistant.actions import Action, ActionExecutor
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import Conversation
+from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.intents import LocalIntents
 
@@ -64,6 +65,14 @@ class FakeHomeSocket:
     def call(self, messages):
         return [{"results": [{"intent": {"name": "HassTurnOn"}, "targets": {"light.reading_lamp": {"matched": True}},
                               "match": True}]}]
+
+
+class FakeRegistry:
+    """Stands in for the HomeRegistry: the lamp, so the guard can vouch for it to Assist."""
+
+    def snapshot(self):
+        lamp = Entry("light.reading_lamp", "hue", None, None, "lamp", "Reading lamp", (), True)
+        return Snapshot(entries={lamp.entity_id: lamp}, devices={}, areas={}, read_at=0.0)
 
 
 class FakeSpotify:
@@ -159,7 +168,7 @@ def test_none_of_what_the_user_says_reaches_the_log_with_transcripts_off(log_fil
     monkeypatch.setattr(spotify_controller.time, "sleep", lambda seconds: None)
 
     clock = Clock(config=make_config(), start=False)
-    home = HomeAssistant("http://homeassistant.local:8123", "token")
+    home = HomeAssistant("http://homeassistant.local:8123", "token", registry=FakeRegistry())
     home._session = FakeHomeSession()
     home.socket = FakeHomeSocket()
     music = spotify_controller.SpotifyController(config=make_config(spotify={"device_name": "Kitchen"}))
