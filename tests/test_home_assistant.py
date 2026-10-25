@@ -2708,6 +2708,20 @@ def test_status_leaves_out_any_address_whatever_its_called(make_home, address):
         "Example router uptime (sensor.example_router_uptime): 12.5 d"
 
 
+def test_status_leaves_out_anything_named_after_an_address(make_home):
+    # A Ping entity is named after the host it pings, in its name and its entity id alike.
+    things = [_status("binary_sensor.10_0_0_1", "10.0.0.1", "on"),
+              _status("binary_sensor.example_host", "Example aa:bb:cc:dd:ee:ff", "on"),
+              _status("binary_sensor.example_10_0_0_2_ping", "Example ping", "on"),
+              _status("binary_sensor.example_cupboard", "Example cupboard", "on"),
+              _status("binary_sensor.example_router", "Example router", "on")]
+    home = _status_home(make_home, things, areas={"binary_sensor.example_cupboard": "fe80::1",
+                                                  "binary_sensor.example_router": "hall"})
+    assert home.status("example", now=STATUS_NOW)["message"] == "Example router (binary_sensor.example_router, " \
+                                                                 "Hall): on"
+    assert home.status("10", now=STATUS_NOW)["message"] == "Nothing in Home Assistant matches that."
+
+
 @pytest.mark.parametrize("state", ["on", "21.5", "2026-10-25T10:00:00+00:00", "2026-10-25T10:00:00.123456+00:00",
                                    "1.2.3", "12:30", "12:30:45", "Version 2026.10.1", "heat",
                                    "500107862016", "1234567890123", "16:9", "2026-10-25T10:00:00-05:00"])

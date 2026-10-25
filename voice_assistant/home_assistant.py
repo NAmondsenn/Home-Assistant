@@ -266,6 +266,9 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 # IPv4 address here, whether or not each is under 256 and whatever's before them, as in
 # "host.10.0.0.2".
 IPV4_ADDRESS = re.compile(r"(?<!\d)\d{1,3}(\.\d{1,3}){3}(?!\d)")
+# An IPv4 address in an entity id, whose dots Home Assistant makes underscores - a Ping
+# entity for 10.0.0.1 is binary_sensor.10_0_0_1.
+IPV4_IN_ID = re.compile(r"(?<!\d)\d{1,3}(_\d{1,3}){3}(?!\d)")
 HARDWARE_ADDRESS = re.compile(
     r"(?<![0-9a-f])([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
     r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])",
@@ -1525,9 +1528,10 @@ def _refused(error: Exception) -> bool:
 def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snapshot]) -> bool:
     """
     Whether status leaves an entity out, as private or another tool's: by its domain
-    (NOT_STATUS_DOMAINS), by its id (NOT_STATUS_IDS), its device class, a state which
-    holds an address of any kind, or a state which isn't a number or a time for a text
-    entity, or for a sensor on a personal device or without the registry to tell.
+    (NOT_STATUS_DOMAINS), by its id (NOT_STATUS_IDS), its device class, a state, name,
+    area or entity id which holds an address of any kind, or a state which isn't a number
+    or a time for a text entity, or for a sensor on a personal device or without the
+    registry to tell.
 
     Args:
         entity: e.g. "sensor.example_phone_steps".
@@ -1543,7 +1547,11 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
         return True
     if attributes.get("device_class") in NOT_STATUS_CLASSES:
         return True
-    if _holds_address(state):
+    # A Ping entity is named after the host it pings, so its name and entity id are
+    # looked at as well as its state - and its area, which is a name too.
+    area = snapshot.area_name(entity) if snapshot else None
+    if (any(_holds_address(text) for text in (state, str(attributes.get("friendly_name") or ""), area or ""))
+            or IPV4_IN_ID.search(entity)):
         return True
     # Only a sensor's or a text entity's state can be free text - a light's is on or off,
     # whatever the device. A text entity holds whatever was typed into it, on any device.
