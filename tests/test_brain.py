@@ -665,6 +665,18 @@ def test_a_removal_on_the_command_line_is_handled_the_same(brain, connect, passw
     _rings_on(brain, "bedroom", bedroom)
 
 
+def test_a_removal_moves_to_the_default_it_read_the_removal_from(brain, passwords, monkeypatch):
+    # The file goes missing just after the removal is read from it. Read again for
+    # the default, it would say there are none, and the alarm would ring nowhere.
+    brain.clock.set_alarm(7, 0, satellite="kitchen")
+    names = passwords.names
+    monkeypatch.setattr(passwords, "names", lambda missing_ok=True: names() if not missing_ok else [])
+
+    brain.remove_satellite("kitchen")
+
+    assert brain.clock.satellites() == {"bedroom"}
+
+
 def test_a_fresh_brain_with_no_satellites_file_logs_no_error(make_brain, passwords, caplog):
     # No satellite has been added yet, so there's no file - nothing to be alarmed by.
     os.remove(passwords.path)
@@ -723,7 +735,7 @@ def test_a_removal_is_handled_once(brain, passwords, monkeypatch):
     brain.clock.set_alarm(7, 0, satellite="kitchen")
     handled = []
     on_removed = brain._on_removed
-    monkeypatch.setattr(brain, "_on_removed", lambda name: (handled.append(name), on_removed(name)))
+    monkeypatch.setattr(brain, "_on_removed", lambda name, names: (handled.append(name), on_removed(name, names)))
     # Each, having read how the file was last seen and which satellites there were,
     # waits for the other to read them too - so both would take the removal for new.
     # One at a time, they can't.

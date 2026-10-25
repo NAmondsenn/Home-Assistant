@@ -744,13 +744,13 @@ class Brain:
             self._names_seen = names
             for name in gone:
                 try:
-                    self._on_removed(name)
+                    self._on_removed(name, names)
                 except Exception:
                     logger.exception(f"Couldn't finish handling the {name} satellite's removal")
         finally:
             self._removing.release()
 
-    def _on_removed(self, name: str):
+    def _on_removed(self, name: str, names: List[str]):
         """
         Handles a satellite which has been removed, whether it's connected or not. Its
         timers, alarms and routines go to the default, so nothing rings nowhere - or
@@ -759,6 +759,9 @@ class Brain:
 
         Args:
             name: The satellite.
+            names: The satellites still let in, as the removal was read - the first
+                is the default. Never read again here: a file gone missing since
+                would read as none, and what was the satellite's would ring nowhere.
         """
         # Out of sessions first, so neither a change on the clock nor the hourly
         # resend can send it its real copy after the empty one - see _send_alarms_to.
@@ -776,7 +779,7 @@ class Brain:
         if not emptied:
             logger.warning(f"The {name} satellite was removed while it wasn't connected, so it still has a copy "
                            f"of its alarms for the next week, and rings them if it's switched on before then")
-        default = self.default_satellite()
+        default = names[0] if names else None
         if default is None:
             with self._lock:
                 self._unowned_given = False
