@@ -589,9 +589,9 @@ def test_a_calendar_google_wont_give_is_left_out_and_the_rest_read(make_calendar
     # reach Google's calendar" for every one of them.
     calendar = make_calendar(calendars={"calendar-personal": [
         _google_event("Dentist", "2026-10-22T09:30:00+01:00", "2026-10-22T10:00:00+01:00")], "calendar-gone": []})
-    url = _events_url("calendar-gone")
-    calendar._session.answers[url] = [requests.HTTPError(f"{status} Client Error for url: {url}",
-                                                         response=FakeResponse(status, {"error": {"code": status}}))]
+    # Answered as Google does, and raised by _get's own raise_for_status - past the 401 retry.
+    calendar._session.answers[_events_url("calendar-gone")] = [FakeResponse(status, {"error": {
+        "code": status, "errors": [{"domain": "global", "reason": "notFound" if status == 404 else "forbidden"}]}})]
 
     with caplog.at_level(logging.INFO):
         assert calendar.agenda(date(2026, 10, 22), 1, today=date(2026, 10, 20)) == {
@@ -603,6 +603,28 @@ def test_a_calendar_google_wont_give_is_left_out_and_the_rest_read(make_calendar
     calendar._session.answers[_events_url("calendar-personal")].append(_events_page())
     calendar.agenda(date(2026, 10, 22), 1)
     assert [url for url, _ in calendar._session.asked].count(LIST) == 2
+
+
+@pytest.mark.parametrize("answer", [
+    FakeResponse(403, {"error": {"code": 403, "errors": [{"domain": "usageLimits", "reason": "rateLimitExceeded"}]}}),
+    FakeResponse(403, {"error": {"code": 403, "errors": [{"domain": "usageLimits",
+                                                          "reason": "userRateLimitExceeded"}]}}),
+    FakeResponse(429, {"error": {"code": 429, "errors": [{"domain": "usageLimits", "reason": "rateLimitExceeded"}]}}),
+])
+def test_google_slowing_nova_down_is_google_out_of_reach_not_a_calendar_gone(make_calendar, answer):
+    # Left out as if gone, the calendar refused for a moment would have been "nothing on".
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": []})
+    calendar._session.answers[_events_url("calendar-work")] = [answer]
+    assert calendar.agenda(date(2026, 10, 22), 1) == {"success": False, "message": CANT_REACH_GOOGLE}
+    assert calendar._known_at is not None
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_an_activity_whose_calendar_google_wont_give_says_it_cant_reach_google(make_calendar, status):
+    # Never "You haven't got gym tomorrow" when the Gym calendar wasn't read at all.
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-gym": []})
+    calendar._session.answers[_events_url("calendar-gym")] = [FakeResponse(status, {"error": {"code": status}})]
+    assert calendar.activity("gym", date(2026, 10, 21)) == {"success": False, "message": CANT_REACH_GOOGLE}
 
 
 def test_an_event_without_a_name_in_words_is_still_said(make_calendar):
@@ -878,6 +900,72 @@ def test_split_shifts_and_all_day_work_are_both_said():
         "On Friday, you've got work all day.")
 
 
+# Google's own calendars - a country's holidays, the contacts' birthdays - with the ids it gives them.
+HOLIDAYS = "en.uk#holiday@group.v.calendar.google.com"
+BIRTHDAYS = "addressbook#contacts@group.v.calendar.google.com"
+
+
+def test_googles_own_calendars_arent_activities(make_calendar, tmp_path):
+    # Every non-primary calendar was an activity, so "Christmas Day" was said as
+    # "holidays in united kingdom", and everyone's birthday as "birthdays".
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": []})
+    calendar._session.answers[LIST] = [_calendar_list(
+        _entry("calendar-personal", "Personal", primary=True), _entry("calendar-work", "Work"),
+        _entry(HOLIDAYS, "Holidays in United Kingdom", access_role="reader"),
+        _entry(BIRTHDAYS, "Birthdays", access_role="reader"))]
+    calendar._session.answers[_events_url(HOLIDAYS)] = [_events_page(
+        _google_event("Christmas Day", "2026-12-25", "2026-12-26"))]
+    calendar._session.answers[_events_url(BIRTHDAYS)] = [_events_page(
+        _google_event("Sam's birthday", "2026-12-25", "2026-12-26"))]
+    calendar._session.answers[_events_url("calendar-personal")] = [_events_page()]
+    calendar._session.answers[_events_url("calendar-work")] = [_events_page()]
+
+    assert calendar.agenda(date(2026, 12, 25), 1, today=date(2026, 12, 24))["message"] == \
+        "Tomorrow, you've got Christmas Day, all day, and Sam's birthday, all day."
+    assert list(calendar.activity_calendars()) == ["work"]
+    # Unless switched on in calendars.json.
+    calendar.choices = _choices(tmp_path, {HOLIDAYS: True})
+    assert list(calendar.activity_calendars()) == ["work", "holidays in united kingdom"]
+
+
+def test_an_all_day_event_on_an_activity_calendar_is_said_by_its_own_name(make_calendar):
+    # An activity is a stretch of time - a training day on the Work calendar isn't "work, all day".
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": [
+        _google_event("Training day", "2026-10-21", "2026-10-22"),
+        _google_event("Late", "2026-10-21T15:30:00+01:00", "2026-10-21T22:00:00+01:00")]})
+    assert calendar.agenda(date(2026, 10, 21), 1, today=date(2026, 10, 20))["message"] == \
+        "Tomorrow, you've got Training day, all day, and work from 3:30 PM until 10:00 PM."
+
+
+def test_the_agenda_takes_an_activity_by_its_calendar_not_its_name(make_calendar, tmp_path):
+    # The user's own calendar, called Work too, isn't the Work activity.
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": []})
+    calendar._session.answers[LIST] = [_calendar_list(_entry("calendar-personal", "Work", primary=True),
+                                                      _entry("calendar-work", "Work"))]
+    calendar._session.answers[_events_url("calendar-personal")] = [_events_page(
+        _google_event("Dentist", "2026-10-21T09:00:00+01:00", "2026-10-21T10:00:00+01:00"))]
+    calendar._session.answers[_events_url("calendar-work")] = [_events_page(
+        _google_event("Late", "2026-10-21T15:30:00+01:00", "2026-10-21T22:00:00+01:00"))]
+    assert calendar.agenda(date(2026, 10, 21), 1, today=date(2026, 10, 20))["message"] == \
+        "Tomorrow, you've got Dentist at 9:00 AM, and work from 3:30 PM until 10:00 PM."
+
+
+def test_shifts_and_working_are_work_even_beside_a_calendar_starting_with_them(make_calendar):
+    calendar, _ = _heard(make_calendar, "Work", "Working group", "Shift swaps")
+    words = calendar.activity_words()
+    assert words["working"] == "work" and words["shift"] == "work" and words["shifts"] == "work"
+    assert words["working group"] == "working group" and words["shift swaps"] == "shift swaps"
+
+
+def test_two_names_that_tidy_alike_are_the_first_listed(make_calendar):
+    calendar = make_calendar(calendars={"calendar-personal": []})
+    calendar._session.answers[LIST] = [_calendar_list(
+        _entry("calendar-personal", "Personal", primary=True), _entry("calendar-work", "Work"),
+        _entry("calendar-work-again", "Work!"))]
+    calendar.calendars()
+    assert calendar.activity_words()["work"] == "work"
+
+
 def _heard(make_calendar, *names):
     """LocalIntents hearing the activities of calendars with these names, beside the user's own."""
     calendar = make_calendar(calendars={"calendar-personal": [], **{
@@ -902,6 +990,37 @@ def test_the_same_words_still_mean_work_and_uni(make_calendar):
     assert asked("What are my next three shifts?") == ("get_activity", {"activity": "work",
                                                                         "start": today.isoformat(), "count": 3})
     assert calendar.activity_words()["classes"] == "uni" and calendar.activity_words()["works"] == "work"
+
+
+@pytest.mark.parametrize("text, heard", [
+    # A first word alone, in a bare shape, is an everyday question - plan 1's sunset and home.
+    ("When is sunset?", None), ("When's sunset?", None), ("Am I at home?", None), ("Am I home?", None),
+    # With a day, or the whole name, or a shape that plainly names an activity, it's the calendar.
+    ("When's sunset tomorrow?", "sunset yoga"), ("Am I at home on Saturday?", "home group"),
+    ("When is sunset yoga?", "sunset yoga"), ("What time do I have sunset?", "sunset yoga"),
+    ("When's my next sunset?", "sunset yoga"),
+])
+def test_a_first_word_alone_isnt_heard_in_a_bare_question(make_calendar, text, heard):
+    _, intents = _heard(make_calendar, "Sunset yoga", "Home group")
+    result = intents.match(text)
+    assert (result["actions"][0].params["activity"] if result else None) == heard
+
+
+@pytest.mark.parametrize("name, text, heard", [
+    ("C++ club", "What time do I have c club tomorrow?", "c++ club"),
+    ("C++ club", "What's the time?", None),
+    ("C++ club", "Have I got a cold?", None),
+    ("A", "What time do I have a tomorrow?", "a"),
+    ("A", "Have I got a meeting today?", None),
+    ("A", "Set a timer for ten minutes.", None),
+    ("A", "Am I at a loss?", None),
+])
+def test_a_calendar_named_oddly_is_still_heard_strictly(make_calendar, name, text, heard):
+    _, intents = _heard(make_calendar, name)
+    result = intents.match(text)
+    activities = [action.params["activity"] for action in (result or {}).get("actions", [])
+                  if action.tool == "get_activity"]
+    assert activities == ([heard] if heard else [])
 
 
 def test_a_calendar_of_two_words_is_heard_by_its_first(make_calendar):

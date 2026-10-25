@@ -53,6 +53,10 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 # user's calendars but their own is one, by its name, so the words are Google's, put in
 # here at each match - see LocalIntents._activity_rule. Until then, any words will do.
 ACTIVITY = r"(?P<activity>[a-z0-9' ]+?)"
+# The bare shapes before an activity - "when's sunset?", "am I at home?" - in which an
+# activity's first word alone is an everyday question, not "Sunset yoga" or "Home group",
+# unless a day follows.
+BARE_BEFORE_ACTIVITY = r"(?:when is|when's|am i)(?: at| in)? "
 
 # The devices a battery is asked about by - the kind words batteries.find knows. A
 # device with a name of its own ("the S25 Ultra") is left to Claude.
@@ -192,6 +196,11 @@ def calendar_days(day: Optional[str], today: date) -> Tuple[date, int]:
             return today, 2
         return today + timedelta(days=5 - today.weekday()), 2
     return today + timedelta(days=(WEEKDAYS.index(day) - today.weekday()) % 7), 1
+
+
+def _tidied(text: str) -> str:
+    """Words as the rules see them: lower case, letters, digits and apostrophes, single-spaced."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]", " ", text.lower())).strip()
 
 
 def _ordinal(day: int) -> str:
@@ -358,8 +367,7 @@ class LocalIntents:
             A result shaped like LLMHandler.process_query's - a "response" and a list
             of "actions" - or None to leave the request to Claude.
         """
-        request = re.sub(r"[^a-z0-9' ]", " ", text.lower())
-        request = re.sub(r"\s+", " ", request).strip()
+        request = _tidied(text)
         request = re.sub(POLITE_END, "", re.sub(POLITE_START, "", request)).strip()
         self._said = text
 
@@ -513,7 +521,14 @@ class LocalIntents:
             pattern = found.re.pattern.replace(ACTIVITY, "(?P<activity>" + "|".join(
                 re.escape(word) for word in sorted(words, key=len, reverse=True)) + ")")
             again = re.fullmatch(pattern, found.string)
-            return handle(again, words) if again else None
+            if not again:
+                return None
+            name = _tidied(words[again["activity"]]).split()
+            first_word_alone = len(name) > 1 and again["activity"] == name[0]
+            if (first_word_alone and not again.groupdict().get("day")
+                    and re.fullmatch(BARE_BEFORE_ACTIVITY, found.string[:again.start("activity")])):
+                return None
+            return handle(again, words)
         return matched
 
     def _activity_words(self) -> Dict[str, str]:

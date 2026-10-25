@@ -86,6 +86,13 @@ EVENTS_PAGE = 250
 # What Google answers for a calendar it won't give the events of - deleted since its list
 # was read, or no longer shared with the user. That one is left out, not the whole read.
 CALENDAR_GONE = (403, 404)
+# Except a 403 for one of these, which is Google slowing Nova down - a moment out of reach,
+# not a calendar gone, or "nothing on" would be said for what wasn't read.
+RATE_LIMITED = ("rateLimitExceeded", "userRateLimitExceeded")
+
+# The ids of Google's own calendars - a country's holidays, the contacts' birthdays, week
+# numbers - which are things on the calendar, not activities, unless switched on.
+GOOGLES_OWN = "@group.v.calendar.google.com"
 
 # The few English words for the same things as an activity's name - so "am I working on
 # Saturday?" is the Work calendar, and "when's my next lecture?" the Uni one. They're
@@ -464,7 +471,8 @@ class GoogleCalendar:
     def activity_calendars(self) -> Dict[str, Dict]:
         """
         The activities, from the calendars Google listed last, without asking it: every
-        calendar but the user's own, unless calendars.json says otherwise for it.
+        calendar but the user's own and Google's own (see GOOGLES_OWN), unless
+        calendars.json says otherwise for it.
 
         Returns:
             Each activity's word - its calendar's name, in lower case - to its calendar.
@@ -475,7 +483,8 @@ class GoogleCalendar:
         for calendar in self.known():
             choice = chosen.get(calendar["id"])
             word = calendar["name"].strip().lower()
-            if word and (choice if isinstance(choice, bool) else not calendar["primary"]):
+            by_default = not calendar["primary"] and not calendar["id"].endswith(GOOGLES_OWN)
+            if word and (choice if isinstance(choice, bool) else by_default):
                 # Of two calendars with one name, the first in Google's list is the one heard.
                 found.setdefault(word, calendar)
         return found
@@ -484,24 +493,29 @@ class GoogleCalendar:
         """
         Every word an activity is heard by locally, to the activity: its name, its plural,
         and SAME_AS's words for it. A name of two or more words is heard by its first word
-        too - "uni" for "Uni timetable" - unless another activity's name starts with it.
-        Each is as the request is, once intents.py has tidied it - "Work (Tesco)" is
-        "work tesco".
+        too - "uni" for "Uni timetable" - unless another activity's name starts with it, or
+        it's SAME_AS's for another, as "working" is Work's beside "Working group". Each is
+        as the request is, once intents.py has tidied it - "Work (Tesco)" is "work tesco".
 
         Returns:
             e.g. {"work": "work", "works": "work", "shift": "work", ...}.
         """
-        names = {_as_said(word): word for word in self.activity_calendars()}
+        names: Dict[str, str] = {}
+        for word in self.activity_calendars():
+            # Of two that tidy alike - "Work" and "Work!" - the first listed, as activity_calendars has it.
+            names.setdefault(_as_said(word), word)
         names.pop("", None)
         firsts: Dict[str, List[str]] = {}
         for said in names:
             firsts.setdefault(said.split()[0], []).append(said)
         heard: List[Tuple[str, str]] = [(said, word) for said, word in names.items()]
         heard += [(said if said.endswith("s") else said + "s", word) for said, word in names.items()]
-        heard += [(first, names[saids[0]]) for first, saids in firsts.items() if len(saids) == 1 and first != saids[0]]
         heard += [(same, word) for said, word in list(heard) for same in SAME_AS.get(said, ())]
+        first_words = [(first, names[saids[0]]) for first, saids in firsts.items()
+                       if len(saids) == 1 and first != saids[0]]
+        heard += first_words + [(same, word) for first, word in first_words for same in SAME_AS.get(first, ())]
         words: Dict[str, str] = {}
-        # A name is heard as that activity before it's another's plural, first word or SAME_AS.
+        # A name is heard as that activity before it's another's plural, SAME_AS or first word.
         for said, word in heard:
             words.setdefault(said, word)
         return words
@@ -517,16 +531,16 @@ class GoogleCalendar:
 
         Returns:
             The events, earliest first, each a dict with "summary", "start", "end",
-            "all_day" and "calendar", its calendar's name - start a local datetime, or
-            a date for an all-day event.
+            "all_day", "calendar", its calendar's name, and "calendar_id" - start a local
+            datetime, or a date for an all-day event.
 
         Raises:
             SignInNeeded: If there's no sign-in, or Google no longer accepts it.
             requests.RequestException: If Google couldn't be reached, or refused.
             ValueError, KeyError, TypeError: If its answer wasn't the shape of events.
 
-        A calendar Google won't give the events of - deleted, or no longer shared - is left
-        out, with a warning, and the rest are read.
+        Reading every calendar, one Google won't give the events of - deleted, or no longer
+        shared - is left out, with a warning, and the rest are read.
         """
         names = {calendar["id"]: calendar["name"] for calendar in self.calendars()}
         # Each end made from its own day, not the start plus so many hours, so a day the
@@ -541,19 +555,23 @@ class GoogleCalendar:
                 events = self._pages(f"{CALENDARS}/{quote(calendar_id, safe='')}/events", window)
             except requests.HTTPError as e:
                 status = getattr(e.response, "status_code", None)
-                if status not in CALENDAR_GONE:
+                # One asked for by id - an activity's own - is the whole read, so it's never
+                # "you haven't got gym" for a Gym calendar that wasn't read.
+                gone = status in CALENDAR_GONE and not _rate_limited(e.response)
+                if gone:
+                    # Its list is read afresh next time, so a calendar since deleted is gone from it.
+                    self._known_at = None
+                if not gone or calendar_ids is not None:
                     raise
                 # Not its id, or the error, which has the address with the id in it.
                 logger.warning(f"Left a calendar out, as Google wouldn't give its events: {status}")
-                # Its list is read afresh next time, so a calendar since deleted is gone from it.
-                self._known_at = None
                 continue
             for event in events:
                 if event.get("status") == "cancelled":
                     continue
                 # A calendar not in Google's list has no name to give - and its id, which
                 # for the primary is the user's email address, is never said in its place.
-                found.append({**_read_event(event), "calendar": names.get(calendar_id, "")})
+                found.append({**_read_event(event), "calendar": names.get(calendar_id, ""), "calendar_id": calendar_id})
         return sorted(found, key=lambda event: _sort_key(event["start"]))
 
     def agenda(self, first: date, days: int = 1, today: Optional[date] = None) -> Dict:
@@ -640,6 +658,14 @@ class GoogleCalendar:
 READ_FAILURES = (SignInNeeded, requests.RequestException, ValueError, KeyError, TypeError)
 
 
+def _rate_limited(response) -> bool:
+    """Whether Google's error answer says it's slowing Nova down, rather than refusing it."""
+    try:
+        return any(error.get("reason") in RATE_LIMITED for error in response.json()["error"]["errors"])
+    except (AttributeError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _failed(error: Exception) -> Dict:
     """
     What's said when the calendar couldn't be read, depending on why. Only the kind of
@@ -672,12 +698,14 @@ def _as_activities(events: List[Dict], activities: Dict[str, Dict], first: date)
     The user's activities - work, uni - as one stretch of time each, named after the
     activity. A day of uni was read out session by session, by each one's own name -
     "CSC2035/P01/01 <04-08> at 11:30 AM" - which took 25 seconds and meant little.
-    Now it's "uni from 9 AM until 1 PM". Everything else is left as it is.
+    Now it's "uni from 9 AM until 1 PM". Everything else is left as it is - an
+    activity calendar's all-day events too, as an activity is a stretch of time: a
+    training day on the Work calendar is "Training day, all day", not "work, all day".
 
     Args:
-        events: From GoogleCalendar.events, earliest first - each with its "calendar".
+        events: From GoogleCalendar.events, earliest first - each with its "calendar_id".
         activities: The activity calendars, by each activity's word - see
-            GoogleCalendar.activity_calendars. Every event on one is that activity.
+            GoogleCalendar.activity_calendars. Every timed event on one is that activity.
         first: The first day asked about.
 
     Returns:
@@ -685,14 +713,14 @@ def _as_activities(events: List[Dict], activities: Dict[str, Dict], first: date)
         time that day are in "spans", to be said with their ends as well as their
         starts.
     """
-    kept, theirs = [], {name: [] for name in activities}
+    # By id, as activity() reads them - not the name, which the user's own may share.
+    by_id = {calendar["id"]: word for word, calendar in activities.items()}
+    kept, theirs = [], {word: [] for word in activities}
     for event in events:
-        name = event["calendar"].strip().lower()
-        (theirs[name] if name in theirs else kept).append(event)
+        word = by_id.get(event.get("calendar_id"))
+        (theirs[word] if word is not None and not event["all_day"] else kept).append(event)
     for name, its_events in theirs.items():
         for day, on_day in _by_day(its_events, first).items():
-            if any(event["all_day"] for event in on_day):
-                kept.append({"summary": name, "start": day, "end": None, "all_day": True, "activity": True})
             spans = _stretches(on_day)
             if spans:
                 kept.append({"summary": name, "start": spans[0][0], "end": None, "all_day": False, "spans": spans,

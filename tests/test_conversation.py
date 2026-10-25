@@ -189,10 +189,11 @@ def test_claude_is_told_the_activities():
     said = activity["input_schema"]["properties"]["activity"]["description"].lower()
     assert "work" not in said and "uni" not in said
 
-    # A calendar added in Google is named from the next request.
+    # A calendar added in Google is named from the next request - in order, so a list
+    # Google gives in another order doesn't change the tools, and the API's cache.
     calendar.names.append("Gym")
     conversation.handle("when have I got gym")
-    assert told()["description"].endswith("The user's activities: Uni, Work and Gym.")
+    assert told()["description"].endswith("The user's activities: Gym, Uni and Work.")
 
 
 def test_a_local_command_never_reaches_claude():
