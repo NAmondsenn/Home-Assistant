@@ -628,6 +628,15 @@ def test_routines_on_a_removed_satellite_run_on_the_default(brain, connect):
     assert bedroom.routines == ["Good morning"]
 
 
+def test_a_routine_isnt_saved_on_a_satellite_gone_from_the_file(brain, passwords):
+    # The page checks too, but a removal can land between its check and the save.
+    passwords.remove("kitchen")
+
+    assert brain.routines.save({**MORNING, "satellite": "kitchen"}) == {
+        "success": False, "message": "There's no satellite called kitchen."}
+    assert brain.routines.save({**MORNING, "satellite": "bedroom"})["success"]
+
+
 def test_a_removed_satellites_volumes_are_kept(brain, passwords):
     volume = VolumeControl(path=session_module._kept_for("volume", "kitchen"))
     volume.set("music", 20)

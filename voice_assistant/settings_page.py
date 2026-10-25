@@ -1035,9 +1035,13 @@ class SettingsPage:
         if self.brain.routines is None or not isinstance(routine, dict):
             return {"success": False, "message": "That didn't make sense."}
         # Never one for a name nobody has: it would be saved, but never run. An empty
-        # one is the default's, as Routines keeps it.
+        # one is the default's, as Routines keeps it. One removed after this looks is
+        # Routines' own to refuse - see its let_in.
         name = str(routine.get("satellite") or "").strip()
-        if name and name not in self.brain.satellites():
+        names = self._satellite_names() if name else []
+        if names is None:
+            return {"success": False, "message": SATELLITES_UNREADABLE}
+        if name and name not in names:
             return {"success": False, "message": f"There's no satellite called {name}."}
         result = self.brain.routines.save(routine)
         if result["success"]:

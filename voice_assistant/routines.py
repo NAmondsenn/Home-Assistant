@@ -20,7 +20,7 @@ import re
 import threading
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from voice_assistant import paths, storage
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -112,12 +112,18 @@ def _checked(given: Dict) -> Dict:
 class Routines:
     """The user's routines."""
 
-    def __init__(self, path: str = None):
+    def __init__(self, path: str = None, let_in: Optional[Callable[[str], bool]] = None):
         """
         Args:
             path: Where they're kept - routines.json in the data folder unless given.
+            let_in: Whether a satellite is still let in, or None to take every one
+                as let in. Asked under the routines' lock as one is saved, which a
+                satellite's removal takes to move its routines once it's gone from
+                the file (see forget_satellite) - so one saved for it as it's
+                removed is saved first and moved, or refused, never left on none.
         """
         self.path = path or ROUTINES_FILE
+        self.let_in = let_in
         self._lock = threading.Lock()
         self._routines: List[Dict] = self._load()
         # The day each one last ran by itself, so it runs once at its time, however
@@ -294,6 +300,9 @@ class Routines:
         except ValueError as e:
             return {"success": False, "message": str(e)}
         with self._lock:
+            satellite = routine["satellite"]
+            if satellite and self.let_in is not None and not self.let_in(satellite):
+                return {"success": False, "message": f"There's no satellite called {satellite}."}
             others = [other for other in self._routines if other["id"] != routine["id"]]
             if len(others) >= MOST_ROUTINES:
                 return {"success": False, "message": f"Nova keeps {MOST_ROUTINES} routines at most."}

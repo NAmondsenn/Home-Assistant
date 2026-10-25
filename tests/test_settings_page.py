@@ -1375,7 +1375,13 @@ def test_a_broken_satellites_file_is_said_so_not_taken_for_no_satellite(files, c
         raise json.JSONDecodeError("Expecting value", "", 0)
 
     page.brain.satellites = broken
+    page.brain.routines = Routines(path=str(files / "routines.json"))
     said = {"success": False, "message": "The satellites' file can't be read, so nothing was changed."}
+    assert page.save_routine({"name": "Lights out", "steps": "turn off the lights", "satellite": "bedroom"},
+                             LOGIN) == said
+    assert page.brain.routines.all() == []
+    # The default's needs no satellites file.
+    assert page.save_routine({"name": "Lights out", "steps": "turn off the lights"}, LOGIN)["success"]
     assert page.add_satellite("study", LOGIN) == said
     assert page.new_password("bedroom", LOGIN) == said
     assert page.remove_satellite("bedroom", LOGIN) == said

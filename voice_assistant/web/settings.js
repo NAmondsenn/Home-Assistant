@@ -514,6 +514,13 @@ function showSatellites(state) {
       return chip;
     }));
   });
+
+  // The routine editor's "Runs on" too, while it's open, as satellites come and go -
+  // keeping the choice made if it's still offered. Closed, it's drawn as it opens.
+  drawIfChanged("runs-on", satellites.map((satellite) => [satellite.name, satellite.default]), () => {
+    if (document.getElementById("routine-editor").hidden) return false;
+    showRunsOn(document.getElementById("routine-satellite").value);
+  });
 }
 
 // Gives a satellite a new password, once the user's sure - it's let go until its
@@ -1695,8 +1702,13 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     const field = (id) => document.getElementById(id).value;
     // With the choice hidden, a routine is saved as it was - not dropped to the default.
+    // That's one satellite at most, so a satellite since removed goes to the default,
+    // where Nova moves its routines anyway, rather than being refused with no choice
+    // shown to change it.
+    const kept = editing && satellites.some((satellite) => satellite.name === editing.satellite)
+      ? editing.satellite : "";
     const runsOn = document.getElementById("routine-satellite-field").hidden && editing
-      ? editing.satellite || "" : field("routine-satellite");
+      ? kept : field("routine-satellite");
     const routine = { id: editing ? editing.id : undefined, name: field("routine-name"), phrases: field("routine-phrases"),
                       at: field("routine-at"), repeat: field("routine-repeat"), steps: field("routine-steps"),
                       satellite: runsOn };

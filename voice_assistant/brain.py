@@ -258,7 +258,7 @@ class Brain:
         # What the assistant knows about the user, learnt as they talk - see memory.py.
         self.memory = Memory()
         # The user's own routines - see routines.py.
-        self.routines = Routines()
+        self.routines = Routines(let_in=lambda satellite: not self._gone_from_file(satellite))
 
         # The user's own ntfy server, both ways: alerts said out loud as they arrive,
         # and things sent to their phone. None if it isn't set up - see ntfy.py.

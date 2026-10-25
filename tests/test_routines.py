@@ -38,6 +38,25 @@ def test_a_routine_keeps_the_satellite_it_runs_on(routines):
     assert dinner["routine"]["satellite"] == "kitchen"
 
 
+def test_a_routine_on_a_satellite_no_longer_let_in_isnt_kept(tmp_path):
+    # Removed as it was being saved. Checked under the routines' own lock, which the
+    # removal's move takes - so it's saved first and moved, or refused.
+    checked = []
+
+    def let_in(satellite):
+        checked.append(routines._lock.locked())
+        return satellite != "kitchen"
+
+    routines = Routines(path=str(tmp_path / "routines.json"), let_in=let_in)
+    assert routines.save({**MORNING, "satellite": "kitchen"}) == {
+        "success": False, "message": "There's no satellite called kitchen."}
+    assert routines.all() == []
+    assert routines.save({**MORNING, "satellite": "bedroom"})["success"]
+    # The default's is never refused.
+    assert routines.save({**MORNING, "name": "Dinner", "phrases": "dinner"})["success"]
+    assert checked == [True, True]
+
+
 def test_changing_a_routine_keeps_it_one_routine(routines):
     routine = routines.save(MORNING)["routine"]
     changed = routines.save({**routine, "steps": ["what's the weather"]})
