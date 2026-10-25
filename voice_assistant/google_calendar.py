@@ -64,9 +64,9 @@ SCOPES_SAID = {
 }
 
 # The OAuth errors from Google's token address that only signing in again can put right:
-# a sign-in revoked or run out, or a client deleted, or with a secret made anew - which
-# would otherwise be heard as Google being out of reach, for good.
-SIGN_IN_ERRORS = ("invalid_grant", "invalid_client")
+# a sign-in revoked or run out, a client deleted, or with a secret made anew, or a client
+# of the wrong type - which would otherwise be heard as Google being out of reach, for good.
+SIGN_IN_ERRORS = ("invalid_grant", "invalid_client", "unauthorized_client")
 
 AUTHORISE = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN = "https://oauth2.googleapis.com/token"
@@ -308,7 +308,7 @@ class GoogleSignIn:
 
         Raises:
             SignInNeeded: If Google says the grant is no good - revoked, or run out - or
-                ClientRefused, if it doesn't know the client.
+                won't let the client have one, or ClientRefused, if it doesn't know the client.
             requests.RequestException: If Google couldn't be reached, or refused.
         """
         response = self._session.post(TOKEN, data={"client_id": self.client_id,

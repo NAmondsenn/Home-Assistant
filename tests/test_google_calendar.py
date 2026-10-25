@@ -250,6 +250,18 @@ def test_a_client_google_no_longer_knows_says_the_sign_in_needs_doing_again(toke
         sign_in.access_token()
 
 
+@pytest.mark.parametrize("status", [400, 401])
+def test_a_client_google_wont_let_sign_in_says_the_sign_in_needs_doing_again(token_file, status):
+    # A client of the wrong type - not a "Desktop app" - which trying again won't put right either.
+    _signed_in(token_file)
+    google = FakeGoogle(**{google_calendar.TOKEN: [
+        FakeResponse(status, {"error": "unauthorized_client", "error_description": "Unauthorized"})]})
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+
+    with pytest.raises(SignInNeeded):
+        sign_in.access_token()
+
+
 def test_without_a_sign_in_it_needs_doing(token_file):
     google = FakeGoogle()
     sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
