@@ -458,6 +458,36 @@ class Brain:
             session = self.sessions.get(name) if name else None
         return session if session is not None and session.satellite.connected else None
 
+    def _stoppable_sessions(self) -> List[Tuple[str, Session]]:
+        """
+        Returns:
+            Each connected satellite with something ringing on it, or its Nova
+            talking, and its session - in the order the satellites were added.
+        """
+        found = []
+        for name in self.satellites():
+            session = self.session_for(name)
+            if session is not None and (self.clock.is_ringing(satellite=name) or session.activity == "speaking"):
+                found.append((name, session))
+        return found
+
+    def stoppable(self) -> bool:
+        """Whether the settings page's Stop has anything to stop, on any satellite."""
+        return bool(self._stoppable_sessions())
+
+    def stop_everywhere(self) -> List[str]:
+        """
+        The settings page's Stop: Home Assistant's, on every satellite with something
+        to stop - see Session.stop_what_rings_and_speaks.
+
+        Returns:
+            The names of the satellites stopped.
+        """
+        stopped = self._stoppable_sessions()
+        for _, session in stopped:
+            session.stop_what_rings_and_speaks()
+        return [name for name, _ in stopped]
+
     def serve(self):
         """
         Listens for satellites on backend.port, on this machine alone, each on a thread

@@ -14,6 +14,7 @@ import socket
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1020,6 +1021,51 @@ def test_stop_silences_what_rings_and_what_nova_is_saying(brain, make_session):
     assert happened == [("stopped", ["reply", "announcement"])]
 
 
+def test_home_assistants_stop_is_the_same_code(make_session):
+    # The settings page's Stop goes through stop_what_rings_and_speaks too, so the two
+    # can never drift apart.
+    session = make_session()
+    assert session._device_controls().stop == session.stop_what_rings_and_speaks
+
+
+def test_stop_never_deletes_a_repeating_alarm(brain, make_session):
+    # A daily alarm stopped as it rings has only this morning's silenced - it rings
+    # again the next day, as saying "stop" leaves it.
+    session = make_session()
+    clock = brain.clock
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    [alarm] = clock._alarms.values()
+    # The 7am before the next one, which has just come due.
+    ringing = datetime.fromtimestamp(alarm["due_at"]) - timedelta(days=1)
+    alarm["due_at"] = ringing.timestamp()
+    clock._tick(time.time())
+    assert clock.is_ringing(satellite="bedroom")
+
+    session.stop_what_rings_and_speaks()
+
+    assert not clock.is_ringing()
+    [kept] = clock.overview()["alarms"]
+    assert kept["id"] == alarm["id"]
+    assert datetime.fromtimestamp(kept["due_at"]) == ringing + timedelta(days=1)
+
+
+def test_stop_leaves_the_music_playing(brain, make_session):
+    # Stop is for what rings and what Nova says - pressed while a song plays under an
+    # announcement, the song carries on.
+    session = make_session()
+    stopped = []
+    session.speaker = SimpleNamespace(stop=lambda kinds: stopped.append(list(kinds)), close=lambda: None)
+    brain.clock.set_timer(60, satellite="bedroom")
+    brain.clock._tick(time.time() + 61)
+    session.activity = "speaking"
+
+    session.stop_what_rings_and_speaks()
+
+    assert stopped == [["reply", "announcement"]]
+    assert not brain.clock.is_ringing()
+
+
 def test_the_device_is_looked_up_until_found_then_now_and_then(make_session):
     # Often until Home Assistant has taken in the device's announcement, then now and
     # then, in case the user has moved it to another room.
@@ -1197,7 +1243,7 @@ def test_a_stop_during_a_battery_warning_still_counts_as_said(connect, make_sess
         Brain._say_battery(brain, "Your phone's battery is down to 5%.")), daemon=True)
     saying.start()
     assert wait_for(lambda: pi.messages("stream_end"))
-    session._stop_from_home_assistant()
+    session.stop_what_rings_and_speaks()
     saying.join(10)
     assert results == [True]
 

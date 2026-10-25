@@ -400,9 +400,13 @@ class SettingsPage:
                 "restart_needed": self._restart_needed(saved)}
 
     def live(self, satellite: Optional[str] = None) -> Dict:
-        """What a satellite's Nova is doing right now - asked for every second or two while the page is open."""
+        """
+        What a satellite's Nova is doing right now, and whether Stop has anything to
+        stop on any satellite - asked for every second or two while the page is open.
+        """
         session, _ = self._session(satellite)
-        return {"activity": session.activity if session is not None else "idle"}
+        return {"activity": session.activity if session is not None else "idle",
+                "stoppable": self.brain.stoppable()}
 
     def _wake_word(self) -> str:
         """What wakes Nova, for the page to say it's waiting for it."""
@@ -775,6 +779,24 @@ class SettingsPage:
         logger.info(f"Settings page: {who} restarted Nova")
         return {"success": True, "message": (self._restart or self.brain.restart)()}
 
+    def press_stop(self, who: str) -> Dict:
+        """
+        Stop, as Home Assistant's: silences whatever rings, and stops Nova talking, on
+        every satellite - see Brain.stop_everywhere. Not stop(), which stops serving
+        the page.
+
+        Args:
+            who: The Tailscale login pressing it, for the log.
+
+        Returns:
+            Dict with 'success' and 'message'.
+        """
+        logger.info(f"Settings page: {who} pressed Stop")
+        # It may have stopped by itself since the page last looked.
+        if not self.brain.stop_everywhere():
+            return {"success": True, "message": "Nothing's ringing or speaking."}
+        return {"success": True, "message": "Stopped."}
+
     def play(self, action: str, who: str, query: str = "", playlist: str = "", satellite: Optional[str] = None) -> Dict:
         """
         Plays, pauses, skips or goes back, or plays something or a playlist - through
@@ -941,6 +963,7 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/keys": lambda page, body, who: page.set_key(body["name"], body["value"], who),
     "/api/settings": lambda page, body, who: page.save_settings(body["changes"], who),
     "/api/restart": lambda page, body, who: page.restart(who),
+    "/api/stop": lambda page, body, who: page.press_stop(who),
     "/api/mute": lambda page, body, who: page.set_muted(body["muted"], who, body.get("satellite")),
     "/api/voice/hear": lambda page, body, who: page.hear_voice(body["speed"], who, body.get("satellite")),
     "/api/music": lambda page, body, who: page.play(

@@ -42,6 +42,7 @@ from voice_assistant.vad import LoudnessDetector
 
 BEDROOM = "the-bedroom-satellites-password"
 KITCHEN = "the-kitchen-satellites-password"
+HALL = "the-hall-satellites-password"
 
 # What a satellite says as it connects when nothing rang or was dismissed while it was away.
 NOTHING_AWAY = {"rang": [], "dismissed": []}
@@ -130,6 +131,9 @@ class FakeSession:
         self.closed = threading.Event()
         # Never stuck, unless a test says it is.
         self.moved_at = float("inf")
+        self.activity = "idle"
+        # How many times Stop was pressed for it.
+        self.stopped = 0
 
     def send_state(self):
         return self.satellite.set_state({"general": 0.5, "alarm": 0.8, "music": 0.4}, False)
@@ -156,6 +160,9 @@ class FakeSession:
 
     def run_routine(self, routine):
         self.routines.append(routine["name"])
+
+    def stop_what_rings_and_speaks(self):
+        self.stopped += 1
 
 
 class FakeNtfy:
@@ -689,6 +696,27 @@ def test_a_routine_runs_on_its_own_satellite_or_the_default(brain, connect):
     brain.run_routine({"name": "Good morning", "satellite": None})
     brain.run_routine({"name": "Dinner time", "satellite": "kitchen"})
     assert bedroom.routines == ["Good morning"] and kitchen.routines == ["Dinner time"]
+
+
+def test_stop_silences_what_rings_and_what_nova_says_on_each_satellite(brain, connect, passwords):
+    # The settings page's Stop is Home Assistant's, on every satellite with something
+    # to stop: the bedroom's timer is ringing and the kitchen's Nova is talking. The
+    # hall has neither, so is left alone.
+    passwords.add("hall", HALL)
+    serving(brain)
+    connect(brain)
+    connect(brain, "kitchen", KITCHEN)
+    connect(brain, "hall", HALL)
+    bedroom, kitchen, hall = connected(brain), connected(brain, "kitchen"), connected(brain, "hall")
+    assert not brain.stoppable()
+
+    brain.clock.set_timer(60, satellite="bedroom")
+    brain.clock._tick(time.time() + 61)
+    kitchen.activity = "speaking"
+    assert brain.stoppable()
+
+    assert brain.stop_everywhere() == ["bedroom", "kitchen"]
+    assert (bedroom.stopped, kitchen.stopped, hall.stopped) == (1, 1, 0)
 
 
 def test_an_unclean_satellite_is_told_to_the_phone(brain, connect):

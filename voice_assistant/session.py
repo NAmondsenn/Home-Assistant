@@ -951,12 +951,16 @@ class Session:
             backend=lambda: self.brain.stt.loaded,
             muted=lambda: self.muted,
             set_muted=self.set_muted,
-            stop=self._stop_from_home_assistant,
+            stop=self.stop_what_rings_and_speaks,
             restart=self.satellite.restart,
             speak=self._speak_from_home_assistant)
 
-    def _stop_from_home_assistant(self):
-        """Home Assistant's Stop: silences anything ringing on the satellite, and stops Nova talking."""
+    def stop_what_rings_and_speaks(self):
+        """
+        Stop, from Home Assistant or the settings page: silences anything ringing on
+        the satellite, and stops Nova talking. What rings is dismissed, never deleted,
+        so a repeating alarm rings again tomorrow - and the music plays on.
+        """
         if self.brain.clock.is_ringing(satellite=self.satellite.name):
             self.brain.clock.dismiss(satellite=self.satellite.name)
         self.speaker.stop(["reply", "announcement"])

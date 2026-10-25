@@ -317,12 +317,19 @@ async function load() {
 
 async function live() {
   let now = "offline";
+  let stoppable = false;
   try {
     const response = await fetch(forChosen("/api/live"));
-    if (response.ok) now = (await response.json()).activity;
+    if (response.ok) {
+      const said = await response.json();
+      now = said.activity;
+      stoppable = Boolean(said.stoppable);
+    }
   } catch (error) {
     // Out of reach, then.
   }
+  // Stop is there only while there's something to stop, on any satellite.
+  document.getElementById("stop").hidden = !stoppable;
   // Back after a restart, or being out of reach - so anything else may have changed too.
   if (activity === "offline" && now !== "offline") {
     load();
@@ -1482,6 +1489,14 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   document.getElementById("restart-button").addEventListener("click", restart);
   document.getElementById("restart-now").addEventListener("click", restart);
+
+  // Gone as it's pressed, so it can't be pressed twice - back at the quick check
+  // straight after if anything's still ringing.
+  const stop = document.getElementById("stop");
+  stop.addEventListener("click", () => {
+    stop.hidden = true;
+    change("/api/stop", {}, live);
+  });
 
   // Put back as Nova last had it if the change didn't work - even with Nova out of
   // reach, when the page can't be shown afresh.

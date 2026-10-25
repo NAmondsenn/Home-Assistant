@@ -53,6 +53,11 @@ class FakeClock:
     def __init__(self):
         self.removed = []
         self.alarms = []
+        # The satellites something is ringing on.
+        self.ringing = set()
+
+    def is_ringing(self, satellite=None):
+        return bool(self.ringing) if satellite is None else satellite in self.ringing
 
     def overview(self, satellite=None):
         self.overviewed = satellite
@@ -169,6 +174,8 @@ class FakeSession:
         # The speeds "Hear it" was said at, and whether it's in a conversation, so can't be.
         self.heard = []
         self.busy = False
+        # How many times Stop was pressed for it.
+        self.stopped = 0
 
     def set_muted(self, muted):
         self.muted = muted
@@ -181,6 +188,9 @@ class FakeSession:
 
     def boop(self, level):
         self.booped.append(level)
+
+    def stop_what_rings_and_speaks(self):
+        self.stopped += 1
 
 
 class FakeBrain:
@@ -207,6 +217,16 @@ class FakeBrain:
 
     def run_routine(self, routine):
         self.ran.append(routine)
+
+    # The brain's own, so Stop finds what to stop as it does on the brain.
+    def _stoppable_sessions(self):
+        return Brain._stoppable_sessions(self)
+
+    def stoppable(self):
+        return Brain.stoppable(self)
+
+    def stop_everywhere(self):
+        return Brain.stop_everywhere(self)
 
     def apply_settings(self, changes):
         # The brain's own, so a change reaches ntfy and the logs as it does on the brain.
@@ -341,10 +361,10 @@ def test_spotifys_volume_is_shown_as_last_set_without_asking_spotify(files):
 
 
 def test_the_page_can_tell_what_nova_is_doing(files):
-    assert _page(sessions={"bedroom": FakeSession(activity="listening")}).live() == {"activity": "listening"}
-    assert _page().live() == {"activity": "idle"}
+    assert _page(sessions={"bedroom": FakeSession(activity="listening")}).live() == {"activity": "listening", "stoppable": False}
+    assert _page().live() == {"activity": "idle", "stoppable": False}
     # A satellite which isn't connected isn't doing anything.
-    assert _page(sessions={}, known=["bedroom"]).live() == {"activity": "idle"}
+    assert _page(sessions={}, known=["bedroom"]).live() == {"activity": "idle", "stoppable": False}
 
 
 def test_the_page_is_told_whats_playing_and_the_playlists_are_kept_a_while(files):
@@ -781,7 +801,7 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
     for name, value in page_module.SAFETY_HEADERS.items():
         assert headers[name] == value
     if path == "/settings.js":
-        assert b'"/api/voice/hear"' in body and b'"restart-now"' in body
+        assert b'"/api/voice/hear"' in body and b'"restart-now"' in body and b'"/api/stop"' in body
 
 
 def test_a_change_has_to_come_from_the_page_itself(served):
@@ -815,7 +835,34 @@ def test_its_typeface_icon_and_what_nova_is_doing_are_served(served):
     assert status == 200 and headers["Content-Type"] == "font/woff2" and body[:4] == b"wOF2"
     status, headers, body = _ask(served, "/icon.svg")
     assert status == 200 and headers["Content-Type"] == "image/svg+xml" and body.startswith(b"<svg")
-    assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle"}
+    assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle", "stoppable": False}
+
+
+def test_the_quick_check_says_when_theres_something_to_stop(served, caplog):
+    def live():
+        return json.loads(_ask(served, "/api/live")[2])["stoppable"]
+
+    def stop(**headers):
+        status, _, body = _ask(served, "/api/stop", {}, **headers)
+        return status, json.loads(body) if status == 200 else body
+
+    bedroom = _bedroom(served)
+    # Pressed after it stopped by itself, there's nothing to do.
+    assert stop(X_Nova="page") == (200, {"success": True, "message": "Nothing's ringing or speaking."})
+    assert not live()
+
+    served.brain.clock.ringing.add("bedroom")
+    bedroom.stop_what_rings_and_speaks = lambda: served.brain.clock.ringing.discard("bedroom")
+    assert live()
+    # As every change, only from the page itself.
+    assert stop()[0] == 403 and live()
+    with caplog.at_level(logging.INFO, logger="voice_assistant.settings_page"):
+        assert stop(X_Nova="page") == (200, {"success": True, "message": "Stopped."})
+    assert f"Settings page: {LOGIN} pressed Stop" in caplog.text
+    assert not live()
+
+    bedroom.activity = "speaking"
+    assert live()
 
 
 def test_the_cover_of_whats_playing_is_served(served):
@@ -1036,8 +1083,8 @@ def test_the_clock_is_shown_for_the_satellite_asked_about(files):
 def test_the_page_asks_after_the_satellite_it_names(served):
     served.brain.sessions["kitchen"] = FakeSession(activity="thinking")
     served.brain.known.append("kitchen")
-    assert json.loads(_ask(served, "/api/live?satellite=kitchen")[2]) == {"activity": "thinking"}
-    assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle"}
+    assert json.loads(_ask(served, "/api/live?satellite=kitchen")[2]) == {"activity": "thinking", "stoppable": False}
+    assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle", "stoppable": False}
     assert json.loads(_ask(served, "/api/state?satellite=kitchen")[2])["satellite"] == "kitchen"
 
     _ask(served, "/api/volume", {"category": "general", "percent": 5, "satellite": "kitchen"}, X_Nova="page")
@@ -1075,7 +1122,7 @@ def test_a_satellite_which_doesnt_exist_is_handled_everywhere(served):
     assert _ask(served, "/api/cover?satellite=ghost")[0] == 404
     assert json.loads(_ask(served, "/api/music?satellite=ghost")[2]) == {"available": False}
     assert json.loads(_ask(served, "/api/home?satellite=ghost")[2]) == {"available": False}
-    assert json.loads(_ask(served, "/api/live?satellite=ghost")[2]) == {"activity": "idle"}
+    assert json.loads(_ask(served, "/api/live?satellite=ghost")[2]) == {"activity": "idle", "stoppable": False}
     assert served.brain.clock.alarms == []
 
 
