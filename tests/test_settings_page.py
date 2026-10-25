@@ -926,7 +926,7 @@ def test_a_battery_change_which_cant_be_understood_or_saved_is_refused(files, tm
     def full(*args):
         raise OSError("No space left on device")
 
-    monkeypatch.setattr(choices, "_change", full)
+    monkeypatch.setattr(choices._store, "change", full)
     assert page.set_battery(MAC, LOGIN, enabled=False) == {"success": False, "message": "Couldn't save that."}
     assert page.set_battery(MAC, LOGIN, reset=True) == {"success": False, "message": "Couldn't save that."}
     assert page.set_battery_also_send(False, LOGIN) == {"success": False, "message": "Couldn't save that."}

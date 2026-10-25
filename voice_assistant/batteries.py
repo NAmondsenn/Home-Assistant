@@ -16,7 +16,6 @@ reading old enough to be stale is said with its age, so that a tablet last heard
 from three days ago isn't taken to be on 88% now.
 """
 
-import copy
 import logging
 import threading
 import time
@@ -25,7 +24,7 @@ from typing import Callable, Dict, List, Optional
 
 import requests
 
-from voice_assistant import storage
+from voice_assistant.choices import ChoiceStore
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.clock import format_duration
 from voice_assistant.config import marks_problem
@@ -284,18 +283,14 @@ class BatteryChoices:
             "mobile": sorted(mobile_marks, reverse=True),
             "other": sorted(other_marks, reverse=True),
         }
-        self._lock = threading.RLock()
-        self._state = {"devices": {}, "warned": {}, "held": {}, "also_send_when_said": True}
-        try:
-            saved = storage.load_json(path, {})
-        except (OSError, ValueError) as e:
-            # Better to warn again about a low battery than to refuse to start.
-            logger.warning(f"Couldn't read {path}, starting without choices: {e}")
-            saved = {}
-        if isinstance(saved, dict):
-            for key in self._state:
-                if key in saved:
-                    self._state[key] = saved[key]
+        self._store = ChoiceStore(
+            path, {"devices": {}, "warned": {}, "held": {}, "also_send_when_said": True}
+        )
+        self._lock = self._store.lock
+
+    @property
+    def _state(self) -> Dict:
+        return self._store.state
 
     @property
     def also_send_when_said(self) -> bool:
@@ -361,7 +356,7 @@ class BatteryChoices:
                     device["marks"] = marks
                 if send_to_phone is not None:
                     device["send_to_phone"] = bool(send_to_phone)
-            self._change(change)
+            self._store.change(change)
 
     def reset(self, battery_id: str):
         """
@@ -373,12 +368,12 @@ class BatteryChoices:
             battery_id: The device's sensor id.
         """
         with self._lock:
-            self._change(lambda state: state["devices"].pop(battery_id, None))
+            self._store.change(lambda state: state["devices"].pop(battery_id, None))
 
     def set_also_send_when_said(self, on: bool):
         """Sets whether a level Nova says aloud is also sent to the phone, and saves."""
         with self._lock:
-            self._change(lambda state: state.update(also_send_when_said=bool(on)))
+            self._store.change(lambda state: state.update(also_send_when_said=bool(on)))
 
     def due(self, batteries: List[Battery]) -> List[BatteryWarning]:
         """
@@ -428,7 +423,7 @@ class BatteryChoices:
                         else:
                             state["warned"].pop(battery_id, None)
                 try:
-                    self._change(remember)
+                    self._store.change(remember)
                 except OSError as e:
                     # The warnings are still given and kept in memory, so they aren't repeated every
                     # minute while saves fail - only after a restart.
@@ -450,7 +445,7 @@ class BatteryChoices:
             mark: The mark that warned, e.g. 15.
         """
         with self._lock:
-            self._keep(lambda state: state["held"].__setitem__(battery_id, mark), "held warning")
+            self._store.keep(lambda state: state["held"].__setitem__(battery_id, mark), "held warning")
 
     def held(self) -> Dict[str, int]:
         """Returns the warnings being held, as each device's sensor id and the mark that warned."""
@@ -468,22 +463,7 @@ class BatteryChoices:
         """
         with self._lock:
             if battery_id in self._state["held"]:
-                self._keep(lambda state: state["held"].pop(battery_id), "release of a held warning")
-
-    def _keep(self, change: Callable[[Dict], object], what: str):
-        """Saves a change, or keeps it in memory alone if the save fails."""
-        try:
-            self._change(change)
-        except OSError as e:
-            change(self._state)
-            logger.warning(f"Couldn't save the {what}: {e}")
-
-    def _change(self, change: Callable[[Dict], object]):
-        """Applies a change to a copy of the state, saves it, and only then keeps it."""
-        new = copy.deepcopy(self._state)
-        change(new)
-        storage.save_json(self._path, new)
-        self._state = new
+                self._store.keep(lambda state: state["held"].pop(battery_id), "release of a held warning")
 
     def _checked(self, battery: Battery, marks: List[int]) -> List[int]:
         """Returns marks highest first, or raises ValueError saying what is wrong."""
