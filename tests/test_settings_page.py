@@ -1336,6 +1336,20 @@ def test_a_broken_satellites_file_is_said_so_not_taken_for_no_satellite(files, c
     assert "Settings page: couldn't read the satellites' file" in caplog.text
 
 
+def test_the_page_loads_with_a_broken_satellites_file(served, caplog):
+    def broken(*args):
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    served.brain.satellites = served.brain.default_satellite = broken
+    status, _, body = _ask(served, "/api/state")
+    state = json.loads(body)
+    # Said as broken, not as there being none - and everything else still shown.
+    assert status == 200 and state["satellites"] == [] and state["satellites_unreadable"] is True
+    assert state["memories"] == ["Your sister is called Amy."]
+    assert json.loads(_ask(served, "/api/live")[2]) == {"activity": "idle", "stoppable": False}
+    assert _page().state()["satellites_unreadable"] is False
+
+
 def test_the_page_works_with_no_satellite_added_at_all(files):
     page = _page(sessions={}, known=[])
     state = page.state()

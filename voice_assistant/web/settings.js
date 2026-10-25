@@ -496,8 +496,12 @@ function showSatellites(state) {
     row.append(dot(satellite.connected ? "good" : "off"), what, actions);
     return row;
   });
-  drawIfChanged("satellites", satellites, () => document.getElementById("satellites").replaceChildren(
-    ...(rows.length ? rows : [emptyRow("No satellites have been added.")])));
+  // A broken satellites file is said as that, not taken for there being none.
+  const none = state.satellites_unreadable
+    ? "The satellites' file can't be read, so they can't be shown or changed - see the brain's log."
+    : "No satellites have been added.";
+  drawIfChanged("satellites", [satellites, none], () => document.getElementById("satellites").replaceChildren(
+    ...(rows.length ? rows : [emptyRow(none)])));
 
   const choice = document.getElementById("satellite-choice");
   choice.hidden = satellites.length < 2;

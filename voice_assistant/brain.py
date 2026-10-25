@@ -165,7 +165,8 @@ class _Server(socketserver.ThreadingTCPServer):
         # Run between connections, every STOP_CHECK. Nothing in it may stop the brain
         # listening.
         try:
-            self.brain._shut_out_removed()
+            # Never waiting on a removal the page is handling - its look is enough.
+            self.brain._shut_out_removed(wait=False)
         except Exception:
             logger.exception("Couldn't check for satellites which have been removed")
         # The brain's main loop is still going, and so is every session, but for one
@@ -200,7 +201,7 @@ class Brain:
         # and the satellites it had then - see _shut_out_removed.
         self._passwords_seen = self._passwords_file()
         try:
-            self._names_seen: List[str] = self.passwords.names()
+            self._names_seen: List[str] = self.passwords.names(missing_ok=False)
         except Exception as e:
             logger.error(f"Couldn't read the satellites' passwords: {e}")
             self._names_seen = []
@@ -295,7 +296,7 @@ class Brain:
         # Started in run(), once what rings on no satellite has gone to the default.
         self.clock = Clock(on_timer_finished=self._announce, on_unanswered=self._unanswered,
                            on_change=self._send_alarms, can_hear=lambda satellite: satellite in self._caught_up,
-                           config=config, start=False)
+                           let_in=lambda satellite: not self._gone_from_file(satellite), config=config, start=False)
 
         # One Piper, and one Nemotron, which every session shares.
         self.tts = TextToSpeech(config)
@@ -705,22 +706,30 @@ class Brain:
             return None
         return found.st_ino, found.st_mtime_ns, found.st_size
 
-    def _shut_out_removed(self):
+    def _shut_out_removed(self, wait: bool = True):
         """
         Handles each satellite removed since the passwords' file was last looked at -
         on the settings page, or with remove-satellite run by itself, which the brain
         only hears of through the file. See _on_removed, the one place either is
         handled. A password is only proved as a satellite connects, so a satellite
         removed otherwise stayed for as long as it stayed connected.
+
+        Args:
+            wait: Whether to wait for a look already under way. The server's poll
+                doesn't, as it must never stop the brain listening: the look under
+                way sees the file as it is, and the poll looks again next time.
         """
-        with self._removing:
+        if not self._removing.acquire(blocking=wait):
+            return
+        try:
             now = self._passwords_file()
             if now == self._passwords_seen:
                 return
             # Noted first, so a file which can't be read is said once, not every check.
             self._passwords_seen = now
             try:
-                names = self.passwords.names()
+                # A missing file is never every satellite removed - see _gone_from_file.
+                names = self.passwords.names(missing_ok=False)
             except Exception as e:
                 logger.error(f"Couldn't read the satellites' passwords to see which are still let in: {e}")
                 return
@@ -734,6 +743,8 @@ class Brain:
                     self._on_removed(name)
                 except Exception:
                     logger.exception(f"Couldn't finish handling the {name} satellite's removal")
+        finally:
+            self._removing.release()
 
     def _on_removed(self, name: str):
         """
@@ -766,7 +777,7 @@ class Brain:
             with self._lock:
                 self._unowned_given = False
         self.clock.move_satellite(name, default)
-        self.routines.forget_satellite(name)
+        self.routines.forget_satellite(name, default)
 
     def _let_go(self, session: Session):
         """
@@ -811,8 +822,7 @@ class Brain:
                 logger.info(f"The {name} satellite connected again, so its last connection is let go")
                 # Before the new session is made, since both would be the same device
                 # in Home Assistant, connecting with the same MQTT client id.
-                old.close()
-                old.satellite.close()
+                self._let_go(old)
             self._give_out_orphans()
             session = Session(self, satellite)
             with self._lock:
@@ -820,7 +830,7 @@ class Brain:
                 if not stopped:
                     self.sessions[name] = session
         if stopped:
-            session.close()
+            self._let_go(session)
             return None
 
         # Checked once it's registered, never before: remove-satellite is only seen
@@ -832,7 +842,15 @@ class Brain:
         # before it looks in sessions.
         if self._removed(name, password):
             logger.info(f"The {name} satellite was removed, or given a new password, as it connected, so it's let go")
-            session.close()
+            if self._gone_from_file(name):
+                # Removed rather than given a new password, and online a moment ago
+                # - so the page's question said nothing of its copy - which
+                # _on_removed found no session to empty. It proved itself on this
+                # connection, so it's emptied here.
+                with self._sending_alarms:
+                    if satellite.connected:
+                        satellite.send_alarms([])
+            self._let_go(session)
             self._forget(session)
             return None
         return session
@@ -849,6 +867,17 @@ class Brain:
             return name not in self.passwords.names()
         except Exception as e:
             logger.error(f"Couldn't read the satellites' passwords to see if the {name} satellite is still let in: {e}")
+            return False
+
+    def _gone_from_file(self, name: str) -> bool:
+        """
+        Whether a satellite is missing from the passwords' file. A file which is
+        missing, or can't be read, says nothing either way, so never counts - that
+        would be every satellite removed at once.
+        """
+        try:
+            return name not in self.passwords.names(missing_ok=False)
+        except Exception:
             return False
 
     def _catch_up(self, session: Session, hello_at: float) -> bool:
@@ -912,34 +941,39 @@ class Brain:
         Nova, and the last satellite's once it's removed. On one no longer let in is
         what was a satellite's removed while the brain was down - with
         remove-satellite run with it stopped, or across an update - which
-        _on_removed never saw. That one's routines run on the default too.
+        _on_removed never saw. That one's routines run on the default too, and those
+        kept for it while it was away go there.
 
-        Run as the brain starts, and as each satellite connects.
+        Run as the brain starts, and as each satellite connects - holding _removing,
+        so it never reads which satellites there are part way through a removal,
+        and gives what's on none to the one being removed.
         """
-        try:
-            names = self.passwords.names()
-        except Exception as e:
-            # Never taken for no satellites at all, which would give everything to none.
-            logger.error(f"Couldn't read the satellites' passwords to see what belongs to none: {e}")
-            return
-        default = names[0] if names else None
-        with self._lock:
-            unowned = default is not None and not self._unowned_given
+        with self._removing:
+            try:
+                # A missing file is never every satellite removed - see _gone_from_file.
+                names = self.passwords.names(missing_ok=False)
+            except Exception as e:
+                logger.error(f"Couldn't read the satellites' passwords to see what belongs to none: {e}")
+                return
+            default = names[0] if names else None
+            with self._lock:
+                unowned = default is not None and not self._unowned_given
+                if unowned:
+                    self._unowned_given = True
             if unowned:
-                self._unowned_given = True
-        if unowned:
-            self.clock.move_satellite(None, default)
-        orphans = {satellite for satellite in self.clock.satellites() if satellite and satellite not in names}
-        orphans |= {routine["satellite"] for routine in self.routines.all()
-                    if routine["satellite"] and routine["satellite"] not in names}
-        for name in sorted(orphans):
-            logger.info(f"The {name} satellite was removed while the brain was down, so what was its goes "
-                        f"to {default or 'the next satellite added'}")
-            if default is None:
-                with self._lock:
-                    self._unowned_given = False
-            self.clock.move_satellite(name, default)
-            self.routines.forget_satellite(name)
+                self.clock.move_satellite(None, default)
+                self.routines.forget_satellite(None, default)
+            orphans = self.clock.satellites() | self.routines.missed_satellites()
+            orphans |= {routine["satellite"] for routine in self.routines.all()}
+            for name in sorted(orphan for orphan in orphans if orphan and orphan not in names):
+                logger.warning(f"The {name} satellite was removed while the brain was down, so it still has a copy "
+                               f"of its alarms for the next week, and rings them if it's switched on before then - "
+                               f"what was its goes to {default or 'the next satellite added'}")
+                if default is None:
+                    with self._lock:
+                        self._unowned_given = False
+                self.clock.move_satellite(name, default)
+                self.routines.forget_satellite(name, default)
 
     def _send_alarms_to(self, satellite: RemoteSatellite):
         """

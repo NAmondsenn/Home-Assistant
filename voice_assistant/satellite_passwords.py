@@ -167,9 +167,24 @@ class SatellitePasswords:
                 raise ValueError(f"There is no satellite called {name}")
             save_json(self.path, {name: passwords[name], **passwords})
 
-    def names(self) -> List[str]:
+    def names(self, missing_ok: bool = True) -> List[str]:
         """
+        Args:
+            missing_ok: Whether no file at all means no satellites. The brain asks
+                otherwise wherever it would take a missing file for every satellite
+                having been removed - which a save never leaves, so only a file
+                moved by hand, or the wrong config folder, does.
+
         Returns:
             The satellites, in the order they were added. The first is the default.
+
+        Raises:
+            FileNotFoundError: If there's no file, and missing_ok is False.
+            OSError or ValueError: If it can't be read.
         """
-        return list(self._read())
+        passwords = load_json(self.path)
+        if passwords is None:
+            if not missing_ok:
+                raise FileNotFoundError(f"There's no {self.path}")
+            return []
+        return list(passwords)

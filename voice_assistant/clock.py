@@ -260,7 +260,8 @@ class Clock:
                  check_interval: float = 0.5, config=None, start: bool = True,
                  on_unanswered: Optional[Callable[..., None]] = None,
                  on_change: Optional[Callable[[], None]] = None,
-                 can_hear: Optional[Callable[[Optional[str]], bool]] = None):
+                 can_hear: Optional[Callable[[Optional[str]], bool]] = None,
+                 let_in: Optional[Callable[[str], bool]] = None):
         """
         Args:
             on_timer_finished: Called with (message, sound, boost, still_wanted=...,
@@ -286,6 +287,12 @@ class Clock:
                       something the satellite rang itself. Called with the clock's
                       lock held, so it mustn't wait on anything, nor call the clock.
                       None says them all at the first tick.
+            let_in: Called with a satellite's name as something is set or put back
+                    for it, to ask whether the brain still lets it in. One removed
+                    meanwhile - by a turn still in flight on it, or the page - is
+                    refused, as it would otherwise ring nowhere. Called with the
+                    clock's lock held, so it mustn't call the clock. None lets in
+                    every satellite.
             check_interval: How often the background thread checks for due timers.
             start: Whether to start the background thread now. The brain starts it
                    later, once it has given what rings on no satellite to the
@@ -296,6 +303,7 @@ class Clock:
         self.on_unanswered = on_unanswered
         self.on_change = on_change
         self.can_hear = can_hear
+        self.let_in = let_in
         self.check_interval = check_interval
 
         self._timers: Dict[int, Dict] = {}
@@ -1555,6 +1563,9 @@ class Clock:
             return {"success": False, "message": "What would you like to name this reminder?"}
 
         with self._changing():
+            gone = self._gone(satellite)
+            if gone:
+                return gone
             clash = self._timer_clash(label, due_at)
             if clash:
                 return {"success": False, "message": clash}
@@ -1953,6 +1964,9 @@ class Clock:
         due_at = self._next_occurrence(hour, minute, repeat)
 
         with self._changing():
+            gone = self._gone(satellite)
+            if gone:
+                return gone
             clash = self._alarm_clash(hour, minute, repeat, due_at)
             if clash:
                 return {"success": False, "message": clash}
@@ -1966,6 +1980,15 @@ class Clock:
 
         logger.info(f"Alarm set: {self._describe_alarm(alarm)}")
         return {"success": True, "message": f"{self._describe_alarm(alarm)}."}
+
+    def _gone(self, satellite: Optional[str]) -> Optional[Dict]:
+        """
+        What to say if something is being set for a satellite the brain no longer
+        lets in, else None - see let_in. The caller is expected to already hold the lock.
+        """
+        if satellite and self.let_in is not None and not self.let_in(satellite):
+            return {"success": False, "message": "That satellite's gone, so it can't ring there."}
+        return None
 
     def _alarm_clash(self, hour: int, minute: int, repeat, due_at: float) -> Optional[str]:
         """
@@ -2072,6 +2095,9 @@ class Clock:
         """
         item = copy.deepcopy(item)
         with self._changing():
+            gone = self._gone(item.get("satellite"))
+            if gone:
+                return gone
             now = time.time() if now is None else now
             if item["due_at"] <= now:
                 if kind != "alarm" or not item["repeat"]:
@@ -2122,19 +2148,42 @@ class Clock:
             to_satellite: The satellite they should ring on, or None for none.
 
         Returns:
-            How many it gave, counting what's ringing or missed.
+            How many it gave, counting what's ringing or missed - and those let go of
+            as the other already had them.
         """
-        def on_it(item: Dict) -> bool:
-            return (item["satellite"] or None) == from_satellite
+        def on(item: Dict, satellite: Optional[str]) -> bool:
+            return (item["satellite"] or None) == satellite
+
+        def doubled(item: Dict, theirs: List[Dict]) -> bool:
+            # An alarm the other satellite already has - the same time, days and
+            # occurrence - so it would ring there twice. Alarms never take a label.
+            same = ("hour", "minute", "repeat", "due_at")
+            return "hour" in item and any("hour" in other and all(other[key] == item[key] for key in same)
+                                          for other in theirs if on(other, to_satellite))
 
         with self._changing():
-            timers = [timer for timer in self._timers.values() if on_it(timer)]
-            alarms = [alarm for alarm in self._alarms.values() if on_it(alarm)]
-            ringing = [entry["timer"] for entry in self._ringing if on_it(entry["timer"])]
-            missed = [item for item in self._missed if on_it(item)]
-            given = timers + alarms + ringing + missed
-            for item in given:
+            timers = [timer for timer in self._timers.values() if on(timer, from_satellite)]
+            alarms = [alarm for alarm in self._alarms.values() if on(alarm, from_satellite)]
+            ringing = [entry for entry in self._ringing if on(entry["timer"], from_satellite)]
+            missed = [item for item in self._missed if on(item, from_satellite)]
+
+            # Each doubled one is let go, with what of it is ringing or missed.
+            dropped = [alarm for alarm in alarms if doubled(alarm, list(self._alarms.values()))]
+            dropped_ringing = [entry for entry in ringing
+                               if doubled(entry["timer"], [other["timer"] for other in self._ringing])]
+            dropped_missed = [item for item in missed if doubled(item, self._missed)]
+            for alarm in dropped:
+                del self._alarms[alarm["id"]]
+            self._ringing = [entry for entry in self._ringing if not any(entry is gone for gone in dropped_ringing)]
+            self._missed = [item for item in self._missed if not any(item is gone for gone in dropped_missed)]
+
+            moved = (timers
+                     + [alarm for alarm in alarms if not any(alarm is gone for gone in dropped)]
+                     + [entry["timer"] for entry in ringing if not any(entry is gone for gone in dropped_ringing)]
+                     + [item for item in missed if not any(item is gone for gone in dropped_missed)])
+            for item in moved:
                 item["satellite"] = to_satellite
+            given = moved + dropped + dropped_ringing + dropped_missed
             # What's ringing, and what's missed, is saved with the timers - and what's
             # ringing is in each copy too.
             if timers or ringing or missed:
@@ -2144,7 +2193,8 @@ class Clock:
 
         if given:
             logger.info(f"Gave {len(given)} timer(s) and alarm(s) from {from_satellite or 'no satellite'} "
-                        f"to {to_satellite or 'no satellite, for the next one added'}")
+                        f"to {to_satellite or 'no satellite, for the next one added'}"
+                        + (f", letting go of {len(given) - len(moved)} it already had" if len(given) > len(moved) else ""))
         return len(given)
 
     def satellites(self) -> Set[Optional[str]]:

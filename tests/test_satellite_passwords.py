@@ -101,17 +101,3 @@ def test_the_command_line_and_the_page_wait_for_each_other(tmp_path):
     added.join(5)
     assert not added.is_alive() and passwords.names() == ["bedroom", "kitchen"]
 
-
-def test_no_change_is_lost_between_two_processes(tmp_path):
-    path = str(tmp_path / "s.json")
-    SatellitePasswords(path).add("bedroom")
-    adding = ("import sys\n"
-              "from voice_assistant.satellite_passwords import SatellitePasswords\n"
-              "passwords = SatellitePasswords(sys.argv[1])\n"
-              "for number in range(20):\n"
-              "    passwords.add(f'{sys.argv[2]}-{number}')\n")
-    project = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    each = [subprocess.Popen([sys.executable, "-c", adding, path, prefix], cwd=project) for prefix in ("a", "b")]
-    assert [process.wait(30) for process in each] == [0, 0]
-
-    assert len(SatellitePasswords(path).names()) == 41

@@ -1496,6 +1496,44 @@ def test_whats_ringing_or_missed_is_given_to_the_default_too(make_clock, tmp_pat
     assert again.announced[0]["satellite"] == "pi"
 
 
+def test_moving_an_alarm_the_satellite_already_has_doesnt_double_it(make_clock, tmp_path):
+    # The same 7am weekday alarm on both, and both ringing: moved, the bedroom would
+    # ring it twice over.
+    clock = make_clock()
+    due = clock._next_occurrence(7, 0, "weekdays")
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 4, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "weekdays", "due_at": due, "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "weekdays", "due_at": due, "satellite": "kitchen"},
+        {"id": 3, "hour": 6, "minute": 30, "repeat": None, "due_at": due + 86400, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock._tick(due + 1)
+    assert len(clock._ringing) == 2
+
+    # The doubled alarm and its ringing are let go, and the 6:30 moves.
+    assert clock.move_satellite("kitchen", "bedroom") == 3
+    assert [alarm["name"] for alarm in clock.overview("bedroom")["alarms"]] == [
+        "7:00 AM alarm, every weekday", "6:30 AM alarm"]
+    assert len(clock._ringing) == 1 and clock._ringing[0]["timer"]["id"] == 1
+    assert len(make_clock().overview()["alarms"]) == 2
+
+
+def test_nothing_is_set_for_a_satellite_no_longer_let_in(make_clock):
+    # Removed as it was being set - from a turn still in flight, or the page.
+    clock = make_clock()
+    clock.let_in = lambda satellite: satellite != "kitchen"
+    gone = {"success": False, "message": "That satellite's gone, so it can't ring there."}
+
+    assert clock.set_alarm(7, 0, satellite="kitchen") == gone
+    assert clock.set_timer(600, satellite="kitchen") == gone
+    assert clock.set_timer(600, label="pizza", is_reminder=True, satellite="kitchen") == gone
+    assert clock.set_alarm(8, 0, satellite="bedroom")["success"]
+    item = clock.remove("alarm", next(iter(clock._alarms)))["removed"]
+    assert clock.put_back("alarm", dict(item, satellite="kitchen")) == gone
+    assert clock.overview() == {"timers": [], "alarms": []}
+    assert clock.set_alarm(7, 0)["success"] and clock.set_timer(600, satellite="bedroom")["success"]
+
+
 def test_move_satellite_moves_everything_of_one_satellite(make_clock, tmp_path):
     # As a satellite is removed: what it was ringing, and what's waiting to be said as
     # missed, go too, so nothing is left ringing nowhere.

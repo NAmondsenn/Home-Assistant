@@ -340,9 +340,14 @@ class SettingsPage:
 
         Returns:
             Its session if it's connected - else None - and the name the request is
-            for, which is None if there are no satellites at all.
+            for, which is None if there are no satellites at all. With the
+            satellites' file unreadable, there's no telling which is the default,
+            so a request for it has no session - and the page still loads.
         """
-        return self.brain.session_for(satellite), satellite or self.brain.default_satellite()
+        try:
+            return self.brain.session_for(satellite), satellite or self.brain.default_satellite()
+        except (OSError, ValueError):
+            return self.brain.session_for(satellite) if satellite else None, satellite
 
     @staticmethod
     def _not_connected(name: Optional[str]) -> Dict:
@@ -351,14 +356,17 @@ class SettingsPage:
             return {"success": False, "message": "There's no satellite to do that on."}
         return {"success": False, "message": f"{name} isn't connected."}
 
-    def _satellites(self) -> List[Dict]:
+    def _satellites(self, names: List[str]) -> List[Dict]:
         """
         Each satellite the brain lets in, whether it's the default, and whether it's
         connected - with what it's doing and its mute if so. Never its password.
+
+        Args:
+            names: The satellites, as the brain has them - the first is the default.
         """
         found = []
-        default = self.brain.default_satellite()
-        for name in self.brain.satellites():
+        default = names[0] if names else None
+        for name in names:
             session = self.brain.session_for(name)
             found.append({"name": name, "connected": session is not None,
                           "activity": session.activity if session is not None else "idle",
@@ -374,6 +382,7 @@ class SettingsPage:
                 for the default. Those are empty while it isn't connected.
         """
         session, chosen = self._session(satellite)
+        names = self._satellite_names()
         saved, problem = self._saved()
         settings = []
         for section, name, label, used in EDITABLE:
@@ -397,7 +406,9 @@ class SettingsPage:
                 for name, label in KEYS]
         routines = self.brain.routines
         return {"status": self._status(),
-                "satellites": self._satellites(),
+                "satellites": self._satellites(names) if names is not None else [],
+                # Said as that, rather than as there being no satellites.
+                "satellites_unreadable": names is None,
                 "satellite": chosen,
                 "wake_word": self._wake_word(),
                 "muted": session is not None and session.muted,
@@ -416,8 +427,12 @@ class SettingsPage:
         stop on any satellite - asked for every second or two while the page is open.
         """
         session, _ = self._session(satellite)
-        return {"activity": session.activity if session is not None else "idle",
-                "stoppable": self.brain.stoppable()}
+        try:
+            stoppable = self.brain.stoppable()
+        except (OSError, ValueError):
+            # The satellites' file can't be read - which state() says.
+            stoppable = False
+        return {"activity": session.activity if session is not None else "idle", "stoppable": stoppable}
 
     def _wake_word(self) -> str:
         """What wakes Nova, for the page to say it's waiting for it."""
