@@ -194,6 +194,37 @@ class Routines:
                 self._save_missed()
         return sorted(taken, key=lambda entry: entry["due_at"])
 
+    def forget_satellite(self, name: str) -> int:
+        """
+        Runs each routine on a satellite which has been removed on the default one
+        instead, and drops those kept for it while it was away, as it's never coming
+        back to run them.
+
+        Args:
+            name: The satellite, by name.
+
+        Returns:
+            How many routines now run on the default.
+        """
+        with self._lock:
+            moved = [routine for routine in self._routines if routine["satellite"] == name]
+            if moved:
+                routines = [dict(routine, satellite=None) if routine["satellite"] == name else routine
+                            for routine in self._routines]
+                try:
+                    storage.save_json(self.path, {"routines": routines}, indent=1)
+                except OSError as e:
+                    # Still run on the default until the brain restarts, and caught
+                    # again then - see Brain._give_out_orphans.
+                    logger.error(f"Couldn't save the routines moved off the {name} satellite: {e}")
+                self._routines = routines
+            if any(entry.get("satellite") == name for entry in self._missed):
+                self._missed = [entry for entry in self._missed if entry.get("satellite") != name]
+                self._save_missed()
+        if moved:
+            logger.info(f"{len(moved)} routine(s) which ran on the {name} satellite run on the default now")
+        return len(moved)
+
     def all(self) -> List[Dict]:
         """Every routine, by name."""
         with self._lock:

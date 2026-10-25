@@ -225,6 +225,18 @@ class FakeBrain:
     def run_routine(self, routine):
         self.ran.append(routine)
 
+    def remove_satellite(self, name):
+        if name not in self.known:
+            return False
+        self.known.remove(name)
+        return True
+
+    def make_default(self, name):
+        if name not in self.known:
+            raise ValueError(f"There is no satellite called {name}")
+        self.known.remove(name)
+        self.known.insert(0, name)
+
     # The brain's own, so Stop finds what to stop as it does on the brain.
     def _stoppable_sessions(self):
         return Brain._stoppable_sessions(self)
@@ -811,6 +823,9 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b'"/api/voice/hear"' in body and b'"restart-now"' in body and b'"/api/stop"' in body
         assert b'"/api/undo"' in body and b'getElementById("undos")' in body
         assert b'"/api/satellites/add"' in body and b'"/api/satellites/password"' in body
+        assert b'"/api/satellites/remove"' in body and b'"/api/satellites/default"' in body
+        # No longer than the name rule lets a name be.
+        assert b'id="satellite-name"' in _ask(served, "/")[2] and b'maxlength="63"' in _ask(served, "/")[2]
         # The password is only ever put on the page as text.
         assert b'getElementById("password-text").textContent = password' in body and b"innerHTML" not in body
         # Where each removal's Undo is stacked.
@@ -1283,6 +1298,42 @@ def test_a_satellite_which_doesnt_exist_is_handled_everywhere(served):
     assert json.loads(_ask(served, "/api/home?satellite=ghost")[2]) == {"available": False}
     assert json.loads(_ask(served, "/api/live?satellite=ghost")[2]) == {"activity": "idle", "stoppable": False}
     assert served.brain.clock.alarms == []
+
+
+def test_a_satellite_is_removed_or_made_the_default_on_the_page(served):
+    served.brain.known = ["bedroom", "kitchen", "hall"]
+
+    def post(path, name, **headers):
+        return _ask(served, path, {"name": name}, **headers)
+
+    # Only from the page itself, as every change.
+    assert post("/api/satellites/remove", "kitchen")[0] == 403
+    assert post("/api/satellites/default", "hall")[0] == 403
+    assert served.brain.known == ["bedroom", "kitchen", "hall"]
+
+    said = [json.loads(post(path, name, X_Nova="page")[2])
+            for path, name in [("/api/satellites/remove", "kitchen"), ("/api/satellites/default", "hall"),
+                               ("/api/satellites/remove", "ghost"), ("/api/satellites/default", "ghost")]]
+    assert said == [{"success": True, "message": "Removed kitchen."},
+                    {"success": True, "message": "hall is the default now."},
+                    {"success": False, "message": "There's no satellite called ghost."},
+                    {"success": False, "message": "There's no satellite called ghost."}]
+    assert served.brain.known == ["hall", "bedroom"]
+
+
+def test_a_broken_satellites_file_is_said_so_not_taken_for_no_satellite(files, caplog):
+    page = _page()
+
+    def broken():
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    page.brain.satellites = broken
+    said = {"success": False, "message": "The satellites' file can't be read, so nothing was changed."}
+    assert page.add_satellite("study", LOGIN) == said
+    assert page.new_password("bedroom", LOGIN) == said
+    assert page.remove_satellite("bedroom", LOGIN) == said
+    assert page.make_default("bedroom", LOGIN) == said
+    assert "Settings page: couldn't read the satellites' file" in caplog.text
 
 
 def test_the_page_works_with_no_satellite_added_at_all(files):

@@ -7,10 +7,12 @@ config folder, readable by this user only, in the order they were added - the fi
 satellite is the default one.
 """
 
+import fcntl
 import os
 import re
 import secrets
-from typing import Dict, List, Optional
+from contextlib import contextmanager
+from typing import Dict, Iterator, List, Optional
 
 from voice_assistant import paths
 from voice_assistant.storage import load_json, save_json
@@ -54,6 +56,31 @@ class SatellitePasswords:
     def _read(self) -> Dict[str, str]:
         return load_json(self.path, {})
 
+    @contextmanager
+    def _changing(self) -> Iterator[Dict[str, str]]:
+        """
+        Holds the file to itself while it's read, changed and written back. The page
+        changes it in the brain's process and backend.py's add-satellite and
+        remove-satellite in one of their own, so without it each could read before
+        the other wrote, losing one change - a new password the page had just shown,
+        say, put back to the old one by an add-satellite.
+
+        It's a lock on a file of its own beside it, as the file itself is replaced at
+        every save. flock rather than lockf, as flock also keeps two threads of the
+        brain apart, each opening the lock afresh.
+
+        Yields:
+            The passwords, as they are now.
+        """
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        lock = os.open(f"{self.path}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield self._read()
+        finally:
+            # Closing it lets go of the lock.
+            os.close(lock)
+
     def get(self, name: str) -> Optional[str]:
         """
         Args:
@@ -77,15 +104,15 @@ class SatellitePasswords:
         Raises:
             ValueError: If the name is already there, or the password is too short.
         """
-        passwords = self._read()
-        if name in passwords:
-            raise ValueError(f"There is already a satellite called {name}")
-        if password is None:
-            password = secrets.token_urlsafe(32)
-        if len(password) < MIN_PASSWORD:
-            raise ValueError(f"A password has to be at least {MIN_PASSWORD} characters long")
-        passwords[name] = password
-        save_json(self.path, passwords)
+        with self._changing() as passwords:
+            if name in passwords:
+                raise ValueError(f"There is already a satellite called {name}")
+            if password is None:
+                password = secrets.token_urlsafe(32)
+            if len(password) < MIN_PASSWORD:
+                raise ValueError(f"A password has to be at least {MIN_PASSWORD} characters long")
+            passwords[name] = password
+            save_json(self.path, passwords)
         return password
 
     def renew(self, name: str) -> str:
@@ -102,12 +129,12 @@ class SatellitePasswords:
         Raises:
             ValueError: If there's no such satellite.
         """
-        passwords = self._read()
-        if name not in passwords:
-            raise ValueError(f"There is no satellite called {name}")
-        passwords[name] = secrets.token_urlsafe(32)
-        save_json(self.path, passwords)
-        return passwords[name]
+        with self._changing() as passwords:
+            if name not in passwords:
+                raise ValueError(f"There is no satellite called {name}")
+            passwords[name] = secrets.token_urlsafe(32)
+            save_json(self.path, passwords)
+            return passwords[name]
 
     def remove(self, name: str) -> bool:
         """
@@ -117,12 +144,28 @@ class SatellitePasswords:
         Returns:
             Whether there was one to remove.
         """
-        passwords = self._read()
-        if name not in passwords:
-            return False
-        del passwords[name]
-        save_json(self.path, passwords)
+        with self._changing() as passwords:
+            if name not in passwords:
+                return False
+            del passwords[name]
+            save_json(self.path, passwords)
         return True
+
+    def make_default(self, name: str):
+        """
+        Makes a satellite the default, by moving it first in the file. Its password,
+        and every other's, stays as it was.
+
+        Args:
+            name: The satellite.
+
+        Raises:
+            ValueError: If there's no such satellite.
+        """
+        with self._changing() as passwords:
+            if name not in passwords:
+                raise ValueError(f"There is no satellite called {name}")
+            save_json(self.path, {name: passwords[name], **passwords})
 
     def names(self) -> List[str]:
         """

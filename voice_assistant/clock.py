@@ -19,7 +19,7 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 from voice_assistant import paths, storage
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -464,7 +464,7 @@ class Clock:
 
             label = timer.get("label")
             timer["label"] = str(label) if label else None
-            # None for one set before there were satellites - see assign_unowned.
+            # None for one set before there were satellites - see move_satellite.
             satellite = timer.get("satellite")
             timer["satellite"] = str(satellite) if satellite else None
 
@@ -612,7 +612,7 @@ class Clock:
                 # Saved without a usable due time, so the next one is worked out afresh.
                 due_at = self._next_occurrence(hour, minute, repeat)
 
-            # None for one set before there were satellites - see assign_unowned.
+            # None for one set before there were satellites - see move_satellite.
             satellite = alarm.get("satellite")
             alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at,
                      "satellite": str(satellite) if satellite else None}
@@ -2108,27 +2108,33 @@ class Clock:
         logger.info(f"Put back on the settings page: {name}", extra=TRANSCRIPT)
         return {"success": True, "message": f"Put back the {name}."}
 
-    def assign_unowned(self, satellite: str) -> int:
+    def move_satellite(self, from_satellite: Optional[str], to_satellite: Optional[str]) -> int:
         """
-        Gives every timer and alarm which rings on no satellite to this one - those
-        set before there were satellites, when the Pi was all of Nova. That takes
-        in whatever's ringing, or waiting to be announced as missed, so it has
-        somewhere to ring or be said.
+        Gives every timer and alarm which rings on one satellite to another - those
+        set before there were satellites, when the Pi was all of Nova, to the
+        default (from None), or a removed satellite's to the default, or to None
+        with no satellite left, for the next one added. That takes in whatever's
+        ringing, or waiting to be announced as missed, so it has somewhere to ring
+        or be said.
 
         Args:
-            satellite: The satellite they should ring on.
+            from_satellite: The satellite they ring on now, or None for those on none.
+            to_satellite: The satellite they should ring on, or None for none.
 
         Returns:
             How many it gave, counting what's ringing or missed.
         """
+        def on_it(item: Dict) -> bool:
+            return (item["satellite"] or None) == from_satellite
+
         with self._changing():
-            timers = [timer for timer in self._timers.values() if not timer["satellite"]]
-            alarms = [alarm for alarm in self._alarms.values() if not alarm["satellite"]]
-            ringing = [entry["timer"] for entry in self._ringing if not entry["timer"]["satellite"]]
-            missed = [item for item in self._missed if not item["satellite"]]
+            timers = [timer for timer in self._timers.values() if on_it(timer)]
+            alarms = [alarm for alarm in self._alarms.values() if on_it(alarm)]
+            ringing = [entry["timer"] for entry in self._ringing if on_it(entry["timer"])]
+            missed = [item for item in self._missed if on_it(item)]
             given = timers + alarms + ringing + missed
             for item in given:
-                item["satellite"] = satellite
+                item["satellite"] = to_satellite
             # What's ringing, and what's missed, is saved with the timers - and what's
             # ringing is in each copy too.
             if timers or ringing or missed:
@@ -2137,8 +2143,19 @@ class Clock:
                 self._save_alarms()
 
         if given:
-            logger.info(f"Gave {len(given)} timer(s) and alarm(s) to {satellite}")
+            logger.info(f"Gave {len(given)} timer(s) and alarm(s) from {from_satellite or 'no satellite'} "
+                        f"to {to_satellite or 'no satellite, for the next one added'}")
         return len(given)
+
+    def satellites(self) -> Set[Optional[str]]:
+        """
+        Returns:
+            Each satellite something is set, ringing or missed on - None for those on none.
+        """
+        with self._lock:
+            items = (list(self._timers.values()) + list(self._alarms.values())
+                     + [entry["timer"] for entry in self._ringing] + self._missed)
+            return {item["satellite"] or None for item in items}
 
     @staticmethod
     def _occurrence(item: Dict, due: Optional[float] = None) -> str:

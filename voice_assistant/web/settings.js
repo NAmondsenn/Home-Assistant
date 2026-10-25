@@ -476,11 +476,24 @@ function showSatellites(state) {
     what.append(element("span",
       satellite.connected ? (DOING[satellite.activity] || (satellite.muted ? "Microphone muted" : "Listening for its wake word"))
         : "Not connected", "detail"));
+    const actions = element("span", undefined, "actions");
+    if (!satellite.default) {
+      const makeDefault = element("button", "Make default", "button quiet");
+      makeDefault.type = "button";
+      makeDefault.setAttribute("aria-label", `Make ${satellite.name} the default`);
+      makeDefault.addEventListener("click", () => change("/api/satellites/default", { name: satellite.name }));
+      actions.append(makeDefault);
+    }
     const renew = element("button", "New password", "button quiet");
     renew.type = "button";
     renew.setAttribute("aria-label", `Give ${satellite.name} a new password`);
     renew.addEventListener("click", () => newPassword(satellite.name));
-    row.append(dot(satellite.connected ? "good" : "off"), what, renew);
+    const remove = element("button", "Remove", "button quiet danger");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Remove ${satellite.name}`);
+    remove.addEventListener("click", () => removeSatellite(satellite));
+    actions.append(renew, remove);
+    row.append(dot(satellite.connected ? "good" : "off"), what, actions);
     return row;
   });
   drawIfChanged("satellites", satellites, () => document.getElementById("satellites").replaceChildren(
@@ -505,6 +518,27 @@ async function newPassword(name) {
   if (!confirm(`Give ${name} a new password? It stops working until it has the new one.`)) return;
   const result = await change("/api/satellites/password", { name });
   if (result.success && result.password) showPassword(name, result.password, false);
+}
+
+// Removes a satellite, once the user's sure - asked with what happens to what was
+// its, from what the page knows: where its timers and alarms go, whether the default
+// moves, and whether it's away with a copy of its alarms nothing here can empty.
+async function removeSatellite(satellite) {
+  const name = satellite.name;
+  const others = satellites.filter((other) => other.name !== name);
+  const next = satellite.default ? others[0]?.name : satellites.find((other) => other.default)?.name;
+  let question = `Remove ${name}? It's let go now, and can't connect again until it's added again.`;
+  question += next
+    ? ` Its timers and alarms move to ${next}, and routines that ran on it run there instead.`
+    : " Its timers and alarms go to the next satellite added.";
+  if (satellite.default && next) question += ` ${next} becomes the default.`;
+  if (!satellite.connected) {
+    question += " It still has a copy of its alarms for the next week. If it's switched on before then, it'll ring"
+      + " them too, so wipe it or connect it first.";
+  }
+  if (!confirm(question)) return;
+  // Looking after it, the page goes back to the default.
+  await change("/api/satellites/remove", { name }, async () => (chosen === name ? choose(null) : load()));
 }
 
 // A satellite's password, just made. It's put straight into the panel's text and

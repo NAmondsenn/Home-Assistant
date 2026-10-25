@@ -42,6 +42,7 @@ from voice_assistant.recording import RATE
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.satellite_passwords import SatellitePasswords
 from voice_assistant.vad import LoudnessDetector
+from voice_assistant.volume import VolumeControl
 
 BEDROOM = "the-bedroom-satellites-password"
 KITCHEN = "the-kitchen-satellites-password"
@@ -531,6 +532,313 @@ def test_a_new_password_is_shown_once_and_never_logged(brain, connect, passwords
         page.stop()
 
 
+# Satellites removed, or made the default
+
+def _rings_on(brain, name, session):
+    """Steps the clock to each of the satellite's alarms, checking it rings on the session given."""
+    alarms = brain.clock.overview(satellite=name)["alarms"]
+    assert alarms
+    brain.clock.alarm_ring_duration = 0
+    for alarm in alarms:
+        before = len(session.announced)
+        brain.clock._tick(alarm["due_at"] + 1)
+        assert len(session.announced) > before
+        brain.clock.dismiss()
+
+
+def test_removing_a_connected_satellite_empties_its_copy_first(brain, connect):
+    brain.clock.set_alarm(7, 0, repeat="weekdays", satellite="kitchen")
+    serving(brain)
+    kitchen = connect(brain, "kitchen", KITCHEN)
+    session = connected(brain, "kitchen")
+    assert wait_for(lambda: kitchen.copy())
+
+    assert brain.remove_satellite("kitchen") is True
+
+    # Emptied before it's let go, so it never rings its old alarms from its copy.
+    assert kitchen.gone.wait(5) and session.closed.is_set()
+    assert kitchen.copy() == []
+    assert brain.session_for("kitchen") is None and "kitchen" not in brain.sessions
+    assert brain.satellites() == ["bedroom"]
+    assert brain.remove_satellite("kitchen") is False
+
+
+def test_removing_one_thats_away_moves_its_alarms_and_warns(brain, connect, caplog):
+    brain.clock.set_alarm(7, 0, repeat="weekdays", satellite="kitchen")
+    serving(brain)
+    bedroom = connect(brain)
+    session = connected(brain)
+
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
+        brain.remove_satellite("kitchen")
+
+    assert brain.clock.overview(satellite="kitchen")["alarms"] == []
+    assert [alarm["name"] for alarm in brain.clock.overview(satellite="bedroom")["alarms"]] == ["7:00 AM alarm, every weekday"]
+    assert wait_for(lambda: bedroom.copy() == brain.clock.copy_for("bedroom") and bedroom.copy())
+    assert {entry["kind"] for entry in bedroom.copy()} == {"alarm"}
+    # Wherever it is, it still has its copy - which nothing here can empty.
+    assert "The kitchen satellite was removed while it wasn't connected" in caplog.text
+    _rings_on(brain, "bedroom", session)
+
+
+def test_removing_the_default_makes_the_next_one_default(brain, connect):
+    brain.clock.set_alarm(6, 30, satellite="bedroom")
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    kitchen = connected(brain, "kitchen")
+
+    brain.remove_satellite("bedroom")
+
+    assert brain.default_satellite() == "kitchen"
+    assert len(brain.clock.overview(satellite="kitchen")["alarms"]) == 1
+    _rings_on(brain, "kitchen", kitchen)
+
+
+def test_removing_the_last_satellite_keeps_its_alarms_for_the_next(brain, connect, passwords):
+    brain.clock.set_alarm(6, 30, satellite="bedroom")
+    brain.clock.set_timer(600, satellite="kitchen")
+    brain.remove_satellite("kitchen")
+    brain.remove_satellite("bedroom")
+
+    # On none, so not rung anywhere - until there's a satellite to ring them.
+    assert brain.default_satellite() is None
+    assert brain.clock.satellites() == {None}
+    assert not brain._unowned_given
+
+    passwords.add("hall", HALL)
+    serving(brain)
+    hall = connect(brain, "hall", HALL)
+    session = connected(brain, "hall")
+    assert brain.clock.satellites() == {"hall"}
+    assert wait_for(lambda: hall.copy() == brain.clock.copy_for("hall"))
+    assert {entry["kind"] for entry in hall.copy()} == {"alarm", "timer"}
+    _rings_on(brain, "hall", session)
+
+
+def test_routines_on_a_removed_satellite_run_on_the_default(brain, connect):
+    routine = brain.routines.save({**MORNING, "satellite": "kitchen"})["routine"]
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+
+    brain.remove_satellite("kitchen")
+
+    assert brain.routines.get(routine["id"])["satellite"] is None
+    assert brain.run_routine(brain.routines.get(routine["id"])) is True
+    assert bedroom.routines == ["Good morning"]
+
+
+def test_a_removed_satellites_volumes_are_kept(brain, passwords):
+    volume = VolumeControl(path=session_module._kept_for("volume", "kitchen"))
+    volume.set("music", 20)
+    muted = session_module._kept_for("microphone", "kitchen")
+    with open(muted, "w") as file:
+        file.write('{"muted": true}')
+
+    brain.remove_satellite("kitchen")
+    passwords.add("kitchen", KITCHEN)
+
+    # Added again, it has them back - they're by its name.
+    assert VolumeControl(path=session_module._kept_for("volume", "kitchen")).percent("music") == 20
+    assert json.loads(open(muted).read()) == {"muted": True}
+
+
+def test_a_removal_on_the_command_line_is_handled_the_same(brain, connect, passwords):
+    brain.clock.set_alarm(7, 0, repeat="weekdays", satellite="kitchen")
+    routine = brain.routines.save({**MORNING, "satellite": "kitchen"})["routine"]
+    serving(brain)
+    bedroom_satellite = connect(brain)
+    bedroom = connected(brain)
+    kitchen = connect(brain, "kitchen", KITCHEN)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: kitchen.copy())
+
+    # As backend.py's remove-satellite does, in a process of its own.
+    SatellitePasswords(passwords.path).remove("kitchen")
+    brain._shut_out_removed()
+
+    assert kitchen.gone.wait(5) and kitchen.copy() == []
+    assert brain.session_for("kitchen") is None
+    assert len(brain.clock.overview(satellite="bedroom")["alarms"]) == 1
+    assert wait_for(lambda: bedroom_satellite.copy() == brain.clock.copy_for("bedroom") and bedroom_satellite.copy())
+    assert brain.routines.get(routine["id"])["satellite"] is None
+    _rings_on(brain, "bedroom", bedroom)
+
+
+def test_a_removal_while_the_brain_was_down_is_caught_at_start(make_brain, connect, passwords, tmp_path):
+    # remove-satellite run with the brain stopped, or across an update.
+    first = make_brain()
+    first.clock.set_alarm(7, 0, repeat="weekdays", satellite="kitchen")
+    first.clock.set_timer(600, satellite="kitchen")
+    routine = first.routines.save({**MORNING, "satellite": "kitchen"})["routine"]
+    first.stop()
+    passwords.remove("kitchen")
+
+    brain = make_brain()
+    brain.serve = lambda: None
+    brain.run()
+
+    assert brain.clock.satellites() == {"bedroom"}
+    assert brain.routines.get(routine["id"])["satellite"] is None
+
+    # Kept so: the next brain rings them on the bedroom.
+    again = make_brain()
+    serving(again)
+    connect(again)
+    _rings_on(again, "bedroom", connected(again))
+
+
+def test_a_removal_is_handled_once(brain, passwords, monkeypatch):
+    # The server's poll and remove_satellite both look, maybe at once.
+    brain.clock.set_alarm(7, 0, satellite="kitchen")
+    handled = []
+    on_removed = brain._on_removed
+    monkeypatch.setattr(brain, "_on_removed", lambda name: (handled.append(name), on_removed(name)))
+    both = threading.Barrier(2)
+    names = passwords.names
+
+    def looking():
+        # Each waits for the other to look too - which, one at a time, it can't.
+        try:
+            both.wait(0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return names()
+
+    monkeypatch.setattr(passwords, "names", looking)
+    passwords.remove("kitchen")
+    threads = [threading.Thread(target=brain._shut_out_removed) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert handled == ["kitchen"]
+    assert len(brain.clock.overview(satellite="bedroom")["alarms"]) == 1
+
+
+class _HeldSatellite:
+    """
+    A satellite whose connected is held, on the thread sending everyone's copies, until
+    let go - so a copy made before it was removed arrives after.
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self.sent = []
+        self.letting_on = threading.Event()
+        self.reached = threading.Event()
+
+    @property
+    def connected(self):
+        if threading.current_thread().name == "on-change":
+            self.reached.set()
+            self.letting_on.wait(5)
+        return True
+
+    def send_alarms(self, entries):
+        self.sent.append(entries)
+        return True
+
+    def close(self):
+        pass
+
+
+def test_no_real_copy_reaches_a_removed_satellite(brain):
+    brain.clock.set_alarm(7, 0, satellite="kitchen")
+    satellite = _HeldSatellite("kitchen")
+    brain.sessions["kitchen"] = FakeSession(brain, satellite, [])
+    # Something changed on the clock just before, and its copies are on their way.
+    sending = threading.Thread(target=brain._send_alarms, name="on-change", daemon=True)
+    sending.start()
+    assert satellite.reached.wait(5)
+
+    brain.remove_satellite("kitchen")
+    satellite.letting_on.set()
+    sending.join(5)
+
+    assert satellite.sent == [[]]
+
+
+def test_routines_kept_for_a_removed_satellite_are_dropped(brain, connect, passwords):
+    routine = brain.routines.save({**MORNING, "satellite": "kitchen"})["routine"]
+    brain._run_timed(routine, time.time())
+    assert brain.routines._missed
+
+    brain.remove_satellite("kitchen")
+    assert brain.routines._missed == []
+
+    # Added again, it isn't given them.
+    passwords.add("kitchen", KITCHEN)
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    kitchen = connected(brain, "kitchen")
+    brain._catch_up_routines()
+    time.sleep(0.05)
+    assert kitchen.routines == [] and kitchen.announced == []
+
+
+def test_make_default_puts_it_first(brain, connect, passwords):
+    serving(brain)
+    connect(brain)
+    connect(brain, "kitchen", KITCHEN)
+    bedroom, kitchen = connected(brain), connected(brain, "kitchen")
+
+    brain.make_default("kitchen")
+
+    assert brain.default_satellite() == "kitchen" and passwords.names() == ["kitchen", "bedroom"]
+    # Its password is kept, so it stays connected.
+    assert passwords.get("kitchen") == KITCHEN and brain.session_for("kitchen") is kitchen
+    brain.run_routine({"name": "Good morning", "satellite": None})
+    assert kitchen.routines == ["Good morning"] and bedroom.routines == []
+    with pytest.raises(ValueError):
+        brain.make_default("study")
+
+
+def test_a_new_password_is_given_even_if_letting_go_fails(brain, connect, passwords, caplog):
+    # It's saved by then, so the old one is refused: lost here, the satellite couldn't
+    # connect until it was given another.
+    serving(brain)
+    connect(brain)
+    session = connected(brain)
+
+    close = session.close
+    failed = []
+
+    def fail():
+        if not failed:
+            failed.append(True)
+            raise RuntimeError("stuck")
+        close()
+
+    session.close = fail
+    password = brain.renew_password("bedroom")
+
+    assert password == passwords.get("bedroom") and password != BEDROOM
+    # Let go all the same.
+    assert wait_for(lambda: brain.session_for("bedroom") is None)
+    assert "Couldn't let go of the bedroom satellite" in caplog.text and password not in caplog.text
+
+
+def test_a_satellite_is_let_go_outside_the_pages_save_lock(brain, connect, tmp_path, monkeypatch):
+    # Letting go stops its device in Home Assistant and its music, which every other
+    # save on the page would wait for.
+    monkeypatch.setattr(paths, "CONFIG_FILE", str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(paths, "SECRETS_FILE", str(tmp_path / ".env"))
+    page = settings_page_module.SettingsPage(["you@example.com"], port=0, brain=brain)
+    serving(brain)
+    connect(brain)
+    connect(brain, "kitchen", KITCHEN)
+    held = []
+    for session in (connected(brain), connected(brain, "kitchen")):
+        session.close = lambda close=session.close, name=session.satellite.name: (
+            held.append((name, page._saving.locked())), close())
+
+    assert page.new_password("bedroom", "you@example.com")["success"]
+    assert page.remove_satellite("kitchen", "you@example.com") == {"success": True, "message": "Removed kitchen."}
+    assert {name for name, _ in held} == {"bedroom", "kitchen"} and not any(locked for _, locked in held)
+
+
 def test_a_timer_rings_on_its_satellite_or_waits_for_its_copy(brain, connect):
     serving(brain)
     brain.clock.set_timer(60, satellite="bedroom")
@@ -960,8 +1268,11 @@ class Recorder:
     def start(self):
         pass
 
-    def assign_unowned(self, satellite):
+    def move_satellite(self, from_satellite, to_satellite):
         return 0
+
+    def satellites(self):
+        return set()
 
 
 @pytest.fixture

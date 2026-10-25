@@ -134,6 +134,10 @@ PLAYLISTS_KEPT = 300
 # What the page's music buttons do, as the actions asking out loud would.
 PLAYBACK = ("pause", "skip", "previous")
 
+# What's said when the satellites' passwords file can't be read - rather than that
+# there's no such satellite, which would send the user looking for one.
+SATELLITES_UNREADABLE = "The satellites' file can't be read, so nothing was changed."
+
 
 def _kind(default: Any) -> str:
     """The kind of value a setting holds, as the page shows it."""
@@ -1037,8 +1041,21 @@ class SettingsPage:
         logger.info(f"Settings page: {who} ran a routine")
         return {"success": True, "message": f"Running {routine['name']}."}
 
-    # The satellites. The passwords' file is read, changed and written back with no
-    # lock of its own, so each of these holds _saving.
+    # The satellites. Their passwords' file keeps its own lock, which backend.py's
+    # add-satellite and remove-satellite keep too (see SatellitePasswords), so none
+    # of these holds _saving - which a satellite being let go would hold up.
+
+    def _satellite_names(self) -> Optional[List[str]]:
+        """
+        Returns:
+            The satellites, or None if their file can't be read - which is logged,
+            so it's said as that, rather than as there being no such satellite.
+        """
+        try:
+            return self.brain.satellites()
+        except (OSError, ValueError) as e:
+            logger.error(f"Settings page: couldn't read the satellites' file: {e}")
+            return None
 
     def add_satellite(self, name, who: str) -> Dict:
         """
@@ -1055,13 +1072,15 @@ class SettingsPage:
         if not isinstance(name, str):
             return {"success": False, "message": "That didn't make sense."}
         name = name.strip()
-        with self._saving:
-            if name in self.brain.satellites():
-                return {"success": False, "message": f"There's already a satellite called {name}."}
-            try:
-                password = self.brain.add_satellite(name)
-            except ValueError as e:
-                return {"success": False, "message": str(e)}
+        names = self._satellite_names()
+        if names is None:
+            return {"success": False, "message": SATELLITES_UNREADABLE}
+        if name in names:
+            return {"success": False, "message": f"There's already a satellite called {name}."}
+        try:
+            password = self.brain.add_satellite(name)
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
         logger.info(f"Settings page: {who} added the {name} satellite")
         return {"success": True, "message": f"Added {name}. Its password is shown only this once.",
                 "password": password}
@@ -1080,14 +1099,70 @@ class SettingsPage:
         """
         if not isinstance(name, str):
             return {"success": False, "message": "That didn't make sense."}
-        with self._saving:
-            try:
-                password = self.brain.renew_password(name)
-            except ValueError:
-                return {"success": False, "message": f"There's no satellite called {name}."}
+        names = self._satellite_names()
+        if names is None:
+            return {"success": False, "message": SATELLITES_UNREADABLE}
+        missing = {"success": False, "message": f"There's no satellite called {name}."}
+        if name not in names:
+            return missing
+        try:
+            password = self.brain.renew_password(name)
+        except ValueError:
+            # Removed since.
+            return missing
         logger.info(f"Settings page: {who} gave the {name} satellite a new password")
         return {"success": True, "message": f"{name} has a new password. It's shown only this once.",
                 "password": password}
+
+    def remove_satellite(self, name, who: str) -> Dict:
+        """
+        Stops letting a satellite in, letting it go if it's connected - its timers,
+        alarms and routines going to the default. See Brain.remove_satellite.
+
+        Args:
+            name: The satellite, as the page sent it.
+            who: The Tailscale login removing it, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        if not isinstance(name, str):
+            return {"success": False, "message": "That didn't make sense."}
+        names = self._satellite_names()
+        if names is None:
+            return {"success": False, "message": SATELLITES_UNREADABLE}
+        if name not in names or not self.brain.remove_satellite(name):
+            return {"success": False, "message": f"There's no satellite called {name}."}
+        logger.info(f"Settings page: {who} removed the {name} satellite")
+        return {"success": True, "message": f"Removed {name}."}
+
+    def make_default(self, name, who: str) -> Dict:
+        """
+        Makes a satellite the default - for ntfy's alerts, the spoken warnings and
+        routines without a satellite. See Brain.make_default.
+
+        Args:
+            name: The satellite, as the page sent it.
+            who: The Tailscale login asking, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        if not isinstance(name, str):
+            return {"success": False, "message": "That didn't make sense."}
+        names = self._satellite_names()
+        if names is None:
+            return {"success": False, "message": SATELLITES_UNREADABLE}
+        missing = {"success": False, "message": f"There's no satellite called {name}."}
+        if name not in names:
+            return missing
+        try:
+            self.brain.make_default(name)
+        except ValueError:
+            # Removed since.
+            return missing
+        logger.info(f"Settings page: {who} made the {name} satellite the default")
+        return {"success": True, "message": f"{name} is the default now."}
 
 
 # What each kind of change is sent to, and what it's given.
@@ -1118,6 +1193,8 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/routines/run": lambda page, body, who: page.start_routine(body["id"], who),
     "/api/satellites/add": lambda page, body, who: page.add_satellite(body["name"], who),
     "/api/satellites/password": lambda page, body, who: page.new_password(body["name"], who),
+    "/api/satellites/remove": lambda page, body, who: page.remove_satellite(body["name"], who),
+    "/api/satellites/default": lambda page, body, who: page.make_default(body["name"], who),
 }
 
 

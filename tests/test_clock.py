@@ -1061,7 +1061,7 @@ def test_changes_are_told_to_on_change(make_clock, tmp_path):
     clock._tick(time.time() + 61)
     clock.dismiss()
     clock.set_timer(600)
-    clock.assign_unowned("bedroom")
+    clock.move_satellite(None, "bedroom")
     clock.apply_away("bedroom", rang=[], dismissed=[clock.copy_for("bedroom")[0]["id"]])
     assert len(told) == 10
 
@@ -1069,7 +1069,7 @@ def test_changes_are_told_to_on_change(make_clock, tmp_path):
     clock.set_alarm(25, 0)
     clock.cancel_timer()
     clock.dismiss()
-    clock.assign_unowned("bedroom")
+    clock.move_satellite(None, "bedroom")
     clock.apply_away("bedroom", rang=[], dismissed=["timer-1@0"])
     assert len(told) == 10
     assert not any(locked for _, locked in told)
@@ -1087,8 +1087,8 @@ def test_entries_from_before_satellites_are_given_to_the_default(make_clock, tmp
     assert [timer.get("id") for timer in json.loads((tmp_path / "timers.json").read_text())["timers"]] == [2, 3]
 
     clock.set_timer(1800, satellite="kitchen")
-    assert clock.assign_unowned("pi") == 3
-    assert clock.assign_unowned("pi") == 0
+    assert clock.move_satellite(None, "pi") == 3
+    assert clock.move_satellite(None, "pi") == 0
 
     restarted = make_clock()
     assert [timer["name"] for timer in restarted.overview("pi")["timers"]] == ["10 minute timer", "pizza reminder"]
@@ -1483,17 +1483,51 @@ def test_silencing_while_ringing_saves_and_tells_on_change(make_clock, tmp_path)
 def test_whats_ringing_or_missed_is_given_to_the_default_too(make_clock, tmp_path):
     clock = make_clock()
     _ring_a_timer(clock)
-    assert clock.assign_unowned("pi") == 1
+    assert clock.move_satellite(None, "pi") == 1
     assert [entry["kind"] for entry in clock.copy_for("pi")] == ["timer"]
 
     (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
         {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None}]}))
     restarted = make_clock()
-    assert restarted.assign_unowned("pi") == 1
+    assert restarted.move_satellite(None, "pi") == 1
     # Still given, through a restart before it's said.
     again = make_clock()
     again._tick(time.time())
     assert again.announced[0]["satellite"] == "pi"
+
+
+def test_move_satellite_moves_everything_of_one_satellite(make_clock, tmp_path):
+    # As a satellite is removed: what it was ringing, and what's waiting to be said as
+    # missed, go too, so nothing is left ringing nowhere.
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None, "satellite": "kitchen"},
+        {"id": 2, "due_at": time.time() + 600, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    # Away, so the missed one waits to be said.
+    clock = make_clock(can_hear=lambda satellite: False)
+    clock.set_timer(1200, satellite="kitchen")
+    clock.set_alarm(7, 0, repeat="weekdays", satellite="kitchen")
+    clock.set_timer(60, satellite="kitchen")
+    clock._tick(time.time() + 61)
+    assert clock.is_ringing(satellite="kitchen")
+
+    # The ringing timer, the missed one, the 20 minute timer and the alarm.
+    assert clock.move_satellite("kitchen", "bedroom") == 4
+    assert clock.move_satellite("kitchen", "bedroom") == 0
+    assert clock.satellites() == {"bedroom"}
+    assert not clock.is_ringing(satellite="kitchen") and clock.is_ringing(satellite="bedroom")
+    assert clock.copy_for("kitchen") == []
+    assert {entry["kind"] for entry in clock.copy_for("bedroom")} == {"timer", "alarm"}
+
+    restarted = make_clock()
+    assert restarted.overview("kitchen") == {"timers": [], "alarms": []}
+    assert len(restarted.overview("bedroom")["timers"]) == 3 and len(restarted.overview("bedroom")["alarms"]) == 1
+    restarted._tick(time.time())
+    assert restarted.announced and {said["satellite"] for said in restarted.announced} == {"bedroom"}
+
+    # With no satellite left, they wait on none for the next one added.
+    moved = restarted.move_satellite("bedroom", None)
+    assert moved >= 3 and restarted.satellites() == {None}
+    assert restarted.move_satellite(None, "hall") == moved
 
 
 def _ring_alarm_then_restart(make_clock, repeat):
