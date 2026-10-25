@@ -93,6 +93,15 @@ PROXMOX = "proxmoxve"
 WORKS_GUARDED = "works something guarded"
 UNSEEN = "can't be seen"
 
+# Why Assist isn't asked to act on something, as the log says it. Something with no unique
+# id - a YAML template switch, a scene with no id, an old-style group - is never in the
+# registry, so it's refused for good, not only until the registry's next read: the log
+# says what would let it be worked.
+NOT_IN_STATES = "not in Home Assistant's states"
+GUARDED_TARGET = "never worked by voice"
+UNREGISTERED = "not in Home Assistant's registry - give it a unique id to work it by voice"
+NO_REGISTRY = "not vouched for while Home Assistant's registry can't be read"
+
 # The domains whose actions, given a whole area, floor or label - or "all", for every
 # entity - could reach something guarded there: homeassistant's reach anything, a door is a
 # cover, the PC's shutdown and Proxmox's are buttons, Proxmox's switches stop the machines
@@ -297,14 +306,32 @@ def target_refused(entity_id: str, state: Optional[Dict], snapshot: Optional[Sna
         True for anything guarded, anything that wasn't there a moment ago to be checked,
         and anything which acts that the registry can't vouch for.
     """
+    return why_target_refused(entity_id, state, snapshot) is not None
+
+
+def why_target_refused(entity_id: str, state: Optional[Dict], snapshot: Optional[Snapshot]) -> Optional[str]:
+    """
+    Why Assist mustn't be asked to act on something, for the log - see target_refused.
+
+    Args:
+        entity_id, state, snapshot: As for target_refused.
+
+    Returns:
+        NOT_IN_STATES, GUARDED_TARGET, UNREGISTERED or NO_REGISTRY - or None if it may be
+        acted on.
+    """
     if state is None:
-        return True
+        return NOT_IN_STATES
     if guarded(entity_id, state.get("attributes") or {}, snapshot) is not None:
-        return True
+        return GUARDED_TARGET
     # Whatever Proxmox or HASS.Agent adds is in the states at once, but in the registry
     # only up to five minutes later - and either can act through a switch, an update or a
     # light as well as a button. Only a sensor's or a binary sensor's never acts.
-    return entity_id.partition(".")[0] not in NOT_ACTING and (snapshot is None or snapshot.platform(entity_id) is None)
+    if entity_id.partition(".")[0] in NOT_ACTING:
+        return None
+    if snapshot is None:
+        return NO_REGISTRY
+    return UNREGISTERED if snapshot.platform(entity_id) is None else None
 
 
 def _worst(reasons: Iterable[Optional[str]]) -> Optional[str]:

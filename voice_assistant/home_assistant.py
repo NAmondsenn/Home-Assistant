@@ -62,8 +62,8 @@ import requests
 from voice_assistant import network
 from voice_assistant.clock import format_duration, spoken_clock_time
 from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, Scripts, names_guarded,
-                                      runnables_named, sensitive, sensitive_words, split_words, target_refused,
-                                      why_not_run)
+                                      runnables_named, sensitive, sensitive_words, split_words, why_not_run,
+                                      why_target_refused)
 from voice_assistant.ha_registry import (HASS_AGENT_MAKER, PC_KINDS, HomeRegistry, HomeSocket, HomeSocketError,
                                          Snapshot)
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -590,10 +590,12 @@ class HomeAssistant:
                     logger.info(f"Not sent to Assist, which reads it as {what} on {match.targets}: '{request}'",
                                 extra=TRANSCRIPT)
                     return not_understood
-                barred = [target for target in match.targets if target_refused(target, by_id.get(target), snapshot)]
+                barred = {target: why for target in match.targets
+                          if (why := why_target_refused(target, by_id.get(target), snapshot)) is not None}
                 if barred:
-                    logger.warning(f"Refused a Home Assistant request Assist would act on {barred} with: '{request}'",
-                                   extra=TRANSCRIPT)
+                    whys = "; ".join(f"{target} is {why}" for target, why in barred.items())
+                    logger.warning(f"Refused a Home Assistant request Assist would act on {list(barred)} with "
+                                   f"({whys}): '{request}'", extra=TRANSCRIPT)
                     return refused
             # A script or scene is only run once what it does has been checked - one Assist
             # would act on, and one the request names, as a light sentence can while the

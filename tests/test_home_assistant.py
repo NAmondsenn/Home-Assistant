@@ -689,6 +689,26 @@ def test_anything_acting_the_registry_cant_vouch_for_is_refused(make_home, entit
     assert home.command("is new on", wider=True)["success"]
 
 
+def test_the_refusal_says_why_the_registry_cant_vouch(make_home, caplog):
+    # A YAML template switch with no unique id is never in the registry, so it's refused
+    # for good - and the log says what to do about it.
+    home = _assisted(make_home, [_thing("switch.heater", "Heater"), LAMP], [_entry("light.lamp")],
+                     _match("HassTurnOn", "switch.heater"))
+    with caplog.at_level("WARNING", logger="voice_assistant.home_assistant"):
+        assert home.command("turn on the heater", wider=True) == REFUSED
+    assert ("switch.heater is not in Home Assistant's registry - give it a unique id to work it by voice"
+            in caplog.records[-1].message)
+    # Without a read of the registry at all, it's that which is said instead.
+    home.registry.read = None
+    home.socket.answer = _debugged(_match("HassTurnOn", "light.lamp"))
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="voice_assistant.home_assistant"):
+        assert home.command("turn on the lamp") == REFUSED
+    message = caplog.records[-1].message
+    assert "light.lamp is not vouched for while Home Assistant's registry can't be read" in message
+    assert "unique id" not in message
+
+
 def test_a_group_assist_would_act_on_is_refused_for_a_guarded_member(make_home):
     # The final review's repro: a cover group holding the garage door and a blind is one
     # target, and Home Assistant opens every member.
