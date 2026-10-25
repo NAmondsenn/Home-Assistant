@@ -286,6 +286,9 @@ class SettingsPage:
         # as each request has a thread of its own - two saves at once, from two tabs or
         # two keys pasted quickly, could otherwise each write over the other.
         self._saving = threading.Lock()
+        # Whether the satellites' file couldn't be read when last asked - see
+        # _satellite_names, which says so once until it can be.
+        self._satellites_unreadable = False
         # What was just removed, for a while, so the toast's Undo can put it back.
         self._undo = UndoShelf()
         self._server: Optional[ThreadingHTTPServer] = None
@@ -1067,10 +1070,16 @@ class SettingsPage:
             so it's said as that, rather than as there being no such satellite.
         """
         try:
-            return self.brain.satellites()
+            names = self.brain.satellites()
         except (OSError, ValueError) as e:
-            logger.error(f"Settings page: couldn't read the satellites' file: {e}")
+            # The page asks for its state every twenty seconds, so it's said once,
+            # until the file can be read again - and once more if it breaks again.
+            if not self._satellites_unreadable:
+                logger.error(f"Settings page: couldn't read the satellites' file: {e}")
+            self._satellites_unreadable = True
             return None
+        self._satellites_unreadable = False
+        return names
 
     def add_satellite(self, name, who: str) -> Dict:
         """

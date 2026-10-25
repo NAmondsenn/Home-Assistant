@@ -1350,6 +1350,27 @@ def test_the_page_loads_with_a_broken_satellites_file(served, caplog):
     assert _page().state()["satellites_unreadable"] is False
 
 
+def test_a_broken_satellites_file_is_logged_once_until_its_read_again(files, caplog):
+    # The page asks for its state every twenty seconds.
+    page = _page()
+    known = page.brain.satellites
+
+    def broken():
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    page.brain.satellites = broken
+    for _ in range(3):
+        page.state()
+    assert caplog.text.count("couldn't read the satellites' file") == 1
+
+    # Readable again, then broken again, it's said again.
+    page.brain.satellites = known
+    page.state()
+    page.brain.satellites = broken
+    page.state()
+    assert caplog.text.count("couldn't read the satellites' file") == 2
+
+
 def test_the_page_works_with_no_satellite_added_at_all(files):
     page = _page(sessions={}, known=[])
     state = page.state()
