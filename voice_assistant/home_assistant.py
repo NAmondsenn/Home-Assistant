@@ -1,8 +1,8 @@
 """
 Home Assistant Module.
 
-Works the lights and the to-do lists, and reads the calendar and the weather, through
-Home Assistant.
+Works the lights and the to-do lists, reads the calendar and the weather, and finds and
+rings the user's phone (see devices.py), through Home Assistant.
 
 Nova signs in as a Home Assistant user of its own, with a long-lived access token,
 and asks for things in plain words through Home Assistant's own Assist - "turn off
@@ -90,9 +90,14 @@ DEFAULT_AGENT = "conversation.home_assistant"
 # The lists' services never delete - a thing is ticked off with update_item, and stays in
 # Home Assistant, where it can be put back - so todo.remove_item and remove_completed_items
 # aren't here.
+# The Home Assistant app's own notify services, one for each phone, tablet or Mac, are
+# allowed by name - mobile_app_s25_ultra - and given no target, as each already names its
+# device. Not notify.notify or notify.send_message, which could reach anything.
 SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",),
-            "weather": ("get_forecasts",), "todo": ("add_item", "update_item", "get_items")}
+            "weather": ("get_forecasts",), "todo": ("add_item", "update_item", "get_items"),
+            "notify": re.compile(r"mobile_app_[a-z0-9_]+")}
 BY_AREA = ("light",)
+UNTARGETED = ("notify",)
 # The services Nova asks for an answer from - only reads, which change nothing. Each is
 # still only called if SERVICES has it too, and always with its answer asked for.
 RETURNS = {("weather", "get_forecasts"), ("todo", "get_items")}
@@ -224,6 +229,45 @@ PEOPLE_TEMPLATE = """
   }] -%}
 {%- endfor -%}
 {{ found.people | tojson }}
+"""
+
+# Renders every device of the Home Assistant app - a phone, tablet or Mac - as JSON, with
+# where its tracker says it is and the place its geocoded location sensor names, e.g.
+# [{"device": "abc123", "own_name": "s25-ultra", "name_by_user": null, "maker": "samsung",
+# "model": "SM-S938B", "tracker": {"state": "not_home", "reported": 1761200000.0}, "place":
+# {"state": "1 High Street, Leeds, ...", "attributes": [["thoroughfare", "High Street"],
+# ["locality", "Leeds"]]}}]. Only the place's street and town are rendered, as pairs under
+# whichever case the app gives them - the Mac's are "Thoroughfare" and "Locality" - never
+# its coordinates, which the sensor has as well. A device with no tracker, or no sensor,
+# has null for it.
+APP_DEVICES_TEMPLATE = """
+{%- set found = namespace(devices=[]) -%}
+{%- for device in integration_entities('mobile_app') | map('device_id') | select('string') | unique -%}
+  {%- set tracker = namespace(seen=none) -%}
+  {%- for entity in states.device_tracker if device_id(entity.entity_id) == device -%}
+    {%- set tracker.seen = {'state': entity.state,
+                            'reported': (entity.last_reported or entity.last_updated) | as_timestamp} -%}
+  {%- endfor -%}
+  {%- set place = namespace(seen=none) -%}
+  {%- for entity in states.sensor if device_id(entity.entity_id) == device
+                                     and entity.entity_id.endswith('geocoded_location') -%}
+    {%- set parts = namespace(kept=[]) -%}
+    {%- for key, value in entity.attributes.items() if key | lower in ('thoroughfare', 'locality') -%}
+      {%- set parts.kept = parts.kept + [[key, value]] -%}
+    {%- endfor -%}
+    {%- set place.seen = {'state': entity.state, 'attributes': parts.kept} -%}
+  {%- endfor -%}
+  {%- set found.devices = found.devices + [{
+    'device': device,
+    'own_name': device_attr(device, 'name'),
+    'name_by_user': device_attr(device, 'name_by_user'),
+    'maker': device_attr(device, 'manufacturer'),
+    'model': device_attr(device, 'model'),
+    'tracker': tracker.seen,
+    'place': place.seen
+  }] -%}
+{%- endfor -%}
+{{ found.devices | tojson }}
 """
 
 # What the settings page may switch, and run (ha_guard.RUNNABLE), by entity id. A light
@@ -847,6 +891,66 @@ class HomeAssistant:
                  "state": person["state"], "devices": person["devices"]}
                 for person in json.loads(self._template(PEOPLE_TEMPLATE, timeout=timeout))]
 
+    def app_devices(self) -> List[Dict]:
+        """
+        Every device of the Home Assistant app - the user's phone, tablet or Mac - with where
+        it is and how to ring it, for devices.py. Not find_device, which finds Nova's own
+        device for its room.
+
+        Returns:
+            One dict for each, with "device" (its id), "name" (the name the user gave it,
+            else its own), "maker" and "model" (or None), "notify" (its notify service,
+            "mobile_app_" and its own name slugified, e.g. "mobile_app_s25_ultra" - or None
+            if Home Assistant hasn't got that service), "tracker" ({"state", "reported"}:
+            e.g. "home", "not_home" or a zone's name, and when it last reported, in epoch
+            seconds - or None with no tracker) and "place" ({"state", "thoroughfare",
+            "locality"} from its geocoded location sensor, each part None if the sensor
+            hasn't got it - or None with no sensor).
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down - see _template.
+            ValueError: If it didn't answer with JSON. An answer of the wrong shape
+                raises KeyError or TypeError - callers catch batteries.HOME_FAILURES,
+                which has all three.
+        """
+        rendered = json.loads(self._template(APP_DEVICES_TEMPLATE))
+        notify = next((set(domain["services"]) for domain in self._request("GET", "/api/services").json()
+                       if domain["domain"] == "notify"), set())
+        found = []
+        for device in rendered:
+            service = "mobile_app_" + _slug(device["own_name"] or "")
+            place = device["place"]
+            if place is not None:
+                # The Mac's app gives "Thoroughfare" and "Locality", the phone's "thoroughfare".
+                parts = {str(key).lower(): value for key, value in place["attributes"]}
+                place = {"state": place["state"], "thoroughfare": parts.get("thoroughfare"),
+                         "locality": parts.get("locality")}
+            found.append({"device": device["device"],
+                          "name": device["name_by_user"] or device["own_name"] or device["device"],
+                          "maker": device["maker"], "model": device["model"],
+                          "notify": service if service in notify else None,
+                          "tracker": device["tracker"], "place": place})
+        return found
+
+    def notify(self, service: str, message: str, title: Optional[str] = None, data: Optional[Dict] = None):
+        """
+        Sends a notification through one of the Home Assistant app's notify services - to
+        ring a phone, for devices.py.
+
+        Args:
+            service: The service, e.g. "mobile_app_s25_ultra".
+            message: The message, e.g. "TTS" for the Android app to say data's tts_text aloud.
+            title: Its title, or None for none.
+            data: What else the app is given, e.g. {"push": {"sound": "default"}}, or None.
+
+        Raises:
+            NotAllowed: If it isn't one of the app's notify services.
+            requests.RequestException: If Home Assistant couldn't be asked, or didn't take it.
+        """
+        sent = {"message": message, **({"title": title} if title else {}), **({"data": data} if data else {})}
+        self._call_service("notify", service, sent)
+
     def _in_order(self, lights: List[Dict]) -> List[Dict]:
         """
         The lights with Nova's own room's first, then the other rooms' by name, and last
@@ -1132,15 +1236,17 @@ class HomeAssistant:
 
         Raises:
             NotAllowed: If SERVICES doesn't have the service, or it's given anything
-                outside its own domain, or nothing to act on - or returns doesn't
-                match whether RETURNS has it.
+                outside its own domain, or nothing to act on - or, for one in UNTARGETED,
+                anything at all - or returns doesn't match whether RETURNS has it.
             requests.RequestException: If Home Assistant couldn't be asked.
         """
         entities = data.get("entity_id")
         entities = [entities] if isinstance(entities, str) else list(entities or [])
         targets = {key for key in data if key in ("entity_id", "area_id", "device_id", "floor_id", "label_id")}
         allowed_targets = {"entity_id", "area_id"} if domain in BY_AREA else {"entity_id"}
-        if (service not in SERVICES.get(domain, ()) or not targets or targets - allowed_targets
+        allowed = SERVICES.get(domain, ())
+        named = bool(allowed.fullmatch(service)) if isinstance(allowed, re.Pattern) else service in allowed
+        if (not named or (bool(targets) if domain in UNTARGETED else not targets) or targets - allowed_targets
                 or returns != ((domain, service) in RETURNS)
                 or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
                            for entity in entities)):
@@ -1664,6 +1770,11 @@ def _script_name(name: str) -> str:
     if len(words) > 1 and words[-1] in ("script", "scene", "routine"):
         words = words[:-1]
     return "".join(words)
+
+
+def _slug(name: str) -> str:
+    """A name as Home Assistant slugifies it for a service, e.g. "s25-ultra" or "S25 Ultra" -> "s25_ultra"."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
 def _members(state: Optional[Dict]) -> Optional[List]:

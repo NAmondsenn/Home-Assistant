@@ -102,12 +102,12 @@ class Battery:
             device=device,
             kind=kind,
             phone=kind == "mobile" and is_phone(maker, model),
-            computer=app and _is_mac(maker, model),
+            computer=app and is_mac(maker, model),
             charging=charging_from(found.get("charging")) if device else None,
         )
 
 
-def _is_mac(maker: Optional[str], model: Optional[str]) -> bool:
+def is_mac(maker: Optional[str], model: Optional[str]) -> bool:
     """Whether a device is an Apple Mac, e.g. maker "Apple", model "Mac16,8"."""
     return (maker or "").lower() == "apple" and (model or "").lower().startswith("mac")
 
@@ -125,7 +125,7 @@ def kind_of(maker: Optional[str], model: Optional[str], app: bool) -> str:
         "mobile" for what's on the app, apart from a Mac; "other" for a Mac,
         anything off the app, and anything unknown.
     """
-    return "mobile" if app and not _is_mac(maker, model) else "other"
+    return "mobile" if app and not is_mac(maker, model) else "other"
 
 
 def is_phone(maker: Optional[str], model: Optional[str]) -> bool:

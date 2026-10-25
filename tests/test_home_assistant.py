@@ -2423,7 +2423,76 @@ def test_people_come_with_their_trackers_devices(make_home):
     assert "states.person" in template and "person.name" in template
 
 
-@pytest.mark.parametrize("ask", ["batteries", "people"])
+# The Home Assistant app's devices, as live check 4 found them
+
+def _rendered_app_device(device="dev25", own_name="s25-ultra", **shown):
+    """One device as APP_DEVICES_TEMPLATE renders it - the S25's, unless a test says otherwise."""
+    return {"device": device, "own_name": own_name, "name_by_user": None, "maker": "samsung", "model": "SM-S938B",
+            "tracker": {"state": "not_home", "reported": 1761200000.0},
+            "place": {"state": "1 High Street, Leeds, LS1 1AA, UK",
+                      "attributes": [["thoroughfare", "High Street"], ["locality", "Leeds"]]}, **shown}
+
+
+NOTIFY_SERVICES = [{"domain": "light", "services": {"turn_on": {}}},
+                   {"domain": "notify", "services": {"mobile_app_s25_ultra": {}, "notify": {}, "send_message": {}}}]
+
+
+def test_a_devices_notify_service_is_found_by_its_name(make_home):
+    mac = _rendered_app_device("devmac", "MacBook Pro", name_by_user="Work Mac", maker="Apple", model="Mac16,8",
+                               tracker=None, place={"state": "High Street, Leeds",
+                                                    "attributes": [["Thoroughfare", "High Street"],
+                                                                   ["Locality", "Leeds"]]})
+    home = make_home({"/api/template": FakeResponse(json.dumps([_rendered_app_device(), mac])),
+                      "/api/services": NOTIFY_SERVICES})
+    assert home.app_devices() == [
+        {"device": "dev25", "name": "s25-ultra", "maker": "samsung", "model": "SM-S938B",
+         "notify": "mobile_app_s25_ultra", "tracker": {"state": "not_home", "reported": 1761200000.0},
+         "place": {"state": "1 High Street, Leeds, LS1 1AA, UK", "thoroughfare": "High Street", "locality": "Leeds"}},
+        # The user's name for it is said, but its notify service is named after its own. /api/services
+        # hasn't got mobile_app_macbook_pro, so it has none - and the Mac's capitals are read all the same.
+        {"device": "devmac", "name": "Work Mac", "maker": "Apple", "model": "Mac16,8", "notify": None,
+         "tracker": None, "place": {"state": "High Street, Leeds", "thoroughfare": "High Street", "locality": "Leeds"}}]
+    template = home._session.requests[0][2]["json"]["template"]
+    assert "integration_entities('mobile_app')" in template and "geocoded_location" in template
+    # Nothing but the two parts of the place leaves Home Assistant - never its coordinates.
+    assert "thoroughfare" in template and "locality" in template and "| lower" in template
+
+
+def test_a_device_with_no_tracker_or_place_has_none(make_home):
+    row = _rendered_app_device(tracker=None, place=None)
+    home = make_home({"/api/template": FakeResponse(json.dumps([row])), "/api/services": []})
+    found, = home.app_devices()
+    assert (found["notify"], found["tracker"], found["place"]) == (None, None, None)
+
+
+def test_the_app_is_sent_a_notification_with_no_target(make_home):
+    home = make_home({"/api/services/notify/mobile_app_s25_ultra": []})
+    home.notify("mobile_app_s25_ultra", "TTS", data={"tts_text": "Hello."})
+    assert home._session.requests == [
+        ("POST", "/api/services/notify/mobile_app_s25_ultra", {"json": {"message": "TTS", "data": {"tts_text": "Hello."}}})]
+    home.notify("mobile_app_s25_ultra", "Hello.", title="Nova")
+    assert home._session.requests[-1][2] == {"json": {"message": "Hello.", "title": "Nova"}}
+
+
+@pytest.mark.parametrize("service, data", [
+    ("notify", {"message": "Hello."}),
+    ("send_message", {"message": "Hello.", "entity_id": "notify.mobile_app_s25_ultra"}),
+    ("persistent_notification", {"message": "Hello."}),
+    ("mobile_app_", {"message": "Hello."}),
+    ("mobile_app_S25", {"message": "Hello."}),
+    ("mobile_app_s25_ultra", {"message": "Hello.", "entity_id": "notify.mobile_app_s25_ultra"}),
+    ("mobile_app_s25_ultra", {"message": "Hello.", "device_id": "dev25"}),
+])
+def test_only_the_apps_notify_services_are_called(make_home, service, data):
+    home = make_home({f"/api/services/notify/{service}": []})
+    with pytest.raises(NotAllowed):
+        home._call_service("notify", service, data)
+    with pytest.raises(NotAllowed):
+        home._call_service("notify", "mobile_app_s25_ultra", {"message": "Hello."}, returns=True)
+    assert home._session.requests == []
+
+
+@pytest.mark.parametrize("ask", ["batteries", "people", "app_devices"])
 @pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("", status=403),
                                     FakeResponse("<html>not JSON</html>")])
 def test_a_refused_template_raises_as_for_the_lights(make_home, ask, answer):

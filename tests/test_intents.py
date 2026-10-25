@@ -355,6 +355,18 @@ def test_what_the_battery_rules_mustnt_catch_is_left_alone(text):
     assert not actions or all(action.tool != "get_batteries" for action in actions)
 
 
+def test_the_phone_is_found_and_rung_without_claude():
+    assert _actions("Where's my phone?") == [Action("find_device", {"device": "phone", "ring": False})]
+    assert _actions("Where is the tablet?") == [Action("find_device", {"device": "tablet", "ring": False})]
+    assert _actions("Find my phone.") == [Action("find_device", {"device": "phone", "ring": True})]
+    assert _actions("Ring my tablet.") == [Action("find_device", {"device": "tablet", "ring": True})]
+    assert _actions("Ring the Mac, please.") == [Action("find_device", {"device": "mac", "ring": True})]
+    # Still the battery, and anything less plain is Claude's.
+    assert _actions("What's my phone on?") == [Action("get_batteries", {"device": "phone"})]
+    assert _actions("Where's my phone charger?") is None
+    assert _actions("Find my phone and turn off the lamp.") is None
+
+
 # Lists - see lists.py
 
 @pytest.mark.parametrize("text, item, said, command", [

@@ -23,8 +23,11 @@ from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from voice_assistant import network
+import requests
+
 from voice_assistant.batteries import HOME_FAILURES, find, said
-from voice_assistant.home_assistant import CANT_REACH
+from voice_assistant.devices import AppDevice, ring_call, said_as, where
+from voice_assistant.home_assistant import CANT_REACH, NotAllowed
 from voice_assistant.lists import names_list
 
 # Logger setup
@@ -87,6 +90,8 @@ class ActionResult:
         understood: False when Home Assistant's Assist matched nothing in what was
             said - which the model may be able to do something with - rather than
             understanding it and failing.
+        private: Whether what it says is the user's alone - where their phone is - and
+            so kept from Claude when it was asked for locally (see Conversation.handle).
     """
     ok: bool
     say: str = ""
@@ -94,6 +99,7 @@ class ActionResult:
     sound: Optional[str] = None
     sound_category: str = "general"
     understood: bool = True
+    private: bool = False
 
     @classmethod
     def from_reply(cls, reply: Dict) -> "ActionResult":
@@ -111,17 +117,18 @@ class ActionResult:
         """
         ok = bool(reply.get("success"))
         say = reply.get("message") or ""
+        private = bool(reply.get("private"))
         if ok and reply.get("silent"):
-            return cls(ok, say, confirm="music")
+            return cls(ok, say, confirm="music", private=private)
         if ok and reply.get("note"):
-            return cls(ok, say, confirm="note")
+            return cls(ok, say, confirm="note", private=private)
         if ok and reply.get("sound"):
             return cls(ok, say, confirm="sound", sound=reply["sound"],
-                       sound_category=reply.get("sound_category", "general"))
+                       sound_category=reply.get("sound_category", "general"), private=private)
         if ok and reply.get("chime"):
-            return cls(ok, say, confirm="chime")
+            return cls(ok, say, confirm="chime", private=private)
         # Only a failure can be not understood, and a failure always gets this far.
-        return cls(ok, say, understood=not reply.get("not_understood"))
+        return cls(ok, say, understood=not reply.get("not_understood"), private=private)
 
 
 def confirm(results: List[ActionResult], chime_enabled: bool = True,
@@ -1177,6 +1184,64 @@ class ActionExecutor:
         now = time.time()
         return {"success": True, "message": " ".join(said(battery, now, self.batteries.stale_after)
                                                      for battery in found)}
+
+    # Where the phone is, and ringing it - see devices.py
+
+    # Not HomeAssistant.find_device, which finds Nova's own device for its room.
+    @tool(
+        "Say where one of the user's devices is - their phone, tablet or Mac - and ring it if asked ('find my "
+        "phone', 'make my tablet ring'). What's found is said for you, so just reply 'Okay.'",
+        needs="home",
+        required=["device"],
+        device={
+            "type": "string",
+            "description": "Which device, as the user said it, e.g. 'phone', 'tablet', 'mac' or 's25 ultra'.",
+        },
+        ring={"type": "boolean", "description": "True to ring it as well, wherever it is."},
+    )
+    def find_device(self, device: Optional[str] = None, ring: bool = False):
+        # Every answer is private: even "I haven't got a device called that" is about the user's devices.
+        try:
+            devices = [AppDevice.from_home(found) for found in self.home.app_devices()]
+        except HOME_FAILURES as e:
+            logger.warning(f"Couldn't read the Home Assistant app's devices: {e}")
+            return {"success": False, "message": CANT_REACH, "private": True}
+        found = find(devices, device or "phone")
+        if not found:
+            return {"success": False, "message": "I haven't got a device called that.", "private": True}
+        now = time.time()
+        parts, ok = [], True
+        for app_device in found:
+            parts.append(where(app_device, now))
+            # Never the place itself, which is the user's alone.
+            logger.info(f"Said where the {app_device.name} is")
+            if ring:
+                rang, said_of_ringing = self._ring(app_device)
+                ok = ok and rang
+                parts.append(said_of_ringing)
+        return {"success": ok, "message": " ".join(parts), "private": True}
+
+    def _ring(self, device: AppDevice) -> Tuple[bool, str]:
+        """
+        Rings a device through its notify service.
+
+        Args:
+            device: The device.
+
+        Returns:
+            Whether Home Assistant took it, and what to say: "Ringing your phone.", or why not.
+        """
+        word = said_as(device)
+        if device.notify is None:
+            return False, f"Your {word} can't be rung - it hasn't got the Home Assistant app's notifications."
+        call = ring_call(device)
+        try:
+            self.home.notify(device.notify, call["message"], data=call["data"])
+        except (requests.RequestException, NotAllowed) as e:
+            logger.warning(f"Couldn't ring the {device.name}: {e}")
+            return False, f"I couldn't ring your {word}."
+        logger.info(f"Rang the {device.name}")
+        return True, f"Ringing your {word}."
 
     # Notifications
 

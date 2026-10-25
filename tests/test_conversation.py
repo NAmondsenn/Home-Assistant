@@ -151,6 +151,26 @@ def test_a_local_command_never_reaches_claude():
     assert reply.sounds == [("success_chime.wav", "general")] and reply.say == ""
 
 
+def test_where_my_phone_is_never_reaches_claude_when_asked_locally():
+    # Claude's history goes to Anthropic with every later request, so a place said for a
+    # local "where's my phone?" is kept from it - it only hears that it was said.
+    where = "Your phone's near High Street, Leeds, as of 10 minutes ago."
+    intents = FakeIntents({"where's my phone": _answer("Okay.", Action("find_device", {"device": "phone",
+                                                                                       "ring": False}))})
+    actions = FakeActions({"find_device": ActionResult(True, where, private=True)})
+    llm = FakeLLM()
+    reply = _conversation(intents=intents, llm=llm, actions=actions).handle("where's my phone")
+    assert reply.say == where and llm.asked == []
+    assert llm.remembered == [("where's my phone", "I said where your phone is.")]
+    assert llm.recorded == [("where's my phone", "I said where your phone is.")]
+    assert llm.tool_answers == [["I said where your phone is."]]
+
+    # Claude's own call is kept as any other's, with what it said.
+    llm = FakeLLM(_answer("Okay.", Action("find_device", {"device": "phone"}, from_model=True)))
+    _conversation(llm=llm, actions=actions).handle("any idea where I left my phone?")
+    assert llm.recorded == [("any idea where I left my phone?", where)] and llm.tool_answers == [[where]]
+
+
 def test_the_answer_to_a_question_isnt_taken_for_a_local_command():
     # "Stop" answering "which timer?" needs the conversation so far to make sense of.
     llm = FakeLLM(_answer("Okay."))

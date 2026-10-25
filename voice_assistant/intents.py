@@ -59,6 +59,8 @@ ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
 # The devices a battery is asked about by - the kind words batteries.find knows. A
 # device with a name of its own ("the S25 Ultra") is left to Claude.
 BATTERY_DEVICE = "mac|phone|tablet|laptop|computer"
+# And the devices found or rung by - those the Home Assistant app is on.
+FOUND_DEVICE = "phone|tablet|mac|laptop"
 
 # A thing of Home Assistant's for Assist - "the TV", "AdGuard protection", "movie
 # night" - of one to four words, none of them "and", "then" or "plus", so "turn off
@@ -288,6 +290,10 @@ class LocalIntents:
              self._batteries),
             (r"(?:what(?:'s| are| is) (?:the |my )?)?battery levels?|how are (?:all )?my batteries(?: doing)?",
              self._batteries),
+            # Where the phone is, and ringing it - see devices.py. Only the one word, as for a
+            # battery, so "where's my phone charger?" is Claude's.
+            (rf"where(?:'s| is) (?:my |the )(?P<device>{FOUND_DEVICE})", self._find_device(False)),
+            (rf"(?:find|ring) (?:my |the )(?P<device>{FOUND_DEVICE})", self._find_device(True)),
             (r"(?:send|text) (?:that|it|this) to (?:my phone|me)|text me (?:that|it)"
              r"|(?:send|put) (?:that|it|this) on my phone", self._send_to_phone),
             # The to-do lists - see lists.py. Assist is asked first for the adding and
@@ -486,6 +492,9 @@ class LocalIntents:
     def _batteries(self, found) -> Dict:
         device = found.groupdict().get("device") or found.groupdict().get("device2")
         return self._result("Okay.", [Action("get_batteries", {"device": device} if device else {})])
+
+    def _find_device(self, ring: bool):
+        return lambda found: self._result("Okay.", [Action("find_device", {"device": found["device"], "ring": ring})])
 
     def _notifications(self, found) -> Optional[Dict]:
         return self._result("Okay.", [Action("read_notifications")]) if self.ntfy else None

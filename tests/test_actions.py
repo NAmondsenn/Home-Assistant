@@ -5,6 +5,7 @@ temporary folder) and a fake Spotify controller, so nothing plays or goes online
 """
 
 import time
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -622,6 +623,92 @@ def test_batteries_are_only_offered_with_home_assistant():
     assert "get_batteries" in offered(ActionExecutor(batteries=FakeBatteries()))
     assert "get_batteries" not in offered(ActionExecutor())
     assert ActionExecutor().execute(Action("get_batteries")).say == "Battery levels need Home Assistant."
+
+
+# Where the phone is, and ringing it - see devices.py
+
+class FakeAppHome:
+    """Stands in for Home Assistant: the app's devices, and the notifications it was asked to send."""
+
+    def __init__(self, devices, notify_fails=None):
+        self.devices = devices
+        self.notify_fails = notify_fails
+        self.sent = []
+
+    def app_devices(self):
+        return self.devices
+
+    def notify(self, service, message, title=None, data=None):
+        if self.notify_fails is not None:
+            raise self.notify_fails
+        self.sent.append((service, message, data))
+
+
+def _app_device(name="s25-ultra", maker="samsung", model="SM-S938B", notify="mobile_app_s25_ultra",
+                tracker="not_home", age=600.0):
+    return {"device": f"dev_{name}", "name": name, "maker": maker, "model": model, "notify": notify,
+            "tracker": {"state": tracker, "reported": time.time() - age},
+            "place": {"state": "High Street, Leeds", "thoroughfare": "High Street", "locality": "Leeds"}}
+
+
+def test_find_device_says_where_without_ringing():
+    home = FakeAppHome([_app_device(tracker="home")])
+    result = ActionExecutor(home=home).execute(Action("find_device", {"device": "phone", "ring": False}))
+    assert (result.ok, result.say, result.private) == (True, "Your phone's at home.", True)
+    assert home.sent == []
+
+
+def test_ring_my_phone_rings_wherever_the_user_is():
+    # Away from home it's still rung - it may be in the car, or a friend's.
+    home = FakeAppHome([_app_device()])
+    result = ActionExecutor(home=home).execute(Action("find_device", {"device": "phone", "ring": True}))
+    assert result.say == "Your phone's near High Street, Leeds, as of 10 minutes ago. Ringing your phone."
+    assert result.private
+    assert [(service, message) for service, message, _ in home.sent] == [("mobile_app_s25_ultra", "TTS")]
+
+
+def test_ringing_is_only_said_once_home_assistant_took_it():
+    failure = requests.HTTPError("500", response=SimpleNamespace(status_code=500))
+    home = FakeAppHome([_app_device(tracker="home")], notify_fails=failure)
+    result = ActionExecutor(home=home).execute(Action("find_device", {"device": "phone", "ring": True}))
+    assert (result.ok, result.say) == (False, "Your phone's at home. I couldn't ring your phone.")
+    assert result.private
+
+
+def test_a_device_without_the_apps_notifications_cant_be_rung():
+    mac = _app_device("macbook-pro", "Apple", "Mac16,8", notify=None, tracker="home")
+    result = ActionExecutor(home=FakeAppHome([mac])).execute(Action("find_device", {"device": "mac", "ring": True}))
+    assert result.say == ("Your Mac's at home. Your Mac can't be rung - it hasn't got the Home Assistant app's "
+                          "notifications.")
+
+
+def test_find_device_finds_nothing_called_that():
+    result = ActionExecutor(home=FakeAppHome([_app_device()])).execute(Action("find_device", {"device": "kettle"}))
+    assert (result.ok, result.say, result.private) == (False, "I haven't got a device called that.", True)
+
+
+@pytest.mark.parametrize("failure", [requests.ConnectionError("down"), ValueError("not JSON"), KeyError("device")])
+def test_find_device_with_home_assistant_down_says_so(failure):
+    class Down(FakeAppHome):
+        def app_devices(self):
+            raise failure
+    result = ActionExecutor(home=Down([])).execute(Action("find_device", {"device": "phone"}))
+    assert (result.ok, result.say) == (False, "I can't reach Home Assistant right now.")
+
+
+def test_find_device_is_offered_with_home_assistant():
+    schema = {s["name"]: s for s in ActionExecutor(home=object()).tool_schemas()}["find_device"]
+    assert schema["description"] == (
+        "Say where one of the user's devices is - their phone, tablet or Mac - and ring it if asked ('find my "
+        "phone', 'make my tablet ring'). What's found is said for you, so just reply 'Okay.'")
+    assert "find_device" not in {s["name"] for s in ActionExecutor().tool_schemas()}
+    # What it finds is said, never read back to Claude.
+    assert "find_device" not in ActionExecutor().read_tools()
+
+
+def test_a_private_reply_is_kept_private():
+    assert ActionResult.from_reply({"success": True, "message": "Your phone's at home.", "private": True}).private
+    assert not ActionResult.from_reply({"success": True, "message": "Done."}).private
 
 
 # What Claude reads of the house

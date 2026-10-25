@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from voice_assistant.actions import Action, ActionResult, confirm
+from voice_assistant.devices import told_claude
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.timeline import Timeline
 
@@ -199,8 +200,16 @@ class Conversation:
         # nothing in is asked of Claude, as if no local command had matched. Only
         # remembered once that's known, or the request would be in the model's history
         # twice: here, and again from its own answer.
+        # Where the phone is, asked for locally, is the user's alone: Claude's history goes to
+        # Anthropic with every later request, so it only has that it was said. Claude's own
+        # find_device call is kept as any other's - it was Claude that was asked.
+        kept_from_claude = None
         if local and all(action_result.understood for action_result in action_results):
-            self.llm.remember(text, result["response"])
+            private = next((action for action, action_result in zip(actions, action_results)
+                            if action_result.private), None)
+            if private:
+                kept_from_claude = told_claude(private.params.get("device") or "phone")
+            self.llm.remember(text, kept_from_claude or result["response"])
         elif local:
             logger.info("Home Assistant didn't understand that, so asking Claude")
             timeline.note(local_intent=False)
@@ -260,7 +269,9 @@ class Conversation:
         # comes back on the next turn. Only what's spoken is recorded: an action
         # confirmed by a chime or by the music changing keeps the model's own "Okay.".
         # What each action said goes with it, as the tools' own answers.
-        if result.get("success"):
+        if result.get("success") and kept_from_claude:
+            self.llm.record_reply(text, kept_from_claude, [kept_from_claude])
+        elif result.get("success"):
             self.llm.record_reply(text, response_text, [action_result.say for action_result in action_results])
 
         # If the assistant asked something, it listens straight away for the answer -
