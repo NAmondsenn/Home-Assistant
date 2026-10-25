@@ -65,6 +65,14 @@ else
     show_log() { journalctl --user-unit "$SERVICE_NAME" -n "$1" --no-pager -o cat; }
 fi
 
+# The new code reads the settings as it starts, so a setting it refuses is found out
+# here, while the old version is still running, rather than after it has been stopped.
+if ! error=$(cd "$PROJECT_DIRECTORY" && as_user "$PYTHON" -c 'from voice_assistant.config import Config; Config()' 2>&1); then
+    problem "The new code is in place, but Nova's settings won't start it - put them right, then run this again. Nova is still running the old code until it next restarts:"
+    echo "$error" | tail -n 5 >&2
+    exit 1
+fi
+
 step "Restarting"
 stop_service
 install_service

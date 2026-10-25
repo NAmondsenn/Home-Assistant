@@ -111,6 +111,10 @@ web_search:
   enabled: true
   max_uses: 3
 
+voice:
+  # How fast Nova speaks, from 0.75 to 1.5. 1.0 is the voice's own pace.
+  speed: 1.0
+
 thresholds:
   # How long the user has to be quiet before the recording stops. Every bit of this is
   # waited out before Nova can answer, but too short and a pause mid-sentence ends it -

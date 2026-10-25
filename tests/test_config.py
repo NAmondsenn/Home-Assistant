@@ -5,10 +5,12 @@ mistake in the install's file is caught rather than ignored.
 """
 
 import logging
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
-from voice_assistant.config import Config, ConfigError, check, removed
+from voice_assistant.config import LIMITS, Config, ConfigError, check, clashes, limit_problem, removed
 
 DEFAULTS = """
 navidrome:
@@ -218,3 +220,88 @@ def test_a_battery_setting_which_cant_work_is_refused_by_name(tmp_path, own, set
     with pytest.raises(ConfigError) as caught:
         Config(path=str(tmp_path / "config.yaml"))
     assert f"'batteries.{setting}'" in str(caught.value)
+
+
+# For each limit, what passes and what just doesn't - the table in design 0009.
+IN_AND_OUT = {
+    ("ntfy", "quiet_from"): (["23:59", "00:00"], ["24:00", "7:00", "11pm", 2300, ""]),
+    ("ntfy", "quiet_until"): (["07:00"], ["24:00", "7:00", "11pm"]),
+    ("navidrome", "url"): (["http://music.local:4533", ""], ["music.local", "ftp://music.local"]),
+    ("home_assistant", "url"): (["https://ha.local:8123", ""], ["ha.local"]),
+    ("ntfy", "url"): (["https://ntfy.example.com", ""], ["ntfy.example.com"]),
+    ("ntfy", "phone"): (["home-lab_1", ""], ["home lab", "a/b", "x" * 65]),
+    ("ntfy", "reminders"): (["home-lab_1", ""], ["home lab", "a/b"]),
+    ("ntfy", "restarts"): (["home-lab_1", ""], ["home lab", "a/b"]),
+    ("ntfy", "alerts"): ([["home-lab_1", "b"], []], [["home lab"], ["a/b"], [""], "homelab"]),
+    ("thresholds", "silence_duration"): ([0.2, 3, 1], [0.19, 3.1, True]),
+    ("conversation", "history_max_age"): ([0, 3600, 300], [-1, 3601, 1.5]),
+    ("mqtt", "host"): (["192.168.1.20", "ha.local", ""], ["http://ha.local", "ha local"]),
+    ("mqtt", "port"): ([1, 1883, 65535], [0, 65536, 1883.5]),
+    ("voice", "speed"): ([0.75, 1.5, 1], [0.74, 1.51]),
+}
+
+
+def test_each_limit_is_the_tables():
+    assert set(IN_AND_OUT) == set(LIMITS)
+    for (section, name), (good, bad) in IN_AND_OUT.items():
+        for value in good:
+            assert limit_problem(section, name, value) is None, (section, name, value)
+        for value in bad:
+            assert limit_problem(section, name, value), (section, name, value)
+    assert limit_problem("thresholds", "silence_duration", 5) == "should be from 0.2 to 3"
+    assert limit_problem("mqtt", "port", 0) == "should be a whole number from 1 to 65535"
+    assert limit_problem("ntfy", "quiet_from", "11pm") == "should be a time of day, from 00:00 to 23:59"
+    assert limit_problem("ntfy", "url", "x") == "should be an address starting http:// or https://"
+    assert limit_problem("ntfy", "phone", "a/b") == "should be an ntfy topic: letters, digits, hyphens and underscores"
+    assert limit_problem("mqtt", "host", "http://x") == "should be a host name or address, without http://"
+    assert limit_problem("music", "player", "anything") is None
+
+
+def test_an_out_of_range_value_stops_the_start_naming_it(tmp_path):
+    (tmp_path / "config.yaml").write_text("thresholds:\n  silence_duration: 5\n")
+    with pytest.raises(ConfigError) as caught:
+        Config(path=str(tmp_path / "config.yaml"))
+    assert "'thresholds.silence_duration' should be from 0.2 to 3, not 5" in str(caught.value)
+
+
+def test_the_same_quiet_hours_are_no_quiet_hours(tmp_path):
+    from voice_assistant.ntfy import Ntfy
+
+    (tmp_path / "config.yaml").write_text('ntfy:\n  quiet_from: "22:00"\n  quiet_until: "22:00"\n')
+    Config(path=str(tmp_path / "config.yaml"))
+    for hour in (0, 12, 22, 23):
+        ntfy = Ntfy("https://ntfy.example.com", quiet_from="22:00", quiet_until="22:00",
+                    now=lambda hour=hour: datetime(2026, 1, 1, hour, 0))
+        assert ntfy.quiet() is False
+
+
+def test_settings_that_need_each_other_are_named():
+    assert clashes({"music": {"player": "navidrome"}, "navidrome": {"url": ""}}) == [
+        ("navidrome.url", "Navidrome as the player needs Navidrome's address.")]
+    assert clashes({"ntfy": {"url": "", "alerts": [], "phone": "me", "reminders": "", "restarts": ""}}) == [
+        ("ntfy.url", "ntfy's topics need its server.")]
+    assert clashes({"ntfy": {"url": "", "alerts": ["a"]}}) == [("ntfy.url", "ntfy's topics need its server.")]
+    assert clashes({"music": {"player": "navidrome"}, "navidrome": {"url": "http://m"},
+                    "ntfy": {"url": "https://n", "phone": "me"}}) == []
+    assert clashes({"music": {"player": "spotify"}, "navidrome": {"url": ""}, "ntfy": {"url": ""}}) == []
+
+
+def test_a_removed_setting_still_only_warns(config_with, caplog):
+    with caplog.at_level(logging.WARNING):
+        config = config_with("weather:\n  location: Paris\nthresholds:\n  silence_duration: 1\n")
+    assert "weather" not in config.data
+    assert "'weather.location' is no longer used" in caplog.text
+
+
+@pytest.mark.parametrize("marks", ["[0]", "[100]"])
+def test_battery_marks_are_from_1_to_99(tmp_path, marks):
+    (tmp_path / "config.yaml").write_text(f"batteries:\n  mobile_marks: {marks}\n")
+    with pytest.raises(ConfigError, match="mobile_marks.*1 to 99"):
+        Config(path=str(tmp_path / "config.yaml"))
+
+
+def test_update_checks_the_settings_before_stopping_nova():
+    text = (Path(__file__).parent.parent / "update.sh").read_text()
+    check_at = text.index("from voice_assistant.config import Config; Config()")
+    assert check_at < text.index("\nstop_service\n")
+    assert "exit 1" in text[check_at:text.index("\nstop_service\n")]
