@@ -22,6 +22,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 
 from voice_assistant import paths
+from voice_assistant.google_calendar import logged_error
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.music import means_liked_songs
 
@@ -171,7 +172,7 @@ class SpotifySignIn:
             given, code = self.oauth.parse_auth_response_url(str(pasted).strip())
         except SpotifyOauthError as e:
             # The address had error= in it - Cancel, on Spotify's page.
-            logger.info(f"Spotify turned the sign-in down: {e.error}")
+            logger.info(f"Spotify turned the sign-in down: {logged_error(e.error)}")
             raise SpotifySignInError("Spotify didn't accept that sign-in - start again.") from None
         # Compared in constant time, as GoogleSignIn does, and as bytes, since
         # compare_digest won't take a string with "é" in it.
@@ -184,8 +185,9 @@ class SpotifySignIn:
             token = self.oauth.get_access_token(code, as_dict=False, check_cache=False)
         except SpotifyOauthError as e:
             # Its error - invalid_grant, invalid_client - is the only clue to a wrong
-            # redirect address or secret, and isn't secret itself.
-            logger.info(f"Spotify turned the sign-in down: {e.error}")
+            # redirect address or secret, and isn't secret itself. It's still Spotify's
+            # own text, so only a plain code is logged, as with the pasted error= above.
+            logger.info(f"Spotify turned the sign-in down: {logged_error(e.error)}")
             raise SpotifySignInError("Spotify didn't accept that sign-in - start again.") from None
         # spotipy only warns when it can't write the cache, so it's read back - for this
         # token, not an older sign-in still there.

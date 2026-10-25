@@ -10,7 +10,7 @@ import os
 import stat
 import threading
 import time
-from urllib.parse import parse_qs, parse_qsl, urlsplit
+from urllib.parse import parse_qs, parse_qsl, quote, urlsplit
 
 import pytest
 
@@ -177,6 +177,8 @@ class FakeSignInOAuth:
         self.cache_handler = FakeCacheFile(cache_path)
         self.asked = []
         self.refuse = False
+        # What Spotify's refusal says as its error, which is its own text, not Nova's.
+        self.refused_with = "invalid_grant"
         self.save_fails = False
 
     def get_authorize_url(self, state=None):
@@ -193,7 +195,7 @@ class FakeSignInOAuth:
     def get_access_token(self, code=None, as_dict=True, check_cache=True):
         self.asked.append((code, as_dict, check_cache))
         if self.refuse:
-            raise spotify_controller.SpotifyOauthError("error: invalid_grant", error="invalid_grant")
+            raise spotify_controller.SpotifyOauthError(f"error: {self.refused_with}", error=self.refused_with)
         if self.save_fails:
             return "the-access-token"
         with open(self.cache_handler.cache_path, "w") as file:
@@ -263,6 +265,28 @@ def test_a_cancelled_spotify_sign_in_is_answered(tmp_path):
     with pytest.raises(ValueError, match="Spotify didn't accept that sign-in - start again."):
         sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
     assert not sign_in.signed_in()
+
+
+@pytest.mark.parametrize("refused_by_spotify", [False, True])
+def test_a_refusals_error_is_logged_only_as_an_error_code(tmp_path, caplog, refused_by_spotify):
+    # A pasted error= is anything the user's browser had in it, and Spotify's own answer
+    # is its text, not Nova's - a new line in either could forge a log line.
+    caplog.set_level(logging.INFO)
+    oauth = FakeSignInOAuth(tmp_path / "spotify_token.json")
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+    for error, logged in [("access_denied", "access_denied"),
+                          ("bad\nINFO forged line", "an unreadable error")]:
+        caplog.clear()
+        state = _state(sign_in.start())
+        if refused_by_spotify:
+            oauth.refuse, oauth.refused_with = True, error
+            address = f"{CALLBACK}?code=the-code&state={state}"
+        else:
+            address = f"{CALLBACK}?error={quote(error)}&state={state}"
+        with pytest.raises(ValueError, match="Spotify didn't accept that sign-in - start again."):
+            sign_in.finish(address)
+        assert f"Spotify turned the sign-in down: {logged}" in caplog.text
+        assert "forged" not in caplog.text
 
 
 def test_a_sign_in_that_couldnt_be_kept_isnt_said_to_have_worked(tmp_path):

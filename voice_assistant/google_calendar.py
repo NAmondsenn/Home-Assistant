@@ -93,6 +93,21 @@ SIGN_IN_LASTS = 10 * 60
 # said of a refusal, never the words Google answers with.
 ERROR_CODE = re.compile(r"[a-z_]{1,40}")
 
+
+def logged_error(error) -> str:
+    """
+    An OAuth error as it's logged, for both sign-ins: only a plain code such as
+    access_denied, since a pasted address's error= can be anything - a new line in it
+    would forge a log line.
+
+    Args:
+        error: The error, from the pasted address or the answer to it.
+
+    Returns:
+        The code, or "an unreadable error".
+    """
+    return error if isinstance(error, str) and ERROR_CODE.fullmatch(error) else "an unreadable error"
+
 CALENDARS = "https://www.googleapis.com/calendar/v3/calendars"
 CALENDAR_LIST = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
 
@@ -252,10 +267,11 @@ class GoogleSignIn:
 
         Raises:
             GoogleSignInError: If the address isn't from the sign-in started, or none
-                was, or it ran out, or it hasn't got Google's code in it - nothing is
-                asked or saved - or if Google refused the code for the client's set-up,
-                wasn't given everything Nova asks for, or gave no whole sign-in to keep -
-                nothing is saved - or the sign-in couldn't be saved.
+                was, or it ran out, or was cancelled on Google's page, or it hasn't got
+                Google's code in it - nothing is asked or saved - or if Google refused
+                the code for the client's set-up, wasn't given everything Nova asks
+                for, or gave no whole sign-in to keep - nothing is saved - or the
+                sign-in couldn't be saved.
             ValueError: If the address couldn't be read at all, such as "http://[x".
             SignInNeeded: If Google turned the code down, or ClientRefused, if it
                 doesn't know the client.
@@ -273,6 +289,11 @@ class GoogleSignIn:
             raise GoogleSignInError("That address isn't from this sign-in - start again.")
         if time.monotonic() - started_at > SIGN_IN_LASTS:
             raise GoogleSignInError("That sign-in ran out - start again.")
+        if "error" in fields:
+            # Cancel, on Google's page - said as SpotifySignIn says it, not as an address
+            # copied short.
+            logger.info(f"Google turned the sign-in down: {logged_error(fields['error'])}")
+            raise GoogleSignInError("Google didn't accept that sign-in - start again.")
         if not fields.get("code"):
             raise GoogleSignInError("That address hasn't got Google's code in it.")
 

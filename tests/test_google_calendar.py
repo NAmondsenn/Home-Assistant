@@ -384,6 +384,26 @@ def test_a_started_sign_in_runs_out(token_file, monkeypatch):
     assert sign_in.signed_in()
 
 
+@pytest.mark.parametrize("error, logged", [("access_denied", "access_denied"),
+                                           ("bad\nINFO forged line", "an unreadable error")])
+def test_a_cancelled_google_sign_in_is_answered_as_spotifys_is(token_file, caplog, error, logged):
+    # Cancel, on Google's page, sends the browser back with error= and the right state,
+    # and no code - which isn't the user copying too little of the address.
+    caplog.set_level(logging.INFO)
+    google = FakeGoogle()
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+    state = _query(sign_in.start())["state"]
+
+    with pytest.raises(GoogleSignInError, match="Google didn't accept that sign-in - start again."):
+        sign_in.finish(f"{google_calendar.REDIRECT}?{urlencode({'error': error, 'state': state})}")
+
+    assert google.asked == [] and not os.path.exists(token_file)
+    assert f"Google turned the sign-in down: {logged}" in caplog.text and "forged" not in caplog.text
+    # Used up, as any other finish.
+    with pytest.raises(GoogleSignInError, match="That address isn't from this sign-in - start again."):
+        sign_in.finish(_pasted(state))
+
+
 @pytest.mark.parametrize("answer, code", [
     (FakeResponse(400, {"error": "redirect_uri_mismatch", "error_description": "Not what the client lists"}),
      "redirect_uri_mismatch"),
