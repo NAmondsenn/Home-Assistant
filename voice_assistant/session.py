@@ -61,6 +61,10 @@ PLAYBACK_SLACK = 60.0
 # How often waiting for a sound checks whether it's been lost track of, in seconds.
 PLAYBACK_CHECK = 0.1
 
+# The sound before a reminder or other announcement, which sounds.reminder_enabled
+# switches off. A timer's beep and an alarm's sound are never switched off by it.
+REMINDER_SOUND = "announcement_sound.wav"
+
 # How often Home Assistant is asked which device is this satellite's, and which room
 # it's in, in seconds: every half a minute until it's found - it isn't until Home
 # Assistant has taken in the device's MQTT announcement - then every five minutes,
@@ -748,7 +752,9 @@ class Session:
                            else f"\n{self.assistant_name}: [{sound}]")
 
             # A sound first, so the user knows the assistant is about to speak.
-            if sound and self.reminder_sound_enabled:
+            # Only the reminder's own sound can be switched off - an alarm that could be silenced
+            # by it would be a missed wake-up, and a timer's beep is how it's noticed.
+            if sound and (sound != REMINDER_SOUND or self.reminder_sound_enabled):
                 chimed = self._play_announcement(self.speaker.play_file(
                     str(self.brain.sounds_folder / sound), volume=volume * level, kind="announcement",
                     start=start, length=length), still_wanted)

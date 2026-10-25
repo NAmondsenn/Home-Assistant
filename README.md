@@ -148,7 +148,7 @@ navidrome:
 
 Songs are fetched as MP3 - Navidrome converts anything else as it sends it - and decoded with ffmpeg on the brain, which `setup.sh --brain` installs. Your liked songs are the ones starred in Navidrome. Nova never sends the password itself, only a salted hash of it, as Navidrome's API has it.
 
-**Spotify.** Spotify Premium is needed. Sign in once, on the brain, as its user - it prints a link to open in a browser:
+**Spotify.** Spotify Premium is needed. Its client ID and secret (`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, from Spotify's developer dashboard) go under Keys on the settings page, or in the brain's `~/.config/nova/.env` yourself. Then sign in once, on the brain, as its user - it prints a link to open in a browser:
 
 ```bash
 runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller
@@ -322,7 +322,7 @@ The settings most likely to need changing:
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
-| `sounds.*`, `web_search.enabled`, `conversation.history_max_age`, `spotify.pause_while_speaking` | The blip, chime and reminder sound, searching the web, how long a conversation's thread is kept, and pausing Spotify while Nova talks. On the settings page, and used straight away. |
+| `sounds.listening_enabled`, `sounds.chime_enabled`, `sounds.reminder_enabled`, `web_search.enabled`, `conversation.history_max_age`, `spotify.pause_while_speaking` | The blip, chime and reminder sound (a timer's beep and an alarm always play), searching the web, how long a conversation's thread is kept, and pausing Spotify while Nova talks. On the settings page, and used straight away. |
 | `ntfy.quiet_from`, `ntfy.quiet_until` | The night, when only the most urgent alerts are read out. |
 
 ## Running it

@@ -1148,11 +1148,15 @@ def test_the_listening_blip_is_switched_off_straight_away(brain, connect, make_s
     assert pi.messages("play_sound") == []
 
 
-def test_the_done_chime_is_switched_off_straight_away(brain, connect, make_session):
+def test_the_done_chime_is_switched_off_straight_away(brain, connect, make_session, monkeypatch):
     session = make_session(connect()[0])
-    assert session.conversation.chime_enabled is True
+    # Something ringing which "stop" dismisses, confirmed by the chime.
+    monkeypatch.setattr(session.conversation.clock, "is_ringing", lambda satellite=None: True)
+    monkeypatch.setattr(session.conversation.clock, "dismiss", lambda satellite=None: {"message": "Okay, stopped."})
+    assert session.conversation.handle("stop").sounds == [("success_chime.wav", "general")]
+
     brain.config.apply({("sounds", "chime_enabled"): False})
-    assert session.conversation.chime_enabled is False
+    assert session.conversation.handle("stop").sounds == []
 
 
 def test_the_reminder_sound_is_switched_off_straight_away(brain, connect, make_session):
@@ -1162,3 +1166,15 @@ def test_the_reminder_sound_is_switched_off_straight_away(brain, connect, make_s
 
     assert session.announce("Your reminder: take the bins out.") is True
     assert pi.messages("play_sound") == [] and len(pi.messages("play_stream")) == 1
+
+
+@pytest.mark.parametrize("sound, start", [("alarm_sound.wav", 4.0), ("timer_beep.wav", 0.0)],
+                         ids=["an alarm's later burst", "a timer's beep"])
+def test_the_reminder_sound_switch_never_silences_an_alarm_or_a_timer(brain, connect, make_session, sound, start):
+    # A wake-up alarm which rang silently after its first line would be a missed wake-up.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.config.apply({("sounds", "reminder_enabled"): False})
+
+    session.announce(None, sound, boost=True, start=start, length=2.0)
+    assert [message["name"] for message in pi.messages("play_sound")] == [sound]
