@@ -9,7 +9,7 @@ import stat
 
 import pytest
 
-from voice_assistant.satellite_passwords import SatellitePasswords
+from voice_assistant.satellite_passwords import SatellitePasswords, name_problem
 
 
 def test_passwords_are_kept_in_the_order_added_and_privately(tmp_path):
@@ -40,3 +40,12 @@ def test_a_satellite_can_be_removed(tmp_path):
     assert passwords.remove("bedroom") is True
     assert passwords.remove("bedroom") is False
     assert passwords.names() == []
+
+
+def test_a_satellites_name_is_a_machine_name():
+    # Its Pi's own, which setup.sh gives the brain for it.
+    for name in ("bedroom", "pi-2", "a", "a" * 63):
+        assert name_problem(name) is None
+    for name in ("Bedroom", "-pi", "pi-", "pi_2", "pi 2", "a" * 64, ""):
+        assert name_problem(name) == ("A satellite's name is its Pi's machine name: lower-case letters, digits "
+                                      "and hyphens, not starting or ending with a hyphen.")

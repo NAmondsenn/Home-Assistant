@@ -53,8 +53,25 @@
         <div class="tiles" id="status"></div>
         <!-- Each satellite, and a choice of which to look after when there's more than one. -->
         <h3 class="subheading">Satellites</h3>
-        <ul class="list" id="satellites"></ul>
+        <ul class="list satellites" id="satellites"></ul>
         <div class="chips" id="satellite-choice" role="group" aria-label="Look after" hidden></div>
+        <!-- A satellite's password, just made: put straight into the text here and
+             nowhere else, and gone from the page once the panel's closed. -->
+        <div class="panel password" id="password-panel" hidden>
+          <p class="about" id="password-about"></p>
+          <div class="entry">
+            <code class="secret" id="password-text"></code>
+            <button type="button" class="button" id="password-copy">Copy</button>
+          </div>
+          <p class="how" id="password-how"></p>
+          <button type="button" class="button quiet" id="password-close">Done</button>
+        </div>
+        <form class="panel ask" id="add-satellite">
+          <label class="visually-hidden" for="satellite-name">The new satellite's machine name</label>
+          <input type="text" id="satellite-name" placeholder="Its Pi's machine name, e.g. bedroom" autocomplete="off"
+                 autocapitalize="none" spellcheck="false">
+          <button type="submit" class="button quiet">Add a satellite</button>
+        </form>
         <!-- The microphone's mute, which Home Assistant can change too. -->
         <ul class="list microphone">
           <li id="microphone">

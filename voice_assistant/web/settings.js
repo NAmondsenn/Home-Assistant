@@ -463,16 +463,24 @@ function showStatus(status) {
   document.getElementById("problems").replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
 }
 
-// Each satellite, and whether it's connected - with a choice of which to look after
-// below, when there's more than one.
+// Each satellite, which is the default, and whether it's connected - with a way to
+// give it a new password, and a choice of which to look after below, when there's
+// more than one.
 function showSatellites(state) {
   const rows = satellites.map((satellite) => {
     const row = element("li");
     const what = element("span", undefined, "what");
-    what.append(satellite.name, element("span",
+    what.append(satellite.name);
+    // What belongs to no satellite - ntfy's alerts, say - goes to this one.
+    if (satellite.default) what.append(element("span", "Default", "badge"));
+    what.append(element("span",
       satellite.connected ? (DOING[satellite.activity] || (satellite.muted ? "Microphone muted" : "Listening for its wake word"))
         : "Not connected", "detail"));
-    row.append(dot(satellite.connected ? "good" : "off"), what);
+    const renew = element("button", "New password", "button quiet");
+    renew.type = "button";
+    renew.setAttribute("aria-label", `Give ${satellite.name} a new password`);
+    renew.addEventListener("click", () => newPassword(satellite.name));
+    row.append(dot(satellite.connected ? "good" : "off"), what, renew);
     return row;
   });
   drawIfChanged("satellites", satellites, () => document.getElementById("satellites").replaceChildren(
@@ -489,6 +497,37 @@ function showSatellites(state) {
       return chip;
     }));
   });
+}
+
+// Gives a satellite a new password, once the user's sure - it's let go until its
+// setup has the new one.
+async function newPassword(name) {
+  if (!confirm(`Give ${name} a new password? It stops working until it has the new one.`)) return;
+  const result = await change("/api/satellites/password", { name });
+  if (result.success && result.password) showPassword(name, result.password, false);
+}
+
+// A satellite's password, just made. It's put straight into the panel's text and
+// kept nowhere else once this returns - in no variable, nor anything the browser
+// keeps - and closing the panel takes it off the page.
+function showPassword(name, password, added) {
+  document.getElementById("password-about").textContent = added
+    ? `The ${name} satellite's password, shown only this once:`
+    : `The ${name} satellite's new password, shown only this once:`;
+  document.getElementById("password-text").textContent = password;
+  document.getElementById("password-how").replaceChildren(...(added
+    ? ["Type this into setup.sh on the Pi."]
+    : ["On the Pi, run ", element("code", "bash setup.sh --new-password"), " and type it in - or, on a Pi not yet updated, put it after ",
+       element("code", "NOVA_BACKEND_TOKEN="), " in ", element("code", "~/.config/nova/.env"), " and restart the satellite."]));
+  const copy = document.getElementById("password-copy");
+  copy.textContent = "Copy";
+  document.getElementById("password-panel").hidden = false;
+  copy.focus();
+}
+
+function closePassword() {
+  document.getElementById("password-text").textContent = "";
+  document.getElementById("password-panel").hidden = true;
 }
 
 // Looks after another satellite, showing what's its own from the start.
@@ -1517,6 +1556,36 @@ document.addEventListener("DOMContentLoaded", () => {
       unsaved.classList.add("bad");
     }
   });
+
+  document.getElementById("add-satellite").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const field = document.getElementById("satellite-name");
+    const name = field.value.trim();
+    if (!name) return;
+    const result = await change("/api/satellites/add", { name });
+    if (result.success && result.password) {
+      field.value = "";
+      showPassword(name, result.password, true);
+    }
+  });
+  // Copied from the panel's own text, the only place it's kept. Without the clipboard
+  // - which a browser only offers over HTTPS - it's selected, to be copied from there.
+  const copy = document.getElementById("password-copy");
+  copy.addEventListener("click", async () => {
+    const shown = document.getElementById("password-text");
+    try {
+      await navigator.clipboard.writeText(shown.textContent);
+      copy.textContent = "Copied";
+    } catch (error) {
+      const range = document.createRange();
+      range.selectNodeContents(shown);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      toast("Couldn't copy it, so it's selected - copy it from there.", false);
+    }
+  });
+  document.getElementById("password-close").addEventListener("click", closePassword);
 
   document.getElementById("add-alarm").addEventListener("submit", async (event) => {
     event.preventDefault();

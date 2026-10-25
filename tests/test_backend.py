@@ -117,3 +117,15 @@ def test_remove_satellite_stops_admitting_it(passwords):
     backend.main(["remove-satellite", "bedroom"])
 
     assert passwords.names() == []
+
+
+def test_add_satellite_on_the_command_line_uses_the_same_rule(passwords, capsys):
+    from voice_assistant.satellite_passwords import name_problem
+
+    with pytest.raises(SystemExit) as refused:
+        backend.main(["add-satellite", "Bedroom"])
+    assert refused.value.code == name_problem("Bedroom")
+    assert passwords.names() == []
+
+    backend.main(["add-satellite", "pi-2"])
+    assert passwords.names() == ["pi-2"]

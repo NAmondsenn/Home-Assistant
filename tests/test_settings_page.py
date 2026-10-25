@@ -810,6 +810,9 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
     if path == "/settings.js":
         assert b'"/api/voice/hear"' in body and b'"restart-now"' in body and b'"/api/stop"' in body
         assert b'"/api/undo"' in body and b'getElementById("undos")' in body
+        assert b'"/api/satellites/add"' in body and b'"/api/satellites/password"' in body
+        # The password is only ever put on the page as text.
+        assert b'getElementById("password-text").textContent = password' in body and b"innerHTML" not in body
         # Where each removal's Undo is stacked.
         assert b'id="undos"' in _ask(served, "/")[2]
 
@@ -1152,11 +1155,18 @@ def test_the_page_lists_each_satellite(files):
     state = page.state()
 
     assert state["satellites"] == [
-        {"name": "bedroom", "connected": True, "activity": "speaking", "muted": False},
-        {"name": "kitchen", "connected": True, "activity": "idle", "muted": True},
-        {"name": "garage", "connected": False, "activity": "idle", "muted": False}]
+        {"name": "bedroom", "connected": True, "activity": "speaking", "muted": False, "default": True},
+        {"name": "kitchen", "connected": True, "activity": "idle", "muted": True, "default": False},
+        {"name": "garage", "connected": False, "activity": "idle", "muted": False, "default": False}]
     # What's shown below is the default's, unless another is asked for.
     assert state["muted"] is False and page.state("kitchen")["muted"] is True
+
+
+def test_the_default_satellite_is_marked(files):
+    # The first added, whether it's connected or not - what belongs to no satellite goes there.
+    page = _page(sessions={"kitchen": FakeSession()}, known=["garage", "kitchen"])
+    assert [(each["name"], each["default"]) for each in page.state()["satellites"]] == [
+        ("garage", True), ("kitchen", False)]
 
 
 def test_a_volume_change_goes_to_the_satellite_named(files):
@@ -1215,7 +1225,8 @@ def test_alarms_and_routines_work_with_no_satellite(files):
     state = page.state()
     assert state["clock"]["timers"] and state["memories"] == [] and state["routines"][0]["name"] == "Good morning"
     assert state["volumes"] == {} and state["muted"] is False
-    assert state["satellites"] == [{"name": "bedroom", "connected": False, "activity": "idle", "muted": False}]
+    assert state["satellites"] == [
+        {"name": "bedroom", "connected": False, "activity": "idle", "muted": False, "default": True}]
     # Without any satellite added at all, too.
     assert _page(sessions={}, known=[]).state()["satellites"] == []
 

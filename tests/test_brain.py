@@ -15,6 +15,8 @@ import re
 import socket
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -31,6 +33,7 @@ from voice_assistant import ntfy as ntfy_module
 from voice_assistant import paths, protocol
 from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
+from voice_assistant import settings_page as settings_page_module
 from voice_assistant.batteries import BatteryWatcher
 from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
@@ -132,6 +135,7 @@ class FakeSession:
         # Never stuck, unless a test says it is.
         self.moved_at = float("inf")
         self.activity = "idle"
+        self.muted = False
         # How many times Stop was pressed for it.
         self.stopped = 0
 
@@ -421,6 +425,110 @@ def test_a_satellite_still_let_in_gets_its_session(brain, passwords):
     session = brain._start_session(kept)
 
     assert session is not None and brain.sessions["kitchen"] is session
+
+
+# Satellites added, and given new passwords, on the settings page
+
+def test_a_satellite_added_on_the_page_is_let_in_with_no_restart(brain, connect):
+    serving(brain)
+    password = brain.add_satellite("study")
+
+    connect(brain, "study", password)
+    assert connected(brain, "study") is not None
+    assert brain.satellites() == ["bedroom", "kitchen", "study"]
+    # Only ever its Pi's machine name, which setup.sh gives the brain for it.
+    with pytest.raises(ValueError, match="machine name"):
+        brain.add_satellite("The Study")
+    assert brain.satellites() == ["bedroom", "kitchen", "study"]
+
+
+def test_a_new_password_lets_go_of_the_satellite_and_refuses_the_old_one(brain, connect, passwords):
+    brain.clock.set_alarm(7, 30, satellite="bedroom")
+    serving(brain)
+    old = connect(brain)
+    session = connected(brain)
+
+    password = brain.renew_password("bedroom")
+
+    # Let go, rather than kept until it next connects, as it proved the old one.
+    assert old.gone.wait(5) and session.closed.is_set()
+    assert wait_for(lambda: brain.session_for("bedroom") is None and "bedroom" not in brain.sessions)
+    with pytest.raises(protocol.Refused):
+        connect(brain, password=BEDROOM)
+    # One which proved the old password just before, and whose session is made just
+    # after, isn't let stay either.
+    late = SimpleNamespace(name="bedroom", connected=False, close=lambda: None)
+    assert brain._start_session(late, BEDROOM) is None and "bedroom" not in brain.sessions
+
+    connect(brain, password=password)
+    connected(brain)
+    # Still the default, with its alarm.
+    assert passwords.names() == ["bedroom", "kitchen"] and password != BEDROOM
+    assert len(brain.clock.overview(satellite="bedroom")["alarms"]) == 1
+    with pytest.raises(ValueError):
+        brain.renew_password("study")
+
+
+def test_a_new_password_is_shown_once_and_never_logged(brain, connect, passwords, caplog, tmp_path, monkeypatch):
+    # Through the page itself, as the brain runs it, so what the brain logs is checked too.
+    monkeypatch.setattr(paths, "CONFIG_FILE", str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(paths, "SECRETS_FILE", str(tmp_path / ".env"))
+    monkeypatch.setattr(settings_page_module, "STOP_CHECK", 0.02)
+    login = "you@example.com"
+    page = settings_page_module.SettingsPage([login], port=0, brain=brain)
+    page.start()
+
+    def ask(path, body=None, **headers):
+        request = urllib.request.Request(f"http://127.0.0.1:{page.port}{path}",
+                                         data=None if body is None else json.dumps(body).encode())
+        request.add_header("Tailscale-User-Login", login)
+        for name, value in headers.items():
+            request.add_header(name, value)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, response.headers, response.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    serving(brain)
+    connect(brain)
+    connected(brain)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            status, added_headers, added = ask("/api/satellites/add", {"name": "study"}, **{"X-Nova": "page"})
+            added = json.loads(added)
+            first = passwords.get("study")
+            _, renewed_headers, renewed = ask("/api/satellites/password", {"name": "bedroom"}, **{"X-Nova": "page"})
+            renewed = json.loads(renewed)
+            # Only from the page itself, as every change.
+            assert ask("/api/satellites/add", {"name": "hall"})[0] == 403
+            assert ask("/api/satellites/password", {"name": "study"})[0] == 403
+            # Refused, with nothing to show.
+            refusals = [ask(path, {"name": name}, **{"X-Nova": "page"})
+                        for path, name in [("/api/satellites/add", "study"), ("/api/satellites/add", "The Hall"),
+                                           ("/api/satellites/password", "hall")]]
+            state = ask("/api/state")[2].decode()
+            assert wait_for(lambda: brain.session_for("bedroom") is None)
+
+        assert status == 200 and added == {"success": True, "message": added["message"], "password": first}
+        assert renewed == {"success": True, "message": renewed["message"], "password": passwords.get("bedroom")}
+        assert renewed["password"] != BEDROOM
+        # Kept by no cache.
+        assert added_headers["Cache-Control"] == renewed_headers["Cache-Control"] == "no-store"
+        assert [json.loads(body) for _, _, body in refusals] == [
+            {"success": False, "message": "There's already a satellite called study."},
+            {"success": False, "message": "A satellite's name is its Pi's machine name: lower-case letters, "
+                                          "digits and hyphens, not starting or ending with a hyphen."},
+            {"success": False, "message": "There's no satellite called hall."}]
+        assert passwords.names() == ["bedroom", "kitchen", "study"]
+        # What was done is logged, and who did it - never either password.
+        assert f"Settings page: {login} added the study satellite" in caplog.text
+        assert f"Settings page: {login} gave the bedroom satellite a new password" in caplog.text
+        for password in (first, renewed["password"]):
+            assert password not in caplog.text
+            assert password not in state and password not in json.dumps(page.state())
+    finally:
+        page.stop()
 
 
 def test_a_timer_rings_on_its_satellite_or_waits_for_its_copy(brain, connect):

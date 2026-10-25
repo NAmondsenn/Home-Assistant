@@ -348,13 +348,17 @@ class SettingsPage:
         return {"success": False, "message": f"{name} isn't connected."}
 
     def _satellites(self) -> List[Dict]:
-        """Each satellite the brain lets in, and whether it's connected - with what it's doing and its mute if so."""
+        """
+        Each satellite the brain lets in, whether it's the default, and whether it's
+        connected - with what it's doing and its mute if so. Never its password.
+        """
         found = []
+        default = self.brain.default_satellite()
         for name in self.brain.satellites():
             session = self.brain.session_for(name)
             found.append({"name": name, "connected": session is not None,
                           "activity": session.activity if session is not None else "idle",
-                          "muted": session is not None and session.muted})
+                          "muted": session is not None and session.muted, "default": name == default})
         return found
 
     def state(self, satellite: Optional[str] = None) -> Dict:
@@ -1033,6 +1037,58 @@ class SettingsPage:
         logger.info(f"Settings page: {who} ran a routine")
         return {"success": True, "message": f"Running {routine['name']}."}
 
+    # The satellites. The passwords' file is read, changed and written back with no
+    # lock of its own, so each of these holds _saving.
+
+    def add_satellite(self, name, who: str) -> Dict:
+        """
+        Lets a new satellite in, with a password made up for it.
+
+        Args:
+            name: Its Pi's machine name, as the page sent it.
+            who: The Tailscale login adding it, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message' - and once added, 'password', for the
+            page to show once. Only this and new_password ever answer with one.
+        """
+        if not isinstance(name, str):
+            return {"success": False, "message": "That didn't make sense."}
+        name = name.strip()
+        with self._saving:
+            if name in self.brain.satellites():
+                return {"success": False, "message": f"There's already a satellite called {name}."}
+            try:
+                password = self.brain.add_satellite(name)
+            except ValueError as e:
+                return {"success": False, "message": str(e)}
+        logger.info(f"Settings page: {who} added the {name} satellite")
+        return {"success": True, "message": f"Added {name}. Its password is shown only this once.",
+                "password": password}
+
+    def new_password(self, name, who: str) -> Dict:
+        """
+        Gives a satellite a new password, letting it go until its setup has it.
+
+        Args:
+            name: The satellite, as the page sent it.
+            who: The Tailscale login asking, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message' - and once changed, 'password', for
+            the page to show once.
+        """
+        if not isinstance(name, str):
+            return {"success": False, "message": "That didn't make sense."}
+        with self._saving:
+            try:
+                password = self.brain.renew_password(name)
+            except ValueError:
+                return {"success": False, "message": f"There's no satellite called {name}."}
+        logger.info(f"Settings page: {who} gave the {name} satellite a new password")
+        return {"success": True, "message": f"{name} has a new password. It's shown only this once.",
+                "password": password}
+
 
 # What each kind of change is sent to, and what it's given.
 ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
@@ -1060,6 +1116,8 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/routines": lambda page, body, who: page.save_routine(body["routine"], who),
     "/api/routines/remove": lambda page, body, who: page.remove_routine(body["id"], who),
     "/api/routines/run": lambda page, body, who: page.start_routine(body["id"], who),
+    "/api/satellites/add": lambda page, body, who: page.add_satellite(body["name"], who),
+    "/api/satellites/password": lambda page, body, who: page.new_password(body["name"], who),
 }
 
 

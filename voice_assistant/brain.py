@@ -15,6 +15,7 @@ running mark and restart notice, its signals and shutdown, the watchdog, routine
 their time, and the reminder nobody answered sent to the user's phone.
 """
 
+import hmac
 import logging
 import os
 import queue
@@ -43,7 +44,7 @@ from voice_assistant.protocol import ProtocolError, Refused, admit
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.routines import Routines
 from voice_assistant.satellite_link import SOCKET_TIMEOUT, Stream
-from voice_assistant.satellite_passwords import SatellitePasswords
+from voice_assistant.satellite_passwords import SatellitePasswords, name_problem
 from voice_assistant.session import Session
 from voice_assistant.settings_page import SettingsPage
 from voice_assistant.text_to_speech import TextToSpeech
@@ -432,6 +433,51 @@ class Brain:
         names = self.passwords.names()
         return names[0] if names else None
 
+    def add_satellite(self, name: str) -> str:
+        """
+        Lets a new satellite in, as the settings page asks - at its first try, as its
+        password is read afresh as each satellite connects.
+
+        Args:
+            name: Its Pi's machine name, e.g. "bedroom".
+
+        Returns:
+            Its password, made up here, for the page to show once.
+
+        Raises:
+            ValueError: If the name isn't a machine name, or is already there.
+        """
+        problem = name_problem(name)
+        if problem:
+            raise ValueError(problem)
+        return self.passwords.add(name)
+
+    def renew_password(self, name: str) -> str:
+        """
+        Gives a satellite a new password, as the settings page asks, and lets it go if
+        it's connected - so it's refused until its setup has the new one. Its alarms,
+        routines and volumes are kept, as they're by its name.
+
+        Args:
+            name: The satellite.
+
+        Returns:
+            The new password, for the page to show once.
+
+        Raises:
+            ValueError: If there's no such satellite.
+        """
+        password = self.passwords.renew(name)
+        # After it's saved, never before - see _start_session, which lets go of one
+        # whose session is made after this looks.
+        with self._lock:
+            session = self.sessions.get(name)
+        if session is not None:
+            logger.info(f"The {name} satellite has a new password, so it's let go until its setup has it")
+            session.close()
+            session.satellite.close()
+        return password
+
     def last_moved(self) -> float:
         """
         When the brain was last known to be getting on with everything, by
@@ -535,9 +581,10 @@ class Brain:
         stream = Stream(sock)
         # The satellite says hello as it connects - see _catch_up.
         hello_at = time.monotonic()
-        hello = self._admit(stream, address)
-        if hello is None:
+        admitted = self._admit(stream, address)
+        if admitted is None:
             return
+        hello, password = admitted
         name = hello["name"]
         logger.info(f"The {name} satellite connected")
         if hello["unclean"]:
@@ -549,7 +596,7 @@ class Brain:
         reading.start()
         session = None
         try:
-            session = self._start_session(satellite)
+            session = self._start_session(satellite, password)
             if session is not None and self._catch_up(session, hello_at):
                 session.run()
         except Exception:
@@ -562,18 +609,22 @@ class Brain:
                 self._forget(session)
         logger.info(f"The {name} satellite went")
 
-    def _admit(self, stream: Stream, address: str) -> Optional[Dict]:
+    def _admit(self, stream: Stream, address: str) -> Optional[Tuple[Dict, str]]:
         """
         The brain's side of the handshake - see protocol.admit.
 
         Returns:
-            The satellite's hello, or None if it wasn't let in.
+            The satellite's hello and the password it proved, or None if it wasn't let in.
         """
         named: List[str] = []
+        # The password as it was read, for _start_session to tell whether it has
+        # changed since - only ever compared, never logged.
+        read: List[Optional[str]] = []
 
         def password_for(name: str) -> Optional[str]:
             named.append(name)
-            return self.passwords.get(name)
+            read.append(self.passwords.get(name))
+            return read[-1]
 
         try:
             hello = admit(stream, password_for)
@@ -597,7 +648,7 @@ class Brain:
             return None
         with self._lock:
             self._why_turned_away.pop(hello["name"], None)
-        return hello
+        return hello, read[-1]
 
     def _passwords_file(self) -> Optional[Tuple[int, int, int]]:
         """
@@ -645,14 +696,18 @@ class Brain:
             self._why_turned_away[name] = why
         logger.warning(why)
 
-    def _start_session(self, satellite: RemoteSatellite) -> Optional[Session]:
+    def _start_session(self, satellite: RemoteSatellite, password: Optional[str] = None) -> Optional[Session]:
         """
         Makes a satellite's session, in place of any it had - from a connection which
         went without the brain noticing yet, say.
 
+        Args:
+            satellite: The satellite, just let in.
+            password: The password it proved, or None not to check it's still its own.
+
         Returns:
-            The session, or None if the brain is stopping or the satellite was removed
-            as it connected.
+            The session, or None if the brain is stopping or the satellite was removed,
+            or given a new password, as it connected.
         """
         name = satellite.name
         with self._connecting:
@@ -680,20 +735,24 @@ class Brain:
         # sessions as it reads it. A removal before this is seen here; one after it is
         # seen there, as the session is in sessions by then - so whichever way round
         # the two threads run, a satellite removed while its session was being made
-        # can't stay.
-        if self._removed(name):
-            logger.info(f"The {name} satellite was removed as it connected, so it's let go")
+        # can't stay. The same goes for a new password, which renew_password saves
+        # before it looks in sessions.
+        if self._removed(name, password):
+            logger.info(f"The {name} satellite was removed, or given a new password, as it connected, so it's let go")
             session.close()
             self._forget(session)
             return None
         return session
 
-    def _removed(self, name: str) -> bool:
+    def _removed(self, name: str, password: Optional[str] = None) -> bool:
         """
-        Whether a satellite has had its password removed. One which can't be told,
-        because the file can't be read, is taken to be let in, as _shut_out_removed does.
+        Whether a satellite has had its password removed - or, given the one it proved,
+        changed. One which can't be told, because the file can't be read, is taken to
+        be let in, as _shut_out_removed does.
         """
         try:
+            if password is not None:
+                return not hmac.compare_digest((self.passwords.get(name) or "").encode(), password.encode())
             return name not in self.passwords.names()
         except Exception as e:
             logger.error(f"Couldn't read the satellites' passwords to see if the {name} satellite is still let in: {e}")

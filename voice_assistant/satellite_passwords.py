@@ -8,6 +8,7 @@ satellite is the default one.
 """
 
 import os
+import re
 import secrets
 from typing import Dict, List, Optional
 
@@ -16,6 +17,28 @@ from voice_assistant.storage import load_json, save_json
 
 # The shortest password the brain will accept. A guessable one defeats the handshake.
 MIN_PASSWORD = 16
+
+# A satellite's name is its Pi's machine name - one label of a hostname - as that's
+# the name a satellite connects by unless backend.satellite says otherwise, and the
+# one setup.sh asks the brain to add.
+NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def name_problem(name: str) -> Optional[str]:
+    """
+    What's wrong with a new satellite's name. Those added before the rule aren't
+    checked again, so one already there keeps working.
+
+    Args:
+        name: The name, e.g. "bedroom".
+
+    Returns:
+        Why it can't be a satellite's name, as a sentence, or None if it can.
+    """
+    if NAME.fullmatch(name):
+        return None
+    return ("A satellite's name is its Pi's machine name: lower-case letters, digits and hyphens, "
+            "not starting or ending with a hyphen.")
 
 
 class SatellitePasswords:
@@ -64,6 +87,27 @@ class SatellitePasswords:
         passwords[name] = password
         save_json(self.path, passwords)
         return password
+
+    def renew(self, name: str) -> str:
+        """
+        Gives a satellite a new password in place of its old one, keeping its place in
+        the order - so the default stays the default.
+
+        Args:
+            name: The satellite.
+
+        Returns:
+            The new password.
+
+        Raises:
+            ValueError: If there's no such satellite.
+        """
+        passwords = self._read()
+        if name not in passwords:
+            raise ValueError(f"There is no satellite called {name}")
+        passwords[name] = secrets.token_urlsafe(32)
+        save_json(self.path, passwords)
+        return passwords[name]
 
     def remove(self, name: str) -> bool:
         """
