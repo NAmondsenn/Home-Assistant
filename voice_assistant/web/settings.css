@@ -823,8 +823,40 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   gap: 12px;
 }
 
+/* A setting's label, with when it's used under it. */
+.field .about {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.field .detail {
+  color: rgba(150, 161, 192, 0.75);
+  font-size: 12px;
+}
+
+/* The speaking speed's slider, how fast it is, and its "Hear it" - the button going
+   under the slider where there's no room beside it, as on a phone. */
+.speed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.speed input { flex: 1 1 140px; min-width: 0; }
+
+.speed output {
+  color: var(--dusk);
+  font-size: 13px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed .button { padding: 7px 16px; font-size: 13px; }
+
 /* A setting changed but not saved yet, marked with a little of Nova's light. */
-.field.changed > label { color: var(--starlight); }
+.field.changed label { color: var(--starlight); }
 
 .save-bar {
   display: flex;
@@ -839,6 +871,9 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   color: var(--dusk);
   font-size: 14px;
 }
+
+/* Why a save didn't work, said here too as it stays in view. */
+.save-bar p.bad { color: var(--ember); }
 
 .note {
   margin: 0;

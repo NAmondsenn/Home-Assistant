@@ -62,13 +62,18 @@ const VOLUMES = {
 // The settings, grouped by what they're for. One that's under none of these goes
 // under Other, so a new setting turns up on the page without it changing.
 const GROUPS = [
-  ["Weather", ["weather."]],
   ["Music", ["music.", "navidrome.", "spotify."]],
-  ["Home", ["home_assistant."]],
+  ["Voice", ["voice."]],
+  ["Sounds", ["sounds."]],
+  ["Claude", ["web_search.", "conversation."]],
+  ["Home", ["home_assistant.", "mqtt."]],
   ["Notifications", ["ntfy."]],
   ["Listening", ["thresholds."]],
   ["Privacy", ["logging."]],
 ];
+
+// The night's two settings - quiet hours, which there are none of while they're the same.
+const NIGHT = ["ntfy.quiet_from", "ntfy.quiet_until"];
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -105,6 +110,10 @@ let home = null;
 
 // What /api/batteries last said.
 let batteries = null;
+
+// Whether the save bar offers to restart Nova rather than to save - once a save has
+// something which waits for a restart, while nothing else is waiting to be saved.
+let offerRestart = false;
 
 // Making things
 
@@ -297,6 +306,11 @@ async function load() {
   drawIfChanged("settings", state.settings, showSettings);
   showSettingsProblem(state.settings_problem);
   document.getElementById("restart").hidden = !state.restart_needed;
+  // Restarted since, or the saved settings put back as they're running.
+  if (offerRestart && !state.restart_needed) {
+    offerRestart = false;
+    countChanges();
+  }
 }
 
 async function live() {
@@ -1174,18 +1188,31 @@ function showSettings(settings) {
   }
   document.getElementById("setting-groups").replaceChildren(...rows);
   countChanges();
+  showNight();
 }
 
+// A setting, with when it's used under its label: "Used straight away".
 function settingField(setting) {
   const id = `setting-${setting.key}`;
   const field = element("div", undefined, setting.kind === "yes/no" ? "field switch" : "field");
+  const about = element("span", undefined, "about");
   const label = element("label", setting.label);
   label.htmlFor = id;
+  const used = element("span", setting.used, "detail");
+  used.id = `${id}-used`;
+  about.append(label, used);
   const input = setting.choices ? choiceInput(setting) : valueInput(setting);
   input.id = id;
   input.name = setting.key;
   input.dataset.saved = valueOf(input);
-  field.append(label, setting.choices ? selectBox(input) : input);
+  input.setAttribute("aria-describedby", used.id);
+  field.append(about, setting.choices ? selectBox(input) : input.type === "range" ? speedControl(input) : input);
+  if (NIGHT.includes(setting.key)) {
+    const none = element("span", "No quiet hours", "detail night");
+    none.id = `${id}-night`;
+    none.hidden = true;
+    field.append(none);
+  }
   return field;
 }
 
@@ -1209,15 +1236,73 @@ function valueInput(setting) {
     input.checked = Boolean(setting.value);
     return input;
   }
-  input.type = setting.kind === "number" ? "number" : "text";
-  if (setting.kind === "number") {
-    input.step = "any";
-    input.inputMode = "decimal";
+  if (setting.form === "number") {
+    // Its range before its value, which would otherwise be rounded to the browser's
+    // own whole steps from 0 to 100 - 1.25 becoming 1.
+    Object.assign(input, { type: setting.key === "voice.speed" ? "range" : "number", min: setting.min,
+                           max: setting.max, step: setting.whole ? 1 : 0.05 });
+    if (input.type === "number") input.inputMode = setting.whole ? "numeric" : "decimal";
+  } else if (setting.form === "time") {
+    input.type = "time";
+  } else if (setting.form === "address") {
+    input.type = "url";
+    input.inputMode = "url";
+  } else {
+    input.type = setting.kind === "number" ? "number" : "text";
+    if (setting.kind === "number") {
+      input.step = "any";
+      input.inputMode = "decimal";
+    }
   }
   input.value = Array.isArray(setting.value) ? setting.value.join(", ") : setting.value ?? "";
   input.autocomplete = "off";
   input.spellcheck = false;
   return input;
+}
+
+// The speaking speed's slider, with how fast it is beside it, and a button to hear it
+// said at that speed before it's saved.
+function speedControl(slider) {
+  const made = element("div", undefined, "speed");
+  const output = element("output", undefined, "value");
+  output.setAttribute("for", slider.id);
+  const show = () => {
+    // "1.0 times" rather than "1 times", and "1.25 times" as it is.
+    const speed = Number(slider.value);
+    output.textContent = `${Number.isInteger(speed) ? speed.toFixed(1) : speed} times`;
+    slider.style.setProperty("--level", `${((speed - slider.min) / (slider.max - slider.min)) * 100}%`);
+  };
+  show();
+  slider.addEventListener("input", show);
+  const hear = element("button", "Hear it", "button quiet");
+  hear.type = "button";
+  hear.setAttribute("aria-label", "Hear it at this speed");
+  hear.addEventListener("click", async () => {
+    // Only one at a time - Nova says it's busy to another while one's being said.
+    hear.disabled = true;
+    let result;
+    try {
+      result = await send("/api/voice/hear", { speed: Number(slider.value) });
+    } catch (error) {
+      result = { success: false, message: "Couldn't reach Nova." };
+    }
+    hear.disabled = false;
+    toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
+  });
+  made.append(slider, output, hear);
+  return made;
+}
+
+// Says beside the night's two settings when there are no quiet hours, as they're the
+// same - and only then reads it out with them, as a description is read even hidden.
+function showNight() {
+  const [from, until] = NIGHT.map((key) => document.getElementById(`setting-${key}`));
+  if (!from || !until) return;
+  const none = from.value === until.value;
+  for (const input of [from, until]) {
+    document.getElementById(`${input.id}-night`).hidden = !none;
+    input.setAttribute("aria-describedby", none ? `${input.id}-used ${input.id}-night` : `${input.id}-used`);
+  }
 }
 
 // A select with the page's own arrow, the browser's being hidden so it matches the fields.
@@ -1239,9 +1324,16 @@ function countChanges() {
     input.closest(".field").classList.toggle("changed", differs);
     return differs;
   });
-  document.getElementById("unsaved").textContent =
-    changed.length ? `${counted(changed.length, "change", "changes")} not saved yet.` : "Nothing's changed yet.";
-  document.getElementById("save-settings").disabled = !changed.length;
+  // Anything more to save goes before the restart, which then uses it too.
+  if (changed.length) offerRestart = false;
+  const unsaved = document.getElementById("unsaved");
+  unsaved.classList.remove("bad");
+  unsaved.textContent = changed.length ? `${counted(changed.length, "change", "changes")} not saved yet.`
+    : offerRestart ? "Saved. Some of it is used once Nova restarts." : "Nothing's changed yet.";
+  const save = document.getElementById("save-settings");
+  save.disabled = !changed.length;
+  save.hidden = offerRestart;
+  document.getElementById("restart-now").hidden = !offerRestart;
   return changed;
 }
 
@@ -1346,8 +1438,12 @@ document.addEventListener("DOMContentLoaded", () => {
   tick();
 
   const settings = document.getElementById("settings");
-  settings.addEventListener("input", countChanges);
-  settings.addEventListener("change", countChanges);
+  for (const happened of ["input", "change"]) {
+    settings.addEventListener(happened, () => {
+      countChanges();
+      showNight();
+    });
+  }
   settings.addEventListener("submit", async (event) => {
     event.preventDefault();
     const changed = countChanges();
@@ -1357,7 +1453,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const result = await change("/api/settings", { changes });
     if (result.success) {
       for (const input of changed) input.dataset.saved = valueOf(input);
+      offerRestart = Boolean(result.restart_needed);
       countChanges();
+    } else {
+      // In the save bar too, where it's still in view once the toast has gone.
+      const unsaved = document.getElementById("unsaved");
+      unsaved.textContent = result.message || "That didn't work.";
+      unsaved.classList.add("bad");
     }
   });
 
@@ -1368,9 +1470,11 @@ document.addEventListener("DOMContentLoaded", () => {
     if (result.success) form.reset();
   });
 
-  document.getElementById("restart-button").addEventListener("click", () => {
+  const restart = () => {
     if (confirm("Restart Nova now? It takes about half a minute.")) change("/api/restart");
-  });
+  };
+  document.getElementById("restart-button").addEventListener("click", restart);
+  document.getElementById("restart-now").addEventListener("click", restart);
 
   // Put back as Nova last had it if the change didn't work - even with Nova out of
   // reach, when the page can't be shown afresh.
