@@ -34,8 +34,18 @@ MOST_ITEMS = 10
 
 NO_SUCH_LIST = "I haven't got a list called that."
 
+# Said of a change Home Assistant was sent but didn't answer, so may have made.
+NO_ANSWER = "Home Assistant didn't answer in time"
+
 # The words which only say whose or which thing it is - "tick off the milk" is milk.
 ITEM_LEADS = ("the", "some", "my")
+
+# The fewest letters a word needs to fit by being the start of a list's name, or one word
+# of a thing's - "a" would otherwise fit "a pear", and "no" notepad.
+LOOSE_LETTERS = 3
+
+# The endings whose plural takes "es" - "glasses" is glass and "boxes" is box.
+ES_PLURALS = ("sses", "xes", "ches", "shes", "zes")
 
 
 def _words(text: str) -> List[str]:
@@ -61,18 +71,19 @@ def list_words(name: str) -> Tuple[str, ...]:
     words = _words(name)
     if words and words[0] in ("my", "the"):
         words = words[1:]
+    # Singular first, so "to-dos" is todo too.
     joined = []
-    for word in words:
+    for word in map(_singular, words):
         if word == "do" and joined and joined[-1] == "to":
             joined[-1] = "todo"
         else:
             joined.append(word)
-    return tuple(_singular(word) for word in joined if word not in ("list", "lists"))
+    return tuple(word for word in joined if word != "list")
 
 
 def _begins(said: Tuple[str, ...], name: Tuple[str, ...]) -> bool:
     """Whether a name's words begin with those said, the last of them perhaps cut short - "note" for "notepad"."""
-    if not said or len(said) > len(name):
+    if not said or len(said) > len(name) or len(said[-1]) < LOOSE_LETTERS:
         return False
     return said[:-1] == name[:len(said) - 1] and name[len(said) - 1].startswith(said[-1])
 
@@ -86,8 +97,10 @@ def match_list(said: str, lists: List[Dict]) -> List[Dict]:
         lists: The lists, as HomeAssistant.todo_lists gives them.
 
     Returns:
-        Those whose name, or one of whose other names, has the same words. If none, the one
-        whose name begins with them - but only if just one list's does. Empty if none fit.
+        Those whose name, or one of whose other names, has the same words - so an exact fit
+        wins, and "uni" is uni even with uni-work there too. If none, the one whose name
+        begins with them - but only if just one list's does. Empty if none fit. Nova asks
+        only when two or more fit exactly.
     """
     words = list_words(said)
     if not words:
@@ -100,12 +113,19 @@ def match_list(said: str, lists: List[Dict]) -> List[Dict]:
     return begun if len(begun) == 1 else []
 
 
+def _item_singular(word: str) -> str:
+    """A thing's word without its plural - "glasses" and "glass" are both glass, and "eggs" egg."""
+    if word.endswith(ES_PLURALS):
+        return word[:-2]
+    return word if word.endswith("ss") else _singular(word)
+
+
 def _item_words(text: str) -> Tuple[str, ...]:
     """A thing's words as they're matched - "Some Eggs!" is ("egg",)."""
     words = _words(text)
     if words and words[0] in ITEM_LEADS:
         words = words[1:]
-    return tuple(_singular(word) for word in words)
+    return tuple(_item_singular(word) for word in words)
 
 
 def match_item(said: str, items: List[Dict]) -> List[Dict]:
@@ -118,13 +138,16 @@ def match_item(said: str, items: List[Dict]) -> List[Dict]:
 
     Returns:
         Those with the same words, ignoring case, punctuation, plurals and a leading "the",
-        "some" or "my" - or if none, those with every word said, so "milk" is "oat milk".
+        "some" or "my" - so an exact fit wins, and "milk" is milk even with oat milk there
+        too. If none, those with every word said, so "milk" is oat milk - unless all the
+        words said are shorter than LOOSE_LETTERS. Nova asks only when nothing fits exactly
+        and two or more fit more loosely.
     """
     words = _item_words(said)
     if not words:
         return []
     same = [item for item in items if _item_words(item["summary"]) == words]
-    if same:
+    if same or all(len(word) < LOOSE_LETTERS for word in words):
         return same
     return [item for item in items if set(words) <= set(_item_words(item["summary"]))]
 
@@ -190,7 +213,10 @@ class Lists:
             requests.RequestException: If Home Assistant couldn't be asked.
             ValueError: If its states can't be read.
         """
-        lists = self.home.todo_lists()
+        return self._main(self.home.todo_lists())
+
+    def _main(self, lists: List[Dict]) -> Optional[Dict]:
+        """The main list among these, as main says."""
         chosen = self.choices.get("main")
         for found in lists:
             if found["id"] == chosen:
@@ -215,10 +241,15 @@ class Lists:
             requests.RequestException: If Home Assistant couldn't be asked.
             ValueError: If its states can't be read.
         """
+        lists = self.home.todo_lists()
         if not said or not list_words(said):
-            found = self.main()
-            return (found, None) if found else (None, "Which list?")
-        fits = match_list(said, self.home.todo_lists())
+            found = self._main(lists)
+            if found:
+                return found, None
+            if not lists:
+                return None, "Home Assistant hasn't got any lists."
+            return None, f"Which list, {_joined([each['name'] for each in lists], 'or')}?"
+        fits = match_list(said, lists)
         if len(fits) == 1:
             return fits[0], None
         if fits:
@@ -261,11 +292,7 @@ class Lists:
                 # A failure stops there - the next would likely fail too, and what wasn't
                 # added is all said, so the user knows what to add again.
                 logger.warning(f"Could not add a thing to {found['id']}: {e}")
-                if not added:
-                    return {"success": False, "message": f"I couldn't add that to {where}."}
-                left = items[len(added):]
-                return {"success": False, "message": f"Added {_joined(added)} to {where}, "
-                                                     f"but I couldn't add {_joined(left, 'or')}."}
+                return {"success": False, "message": _not_added(added, items[len(added):], where, e)}
             added.append(item)
         return {"success": True, "message": f"Added {_joined(added)} to {where}."}
 
@@ -328,11 +355,42 @@ class Lists:
                 return {"success": False, "message": f"Which list, {_joined(on, 'or')}?"}
             # The same thing twice on one list is still the one thing, so the first is ticked off.
             thing = fits[0]
-            self.home.tick_off(thing["list"]["id"], thing["uid"])
+            try:
+                self.home.tick_off(thing["list"]["id"], thing["uid"])
+            except requests.Timeout as e:
+                # Sent, but unanswered - so it may well have been ticked off.
+                logger.warning(f"Home Assistant didn't answer in time ticking something off: {e}")
+                return {"success": False, "message": f"{NO_ANSWER}, so I can't tell if {thing['summary']} was "
+                                                     f"ticked off your {_list_said(thing['list']['name'])}."}
         except (requests.RequestException, ValueError) as e:
             return _failed("tick something off", e)
         return {"success": True,
                 "message": f"Ticked off {thing['summary']} on your {_list_said(thing['list']['name'])}."}
+
+
+def _not_added(added: List[str], left: List[str], where: str, error: Exception) -> str:
+    """
+    What's said when adding a thing failed, e.g. "Added eggs to your shopping list, but I
+    couldn't add milk or bread.".
+
+    Args:
+        added: The things Home Assistant took before it.
+        left: The one which failed, then those not tried.
+        where: The list as it's said, e.g. "your shopping list".
+        error: Why it failed.
+    """
+    if isinstance(error, requests.Timeout):
+        # Sent, but unanswered - so it may well have been added.
+        unsure = f"{NO_ANSWER}, so I can't tell if {left[0]} was added"
+        if not added:
+            return f"{unsure} to {where}."
+        rest = f", and I didn't add {_joined(left[1:])}" if left[1:] else ""
+        return f"Added {_joined(added)} to {where}, but {unsure}{rest}."
+    if not added:
+        if getattr(getattr(error, "response", None), "status_code", None) == 401:
+            return HomeAssistant._failure_message(error)
+        return f"I couldn't add that to {where}."
+    return f"Added {_joined(added)} to {where}, but I couldn't add {_joined(left, 'or')}."
 
 
 def _failed(doing: str, error: Exception) -> Dict:

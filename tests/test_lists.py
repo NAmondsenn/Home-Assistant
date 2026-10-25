@@ -35,6 +35,7 @@ class FakeHome:
         # What's raised by everything, as with Home Assistant down, and by add_item for one thing.
         self.failure = None
         self.add_fails = {}
+        self.tick_fails = None
         self.added = []
         self.ticked = []
 
@@ -55,6 +56,8 @@ class FakeHome:
         self.added.append((list_id, item))
 
     def tick_off(self, list_id, uid):
+        if self.tick_fails:
+            raise self.tick_fails
         self.ticked.append((list_id, uid))
 
 
@@ -81,15 +84,29 @@ def _found(lists, said):
 
 @pytest.mark.parametrize("said, name", [
     ("shopping", "Shopping list"), ("my shopping list", "Shopping list"),
-    ("todo", "todo"), ("to do", "todo"), ("to-do list", "todo"),
+    ("todo", "todo"), ("to do", "todo"), ("to-do list", "todo"), ("my to-dos", "todo"), ("to dos", "todo"),
     ("notes", "notepad"), ("my notes", "notepad"), ("notepad", "notepad"),
     ("uni work", "uni-work"), ("uni-work", "uni-work"),
 ])
 def test_each_list_is_found_by_the_users_own_words(make_lists, said, name):
     assert _found(make_lists(), said) == name
+
+
+def test_list_words_are_matched_forgivingly():
     assert list_words("notes") == ("note",)
-    assert list_words("My To-Do List") == list_words("the todo lists") == ("todo",)
+    assert list_words("My To-Do List") == list_words("the todo lists") == list_words("to-dos") == ("todo",)
     assert list_words("uni_work") == ("uni", "work")
+
+
+def test_a_word_of_one_or_two_letters_never_fits_by_its_start(make_lists):
+    lists = make_lists([_list("notepad"), _list("uni-work")])
+    assert _found(lists, "no") == _found(lists, "un") == "I haven't got a list called that."
+    assert _found(lists, "not") == "notepad"
+    # Nor by being one word of a thing's - "a" isn't "a pear".
+    lists = make_lists(items={"todo.shopping_list": ["a pear", "tv stand"]})
+    assert lists.tick_off("a", "shopping")["message"] == "I can't see a on your shopping list."
+    assert lists.tick_off("tv", "shopping")["message"] == "I can't see tv on your shopping list."
+    assert lists.tick_off("stand", "shopping")["message"] == "Ticked off tv stand on your shopping list."
 
 
 def test_a_lists_other_name_finds_it(make_lists):
@@ -125,9 +142,13 @@ def test_with_no_list_named_its_the_main_one(make_lists):
     lists.home.lists = [found for found in lists.home.lists if found["name"] != "Shopping list"]
     assert _found(lists, None) == "todo"
 
-    # Without todo, it's the only list there is - and with several, there's none to go by.
+    # Without todo, it's the only list there is - and with several, there's none to go by,
+    # so Nova asks which.
     assert make_lists([_list("notepad")]).main()["name"] == "notepad"
-    assert make_lists([_list("notepad"), _list("uni-work")]).main() is None
+    several = make_lists([_list("notepad"), _list("uni-work")])
+    assert several.main() is None
+    assert _found(several, None) == "Which list, notepad or uni-work?"
+    assert _found(make_lists([]), None) == "Home Assistant hasn't got any lists."
 
 
 def test_added_is_only_said_once_home_assistant_took_it(make_lists):
@@ -144,6 +165,39 @@ def test_added_is_only_said_once_home_assistant_took_it(make_lists):
     assert lists.add(["eggs", "milk", "bread"], "shopping") == {
         "success": False, "message": "Added eggs to your shopping list, but I couldn't add milk or bread."}
     assert lists.home.added == [("todo.shopping_list", "eggs")]
+
+
+def test_a_token_turned_down_says_so(make_lists):
+    lists = make_lists()
+    response = requests.Response()
+    response.status_code = 401
+    lists.home.add_fails["milk"] = requests.HTTPError("401", response=response)
+    assert "HA_TOKEN in the .env file needs checking" in lists.add(["milk"], "shopping")["message"]
+
+
+def test_no_answer_in_time_says_nova_cant_tell_if_it_was_done(make_lists):
+    lists = make_lists(items={"todo.shopping_list": ["milk"]})
+    lists.home.add_fails["milk"] = requests.Timeout("slow")
+    assert lists.add(["milk"], "shopping") == {"success": False, "message": (
+        "Home Assistant didn't answer in time, so I can't tell if milk was added to your shopping list.")}
+    assert lists.add(["eggs", "milk", "bread"], "shopping") == {"success": False, "message": (
+        "Added eggs to your shopping list, but Home Assistant didn't answer in time, so I can't tell if milk "
+        "was added, and I didn't add bread.")}
+    lists.home.tick_fails = requests.Timeout("slow")
+    assert lists.tick_off("milk", "shopping") == {"success": False, "message": (
+        "Home Assistant didn't answer in time, so I can't tell if milk was ticked off your shopping list.")}
+    # Reading the lists unanswered changed nothing, so it's said as Home Assistant being down.
+    lists.home.failure = requests.Timeout("slow")
+    assert lists.tick_off("milk", None) == {"success": False, "message": CANT_REACH}
+
+
+def test_nothing_sent_says_it_wasnt_done(make_lists):
+    lists = make_lists(items={"todo.shopping_list": ["milk"]})
+    lists.home.add_fails["milk"] = requests.ConnectionError("refused")
+    assert lists.add(["milk"], "shopping")["message"] == "I couldn't add that to your shopping list."
+    lists.home.tick_fails = requests.ConnectionError("refused")
+    assert lists.tick_off("milk", "shopping") == {"success": False, "message": CANT_REACH}
+    assert lists.home.ticked == []
 
 
 def test_each_says_it_cant_reach_home_assistant_while_its_down(make_lists):
@@ -170,6 +224,12 @@ def test_two_things_that_fit_are_asked_about(make_lists):
     assert lists.tick_off("some egg!", "shopping") == {"success": True,
                                                        "message": "Ticked off Eggs on your shopping list."}
 
+    # "es" plurals count for things too.
+    lists = make_lists(items={"todo.shopping_list": ["glasses", "box"]})
+    assert lists.tick_off("glass", "shopping")["message"] == "Ticked off glasses on your shopping list."
+    assert lists.tick_off("boxes", "shopping")["message"] == "Ticked off box on your shopping list."
+
+    # The exact fit wins over looser ones.
     lists = make_lists(items={"todo.shopping_list": ["oat milk", "milk shake", "milk"]})
     assert lists.tick_off("the milk", "shopping")["message"] == "Ticked off milk on your shopping list."
     assert lists.home.ticked == [("todo.shopping_list", "todo.shopping_list-2")]
@@ -194,5 +254,8 @@ def test_words_naming_no_list_go_to_claude(make_lists):
     # Nothing on any list fitting, with no list said, goes to Claude too...
     assert lists.tick_off("work tomorrow", None) == {
         "success": False, "message": "I can't see work tomorrow on your lists.", "not_understood": True}
-    # ...but a list asked for by name is still one Nova hasn't got.
+    assert lists.tick_off("milk", "my calendar") == {
+        "success": False, "message": "I haven't got a list called that.", "not_understood": True}
+    # ...but a list asked for by name is still one Nova hasn't got, and "my list" is still a list.
     assert "not_understood" not in lists.read("my garden list")
+    assert lists.tick_off("cheese", "my list") == {"success": False, "message": "I can't see cheese on your lists."}
