@@ -1082,6 +1082,8 @@ function listRow(found) {
   } else {
     const make = element("button", "Make main", "button quiet");
     make.type = "button";
+    // Said by a screen reader, which otherwise hears only "Make main" for every list.
+    make.setAttribute("aria-label", `Make ${found.name} the main list`);
     make.addEventListener("click", () => changeHomeChoice("/api/lists/main", { id: found.id }));
     row.append(make);
   }
