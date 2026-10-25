@@ -1518,6 +1518,60 @@ def test_moving_an_alarm_the_satellite_already_has_doesnt_double_it(make_clock, 
     assert len(make_clock().overview()["alarms"]) == 2
 
 
+def test_a_doubled_repeating_alarm_keeps_the_later_skip(make_clock, tmp_path):
+    # The same daily 7am on both, skipped just today on the kitchen's copy only - so
+    # its next occurrence is tomorrow's. Moved, it's still one alarm, and still skipped.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    tomorrow = clock._next_occurrence(7, 0, "daily", after=today + 60)
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 5, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "due_at": tomorrow, "satellite": "kitchen"},
+        # Two one-offs at 7am, today's and tomorrow's, are two alarms.
+        {"id": 3, "hour": 7, "minute": 0, "repeat": None, "due_at": today, "satellite": "bedroom"},
+        {"id": 4, "hour": 7, "minute": 0, "repeat": None, "due_at": tomorrow, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+
+    assert clock.move_satellite("kitchen", "bedroom") == 2
+    alarms = make_clock()._alarms
+    assert sorted(alarms) == [1, 3, 4]
+    assert alarms[1]["due_at"] == tomorrow and alarms[1]["satellite"] == "bedroom"
+
+    # Today only the one-off rings, and tomorrow the daily one and the other one-off.
+    clock._tick(today + 1)
+    assert [entry["timer"]["id"] for entry in clock._ringing] == [3]
+    clock.dismiss()
+    clock._tick(tomorrow + 1)
+    assert sorted(entry["timer"]["id"] for entry in clock._ringing) == [1, 4]
+    assert {entry["timer"]["satellite"] for entry in clock._ringing} == {"bedroom"}
+
+
+def test_a_moved_ringing_alarm_the_default_has_answered_doesnt_ring_again(make_clock, tmp_path):
+    # The same daily 7am on both, ringing on both. The bedroom's is answered, then the
+    # kitchen is removed while its copy still rings.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    # Timers are numbered apart from alarms, so one ringing can share the alarm's id.
+    clock.set_timer(60, satellite="kitchen")
+    clock.set_timer(120, satellite="kitchen")
+    clock._tick(today + 1)
+    assert len(clock._ringing) == 4
+    clock.dismiss(satellite="bedroom")
+
+    clock.move_satellite("kitchen", "bedroom")
+
+    assert sorted(entry["timer"]["id"] for entry in clock._ringing) == [1, 2]
+    assert not any(entry["kind"] == "alarm" for entry in clock._ringing)
+    assert {entry["timer"]["satellite"] for entry in clock._ringing} == {"bedroom"}
+    assert sorted(clock._alarms) == [1]
+
+
 def test_nothing_is_set_for_a_satellite_no_longer_let_in(make_clock):
     # Removed as it was being set - from a turn still in flight, or the page.
     clock = make_clock()

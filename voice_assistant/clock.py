@@ -2154,12 +2154,41 @@ class Clock:
         def on(item: Dict, satellite: Optional[str]) -> bool:
             return (item["satellite"] or None) == satellite
 
+        def same_alarm(item: Dict, other: Dict, occurrence: bool) -> bool:
+            # The same time and days - alarms never take a label - and, for an
+            # occurrence, the same one.
+            same = ("hour", "minute", "repeat") + (("due_at",) if occurrence else ())
+            return "hour" in item and "hour" in other and all(other[key] == item[key] for key in same)
+
         def doubled(item: Dict, theirs: List[Dict]) -> bool:
-            # An alarm the other satellite already has - the same time, days and
-            # occurrence - so it would ring there twice. Alarms never take a label.
-            same = ("hour", "minute", "repeat", "due_at")
-            return "hour" in item and any("hour" in other and all(other[key] == item[key] for key in same)
-                                          for other in theirs if on(other, to_satellite))
+            # An occurrence the other satellite already has, so it would ring there twice.
+            return any(on(other, to_satellite) and same_alarm(item, other, True) for other in theirs)
+
+        def stored_twice(alarm: Dict) -> Optional[Dict]:
+            # The other satellite's copy of an alarm in the store. A repeating one is
+            # the same alarm whenever it's next due, as "skip just today" on one copy
+            # only moves that copy on. Two one-offs at 7am, today's and tomorrow's,
+            # are two alarms.
+            occurrence = not alarm["repeat"]
+            return next((other for other in self._alarms.values()
+                         if other is not alarm and on(other, to_satellite) and same_alarm(alarm, other, occurrence)),
+                        None)
+
+        def answered(entry: Dict, dropped_ids: Set[int]) -> bool:
+            # A ringing alarm is a copy made as it came due, and a repeating one's
+            # stored copy moves on then - so the other satellite's stored copy past
+            # this occurrence has had it already: rung, ringing or skipped. Rung
+            # there, a one-off leaves no trace to match, but doubles only come from
+            # older files, and only for the quarter of an hour it rings.
+            alarm = entry["timer"]
+            # Timers are numbered apart from alarms.
+            if "hour" not in alarm:
+                return False
+            if alarm["id"] in dropped_ids:
+                return True
+            return bool(alarm["repeat"]) and any(
+                on(other, to_satellite) and same_alarm(alarm, other, False) and other["due_at"] > alarm["due_at"]
+                for other in self._alarms.values())
 
         with self._changing():
             timers = [timer for timer in self._timers.values() if on(timer, from_satellite)]
@@ -2167,10 +2196,18 @@ class Clock:
             ringing = [entry for entry in self._ringing if on(entry["timer"], from_satellite)]
             missed = [item for item in self._missed if on(item, from_satellite)]
 
-            # Each doubled one is let go, with what of it is ringing or missed.
-            dropped = [alarm for alarm in alarms if doubled(alarm, list(self._alarms.values()))]
+            # Each doubled one is let go, with what of it is ringing or missed - the
+            # other's copy kept, as the later skip of the two.
+            dropped = []
+            for alarm in alarms:
+                kept = stored_twice(alarm)
+                if kept is not None:
+                    kept["due_at"] = max(kept["due_at"], alarm["due_at"])
+                    dropped.append(alarm)
+            dropped_ids = {alarm["id"] for alarm in dropped}
             dropped_ringing = [entry for entry in ringing
-                               if doubled(entry["timer"], [other["timer"] for other in self._ringing])]
+                               if doubled(entry["timer"], [other["timer"] for other in self._ringing])
+                               or answered(entry, dropped_ids)]
             dropped_missed = [item for item in missed if doubled(item, self._missed)]
             for alarm in dropped:
                 del self._alarms[alarm["id"]]
