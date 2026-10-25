@@ -23,6 +23,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Dict, List, Optional, Tuple
 
 from voice_assistant import network
@@ -250,9 +251,13 @@ class Snapshot:
         """The entity ids of the device's entities."""
         return [entry.entity_id for entry in self.entries.values() if entry.device_id == device_id]
 
-    def hass_agent_buttons(self) -> Dict[str, Tuple[str, str]]:
+    @cached_property
+    def hass_agent_commands(self) -> Dict[str, Tuple[str, str]]:
         """
-        Each button of a HASS.Agent device, by entity id.
+        Each entity of a HASS.Agent device, by entity id - its buttons, and the switches,
+        lights and the like a command can be made as instead, and its sensors. Worked out
+        once a snapshot, which is never changed, as the guard looks it up on the voice
+        path for every button and switch there is.
 
         Returns:
             {entity id: (device id, kind)}, the kind as button_kind gives it.
@@ -260,7 +265,17 @@ class Snapshot:
         agents = {device_id for device_id, device in self.devices.items()
                   if (device.get("maker") or "").startswith(HASS_AGENT_MAKER)}
         return {entry.entity_id: (entry.device_id, button_kind(entry)) for entry in self.entries.values()
-                if entry.device_id in agents and entry.entity_id.startswith("button.")}
+                if entry.device_id in agents}
+
+    def hass_agent_buttons(self) -> Dict[str, Tuple[str, str]]:
+        """
+        Each button of a HASS.Agent device, by entity id - those of hass_agent_commands.
+
+        Returns:
+            {entity id: (device id, kind)}, the kind as button_kind gives it.
+        """
+        return {entity_id: found for entity_id, found in self.hass_agent_commands.items()
+                if entity_id.startswith("button.")}
 
 
 class HomeRegistry:

@@ -215,6 +215,22 @@ def test_hass_agents_buttons_are_found_by_their_device_and_kind():
     assert "button.nova_restart" not in snapshot.hass_agent_buttons()
 
 
+def test_hass_agents_commands_are_found_whatever_their_domain_and_once_a_snapshot():
+    # A HASS.Agent command can be a switch, a light or a siren as well as a button.
+    pc = {"dev_pc": {"name": "Desk", "maker": "HASS.Agent Team"}, "dev_lamp": {"name": "Lamp", "maker": "Signify"}}
+    entries = [Entry("switch.desk_shutdown", "mqtt", "dev_pc", None, "abc_shutdown", "Shutdown", (), True),
+               Entry("sensor.desk_cpu", "mqtt", "dev_pc", None, "abc_cpu", "CPU", (), True),
+               Entry("switch.lamp", "hue", "dev_lamp", None, "lamp", "Lamp", (), True)]
+    snapshot = Snapshot(entries={entry.entity_id: entry for entry in entries}, devices=pc, areas={}, read_at=0.0)
+    assert snapshot.hass_agent_commands == {"switch.desk_shutdown": ("dev_pc", "shutdown"),
+                                            "sensor.desk_cpu": ("dev_pc", "other")}
+    # Worked out once a snapshot, as the guard looks it up for every button and switch
+    # on the voice path, out of over a thousand entities.
+    assert snapshot.hass_agent_commands is snapshot.hass_agent_commands
+    # Its buttons alone are the PC's buttons.
+    assert snapshot.hass_agent_buttons() == {}
+
+
 def test_a_buttons_kind_is_read_from_its_name_else_its_unique_id():
     def kind(original_name, unique_id=""):
         return button_kind(Entry("button.x", "mqtt", "d", None, unique_id, original_name, (), True))

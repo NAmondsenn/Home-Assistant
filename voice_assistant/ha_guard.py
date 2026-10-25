@@ -11,8 +11,9 @@ other name from the registry (see ha_registry.py):
   gate or window (see GUARDED) - Assist's own "turn off" unlocks a lock;
 - everything of the Proxmox integration, so "turn on PVE2 shut down" is refused even
   if it's been exposed;
-- HASS.Agent's buttons on the PC, bar sleep, monitor sleep and lock - through Assist,
-  shutting the PC down or restarting it would be done with no yes.
+- HASS.Agent's commands on the PC, whatever kind of entity each is, bar the buttons
+  for sleep, monitor sleep and lock - through Assist, shutting the PC down or
+  restarting it would be done with no yes.
 Nor are the words for unlocking or opening anything (see SENSITIVE).
 
 A request naming one of those is refused whole, even when a harmless thing's name
@@ -73,6 +74,10 @@ GUARDED = {"lock": ("lock", "locks", "door", "doors"), "valve": ("valve", "valve
            "alarm_control_panel": ("alarm", "alarms", "security")}
 GUARDED_COVERS = {"door": ("door", "doors"), "garage": ("garage", "garages"), "gate": ("gate", "gates"),
                   "window": ("window", "windows")}
+# The domains which only ever say how something is, and never act - the rest can all do
+# something, as a HASS.Agent command can be a switch, a light or a siren.
+NOT_ACTING = ("sensor", "binary_sensor")
+
 # The Proxmox integration's platform in the registry. Everything of it is guarded, as
 # its buttons and switches shut down, restart and stop the machines Nova itself runs on.
 PROXMOX = "proxmoxve"
@@ -163,10 +168,12 @@ def guarded(entity_id: str, attributes: Dict, snapshot: Optional[Snapshot]) -> O
         return kind
     if snapshot.platform(entity_id) == PROXMOX:
         return ()
-    # Only a button can be one of the PC's, so the rest aren't looked for among them.
-    if domain == "button":
-        _, pc_kind = snapshot.hass_agent_buttons().get(entity_id, (None, None))
-        if pc_kind is not None and pc_kind not in PC_SAFE:
+    # A HASS.Agent command can be a switch, a light or a siren as well as a button, and
+    # any of them could shut the PC down. Only a button is vouched for by its kind, as
+    # only a button's name is HASS.Agent's own.
+    if domain not in NOT_ACTING and entity_id in snapshot.hass_agent_commands:
+        _, pc_kind = snapshot.hass_agent_commands[entity_id]
+        if domain != "button" or pc_kind not in PC_SAFE:
             return ()
     return None
 

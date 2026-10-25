@@ -434,6 +434,28 @@ def test_the_pcs_shutdown_restart_and_web_address_buttons_are_refused(make_home)
     assert home.command("turn on desk pc sleep")["success"] and _asked(home)["text"] == "turn on desk pc sleep"
 
 
+def test_the_pcs_commands_are_refused_whatever_kind_of_entity_each_is(make_home):
+    # HASS.Agent lets each command be a switch, a light or a siren as well as a button -
+    # so a shutdown as a switch is "turn on desk pc shutdown" with no yes. Only the
+    # buttons for sleep, monitor sleep and lock are safe; a switch is never vouched for
+    # by its name, as only a button's name is HASS.Agent's own.
+    things = [("switch", "Shutdown"), ("light", "Restart"), ("siren", "Lock"), ("switch", "Sleep")]
+    states = [_thing(f"{domain}.desk_pc_{kind.lower()}", f"Desk PC {kind}") for domain, kind in things]
+    states += [_thing("sensor.desk_pc_cpu", "Desk PC CPU"), _thing("button.desk_pc_monitorsleep", "Desk PC Monitor")]
+    registry = _registry(*[_entry(f"{domain}.desk_pc_{kind.lower()}", "mqtt", "desk", kind) for domain, kind in things],
+                         _entry("sensor.desk_pc_cpu", "mqtt", "desk", "CPU"),
+                         _entry("button.desk_pc_monitorsleep", "mqtt", "desk", "MonitorSleep"), devices=DESK)
+    for entity in ("switch.desk_pc_shutdown", "light.desk_pc_restart", "siren.desk_pc_lock", "switch.desk_pc_sleep"):
+        assert ha_guard.guarded(entity, {}, registry) == (), entity
+    assert ha_guard.guarded("sensor.desk_pc_cpu", {}, registry) is None
+    assert ha_guard.guarded("button.desk_pc_monitorsleep", {}, registry) is None
+    home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Done")})
+    home._snapshot = lambda: registry
+    for request in ("turn on desk pc shutdown", "turn on desk pc restart", "turn on desk pc sleep"):
+        assert home.command(request) == REFUSED, request
+    assert "/api/conversation/process" not in _paths(home)
+
+
 def test_locking_the_pc_is_no_way_past_a_guarded_name(make_home):
     # The PC's lock button is safe by its kind, so "lock my PC" still goes to Assist. But
     # a shutdown button the user has called "PC lock" is refused by that name, though
