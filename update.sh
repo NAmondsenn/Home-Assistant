@@ -35,7 +35,9 @@ if [ "$PULL" = true ]; then
     # This script and setup.sh's steps were read before the pull, so any new steps
     # the update brings - a new model to fetch, say - would be missed. So once there's
     # new code, it starts again on that.
+    # And with where it was before, to go back to if the new code is refused.
     if [ "$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" != "$before" ]; then
+        export NOVA_UPDATED_FROM="$before"
         exec bash "${PROJECT_DIRECTORY}/update.sh" --no-pull
     fi
 fi
@@ -68,9 +70,12 @@ fi
 # The new code reads the settings as it starts, so a setting it refuses is found out
 # here, while the old version is still running, rather than after it has been stopped.
 # Exit 1 from the check is the settings, 2 is the code itself (a missing package, say).
+# Code just pulled is then taken back out, so whatever restarts Nova next - the page's
+# Restart now, the watchdog, a power cut - starts the code it's running now, not the
+# code refused.
 # BEGIN settings check
 settings_check() {
-    local output status=0
+    local output status=0 why
     output=$(cd "$PROJECT_DIRECTORY" && as_user "$PYTHON" -c '
 import sys
 try:
@@ -87,15 +92,24 @@ except Exception as e:
     print(f"{type(e).__name__}: {e}")
     sys.exit(2)
 ' 2>&1) || status=$?
+    if [ "$status" = 0 ]; then
+        return 0
+    fi
     if [ "$status" = 1 ]; then
-        problem "The new code is in place, but Nova's settings won't start it - put them right, then run this again. Nova is still running the old code until it next restarts:"
-    elif [ "$status" != 0 ]; then
-        problem "The new code is in place, but it won't start on this machine, whatever the settings - fix that, then run this again. Nova is still running the old code until it next restarts:"
+        why="Nova's settings won't start the new code - put them right, then run this again."
+    else
+        why="The new code won't start on this machine, whatever the settings - fix that, then run this again."
     fi
-    if [ "$status" != 0 ]; then
-        echo "$output" | tail -n 5 >&2
-        return 1
+    if [ -z "${NOVA_UPDATED_FROM:-}" ]; then
+        # Run with --no-pull, on code checked out by hand, so there's nothing to go back to.
+        problem "${why} The new code is in place, but Nova is still running the old code until it next restarts:"
+    elif as_user git -C "$PROJECT_DIRECTORY" reset -q --keep "$NOVA_UPDATED_FROM"; then
+        problem "${why} The new code has been taken back out, so Nova goes on running the code it had before, even once it restarts:"
+    else
+        problem "${why} The new code couldn't be taken back out, so check out ${NOVA_UPDATED_FROM} before Nova next restarts:"
     fi
+    echo "$output" | tail -n 5 >&2
+    return 1
 }
 # END settings check
 settings_check || exit 1

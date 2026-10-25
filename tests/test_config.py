@@ -310,17 +310,44 @@ def test_update_checks_the_settings_before_stopping_nova():
     assert check_at < text.index("\nstop_service\n")
 
 
-def _run_update_check(tmp_path, own, python=None):
-    """Runs update.sh's own check block against a scratch config, as the Pi's user would."""
+def _run_update_check(tmp_path, own, python=None, project=None, updated_from=None):
+    """
+    Runs update.sh's own check block against a scratch config, as the Pi's user would -
+    in the project given, a scratch clone, and as just updated from the commit given.
+    """
     root = Path(__file__).parent.parent
     text = (root / "update.sh").read_text()
     block = text[text.index("# BEGIN settings check"):text.index("# END settings check")]
     (tmp_path / "config.yaml").write_text(own)
     script = ('problem() { echo "PROBLEM $*" >&2; }\nas_user() { "$@"; }\n' + block
               + "settings_check\necho \"status $?\"\n")
-    env = {**os.environ, "NOVA_CONFIG": str(tmp_path), "PROJECT_DIRECTORY": str(root),
-           "PYTHON": python or sys.executable}
+    env = {**os.environ, "NOVA_CONFIG": str(tmp_path), "PROJECT_DIRECTORY": str(project or root),
+           "PYTHON": python or sys.executable,
+           # The code checked is this one's, wherever the project is.
+           "PYTHONPATH": os.pathsep.join(filter(None, [str(root), os.environ.get("PYTHONPATH")]))}
+    env.pop("NOVA_UPDATED_FROM", None)
+    if updated_from:
+        env["NOVA_UPDATED_FROM"] = updated_from
     return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+
+
+def _updated_clone(tmp_path):
+    """A scratch clone just pulled, as update.sh leaves it: the commit before, and the update."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+
+    def git(*arguments):
+        return subprocess.run(["git", "-C", str(clone), "-c", "user.name=Nova", "-c", "user.email=nova@example.com",
+                               *arguments], check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    (clone / "version").write_text("before\n")
+    git("add", "version")
+    git("commit", "-q", "-m", "Before")
+    before = git("rev-parse", "HEAD")
+    (clone / "version").write_text("after\n")
+    git("commit", "-q", "-a", "-m", "The update")
+    return clone, before, git
 
 
 def test_update_check_refuses_bad_settings_and_passes_good_ones(tmp_path):
@@ -329,7 +356,7 @@ def test_update_check_refuses_bad_settings_and_passes_good_ones(tmp_path):
 
     bad = _run_update_check(tmp_path, "thresholds:\n  silence_duration: 5\n")
     assert "status 1" in bad.stdout
-    assert "settings won't start it" in bad.stderr
+    assert "settings won't start the new code" in bad.stderr and "is in place" in bad.stderr
     assert "'thresholds.silence_duration' should be from 0.2 to 3, not 5" in bad.stderr
     assert "Traceback" not in bad.stderr
 
@@ -340,7 +367,38 @@ def test_update_check_tells_broken_code_from_bad_settings(tmp_path):
     fake.chmod(0o755)
     broken = _run_update_check(tmp_path, "", python=str(fake))
     assert "status 1" in broken.stdout
-    assert "whatever the settings" in broken.stderr and "settings won't start it" not in broken.stderr
+    assert "whatever the settings" in broken.stderr and "settings won't start" not in broken.stderr
+
+
+@pytest.mark.parametrize("own, said", [("thresholds:\n  silence_duration: 5\n", "settings won't start the new code"),
+                                       ("", "whatever the settings")], ids=["settings", "code"])
+def test_a_refused_update_takes_the_new_code_back_out(tmp_path, own, said):
+    # Nova goes on running the old code, so whatever restarts it next - the page's
+    # Restart now, the watchdog, a power cut - must start that too, not the code refused.
+    clone, before, git = _updated_clone(tmp_path)
+    python = None
+    if not own:
+        python = tmp_path / "python"
+        python.write_text("#!/bin/bash\necho \"ModuleNotFoundError: No module named 'yaml'\"\nexit 2\n")
+        python.chmod(0o755)
+    refused = _run_update_check(tmp_path, own, python=python and str(python), project=clone, updated_from=before)
+
+    assert "status 1" in refused.stdout and said in refused.stderr
+    assert "taken back out" in refused.stderr
+    assert git("rev-parse", "HEAD") == before and (clone / "version").read_text() == "before\n"
+    # Still on its branch, so the next update pulls the code again.
+    assert git("symbolic-ref", "--short", "HEAD") == "main"
+
+
+def test_an_update_whose_settings_are_good_keeps_the_new_code(tmp_path):
+    clone, before, git = _updated_clone(tmp_path)
+    passed = _run_update_check(tmp_path, "thresholds:\n  silence_duration: 1\n", project=clone, updated_from=before)
+    assert "status 0" in passed.stdout and (clone / "version").read_text() == "after\n"
+
+
+def test_update_says_what_it_updated_from_when_it_starts_again_on_the_new_code():
+    text = (Path(__file__).parent.parent / "update.sh").read_text()
+    assert text.index('export NOVA_UPDATED_FROM="$before"') < text.index('exec bash "${PROJECT_DIRECTORY}/update.sh"')
 
 
 @pytest.mark.parametrize("setting, value", [
