@@ -35,7 +35,7 @@ import shutil
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import parse_qs, urlsplit
 
 import yaml
@@ -654,7 +654,7 @@ class SettingsPage:
         Returns:
             Dict with 'success' and a 'message'.
         """
-        def put_back(kind: str, item) -> Dict:
+        def put_back(kind: str, item: Union[Dict, Tuple[str, int]]) -> Dict:
             if kind == "fact":
                 logger.info(f"Settings page: {who} undid forgetting something")
                 return self.brain.memory.put_back(*item)
@@ -995,7 +995,7 @@ class SettingsPage:
         # "true" that's merely truthy - is turned down before Home Assistant is asked.
         if str(entity_id).startswith("script.") and confirmed is not True:
             logger.warning(f"Settings page: refused running {entity_id} for {who} without a yes")
-            return {"success": False, "message": "A script only runs once you've said yes."}
+            return {"success": False, "message": "A script only runs once you've said yes. Reload the page to be asked."}
         session, name = self._session(satellite)
         if session is None:
             return self._not_connected(name)

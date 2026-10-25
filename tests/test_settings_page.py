@@ -884,7 +884,9 @@ def test_forgetting_on_the_page_offers_an_undo(caplog):
     assert "Amy" not in caplog.text and forgotten["undo"] not in caplog.text
     assert page.brain.memory.known == ["You work at Tesco.", "Your bin day is Thursday."]
 
-    assert page.undo(forgotten["undo"], LOGIN) == {"success": True, "message": "Put it back."}
+    with caplog.at_level(logging.INFO):
+        assert page.undo(forgotten["undo"], LOGIN) == {"success": True, "message": "Put it back."}
+    assert "undid forgetting something" in caplog.text and "Amy" not in caplog.text
     assert page.brain.memory.known == ["You work at Tesco.", "Your sister is called Amy.", "Your bin day is Thursday."]
     assert page.undo(forgotten["undo"], LOGIN) == {"success": False, "message": "That can't be undone now."}
 
@@ -1002,10 +1004,11 @@ def test_music_and_home_assistant_changes_reach_them(served):
     assert bedroom.home.changed == [("light.kitchen", None, 70), ("scene.relax", "run", None)]
 
 
-def test_a_script_runs_only_with_a_yes(served):
+def test_a_script_runs_only_with_a_yes(served, caplog):
     bedroom = _bedroom(served)
     bedroom.home = FakeHome()
-    refused = {"success": False, "message": "A script only runs once you've said yes."}
+    refused = {"success": False,
+               "message": "A script only runs once you've said yes. Reload the page to be asked."}
 
     def run(body):
         return json.loads(_ask(served, "/api/run", body, X_Nova="page")[2])
@@ -1014,7 +1017,11 @@ def test_a_script_runs_only_with_a_yes(served):
     assert run({"id": "script.movie_night"}) == refused
     assert run({"id": "script.movie_night", "confirmed": "true"}) == refused
     assert run({"id": "script.movie_night", "confirmed": 1}) == refused
-    assert served.run("script.movie_night", LOGIN) == refused
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.settings_page"):
+        assert served.run("script.movie_night", LOGIN) == refused
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.WARNING, f"Settings page: refused running script.movie_night for {LOGIN} without a yes")]
     assert bedroom.home.changed == []
     assert run({"id": "script.movie_night", "confirmed": True})["success"]
     assert bedroom.home.changed == [("script.movie_night", "run", None)]
