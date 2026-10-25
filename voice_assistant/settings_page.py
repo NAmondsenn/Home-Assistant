@@ -620,13 +620,15 @@ class SettingsPage:
             more than one PC or more than one button. Else {"available": False, "message": ...}.
         """
         brain = self.brain
-        if brain.home is None or brain.lists is None:
+        if brain.home is None:
             return {"available": False, "message": NO_HOME}
         try:
-            lists = brain.lists.overview()
+            # Each read only if it's there - the brain makes all three with Home Assistant,
+            # but one missing shouldn't take the others with it.
+            lists = brain.lists.overview() if brain.lists is not None else []
             devices = [AppDevice.from_home(found) for found in brain.home.app_devices()]
-            weather = brain.weather.entities()
-            pcs = brain.pc.overview()
+            weather = brain.weather.entities() if brain.weather is not None else []
+            pcs = brain.pc.overview() if brain.pc is not None else {"pcs": [], "buttons": []}
         except HOME_FAILURES as e:
             logger.warning(f"Settings page: couldn't read the lists, devices, weather and PCs: {e}")
             return {"available": False, "message": CANT_REACH_HOME}
@@ -1239,13 +1241,13 @@ class SettingsPage:
             {"success": ..., "message": ...}
         """
         return self._home_choice(
-            lambda home: home.lists.overview(), lambda home, seen: home.lists.choose_main(list_id, seen),
+            "lists", lambda lists: lists.overview(), lambda lists, seen: lists.choose_main(list_id, seen),
             (list_id,), f"Settings page: {who} chose the main list")
 
     def choose_weather(self, entity_id, who: str) -> Dict:
         """Chooses the weather entity the forecast uses, from the next request - see choose_main_list."""
         return self._home_choice(
-            lambda home: home.weather.entities(), lambda home, seen: home.weather.choose(entity_id, seen),
+            "weather", lambda weather: weather.entities(), lambda weather, seen: weather.choose(entity_id, seen),
             (entity_id,), f"Settings page: {who} chose the weather")
 
     def choose_wake(self, device, button, who: str) -> Dict:
@@ -1258,40 +1260,56 @@ class SettingsPage:
             who: The login making the change.
 
         Returns:
-            {"success": ..., "message": ...}
+            {"success": ..., "message": ...} - naming any PC the button was taken off, as
+            one button wakes one PC.
         """
-        return self._home_choice(
-            lambda home: home.pc.overview(), lambda home, seen: home.pc.choose_wake(device, button, seen),
-            (device, button), f"Settings page: {who} chose which button wakes a PC")
+        def choose(pc, seen):
+            taken_from = pc.choose_wake(device, button, seen)
+            if taken_from:
+                has = "has" if len(taken_from) == 1 else "have"
+                return f"Saved - {' and '.join(taken_from)} no longer {has} a Wake-on-LAN button."
+            return None
 
-    def _home_choice(self, read: Callable[[Any], Any], apply: Callable[[Any, Any], None], given: Tuple,
-                     logged: str) -> Dict:
+        return self._home_choice("pc", lambda pc: pc.overview(), choose, (device, button),
+                                 f"Settings page: {who} chose which button wakes a PC")
+
+    def _home_choice(self, part: str, read: Callable[[Any], Any], apply: Callable[[Any, Any], Optional[str]],
+                     given: Tuple, logged: str) -> Dict:
         """
         Makes a choice among what Home Assistant has, saying how it went. Home Assistant is
         read first, and before _saving is held, so a slow one never holds up every other
         save - and a choice is checked against what it shows now, never trusted. The types
         are checked here, as a list or a number isn't an id.
+
+        Args:
+            part: The brain's part the choice is of - "lists", "weather" or "pc".
+            read: Reads what there is to choose from, given the part.
+            apply: Makes the choice, given the part and what read gave - returning what
+                to say in place of "Saved.", or None.
+            given: What the page sent, each of which has to be text.
+            logged: The line logged once it's saved.
         """
         brain = self.brain
         if not all(isinstance(each, str) for each in given):
             return {"success": False, "message": "That didn't make sense."}
-        if brain.home is None or brain.lists is None:
+        chosen_from = getattr(brain, part)
+        if brain.home is None or chosen_from is None:
             return {"success": False, "message": "Nova isn't connected to Home Assistant."}
         try:
-            seen = read(brain)
+            seen = read(chosen_from)
         except HOME_FAILURES as e:
             logger.warning(f"Settings page: couldn't read what Home Assistant has to choose from: {e}")
             return {"success": False, "message": CANT_REACH_HOME}
         with self._saving:
             try:
-                apply(brain, seen)
+                said = apply(chosen_from, seen)
             except ValueError as e:
                 return {"success": False, "message": str(e)}
             except OSError as e:
                 logger.error(f"Settings page: couldn't save a choice: {e}")
                 return {"success": False, "message": "Couldn't save that."}
         logger.info(logged)
-        return {"success": True, "message": "Saved. It's used straight away."}
+        return {"success": True, "message": said or "Saved. It's used straight away."}
 
     def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
                   hue=None, saturation=None, kelvin=None, satellite: Optional[str] = None) -> Dict:

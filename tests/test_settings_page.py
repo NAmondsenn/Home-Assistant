@@ -2290,6 +2290,43 @@ def test_the_lists_weather_and_pcs_are_shown_and_chosen_from_the_page(files, mon
         page.stop()
 
 
+def test_a_wake_button_chosen_for_another_pc_is_moved_and_the_page_says_so(files):
+    page, home = _home_page(files)
+    study = [Entry("button.study_off", "mqtt", "study", None, "study_shutdown", "Shutdown", (), False),
+             Entry("sensor.study_cpu", "mqtt", "study", None, "study_cpu", "CPU Load", (), False)]
+    home.snapshot = Snapshot(entries={**home.snapshot.entries, **{entry.entity_id: entry for entry in study}},
+                             devices={**home.snapshot.devices, "study": {"name": "Study PC", "maker": "HASS.Agent Team"}},
+                             areas={}, read_at=0.0)
+    # Chosen the wrong way round, each can still be put right.
+    assert page.choose_wake("desk", "button.wake_nas", LOGIN)["success"] is True
+    assert page.choose_wake("study", "button.wake_desk_pc", LOGIN)["success"] is True
+    assert page.choose_wake("desk", "button.wake_desk_pc", LOGIN) == {
+        "success": True, "message": "Saved - Study PC no longer has a Wake-on-LAN button."}
+    assert page.choose_wake("study", "button.wake_nas", LOGIN) == {
+        "success": True, "message": "Saved. It's used straight away."}
+    assert [pc["wake"] for pc in page.home_choices_state()["pcs"]["pcs"]] == ["button.wake_desk_pc", "button.wake_nas"]
+
+
+def test_each_home_choice_needs_only_its_own_part(files):
+    # Built together from Home Assistant on the brain - but each is checked by itself, so
+    # one missing never raises in another's place.
+    page, home = _home_page(files)
+    page.brain.lists = None
+    assert page.choose_main_list("todo.todo", LOGIN) == {"success": False,
+                                                        "message": "Nova isn't connected to Home Assistant."}
+    assert page.choose_weather("weather.cabin", LOGIN)["success"] is True
+    assert page.choose_wake("desk", "button.wake_nas", LOGIN)["success"] is True
+    state = page.home_choices_state()
+    assert state["available"] and state["lists"] == [] and state["weather"] is not None
+
+    page, home = _home_page(files)
+    page.brain.weather = page.brain.pc = None
+    assert page.choose_weather("weather.cabin", LOGIN)["success"] is False
+    assert page.choose_wake("desk", "button.wake_nas", LOGIN)["success"] is False
+    state = page.home_choices_state()
+    assert state["available"] and state["lists"] and state["weather"] is None and state["pcs"] is None
+
+
 def test_a_choice_which_cant_be_saved_or_read_says_so(files, monkeypatch):
     page, home = _home_page(files)
 

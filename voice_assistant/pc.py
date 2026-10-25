@@ -159,20 +159,28 @@ class PCPower:
         states = self.home._states()
         names = {state.get("entity_id"): (state.get("attributes") or {}).get("friendly_name") for state in states}
         return {"pcs": [{"device": pc.device, "name": pc.name, "wake": pc.wake}
-                        for pc in find_pcs(states, snapshot, self.choices.get("wake"))],
+                        for pc in find_pcs(states, snapshot, self._wake())],
                 # Never the entity id as a name - it holds the PC's hardware address.
                 "buttons": [{"id": button, "name": names.get(button) or "Wake-on-LAN button"}
                             for button in snapshot.wake_buttons()]}
 
-    def choose_wake(self, device: str, button: str, seen: Optional[Dict] = None):
+    def choose_wake(self, device: str, button: str, seen: Optional[Dict] = None) -> List[str]:
         """
         Chooses the Wake-on-LAN button which wakes a PC, from the next "turn on the PC".
+
+        One button wakes one machine, so it's taken off any other PC it was chosen for -
+        rather than refused, which would leave two PCs chosen the wrong way round with
+        neither able to be put right.
 
         Args:
             device: The PC's Home Assistant device id, a HASS.Agent device.
             button: The button's entity id, a Wake-on-LAN button.
             seen: What overview gave just before, if the caller read it already - so it can
                 read without holding a lock the save needs.
+
+        Returns:
+            The names of the PCs the button was taken off, as overview has them - only
+            those Home Assistant is still showing, as the page shows no other.
 
         Raises:
             ValueError: If Home Assistant isn't showing that PC and button.
@@ -184,7 +192,22 @@ class PCPower:
         if (not any(pc["device"] == device for pc in seen["pcs"])
                 or not any(each["id"] == button for each in seen["buttons"])):
             raise ValueError("Home Assistant isn't showing that PC or button just now.")
-        self.choices.change(lambda state: state["wake"].update({device: button}))
+        taken_from = []
+
+        def choose(state):
+            wake = state["wake"] if isinstance(state["wake"], dict) else {}
+            taken_from[:] = [other for other, chosen in wake.items() if chosen == button and other != device]
+            state["wake"] = {other: chosen for other, chosen in wake.items() if other not in taken_from}
+            state["wake"][device] = button
+
+        self.choices.change(choose)
+        names = {pc["device"]: pc["name"] for pc in seen["pcs"]}
+        return [names[other] for other in taken_from if other in names]
+
+    def _wake(self) -> Dict[str, str]:
+        """The button chosen for each PC - none, if pcs.json's been edited into something else."""
+        wake = self.choices.get("wake")
+        return wake if isinstance(wake, dict) else {}
 
     def _find(self, name: Optional[str]):
         """
@@ -201,7 +224,7 @@ class PCPower:
         except (requests.RequestException, ValueError) as e:
             logger.warning(f"Couldn't read Home Assistant's states for the PC: {e}")
             return None, None, {"success": False, "message": CANT_REACH}
-        pcs = find_pcs(states, snapshot, self.choices.get("wake"))
+        pcs = find_pcs(states, snapshot, self._wake())
         if not pcs:
             return None, None, {"success": False, "message": "I can't find your PC in Home Assistant."}
         if len(pcs) == 1:
