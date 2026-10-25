@@ -564,11 +564,16 @@ def _events_page(*events, next_page=None):
     return page
 
 
-def _choices(tmp_path, activities=None):
-    """The calendars' choices, in calendars.json - which are activities, by calendar id."""
-    choices = ChoiceStore(str(tmp_path / "calendars.json"), {"activities": {}, "new_events": None})
+def _choices(tmp_path, activities=None, whats_on=None):
+    """
+    The calendars' choices, in calendars.json - which are activities, and which are out of
+    what's on, by calendar id.
+    """
+    choices = ChoiceStore(str(tmp_path / "calendars.json"), google_calendar.CALENDAR_CHOICES)
     if activities:
         choices.change(lambda state: state.update(activities=activities))
+    if whats_on:
+        choices.change(lambda state: state.update(whats_on=whats_on))
     return choices
 
 
@@ -582,14 +587,14 @@ def make_calendar(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(google_calendar.network, "online", lambda: True)
 
-    def make(events=(), calendars=None, activities=None, reads=1):
+    def make(events=(), calendars=None, activities=None, reads=1, whats_on=None):
         calendars = calendars if calendars is not None else {"calendar-personal": list(events)}
         google = FakeGoogle(**{LIST: [_calendar_list(*[_entry(calendar_id, _named(calendar_id),
                                                               primary=calendar_id == "calendar-personal")
                                                        for calendar_id in calendars])],
                                **{_events_url(calendar_id): [_events_page(*its_events)] * reads
                                   for calendar_id, its_events in calendars.items()}})
-        return GoogleCalendar(FakeSignIn(), _choices(tmp_path, activities), session=google)
+        return GoogleCalendar(FakeSignIn(), _choices(tmp_path, activities, whats_on), session=google)
 
     return make
 
@@ -786,6 +791,71 @@ def test_an_activity_whose_calendar_google_wont_give_says_it_cant_reach_google(m
     assert calendar.activity("gym", date(2026, 10, 21)) == {"success": False, "message": CANT_REACH_GOOGLE}
 
 
+DENTIST = _google_event("Dentist", "2026-10-22T09:30:00+01:00", "2026-10-22T10:00:00+01:00")
+SHIFT = _google_event("Shift", "2026-10-22T07:00:00+01:00", "2026-10-22T09:00:00+01:00")
+
+
+def test_a_calendar_out_of_whats_on_isnt_read_for_it(make_calendar):
+    # Chosen out on the page before a restart: nothing's known of Google's list yet, so
+    # it's left out of the calendars read once that's been read, not before.
+    calendar = make_calendar(calendars={"calendar-personal": [DENTIST], "calendar-work": [SHIFT]},
+                             whats_on={"calendar-work": False}, reads=2)
+    assert calendar.known() == [] and calendar.left_out() == {"calendar-work"}
+
+    assert calendar.agenda(date(2026, 10, 22), 1, today=date(2026, 10, 20)) == {
+        "success": True, "message": "On Thursday, you've got Dentist at 9:30 AM."}
+    assert calendar.find("shift", date(2026, 10, 22), today=date(2026, 10, 20))["message"] == \
+        "I can't see shift on your calendar in the next three months."
+    assert [calendar_id for calendar_id, _ in _read(calendar)] == ["calendar-personal"] * 2
+
+
+def test_a_calendar_gone_doesnt_stop_whats_on_with_one_left_out(make_calendar):
+    calendar = make_calendar(calendars={"calendar-personal": [DENTIST], "calendar-work": [SHIFT], "calendar-gone": []},
+                             whats_on={"calendar-work": False})
+    calendar._session.answers[_events_url("calendar-gone")] = [FakeResponse(404, {"error": {"code": 404}})]
+
+    assert calendar.agenda(date(2026, 10, 22), 1, today=date(2026, 10, 20)) == {
+        "success": True, "message": "On Thursday, you've got Dentist at 9:30 AM."}
+    assert [calendar_id for calendar_id, _ in _read(calendar)] == ["calendar-personal", "calendar-gone"]
+    # One chosen out that's gone from Google's list is no trouble either.
+    calendar = make_calendar(calendars={"calendar-personal": [DENTIST]}, whats_on={"calendar-deleted": False})
+    assert calendar.agenda(date(2026, 10, 22), 1, today=date(2026, 10, 20))["success"]
+
+
+def test_an_activity_out_of_whats_on_is_still_read_for_itself(make_calendar):
+    # Out of what's on, so a day isn't full of shifts - but "am I working on Thursday?" still knows.
+    calendar = make_calendar(calendars={"calendar-personal": [DENTIST], "calendar-work": [SHIFT]},
+                             whats_on={"calendar-work": False})
+    assert calendar.activity("work", date(2026, 10, 22), today=date(2026, 10, 20)) == {
+        "success": True, "message": "On Thursday, you've got work from 7:00 AM until 9:00 AM."}
+    assert [calendar_id for calendar_id, _ in _read(calendar)] == ["calendar-work"]
+
+
+def test_an_activity_chosen_on_the_page_is_heard_at_the_next_request(make_calendar, tmp_path):
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": []})
+    calendar.calendars()
+    intents = LocalIntents(activities=calendar.activity_words)
+    assert "personal" not in calendar.activity_words()
+
+    calendar.choose("calendar-personal", activity=True)
+    calendar.choose("calendar-work", activity=False)
+    assert "personal" in calendar.activity_words() and "work" not in calendar.activity_words()
+    [action] = intents.match("When's personal tomorrow?")["actions"]
+    assert action.params["activity"] == "personal"
+    # Kept for after a restart, and what's on is left as it was.
+    assert ChoiceStore(str(tmp_path / "calendars.json"), google_calendar.CALENDAR_CHOICES).state == {
+        "activities": {"calendar-personal": True, "calendar-work": False}, "whats_on": {}, "new_events": None}
+
+    calendar.choose("calendar-work", whats_on=False)
+    calendar.choose("calendar-personal", whats_on=False)
+    calendar.choose("calendar-personal", whats_on=True)
+    assert calendar.left_out() == {"calendar-work"}
+    # Only a calendar Google's showing.
+    with pytest.raises(ValueError, match="^Google isn't showing that calendar just now.$"):
+        calendar.choose("calendar-made-up", activity=True)
+    assert "calendar-made-up" not in calendar.choices.get("activities")
+
+
 def test_an_event_without_a_name_in_words_is_still_said(make_calendar):
     calendar = make_calendar([_google_event(42, "2026-10-22T09:30:00+01:00"),
                               _google_event(None, "2026-10-22T11:00:00+01:00")])
@@ -824,7 +894,7 @@ def test_an_access_token_google_turns_down_is_got_afresh_once(make_calendar, tok
     assert calendar.agenda(date(2026, 10, 22), 1) == {"success": False, "message": NEEDS_SIGN_IN}
 
 
-def test_the_calendar_is_off_without_googles_keys(monkeypatch, make_config, caplog):
+def test_the_calendar_is_off_without_googles_keys(monkeypatch, make_config, caplog, tmp_path):
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
     with caplog.at_level("INFO"):
@@ -834,8 +904,12 @@ def test_the_calendar_is_off_without_googles_keys(monkeypatch, make_config, capl
     monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", CLIENT_SECRET)
     monkeypatch.setattr(google_calendar.paths, "GOOGLE_TOKEN_FILE", "/made/up/google_token.json")
+    monkeypatch.setattr(google_calendar.paths, "DATA_DIR", str(tmp_path))
     calendar = GoogleCalendar.from_env(make_config())
     assert calendar.sign_in.client_id == CLIENT_ID and calendar.sign_in.path == "/made/up/google_token.json"
+    # Every calendar in what's on, and new events to the primary, to begin with.
+    assert calendar.choices.path == str(tmp_path / "calendars.json")
+    assert calendar.choices.state == {"activities": {}, "whats_on": {}, "new_events": None}
 
 
 # The calendar's words, moved from Home Assistant's
@@ -1439,6 +1513,27 @@ def test_the_chosen_calendar_is_used_until_its_gone(for_adding):
     calendar = for_adding(new_events="calendar-uni")
     calendar.add("Dentist", "2026-10-29 15:00", today=SATURDAY)
     assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal"]
+
+
+def test_new_events_only_go_to_a_calendar_nova_can_add_to(for_adding):
+    calendar = for_adding()
+    calendar.calendars()
+    with pytest.raises(ValueError, match="^Nova can only add to your own calendars.$"):
+        calendar.set_new_events("calendar-uni")
+    with pytest.raises(ValueError, match="^Google isn't showing that calendar just now.$"):
+        calendar.set_new_events("calendar-made-up")
+    assert calendar.choices.get("new_events") is None
+
+
+def test_new_events_go_to_the_primary_until_another_is_chosen(for_adding):
+    calendar = for_adding()
+    calendar.add("Dentist", "2026-10-29 15:00", today=SATURDAY)
+    # Used from the next one, with no restart.
+    calendar.set_new_events("calendar-work")
+    assert calendar.add("Shift", "2026-10-31 09:00", today=SATURDAY)["message"] == \
+        "Added Shift, Saturday the 31st at 9 AM."
+    assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal", "calendar-work"]
+    assert calendar.choices.get("new_events") == "calendar-work"
 
 
 def test_a_calendar_nova_cant_add_to_says_so(for_adding):

@@ -22,7 +22,7 @@ import pytest
 import requests
 import yaml
 
-from voice_assistant import logging_setup, paths
+from voice_assistant import logging_setup, paths, storage
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant import clock as clock_module
 from voice_assistant import settings_page as page_module
@@ -595,6 +595,8 @@ class FakeGoogle:
 
     def get(self, url, params=None, headers=None, timeout=None, **kwargs):
         assert url == google_calendar.CALENDAR_LIST
+        if isinstance(self.listed, Exception):
+            raise self.listed
         return FakeTokenAnswer(200, self.listed)
 
     def post(self, url, data=None, timeout=None, **kwargs):
@@ -617,8 +619,30 @@ def calendar(files, monkeypatch):
     google = FakeGoogle(FakeTokenAnswer(200, GOOGLE_TOKENS))
     sign_in = google_calendar.GoogleSignIn("the-google-client-id", "the-google-client-secret",
                                            str(files / "google_token.json"), session=google)
-    return google_calendar.GoogleCalendar(sign_in, ChoiceStore(str(files / "calendars.json"), {"activities": {}}),
-                                          session=google)
+    return google_calendar.GoogleCalendar(
+        sign_in, ChoiceStore(str(files / "calendars.json"), google_calendar.CALENDAR_CHOICES), session=google)
+
+
+# Google names the user's own calendar by their address, and a person's own shared with
+# them by theirs - both made up.
+OWN_ADDRESS = "me@example.com"
+THEIR_ADDRESS = "someone@example.com"
+
+
+@pytest.fixture
+def signed_in(calendar, files):
+    """
+    The calendar signed in, with Google listing the user's own, Work, Uni - shared with
+    them, so Nova can't add to it - and a person's own, named by their address.
+    """
+    storage.save_json(str(files / "google_token.json"), {"refresh_token": "the-google-refresh-token",
+                                                         "scope": " ".join(google_calendar.SCOPES)})
+    calendar.sign_in._session.listed = {"items": [
+        {"id": "calendar-personal", "summary": OWN_ADDRESS, "accessRole": "owner", "primary": True},
+        {"id": "calendar-work", "summary": "Work", "accessRole": "owner"},
+        {"id": "calendar-uni", "summary": "Uni", "accessRole": "reader"},
+        {"id": "calendar-theirs", "summary": THEIR_ADDRESS, "accessRole": "reader"}]}
+    return calendar
 
 
 def _google_address(started, code="the-google-code"):
@@ -656,7 +680,9 @@ def test_the_page_signs_in_to_google(calendar, monkeypatch, caplog):
         address = _google_address(started)
         finished = change("/api/google/finish", {"address": address})
         assert finished == {"success": True, "message": "Signed in to Google."}
-        assert shown() == {"available": True, "signed_in": True}
+        assert shown() == {"available": True, "signed_in": True, "new_events": None, "calendars": [
+            {"id": "calendar-gym", "name": "Gym", "primary": False, "writable": True, "whats_on": True,
+             "activity": True}]}
         # Google's list of calendars - another account's, maybe - is read again at once.
         waited = time.monotonic() + 5
         while not calendar.known() and time.monotonic() < waited:
@@ -739,6 +765,97 @@ def test_a_google_sign_in_that_couldnt_be_saved_says_so(calendar, monkeypatch):
     assert page.finish_google_sign_in(_google_address(page.start_google_sign_in(LOGIN)), LOGIN) == {
         "success": False, "message": "Couldn't save the sign-in - check Nova's data folder."}
     assert page.calendars_state() == {"available": True, "signed_in": False}
+
+
+def _calendar_row(calendar_id, name, primary=False, writable=False, whats_on=True, activity=False):
+    return {"id": calendar_id, "name": name, "primary": primary, "writable": writable, "whats_on": whats_on,
+            "activity": activity}
+
+
+def test_the_page_shows_each_calendar_with_its_choices(signed_in, monkeypatch, caplog):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _page(sessions={}, calendar=signed_in)
+    page.start()
+    try:
+        def change(path, body):
+            return json.loads(_ask(page, path, body, X_Nova="page")[2])
+
+        def shown():
+            status, headers, body = _ask(page, "/api/calendars")
+            assert status == 200 and headers["Cache-Control"] == "no-store"
+            return json.loads(body)
+
+        caplog.set_level(logging.DEBUG)
+        # By Google's own names, an address too - it's the user's own page, and they need
+        # to tell them apart. New events go to the primary until another is chosen.
+        assert shown() == {"available": True, "signed_in": True, "new_events": "calendar-personal", "calendars": [
+            _calendar_row("calendar-personal", OWN_ADDRESS, primary=True, writable=True),
+            _calendar_row("calendar-work", "Work", writable=True, activity=True),
+            _calendar_row("calendar-uni", "Uni", activity=True),
+            _calendar_row("calendar-theirs", THEIR_ADDRESS)]}
+
+        saved = {"success": True, "message": "Saved. It's used straight away."}
+        assert change("/api/calendars", {"id": "calendar-uni", "whats_on": False}) == saved
+        assert change("/api/calendars", {"id": "calendar-theirs", "activity": True}) == saved
+        assert change("/api/calendars", {"id": "calendar-work", "whats_on": False, "activity": False}) == saved
+        assert change("/api/calendars/new-events", {"id": "calendar-work"}) == saved
+        assert shown()["new_events"] == "calendar-work"
+        assert shown()["calendars"] == [
+            _calendar_row("calendar-personal", OWN_ADDRESS, primary=True, writable=True),
+            _calendar_row("calendar-work", "Work", writable=True, whats_on=False),
+            _calendar_row("calendar-uni", "Uni", whats_on=False, activity=True),
+            _calendar_row("calendar-theirs", THEIR_ADDRESS, activity=True)]
+        # Only as a change from the page itself.
+        assert _ask(page, "/api/calendars", {"id": "calendar-uni", "whats_on": True})[0] == 403
+
+        nonsense = {"success": False, "message": "That didn't make sense."}
+        for body in ({"id": "calendar-uni", "whats_on": "true"}, {"id": "calendar-uni", "activity": 1},
+                     {"id": ["calendar-uni"], "whats_on": True}, {"whats_on": True}):
+            assert change("/api/calendars", body) == nonsense, body
+        for body in ({"id": 7}, {}):
+            assert change("/api/calendars/new-events", body) == nonsense, body
+        assert change("/api/calendars", {"id": "calendar-made-up", "activity": True}) == {
+            "success": False, "message": "Google isn't showing that calendar just now."}
+        assert change("/api/calendars/new-events", {"id": "calendar-uni"}) == {
+            "success": False, "message": "Nova can only add to your own calendars."}
+        assert signed_in.left_out() == {"calendar-uni", "calendar-work"}
+
+        # Google out of reach, once the list is five minutes old.
+        signed_in._known_at -= 301
+        signed_in.sign_in._session.listed = requests.ConnectionError("www.googleapis.com/calendar-personal")
+        assert shown() == {"available": True, "signed_in": True, "message": "Nova can't reach Google just now."}
+
+        # A calendar's name or id - the primary's is the user's address - is never logged
+        # where the journal keeps it.
+        kept = " ".join(record.getMessage() for record in caplog.records if record.levelno >= logging.INFO)
+        assert "changed" in kept
+        for private in (OWN_ADDRESS, THEIR_ADDRESS, "calendar-", "Work", "Uni"):
+            assert private not in kept, private
+    finally:
+        page.stop()
+
+
+def test_a_calendar_google_no_longer_lists_keeps_its_choice(signed_in):
+    page = _page(calendar=signed_in)
+    page.calendars_state()
+    page.choose_calendar("calendar-work", LOGIN, whats_on=False)
+    page.set_new_events("calendar-work", LOGIN)
+    listed = signed_in.sign_in._session.listed["items"]
+
+    # Unshared, say - it drops off the page, and new events go to the primary.
+    signed_in.sign_in._session.listed = {"items": [each for each in listed if each["id"] != "calendar-work"]}
+    signed_in._known_at -= 301
+    state = page.calendars_state()
+    assert [each["id"] for each in state["calendars"]] == ["calendar-personal", "calendar-uni", "calendar-theirs"]
+    assert state["new_events"] == "calendar-personal"
+
+    # Back, it's as it was chosen.
+    signed_in.sign_in._session.listed = {"items": listed}
+    signed_in._known_at -= 301
+    state = page.calendars_state()
+    assert state["calendars"][1] == _calendar_row("calendar-work", "Work", writable=True, whats_on=False,
+                                                  activity=True)
+    assert state["new_events"] == "calendar-work"
 
 
 def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files):
@@ -1178,6 +1295,10 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         # Spotify's and Google's tabs are opened in the click itself, before anything's waited for.
         assert b"send(`/api/${service}/start`, {})" in body and b"`/api/${service}/finish`" in body
         assert b'startSignIn("spotify")' in body and b'startSignIn("google")' in body
+        # The calendars' choices, and their names put on the page only as text.
+        assert b'changeCalendar("/api/calendars", { id: calendar.id, [key]: box.checked })' in body
+        assert b'changeCalendar("/api/calendars/new-events", { id: event.target.value })' in body
+        assert b'id="calendars"' in _ask(served, "/")[2] and b'id="new-events-calendar"' in _ask(served, "/")[2]
         assert b'const tab = window.open("", "_blank");\n  // So' in body
         html = _ask(served, "/")[2]
         assert b'id="spotify-address"' in html and b'id="google-address"' in html

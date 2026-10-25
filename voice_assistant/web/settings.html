@@ -173,6 +173,16 @@
             </div>
           </form>
         </div>
+        <!-- Once signed in, each calendar by Google's own name, with whether it's in what's
+             on and whether it's an activity, and the one new events go to. -->
+        <ul class="list batteries calendars" id="calendars" hidden></ul>
+        <div class="panel field new-events" id="new-events" hidden>
+          <label for="new-events-calendar">New events go to</label>
+          <span class="select">
+            <select id="new-events-calendar"></select>
+            <svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </span>
+        </div>
       </section>
 
       <section aria-labelledby="routines-title">

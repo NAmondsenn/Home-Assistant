@@ -18,10 +18,11 @@ adding one. Nothing here changes or deletes an event - the scope Google has for 
 would let it, so it's this module that never asks.
 
 Every calendar in Google's own list of the user's is read, so one added later turns up
-by itself. With Google out of reach there's no calendar - no copy is kept. Each but the
-user's own is an activity, by its name - "when's gym tomorrow?" works as soon as there's
-a Gym calendar. A calendar named by an email address - the user's own, as Google names it,
-or a person's own shared with them - is never said by it, or told to Claude.
+by itself, unless it's chosen out of what's on, on the settings page. With Google out of
+reach there's no calendar - no copy is kept. Each but the user's own is an activity, by
+its name - "when's gym tomorrow?" works as soon as there's a Gym calendar - unless the page
+says otherwise for it. A calendar named by an email address - the user's own, as Google
+names it, or a person's own shared with them - is never said by it, or told to Claude.
 """
 
 import base64
@@ -33,7 +34,7 @@ import secrets
 import threading
 import time
 from datetime import date, datetime, time as day_time, timedelta
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 import requests
@@ -154,6 +155,11 @@ OWN_CALENDAR = {"", "primary", "personal", "own", "mine", "main"}
 # shared with the user, named by theirs.
 YOUR_CALENDAR = "your calendar"
 A_SHARED_CALENDAR = "a shared calendar"
+
+# What calendars.json keeps, and each starts as: the calendars chosen as activities, or
+# not, by id; those chosen out of what's on, each id to False; and the one new events go
+# to, or None for the primary.
+CALENDAR_CHOICES = {"activities": {}, "whats_on": {}, "new_events": None}
 
 
 class SignInNeeded(Exception):
@@ -421,8 +427,10 @@ class GoogleCalendar:
         """
         Args:
             sign_in: Nova's sign-in to Google, which gives each request its access token.
-            choices: calendars.json - "activities", which calendars are activities by id,
-                for one that isn't by itself, or is but shouldn't be.
+            choices: calendars.json, as CALENDAR_CHOICES - which calendars are activities
+                by id, for one that isn't by itself, or is but shouldn't be; which are out
+                of what's on; and where new events go. Each is chosen on the settings page
+                and used from the next request.
             session: What requests go through - a fake, in the tests.
         """
         self.sign_in = sign_in
@@ -456,7 +464,7 @@ class GoogleCalendar:
             return None
         # The paths are looked up now, not when this module was imported, as paths.DATA_DIR can be moved first.
         return cls(GoogleSignIn(client_id, client_secret, paths.GOOGLE_TOKEN_FILE),
-                   ChoiceStore(os.path.join(paths.DATA_DIR, "calendars.json"), {"activities": {}, "new_events": None}))
+                   ChoiceStore(os.path.join(paths.DATA_DIR, "calendars.json"), CALENDAR_CHOICES))
 
     def _get(self, url: str, params: Dict) -> Dict:
         """
@@ -575,20 +583,91 @@ class GoogleCalendar:
         Returns:
             Each activity's word - its calendar's name as it's said, in lower case - to its calendar.
         """
-        chosen = self.choices.get("activities")
-        chosen = chosen if isinstance(chosen, dict) else {}
+        chosen = self._chosen("activities")
         found: Dict[str, Dict] = {}
         for calendar in self.known():
-            choice = chosen.get(calendar["id"])
             word = spoken_name(calendar).strip().lower()
-            # A person's calendar shared with the user is named by their email address, and
-            # is no more an activity than the holidays are.
-            by_default = not calendar["primary"] and not calendar["id"].endswith(GOOGLES_OWN) and \
-                not named_by_address(calendar)
-            if word and (choice if isinstance(choice, bool) else by_default):
+            if word and self._is_activity(calendar, chosen):
                 # Of two calendars with one name, the first in Google's list is the one heard.
                 found.setdefault(word, calendar)
         return found
+
+    def is_activity(self, calendar: Dict) -> bool:
+        """
+        Whether a calendar is chosen as an activity, or is one by itself - see
+        activity_calendars - for the settings page's switch.
+
+        Args:
+            calendar: A calendar, as calendars gives it.
+        """
+        return self._is_activity(calendar, self._chosen("activities"))
+
+    @staticmethod
+    def _is_activity(calendar: Dict, chosen: Dict) -> bool:
+        choice = chosen.get(calendar["id"])
+        if isinstance(choice, bool):
+            return choice
+        # A person's calendar shared with the user is named by their email address, and
+        # is no more an activity than the holidays are.
+        return not calendar["primary"] and not calendar["id"].endswith(GOOGLES_OWN) and not named_by_address(calendar)
+
+    def _chosen(self, key: str) -> Dict:
+        """One of calendars.json's choices by calendar id - none, if the file's been edited into something else."""
+        chosen = self.choices.get(key)
+        return chosen if isinstance(chosen, dict) else {}
+
+    def left_out(self) -> Set[str]:
+        """The ids of the calendars chosen out of what's on."""
+        return {calendar_id for calendar_id, on in self._chosen("whats_on").items() if on is False}
+
+    def choose(self, calendar_id: str, whats_on: Optional[bool] = None, activity: Optional[bool] = None):
+        """
+        Chooses whether a calendar is in what's on, and whether it's an activity - each
+        used from the next request. A choice is kept by the calendar's id, so one Google
+        stops listing for a while is as it was chosen when it's back.
+
+        Args:
+            calendar_id: One of the calendars Google listed last.
+            whats_on: Whether it's read for what's on and looking something up, or None to leave it.
+            activity: Whether it's an activity, or None to leave it.
+
+        Raises:
+            ValueError: If Google isn't listing it.
+            OSError: If calendars.json couldn't be saved. Nothing is changed.
+        """
+        if not any(calendar["id"] == calendar_id for calendar in self.known()):
+            raise ValueError("Google isn't showing that calendar just now.")
+
+        def change(state: Dict):
+            for key, value in (("whats_on", whats_on), ("activities", activity)):
+                if value is None:
+                    continue
+                if not isinstance(state[key], dict):
+                    state[key] = {}
+                state[key][calendar_id] = value
+            # Only one that's out is kept, so the file says what's been chosen.
+            if whats_on:
+                state["whats_on"].pop(calendar_id)
+
+        self.choices.change(change)
+
+    def set_new_events(self, calendar_id: str):
+        """
+        Chooses the calendar new events go to, from the next one added.
+
+        Args:
+            calendar_id: One of the user's own calendars Google listed last.
+
+        Raises:
+            ValueError: If Google isn't listing it, or Nova can't add to it.
+            OSError: If calendars.json couldn't be saved. Nothing is changed.
+        """
+        calendar = next((each for each in self.known() if each["id"] == calendar_id), None)
+        if calendar is None:
+            raise ValueError("Google isn't showing that calendar just now.")
+        if not calendar["writable"]:
+            raise ValueError("Nova can only add to your own calendars.")
+        self.choices.change(lambda state: state.update(new_events=calendar_id))
 
     def activity_words(self) -> Dict[str, str]:
         """
@@ -625,7 +704,8 @@ class GoogleCalendar:
             words.setdefault(said, word)
         return words
 
-    def events(self, first: date, days: int, calendar_ids: Optional[List[str]] = None) -> List[Dict]:
+    def events(self, first: date, days: int, calendar_ids: Optional[List[str]] = None,
+               leave_out: Set[str] = frozenset()) -> List[Dict]:
         """
         Everything on the calendars over some days.
 
@@ -633,6 +713,7 @@ class GoogleCalendar:
             first: The first day.
             days: How many days, from 1.
             calendar_ids: The calendars to read, or None for every one in Google's list.
+            leave_out: Calendars not to read of those - the ones chosen out of what's on.
 
         Returns:
             The events, earliest first, each a dict with "summary", "start", "end",
@@ -655,7 +736,11 @@ class GoogleCalendar:
                   # Each time a repeating event is on, as an event of its own - as Home Assistant gave them.
                   "singleEvents": "true", "orderBy": "startTime", "maxResults": EVENTS_PAGE}
         found = []
-        for calendar_id in (list(names) if calendar_ids is None else calendar_ids):
+        # Left out once Google's list is read, so the first read after a restart - with
+        # nothing known before it - still leaves out the right ones.
+        reading = [calendar_id for calendar_id in (list(names) if calendar_ids is None else calendar_ids)
+                   if calendar_id not in leave_out]
+        for calendar_id in reading:
             try:
                 events = self._pages(f"{CALENDARS}/{quote(calendar_id, safe='')}/events", window)
             except requests.HTTPError as e:
@@ -692,7 +777,7 @@ class GoogleCalendar:
             Dict with 'success' and the agenda as the 'message'.
         """
         try:
-            events = self.events(first, days)
+            events = self.events(first, days, leave_out=self.left_out())
         except READ_FAILURES as e:
             return _failed(e)
         events = _as_activities(events, self.activity_calendars(), first)
@@ -716,7 +801,7 @@ class GoogleCalendar:
         if not patterns:
             return {"success": False, "message": "I didn't catch what to look for."}
         try:
-            events = self.events(first, SEARCH_DAYS)
+            events = self.events(first, SEARCH_DAYS, leave_out=self.left_out())
         except READ_FAILURES as e:
             return _failed(e)
         found = [event for event in events if all(pattern.search(event["summary"]) for pattern in patterns)]
@@ -816,10 +901,7 @@ class GoogleCalendar:
             The same as calendars.
         """
         calendars = self.calendars()
-        chosen_id = self.choices.get("new_events")
-        default = next((each for each in calendars if each["id"] == chosen_id and each["writable"]), None) or \
-            next((each for each in calendars if each["primary"]), None) or \
-            {"id": "primary", "name": "", "primary": True, "writable": True}
+        default = self.new_events_calendar(calendars) or {"id": "primary", "name": "", "primary": True, "writable": True}
         if not isinstance(named, str) or not named.strip():
             return default, default
         said = _as_said(named)
@@ -841,6 +923,20 @@ class GoogleCalendar:
         if not writable:
             return f"I can't add to {spoken_name(matches[0])} - Google only lets me add to your own calendars."
         return writable[0], default
+
+    def new_events_calendar(self, calendars: List[Dict]) -> Optional[Dict]:
+        """
+        The calendar new events go to: the one chosen while Nova can still add to it, else the primary.
+
+        Args:
+            calendars: Google's list of the calendars, as calendars gives it.
+
+        Returns:
+            The calendar, or None if the list hasn't got the primary.
+        """
+        chosen_id = self.choices.get("new_events")
+        return next((each for each in calendars if each["id"] == chosen_id and each["writable"]), None) or \
+            next((each for each in calendars if each["primary"]), None)
 
     def _insert(self, calendar_id: str, event: Dict):
         """

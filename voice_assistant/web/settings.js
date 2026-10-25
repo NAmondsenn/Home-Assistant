@@ -23,8 +23,8 @@ const HOME_EVERY = 15000;
 // The batteries change slowly, and every look asks Home Assistant, so once a minute.
 const BATTERIES_EVERY = 60000;
 
-// The calendars' sign-in changes only when it's done here or removed in Google, so
-// once a minute too.
+// The calendars' sign-in changes only when it's done here or removed in Google, and
+// Nova reads Google's list of them every five minutes at most, so once a minute too.
 const CALENDARS_EVERY = 60000;
 
 // The least time between volume changes sent while a slider's dragged, in
@@ -881,12 +881,78 @@ async function loadCalendars() {
   showCalendars();
 }
 
-// Until Google's keys are set, the section says so, and offers no sign-in.
+// Until Google's keys are set, the section says so, and offers no sign-in. Once signed
+// in, it has each calendar and where new events go - or why it hasn't, as Google's out of reach.
 function showCalendars() {
   const missing = document.getElementById("calendars-missing");
   missing.hidden = calendars.available;
   missing.textContent = calendars.available ? "" : calendars.message;
   showSignIn("google", "Google", calendars.available ? calendars : null);
+
+  const list = document.getElementById("calendars");
+  const newEvents = document.getElementById("new-events");
+  const signedIn = Boolean(calendars.available && calendars.signed_in);
+  list.hidden = !signedIn;
+  newEvents.hidden = !signedIn || Boolean(calendars.message);
+  if (!signedIn) return;
+  if (calendars.message) {
+    drawIfChanged("calendars", calendars.message, () => list.replaceChildren(emptyRow(calendars.message)));
+    return;
+  }
+  drawIfChanged("calendars", calendars.calendars, () => {
+    list.replaceChildren(...(calendars.calendars.length ? calendars.calendars.map(calendarRow) : [emptyRow("Google has no calendars for you.")]));
+  });
+  const writable = calendars.calendars.filter((each) => each.writable);
+  newEvents.hidden = !writable.length;
+  drawIfChanged("new-events", [writable, calendars.new_events], () => {
+    const select = document.getElementById("new-events-calendar");
+    select.replaceChildren(...writable.map((each) => {
+      const option = element("option", each.name || "Your calendar");
+      option.value = each.id;
+      return option;
+    }));
+    select.value = calendars.new_events;
+  });
+}
+
+// Sends a change to a calendar's choices. As for the batteries, the rows are drawn again
+// whatever the data says, as a switch which failed to save is still showing what wasn't saved.
+function changeCalendar(path, body) {
+  return change(path, body, () => {
+    delete drawn.calendars;
+    delete drawn["new-events"];
+    return loadCalendars();
+  });
+}
+
+// A calendar: its name, by Google's own, and a switch each for what's on and for being
+// an activity. The ids are by its place in the list, as a calendar's own id can be an
+// email address.
+function calendarRow(calendar, index) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", calendar.name || "No name", "name"));
+  if (calendar.primary) what.append(element("span", "Your own", "sub"));
+  else if (!calendar.writable) what.append(element("span", "Nova can read it, but not add to it", "sub"));
+  top.append(icon("i-calendar"), what);
+  row.append(top);
+
+  const choose = (label, key, checked) => {
+    const id = `calendar-${key}-${index}`;
+    const field = element("div", undefined, "choice");
+    const name = element("label", label);
+    name.htmlFor = id;
+    const box = element("input");
+    Object.assign(box, { type: "checkbox", id, checked });
+    box.setAttribute("role", "switch");
+    box.addEventListener("change", () => changeCalendar("/api/calendars", { id: calendar.id, [key]: box.checked }));
+    field.append(name, box);
+    return field;
+  };
+  row.append(choose("In what's on", "whats_on", calendar.whats_on));
+  row.append(choose("An activity", "activity", calendar.activity));
+  return row;
 }
 
 // Asks the music to do something, then shows what it's doing now - saying how it went
@@ -1787,6 +1853,8 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     finishSignIn("google", loadCalendars);
   });
+  document.getElementById("new-events-calendar").addEventListener("change", (event) =>
+    changeCalendar("/api/calendars/new-events", { id: event.target.value }));
   document.getElementById("play-something").addEventListener("submit", async (event) => {
     event.preventDefault();
     const query = event.target.query;

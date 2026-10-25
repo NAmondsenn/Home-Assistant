@@ -45,7 +45,7 @@ from voice_assistant import paths, storage, timeline
 from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
-from voice_assistant.google_calendar import ClientRefused, GoogleSignInError, SignInNeeded
+from voice_assistant.google_calendar import READ_FAILURES, ClientRefused, GoogleSignInError, SignInNeeded
 from voice_assistant.music import why_no_player
 from voice_assistant.ntfy import RETOPIC
 from voice_assistant.spotify_controller import SpotifySignIn, SpotifySignInError, spotify_oauth
@@ -568,16 +568,35 @@ class SettingsPage:
 
     def calendars_state(self) -> Dict:
         """
-        The Calendars and lists section's calendars: whether Nova is signed in to Google.
+        The Calendars and lists section's calendars: whether Nova is signed in to Google,
+        and once it is, each calendar with what's chosen for it - from Google's list, read
+        afresh once it's five minutes old. Each is shown by Google's own name, one named by
+        an email address too, as it's the user's own page and they need to tell them apart -
+        but never logged.
 
         Returns:
-            {"available": True, "signed_in": ...}, or {"available": False, "message": ...}
-            until Google's keys are set and Nova restarted.
+            {"available": True, "signed_in": True, "calendars": [{"id", "name", "primary",
+            "writable", "whats_on", "activity"}], "new_events": the id of the calendar new
+            events go to}, or {"available": True, "signed_in": True, "message": ...} with
+            Google out of reach; {"available": True, "signed_in": False} before the sign-in;
+            or {"available": False, "message": ...} until Google's keys are set and Nova restarted.
         """
         calendar = self.brain.calendar
         if calendar is None:
             return {"available": False, "message": NO_GOOGLE}
-        return {"available": True, "signed_in": calendar.sign_in.signed_in()}
+        if not calendar.sign_in.signed_in():
+            return {"available": True, "signed_in": False}
+        try:
+            listed = calendar.calendars()
+        except READ_FAILURES as e:
+            # Only the kind of failure - a requests error names the address, with a calendar's id in it.
+            logger.warning(f"Settings page: couldn't read the calendars from Google: {type(e).__name__}")
+            return {"available": True, "signed_in": True, "message": "Nova can't reach Google just now."}
+        left_out = calendar.left_out()
+        new_events = calendar.new_events_calendar(listed)
+        return {"available": True, "signed_in": True, "new_events": new_events["id"] if new_events else None,
+                "calendars": [{**each, "whats_on": each["id"] not in left_out, "activity": calendar.is_activity(each)}
+                              for each in listed]}
 
     def _restart_needed(self, saved: Optional[Config]) -> bool:
         """
@@ -1078,6 +1097,65 @@ class SettingsPage:
         logger.info(f"Settings page: {who} signed in to Google")
         return {"success": True, "message": "Signed in to Google."}
 
+    def choose_calendar(self, calendar_id, who: str, whats_on=None, activity=None) -> Dict:
+        """
+        Chooses whether a calendar is in what's on, and whether it's an activity - see
+        GoogleCalendar.choose. It takes effect straight away: an activity's words are
+        heard, and Claude's told of it, from the next request. The types are checked here,
+        as bool("false") would be True.
+
+        Args:
+            calendar_id: The calendar's id, which Google has to be listing.
+            who: The login making the change.
+            whats_on: Whether it's read for what's on, or None to leave it.
+            activity: Whether it's an activity, or None to leave it.
+
+        Returns:
+            {"success": ..., "message": ...}
+        """
+        if not isinstance(calendar_id, str) or any(
+                value is not None and not isinstance(value, bool) for value in (whats_on, activity)):
+            return {"success": False, "message": "That didn't make sense."}
+        return self._calendar_change(lambda calendar: calendar.choose(calendar_id, whats_on=whats_on,
+                                                                      activity=activity),
+                                     f"Settings page: {who} changed a calendar's choices")
+
+    def set_new_events(self, calendar_id, who: str) -> Dict:
+        """
+        Chooses the calendar new events go to, from the next one added - see
+        GoogleCalendar.set_new_events.
+
+        Args:
+            calendar_id: The calendar's id - one of the user's own, which Google has to be listing.
+            who: The login making the change.
+
+        Returns:
+            {"success": ..., "message": ...}
+        """
+        if not isinstance(calendar_id, str):
+            return {"success": False, "message": "That didn't make sense."}
+        return self._calendar_change(lambda calendar: calendar.set_new_events(calendar_id),
+                                     f"Settings page: {who} changed where new events go")
+
+    def _calendar_change(self, change: Callable[[Any], None], logged: str) -> Dict:
+        """
+        Makes a change to the calendars' choices, saying how it went. What's logged never
+        names the calendar, as its id or its name can be an email address.
+        """
+        calendar = self.brain.calendar
+        if calendar is None:
+            return {"success": False, "message": NO_GOOGLE}
+        with self._saving:
+            try:
+                change(calendar)
+            except ValueError as e:
+                return {"success": False, "message": str(e)}
+            except OSError as e:
+                logger.error(f"Settings page: couldn't save a calendar change: {e}")
+                return {"success": False, "message": "Couldn't save that."}
+        logger.info(logged)
+        return {"success": True, "message": "Saved. It's used straight away."}
+
     def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
                   hue=None, saturation=None, kelvin=None, satellite: Optional[str] = None) -> Dict:
         """
@@ -1385,6 +1463,9 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/spotify/finish": lambda page, body, who: page.finish_spotify_sign_in(body["address"], who),
     "/api/google/start": lambda page, body, who: page.start_google_sign_in(who),
     "/api/google/finish": lambda page, body, who: page.finish_google_sign_in(body["address"], who),
+    "/api/calendars": lambda page, body, who: page.choose_calendar(
+        body["id"], who, body.get("whats_on"), body.get("activity")),
+    "/api/calendars/new-events": lambda page, body, who: page.set_new_events(body["id"], who),
     "/api/light": lambda page, body, who: page.set_light(
         body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
         body.get("kelvin"), body.get("satellite")),

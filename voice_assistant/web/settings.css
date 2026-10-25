@@ -1083,6 +1083,12 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 /* Google's, in Calendars and lists, comes straight under the heading. */
 .sign-in.first { margin-top: 0; }
 
+/* The calendars under it are rows as the batteries are, then where new events go. */
+.calendars,
+.new-events { margin-top: 10px; }
+
+.new-events { padding: 14px 16px; }
+
 .chips {
   display: flex;
   flex-wrap: wrap;
