@@ -27,7 +27,7 @@ from voice_assistant.brain import Brain
 from voice_assistant.config import Config
 from voice_assistant.ntfy import Ntfy
 from voice_assistant.routines import Routines
-from voice_assistant.settings_page import SettingsPage
+from voice_assistant.settings_page import LATER, NOW, SettingsPage
 
 LOGIN = "you@example.com"
 
@@ -627,6 +627,31 @@ def test_each_setting_says_how_its_used_and_its_limits(files):
     assert silence["used"] == "Used straight away" and (silence["min"], silence["max"]) == (0.2, 3)
     assert night["used"] == "Used straight away" and night["form"] == "time"
     assert settings["music.player"]["used"] == "Used once Nova restarts"
+
+
+def test_the_safe_settings_are_on_the_page(files):
+    settings = {setting["key"]: setting for setting in _page().state()["settings"]}
+    expected = {
+        "sounds.listening_enabled": ("The blip when Nova's listening", NOW),
+        "sounds.chime_enabled": ("The chime for done", NOW),
+        "sounds.reminder_enabled": ("The reminder sound", NOW),
+        "web_search.enabled": ("Search the web when asked to", NOW),
+        "conversation.history_max_age": ("Seconds a conversation's thread is kept", NOW),
+        "spotify.pause_while_speaking": ("Pause Spotify while Nova talks", NOW),
+        "mqtt.host": ("Home Assistant's MQTT host", LATER),
+        "mqtt.port": ("Its port", LATER),
+        "mqtt.username": ("Nova's MQTT user", LATER),
+    }
+    for key, (label, used) in expected.items():
+        assert (settings[key]["label"], settings[key]["used"]) == (label, used)
+
+
+def test_mqtt_waits_for_a_restart(files):
+    page, running = _running(files)
+    result = page.save_settings({"mqtt.host": "192.168.1.20"}, LOGIN)
+
+    assert result == {"success": True, "message": "Saved. It's used once Nova restarts.", "restart_needed": True}
+    assert running.section("mqtt")["host"] == ""
 
 
 def test_the_transcripts_switch_is_used_straight_away(files):

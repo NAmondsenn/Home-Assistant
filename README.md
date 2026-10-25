@@ -130,13 +130,13 @@ bash uninstall.sh
 
 Navidrome or Spotify - `music.player` in `config.yaml` says which, and it's Spotify unless you change it. Both are set up on the brain, which plays the music through each satellite's speaker.
 
-**Navidrome.** Make a Navidrome user for Nova (or use your own), then on the brain add its password to `~/.config/nova/.env` yourself:
+**Navidrome.** Make a Navidrome user for Nova (or use your own), then put its password under Keys on the settings page (`nova:10400`, set up below), and its address and user under Settings. Or, on the brain, add the password to `~/.config/nova/.env` yourself:
 
 ```
 NAVIDROME_PASSWORD=the-password
 ```
 
-and point Nova at it in `~/.config/nova/config.yaml`:
+and point Nova at it in `~/.config/nova/config.yaml` (Settings has these too, used once Nova restarts):
 
 ```yaml
 music:
@@ -162,12 +162,12 @@ Whatever's exposed, Nova never locks, unlocks or opens anything by voice: it che
 
 1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in. It needs to be an administrator for most of this, as Home Assistant only lets administrators ask what's in which room, read its registry (what each thing is and what's exposed) and show a script's contents. As an ordinary user, the wider rule is off - only light sentences go to Assist, without rooms, and only while Assist's sentence debugging doesn't answer either, as without the registry nothing it says they'd act on can be vouched for - there are no batteries, and no script is run at all, by voice, by Claude or from the settings page. An administrator's token can do anything in Home Assistant, so keep it as private as a password: what Nova does with it is kept to the lights, finding and ringing your phone, the PC's own buttons, reading how things are for Claude, and the scripts and scenes you run from the settings page or Claude runs for you, by Nova's own code, not by the token.
 2. Log in as that user, and under its profile > Security, make a long-lived access token.
-3. On the brain, add it to `~/.config/nova/.env` yourself - it's a password, so don't paste it anywhere else:
+3. Put it under Keys on the settings page, or on the brain add it to `~/.config/nova/.env` yourself - it's a password, so don't paste it anywhere else:
 
    ```
    HA_TOKEN=the-token
    ```
-4. Put Home Assistant's address in `~/.config/nova/config.yaml`:
+4. Put Home Assistant's address under Settings on the settings page, or in `~/.config/nova/config.yaml`:
 
    ```yaml
    home_assistant:
@@ -220,12 +220,12 @@ The one step: on the phone, let the Home Assistant app ring through Do Not Distu
 Nova can also be a device of its own in Home Assistant, set up on the brain, through its MQTT broker (the Mosquitto add-on), so you can see and change things from Home Assistant's dashboards and automations. It has eleven controls: Status, Volume, Alarm volume, Music volume, Next alarm, Timers, Stop, Restart, Speak, Backend and Microphone muted. Nothing said to Nova, and none of its answers, is sent there - timers show only when they end. Each satellite is a device of its own. Without this, Nova works as it always did, and it carries on if the broker goes down.
 
 1. In Home Assistant, make another user for Nova - Settings > People > Users > Add user, called `nova`, **not** an administrator, and with "Can only log in from the local network" on. The Users tab is only there with Advanced mode on in your profile. The broker accepts Home Assistant's users.
-2. On the brain, add its password to `~/.config/nova/.env` yourself:
+2. Put its password under Keys on the settings page, or on the brain add it to `~/.config/nova/.env` yourself:
 
    ```
    MQTT_PASSWORD=the-password
    ```
-3. Say where the broker is in the brain's `~/.config/nova/config.yaml`. The host is Home Assistant's own address on your home network, not its web address:
+3. Say where the broker is under Settings on the settings page (its host, port and user, used once Nova restarts), or in the brain's `~/.config/nova/config.yaml`. The host is Home Assistant's own address on your home network, not its web address:
 
    ```yaml
    mqtt:
@@ -247,12 +247,12 @@ The microphone switch works from Home Assistant or the settings page, and stays 
    ntfy access nova reminders wo
    ntfy token add nova
    ```
-2. On the brain, add the token to `~/.config/nova/.env` yourself:
+2. Put the token under Keys on the settings page, or on the brain add it to `~/.config/nova/.env` yourself:
 
    ```
    NTFY_TOKEN=the-token
    ```
-3. Say which topic is which in the brain's `~/.config/nova/config.yaml`:
+3. Say which topic is which under Settings on the settings page, or in the brain's `~/.config/nova/config.yaml`:
 
    ```yaml
    ntfy:
@@ -322,6 +322,7 @@ The settings most likely to need changing:
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
+| `sounds.*`, `web_search.enabled`, `conversation.history_max_age`, `spotify.pause_while_speaking` | The blip, chime and reminder sound, searching the web, how long a conversation's thread is kept, and pausing Spotify while Nova talks. On the settings page, and used straight away. |
 | `ntfy.quiet_from`, `ntfy.quiet_until` | The night, when only the most urgent alerts are read out. |
 
 ## Running it

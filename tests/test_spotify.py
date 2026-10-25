@@ -333,3 +333,11 @@ def test_the_page_is_offered_the_spotify_playlists_by_name(make_controller):
     controller = make_controller(cached=SAVED)
     controller.sp = FakeNowPlaying(playlists=[{"name": "Workout"}, {"name": "chill"}, None])
     assert controller.playlists() == ["chill", "Workout"]
+
+
+def test_spotify_pausing_is_switched_off_straight_away(make_controller):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakePlayback("Kitchen")
+    controller.config.apply({("spotify", "pause_while_speaking"): False})
+    controller.pause_for_speech()
+    assert controller.sp.paused is False

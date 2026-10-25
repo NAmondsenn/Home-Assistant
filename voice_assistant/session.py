@@ -99,12 +99,6 @@ class Session:
         # see strip_wake_word.
         self.wake_word = assistant_config.get("wake_word", DEFAULT_WAKE_WORD)
 
-        # The assistant's own sound effects, which the satellite keeps and plays by name.
-        sounds_config = config.section("sounds")
-        self.chime_enabled = sounds_config.get("chime_enabled", True)
-        self.reminder_sound_enabled = sounds_config.get("reminder_enabled", True)
-        self.listening_sound_enabled = sounds_config.get("listening_enabled", True)
-
         # How long each stage of every interaction took, one line per interaction,
         # for scripts/latency_report.py to summarise.
         self.latency_file = os.path.join(paths.LOGS_DIR, "latency.jsonl")
@@ -200,7 +194,7 @@ class Session:
         # How each thing the user says is answered - everything between hearing it and
         # saying the reply. See conversation.py.
         self.conversation = Conversation(brain.clock, self.intents, self.llm, self.actions, self.music,
-                                         chime_enabled=self.chime_enabled,
+                                         chime_enabled=lambda: self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
                                          routines=brain.routines, satellite=satellite.name)
 
@@ -211,6 +205,21 @@ class Session:
         changed on the settings page is used from the next, on a session already started.
         """
         return self.brain.config.section("thresholds")
+
+    @property
+    def chime_enabled(self) -> bool:
+        """Whether a success is confirmed with the chime, as the settings are now."""
+        return self.brain.config.section("sounds").get("chime_enabled", True)
+
+    @property
+    def reminder_sound_enabled(self) -> bool:
+        """Whether a reminder is announced with its sound, as the settings are now."""
+        return self.brain.config.section("sounds").get("reminder_enabled", True)
+
+    @property
+    def listening_sound_enabled(self) -> bool:
+        """Whether the blip says Nova's listening, as the settings are now."""
+        return self.brain.config.section("sounds").get("listening_enabled", True)
 
     # The satellite's mute and volumes
 

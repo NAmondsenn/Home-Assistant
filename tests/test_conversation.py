@@ -727,3 +727,22 @@ def test_a_yes_to_more_than_the_pcs_question_presses_nothing(tmp_path, actions):
     assert reply.listen_again and reply.say.count("?") == 2
     conversation.handle("yes", follow_up=True)
     assert home.pressed == [] and llm.asked == ["shut it all down", "yes"]
+
+
+def test_the_chime_can_be_a_setting_read_at_each_answer():
+    # The session passes a function reading the running settings, so a save changes the next answer.
+    chime = [True]
+    conversation = _conversation(chime_enabled=lambda: chime[0])
+    assert conversation.chime_enabled is True
+    chime[0] = False
+    assert conversation.chime_enabled is False
+
+
+def test_the_done_chime_is_switched_off_straight_away():
+    chime = [True]
+    actions = FakeActions({"control_playback": ActionResult(True, "Paused", confirm="chime")})
+    intents = FakeIntents({"pause": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    conversation = _conversation(intents=intents, actions=actions, chime_enabled=lambda: chime[0])
+    assert conversation.handle("pause").sounds == [("success_chime.wav", "general")]
+    chime[0] = False
+    assert conversation.handle("pause").sounds == []

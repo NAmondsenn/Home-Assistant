@@ -88,7 +88,8 @@ class SpotifyController:
         # Pulls the spotify section from config.yaml.
         spotify_config = config.section("spotify") if config else {}
         self.device_name = spotify_config.get("device_name", "Voice-Assistant")
-        self.pause_while_speaking = spotify_config.get("pause_while_speaking", True)
+        # Kept to read pause_while_speaking at each use - see the property below.
+        self.config = config
 
         self.client_id = os.getenv("SPOTIFY_CLIENT_ID")
         self.client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
@@ -1182,6 +1183,11 @@ class SpotifyController:
         except Exception as e:
             logger.error(f"Listing playlists failed: {e}")
             return []
+
+    @property
+    def pause_while_speaking(self) -> bool:
+        """Whether music is paused as Nova talks, as the settings are now."""
+        return (self.config.section("spotify") if self.config else {}).get("pause_while_speaking", True)
 
     def pause_for_speech(self):
         """

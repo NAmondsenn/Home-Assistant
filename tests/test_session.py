@@ -1131,3 +1131,34 @@ def test_a_stop_during_a_battery_warning_still_counts_as_said(connect, make_sess
     session._stop_from_home_assistant()
     saying.join(10)
     assert results == [True]
+
+
+# Settings saved while a session is already running
+
+def test_the_listening_blip_is_switched_off_straight_away(brain, connect, make_session):
+    # Made before the save, as every satellite's session is when the settings page is used.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.config.apply({("sounds", "listening_enabled"): False})
+    feed = AudioFeed()
+    feed.feed(np.zeros(4 * RATE, np.int16))
+
+    session._handle_interaction(feed, timeline=FakeTimeline())
+    # Neither the blip nor its falling twin for not hearing anything.
+    assert pi.messages("play_sound") == []
+
+
+def test_the_done_chime_is_switched_off_straight_away(brain, connect, make_session):
+    session = make_session(connect()[0])
+    assert session.conversation.chime_enabled is True
+    brain.config.apply({("sounds", "chime_enabled"): False})
+    assert session.conversation.chime_enabled is False
+
+
+def test_the_reminder_sound_is_switched_off_straight_away(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.config.apply({("sounds", "reminder_enabled"): False})
+
+    assert session.announce("Your reminder: take the bins out.") is True
+    assert pi.messages("play_sound") == [] and len(pi.messages("play_stream")) == 1

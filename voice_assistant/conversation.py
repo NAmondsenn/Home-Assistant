@@ -17,7 +17,7 @@ here, in plain Python: text in, Reply out.
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from voice_assistant.actions import Action, ActionExecutor, ActionResult, confirm
 from voice_assistant.devices import told_claude
@@ -69,8 +69,8 @@ class Reply:
 class Conversation:
     """The rules for answering the user, from one wake word to the end of any follow-ups."""
 
-    def __init__(self, clock, intents, llm, actions, music, chime_enabled: bool = True, max_follow_ups: int = 3,
-                 routines=None, satellite: Optional[str] = None):
+    def __init__(self, clock, intents, llm, actions, music, chime_enabled: Union[bool, Callable[[], bool]] = True,
+                 max_follow_ups: int = 3, routines=None, satellite: Optional[str] = None):
         """
         Args:
             clock: The Clock, for what's ringing and for dismissing it.
@@ -79,7 +79,9 @@ class Conversation:
             actions: The ActionExecutor, which runs what was asked for.
             music: The MusicHold, whose pause has to land before anything else is
                 sent to the music player.
-            chime_enabled: Whether a success is confirmed with the chime.
+            chime_enabled: Whether a success is confirmed with the chime - or a function
+                giving that, asked at each use so a setting saved mid-session is used
+                from the next answer.
             max_follow_ups: How many times in a row the assistant may ask a question
                 and listen for the answer without the wake word, so it can't hold
                 the microphone indefinitely.
@@ -92,11 +94,16 @@ class Conversation:
         self.llm = llm
         self.actions = actions
         self.music = music
-        self.chime_enabled = chime_enabled
+        self._chime_enabled = chime_enabled
         self.max_follow_ups = max_follow_ups
         self.routines = routines
         self.satellite = satellite
         self.start()
+
+    @property
+    def chime_enabled(self) -> bool:
+        """Whether a success is confirmed with the chime, as it is set now."""
+        return self._chime_enabled() if callable(self._chime_enabled) else self._chime_enabled
 
     def start(self, ringing: Optional[Dict] = None, talked_over: bool = False):
         """
