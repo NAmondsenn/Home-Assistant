@@ -47,6 +47,7 @@ UNAVAILABLE = {
     "ntfy": "Notifications aren't set up yet.",
     "batteries": "Battery levels need Home Assistant.",
     "lists": "Lists need Home Assistant.",
+    "pc": "Your PC needs Home Assistant.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -92,6 +93,8 @@ class ActionResult:
             understanding it and failing.
         private: Whether what it says is the user's alone - where their phone is - and
             so kept from Claude when it was asked for locally (see Conversation.handle).
+        ask_first: What to do if the user says yes to the question it asks - shutting
+            the PC down, after "Shut down the PC?" - or None (see Conversation.handle).
     """
     ok: bool
     say: str = ""
@@ -100,6 +103,7 @@ class ActionResult:
     sound_category: str = "general"
     understood: bool = True
     private: bool = False
+    ask_first: Optional[Action] = None
 
     @classmethod
     def from_reply(cls, reply: Dict) -> "ActionResult":
@@ -117,18 +121,18 @@ class ActionResult:
         """
         ok = bool(reply.get("success"))
         say = reply.get("message") or ""
-        private = bool(reply.get("private"))
+        kept = {"private": bool(reply.get("private")), "ask_first": reply.get("ask_first")}
         if ok and reply.get("silent"):
-            return cls(ok, say, confirm="music", private=private)
+            return cls(ok, say, confirm="music", **kept)
         if ok and reply.get("note"):
-            return cls(ok, say, confirm="note", private=private)
+            return cls(ok, say, confirm="note", **kept)
         if ok and reply.get("sound"):
             return cls(ok, say, confirm="sound", sound=reply["sound"],
-                       sound_category=reply.get("sound_category", "general"), private=private)
+                       sound_category=reply.get("sound_category", "general"), **kept)
         if ok and reply.get("chime"):
-            return cls(ok, say, confirm="chime", private=private)
+            return cls(ok, say, confirm="chime", **kept)
         # Only a failure can be not understood, and a failure always gets this far.
-        return cls(ok, say, understood=not reply.get("not_understood"), private=private)
+        return cls(ok, say, understood=not reply.get("not_understood"), **kept)
 
 
 def confirm(results: List[ActionResult], chime_enabled: bool = True,
@@ -239,7 +243,7 @@ class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
     def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
-                 satellite: Optional[str] = None, batteries=None, lists=None):
+                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -257,6 +261,8 @@ class ActionExecutor:
                 if Home Assistant isn't set up.
             lists: Lists, for Home Assistant's to-do lists, or None if Home Assistant
                 isn't set up.
+            pc: PCPower, for turning the PC on and off, or None if Home Assistant isn't
+                set up.
         """
         self.music = music
         self.clock = clock
@@ -268,6 +274,7 @@ class ActionExecutor:
         self.satellite = satellite
         self.batteries = batteries
         self.lists = lists
+        self.pc = pc
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -1296,6 +1303,33 @@ class ActionExecutor:
         # Never the words, which may be the user's alone.
         logger.info(f"Notified the {device.name} to {doing}")
         return "taken", None
+
+    # The PC - see pc.py
+
+    @tool(
+        "Turn the user's PC on, shut it down, restart it, put it or its screen to sleep, lock it, or say whether "
+        "it's on. Shutting down and restarting ask the user first. What happens is said for you, so just reply "
+        "'Okay.'",
+        needs="pc",
+        required=["action"],
+        action={"type": "string", "enum": ["on", "off", "restart", "sleep", "screen_off", "lock", "status"]},
+        name={"type": "string", "description": "Which PC, as the user said it - only when they've been asked which."},
+    )
+    def pc_power(self, action: Optional[str] = None, name: Optional[str] = None):
+        return self.pc.act(action or "", name or None)
+
+    # Only ever run by the conversation, on the user's yes to pc_power's question - so Claude,
+    # which isn't offered it, can't shut the PC down without one.
+    @tool(
+        "Shut down or restart the PC, once the user has said yes.",
+        needs="pc",
+        required=["action"],
+        for_model=False,
+        action={"type": "string", "enum": ["off", "restart"]},
+        name={"type": "string", "description": "Which PC, as the user said it, or left out."},
+    )
+    def press_pc_button(self, action: Optional[str] = None, name: Optional[str] = None):
+        return self.pc.press(action or "", name or None)
 
     # Notifications
 

@@ -109,6 +109,10 @@ class Conversation:
         # the next one.
         self.reminder_offered = False
         self.reminder_answer_pending = False
+        # What a yes to the question just asked would do - shutting the PC down, after
+        # "Shut down the PC?" - or None. Only ever the very next thing said in the same
+        # conversation answers it, so a new wake word drops it.
+        self.asked_first: Optional[Action] = None
         # Earlier conversations are only remembered for a few minutes, so this
         # morning's "play that one" doesn't colour tonight's "yes".
         self.llm.forget_stale_history()
@@ -129,8 +133,23 @@ class Conversation:
         """
         timeline = timeline or Timeline()
 
+        # Answering "Shut down the PC?" - read before anything else, the follow-up window's
+        # going straight to Claude included, and only once: whatever's said next drops it.
+        # Only a yes runs it, and as Nova's own action, never the model's.
+        asked_first, self.asked_first = self.asked_first, None
+        if asked_first is not None:
+            answer = self.clock.answer_to_offer(text) if follow_up else None
+            if answer is not None:
+                timeline.note(outcome="asked_first_answer")
+                said = (self._run([Action(asked_first.tool, asked_first.params)])[0].say if answer
+                        else "Okay, I'll leave it.")
+                logger.info(f"{asked_first.tool} {'run' if answer else 'not run'} on the user's answer")
+                self.llm.remember(text, said)
+                return Reply(say=said)
+            # Anything else is a fresh request, and nothing is done.
+
         # Answering the assistant's own "shall I turn that reminder off?". Checked
-        # before anything else, since "no" here means leave it alone, while "no"
+        # before anything else bar that, since "no" here means leave it alone, while "no"
         # said to something ringing means make it stop - opposite outcomes from the
         # same word, told apart only by the question having just been asked.
         if self.reminder_answer_pending:
@@ -281,6 +300,12 @@ class Conversation:
         listen_again = response_text.rstrip().endswith("?") and self.follow_ups < self.max_follow_ups
         if listen_again:
             self.follow_ups += 1
+            # A question one of the actions asks first, answered by what's said next. Not one
+            # nobody's listening for an answer to, nor one asked in a routine, whose next step
+            # would be taken for the answer.
+            if not in_routine:
+                self.asked_first = next((action_result.ask_first for action_result in action_results
+                                         if action_result.ok and action_result.ask_first), None)
         return Reply(say=response_text, sounds=sounds, listen_again=listen_again)
 
     def _ask_claude(self, text: str) -> Dict:

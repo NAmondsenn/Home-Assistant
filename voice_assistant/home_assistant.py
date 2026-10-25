@@ -1,8 +1,9 @@
 """
 Home Assistant Module.
 
-Works the lights and the to-do lists, reads the calendar and the weather, and finds and
-rings the user's phone (see devices.py), through Home Assistant.
+Works the lights and the to-do lists, reads the calendar and the weather, finds and
+rings the user's phone (see devices.py), and presses the PC's buttons (see pc.py), through
+Home Assistant.
 
 Nova signs in as a Home Assistant user of its own, with a long-lived access token,
 and asks for things in plain words through Home Assistant's own Assist - "turn off
@@ -63,7 +64,8 @@ from voice_assistant.clock import format_duration, spoken_clock_time
 from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, Scripts, names_guarded,
                                       runnables_named, sensitive, sensitive_words, split_words, target_refused,
                                       why_not_run)
-from voice_assistant.ha_registry import HASS_AGENT_MAKER, HomeRegistry, HomeSocket, HomeSocketError, Snapshot
+from voice_assistant.ha_registry import (HASS_AGENT_MAKER, PC_KINDS, HomeRegistry, HomeSocket, HomeSocketError,
+                                         Snapshot)
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -93,9 +95,12 @@ DEFAULT_AGENT = "conversation.home_assistant"
 # The Home Assistant app's own notify services, one for each phone, tablet or Mac, are
 # allowed by name - mobile_app_s25_ultra - and given no target, as each already names its
 # device. Not notify.notify or notify.send_message, which could reach anything.
+# A button is only ever the PC's: one of HASS.Agent's in PC_KINDS, or a Wake-on-LAN one, as
+# the registry's snapshot shows it (see _pressable) - never Proxmox's, whose buttons shut
+# down and restart the hosts and their guests, and nothing at all without a snapshot.
 SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",),
             "weather": ("get_forecasts",), "todo": ("add_item", "update_item", "get_items"),
-            "notify": re.compile(r"mobile_app_[a-z0-9_]+")}
+            "notify": re.compile(r"mobile_app_[a-z0-9_]+"), "button": ("press",)}
 BY_AREA = ("light",)
 UNTARGETED = ("notify",)
 # The services Nova asks for an answer from - only reads, which change nothing. Each is
@@ -1238,7 +1243,8 @@ class HomeAssistant:
             NotAllowed: If SERVICES doesn't have the service, or it's given anything
                 outside its own domain, or nothing to act on - or, for one in UNTARGETED,
                 any target at all, notify's own "target" included, at the top or in its
-                data - or returns doesn't match whether RETURNS has it.
+                data - or returns doesn't match whether RETURNS has it - or, for a button,
+                anything but one of the PC's, one at a time (see _pressable).
             requests.RequestException: If Home Assistant couldn't be asked.
         """
         entities = data.get("entity_id")
@@ -1256,7 +1262,8 @@ class HomeAssistant:
         if (not named or wrongly_aimed or targets - allowed_targets
                 or returns != ((domain, service) in RETURNS)
                 or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
-                           for entity in entities)):
+                           for entity in entities)
+                or (domain == "button" and not (len(entities) == 1 and self._pressable(entities[0])))):
             logger.warning(f"Refused to call {domain}.{service} with {data}")
             raise NotAllowed(f"{domain}.{service}")
         response = self._request("POST", f"/api/services/{domain}/{service}" + ("?return_response" if returns else ""),
@@ -1267,6 +1274,34 @@ class HomeAssistant:
         if not isinstance(answer, dict):
             raise ValueError(f"Home Assistant's answer from {domain}.{service} isn't one")
         return answer.get("service_response")
+
+    def _pressable(self, entity_id: str) -> bool:
+        """
+        Whether a button is one of the PC's that Nova may press: a HASS.Agent button of a
+        kind in PC_KINDS, or a Wake-on-LAN one, as the registry's snapshot shows it. Never
+        one of Proxmox's, nor HASS.Agent's others - its launchurl opens any web address on
+        the PC - and none at all without a snapshot, as nothing could vouch for it.
+        """
+        snapshot = self._snapshot()
+        if snapshot is None or snapshot.platform(entity_id) in (None, "proxmoxve"):
+            return False
+        if entity_id in snapshot.wake_buttons():
+            return True
+        _, kind = snapshot.hass_agent_buttons().get(entity_id, (None, "other"))
+        return kind in PC_KINDS
+
+    def press(self, entity_id: str):
+        """
+        Presses one of the PC's buttons - see _pressable.
+
+        Args:
+            entity_id: The button, e.g. "button.desk_pc_sleep".
+
+        Raises:
+            NotAllowed: If it isn't one of the PC's buttons, or there's no snapshot to tell.
+            requests.RequestException: If Home Assistant couldn't be asked, or didn't press it.
+        """
+        self._call_service("button", "press", {"entity_id": entity_id})
 
     def _area_id(self, name: str) -> Optional[str]:
         """

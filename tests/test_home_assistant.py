@@ -2498,6 +2498,38 @@ def test_only_the_apps_notify_services_are_called(make_home, service, data):
     assert home._session.requests == []
 
 
+def test_only_the_pcs_buttons_are_ever_pressed(make_home):
+    # The Wake-on-LAN button's made up: a real one's id holds the PC's hardware address.
+    home = make_home({"/api/services/button/press": []})
+    home.registry.read = _registry(
+        _entry("button.desk_off", "mqtt", "desk", "Shutdown"),
+        _entry("button.desk_web", "mqtt", "desk", "LaunchUrl"),
+        _entry("button.wake_desk_pc", "wake_on_lan"),
+        _entry("button.pve1_shutdown", "proxmoxve", "pve1", "Shutdown"),
+        _entry("button.nova_restart", "mqtt", "nova", "Restart"),
+        devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"},
+                 "pve1": {"name": "pve1", "maker": "Proxmox"}, "nova": {"name": "Nova", "maker": "Nova"}})
+    home.press("button.desk_off")
+    home.press("button.wake_desk_pc")
+    assert [sent["json"] for _, _, sent in home._session.requests] == [{"entity_id": "button.desk_off"},
+                                                                        {"entity_id": "button.wake_desk_pc"}]
+
+    # HASS.Agent's launchurl, a Proxmox button, one on no HASS.Agent device, and one the
+    # registry hasn't got - nor several at once, or anything but a button.
+    for data in ({"entity_id": "button.desk_web"}, {"entity_id": "button.pve1_shutdown"},
+                 {"entity_id": "button.nova_restart"}, {"entity_id": "button.new_one"},
+                 {"entity_id": ["button.desk_off", "button.pve1_shutdown"]}, {"entity_id": "switch.desk_off"},
+                 {"area_id": "office"}, {}):
+        with pytest.raises(NotAllowed):
+            home._call_service("button", "press", data)
+    # Without a snapshot, not even the PC's own.
+    home.registry.read = None
+    for entity in ("button.desk_off", "button.wake_desk_pc"):
+        with pytest.raises(NotAllowed):
+            home.press(entity)
+    assert len(home._session.requests) == 2
+
+
 def _rings(make_home, answer):
     """What find_device says, ringing the S25 through the real notify and _call_service, which answer so."""
     home = make_home({"/api/template": FakeResponse(json.dumps([_rendered_app_device()])),

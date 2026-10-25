@@ -550,3 +550,31 @@ def test_a_thing_is_only_left_to_claude_when_it_points_back(text, item):
     expected = None if item is None else [Action("add_to_list", {
         "item": item, "list": "my list", "command": text.lower().rstrip(".")})]
     assert _actions(text) == expected
+
+
+# The PC - see pc.py
+
+@pytest.mark.parametrize("text, action", [
+    ("Turn on my PC.", "on"), ("Switch on the computer.", "on"), ("Turn the PC on.", "on"),
+    ("Switch my computer on.", "on"), ("Wake my PC.", "on"), ("Wake up the computer.", "on"),
+    ("Turn off the PC.", "off"), ("Switch off my computer.", "off"), ("Turn my PC off.", "off"),
+    ("Switch the computer off.", "off"), ("Shut down my PC.", "off"), ("Shut the computer down.", "off"),
+    ("Restart my PC.", "restart"), ("Reboot the computer.", "restart"),
+    ("Put my PC to sleep.", "sleep"), ("Put the computer to sleep.", "sleep"),
+    ("Turn off my PC's screen.", "screen_off"), ("Turn off the computer monitor.", "screen_off"),
+    ("Lock my PC.", "lock"), ("Lock the computer.", "lock"),
+    ("Is my PC on?", "status"), ("Is the computer on?", "status"),
+])
+def test_the_pc_is_worked_without_claude(text, action):
+    # "Lock my PC" is the PC's own, not Assist's; "is my PC on?" comes before Assist's
+    # "is X on", and "put my PC to sleep" before the lists' "put X to Y".
+    assert _actions(text) == [Action("pc_power", {"action": action})]
+    # Without Home Assistant too, which says the PC needs it.
+    assert _actions(text, home=None) == [Action("pc_power", {"action": action})]
+
+
+@pytest.mark.parametrize("text", ["Turn on the PC lights.", "Turn off my phone.", "Restart the music.",
+                                  "Shut down the PC and play Drake.", "Is my PC's battery on?"])
+def test_what_the_pc_rules_mustnt_catch_is_left_alone(text):
+    assert not any(action.tool == "pc_power" for action in _actions(text) or [])
+    assert _actions("Turn on the PC lights.")[0].tool == "control_home"

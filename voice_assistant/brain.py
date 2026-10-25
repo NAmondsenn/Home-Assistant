@@ -37,6 +37,7 @@ from voice_assistant.lists import Lists
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
 from voice_assistant.ntfy import Ntfy
+from voice_assistant.pc import PCPower
 from voice_assistant.protocol import ProtocolError, Refused, admit
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.routines import Routines
@@ -261,6 +262,10 @@ class Brain:
         # - see lists.py.
         self.lists = (Lists(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "lists.json"), {"main": None}))
                       if self.home else None)
+        # The PC, through HASS.Agent and Wake-on-LAN, and which Wake-on-LAN button wakes which
+        # PC, for a home with several - see pc.py.
+        self.pc = (PCPower(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "pcs.json"), {"wake": {}}))
+                   if self.home else None)
 
         # Every satellite's timers and alarms, rung on the satellite each was set from.
         # Started in run(), once what rings on no satellite has gone to the default.

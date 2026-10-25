@@ -5,10 +5,13 @@ Whisper or Claude - using fakes for the clock, local commands, Claude and the
 actions, so each rule can be checked on its own.
 """
 
-from voice_assistant.actions import Action, ActionResult
+from voice_assistant.actions import Action, ActionExecutor, ActionResult
+from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation
+from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.intents import LocalIntents
+from voice_assistant.pc import PCPower
 
 
 class FakeClock:
@@ -526,3 +529,93 @@ def test_a_question_a_step_asks_isnt_listened_for():
     routine = {"name": "Lights", "phrases": ["lights"], "steps": ["turn on a light"]}
     reply = _conversation(llm=llm, routines=FakeRoutines(routine)).handle("lights")
     assert reply.say == "Which one?" and not reply.listen_again
+
+
+# Asking before shutting the PC down
+
+class FakePCHome:
+    """Stands in for Home Assistant with the desk PC on, noting each button pressed."""
+
+    def __init__(self):
+        entries = [Entry("button.desk_off", "mqtt", "desk", None, "desk_off", "Shutdown", (), False),
+                   Entry("button.desk_again", "mqtt", "desk", None, "desk_again", "Restart", (), False),
+                   Entry("sensor.desk_cpu", "mqtt", "desk", None, "desk_cpu", "CPU Load", (), False)]
+        self.snapshot = Snapshot(entries={entry.entity_id: entry for entry in entries},
+                                 devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}}, areas={},
+                                 read_at=0.0)
+        self.pressed = []
+
+    def _snapshot(self):
+        return self.snapshot
+
+    def _states(self):
+        return [{"entity_id": entity, "state": "12", "attributes": {}} for entity in self.snapshot.entries]
+
+    def press(self, entity_id):
+        self.pressed.append(entity_id)
+
+    def describe_lights(self, timeout=None):
+        return ""
+
+
+def _pc_conversation(tmp_path, *replies):
+    """A conversation with the real local rules and actions, and the PC on a fake Home Assistant."""
+    home = FakePCHome()
+    actions = ActionExecutor(home=home, pc=PCPower(home, ChoiceStore(str(tmp_path / "pcs.json"), {"wake": {}})))
+    llm = FakeLLM(*replies)
+    return _conversation(intents=LocalIntents(), llm=llm, actions=actions), home, llm
+
+
+def test_shutting_down_asks_first_and_only_a_yes_does_it(tmp_path):
+    conversation, home, llm = _pc_conversation(tmp_path)
+    reply = conversation.handle("Shut down the PC.")
+    assert (reply.say, reply.listen_again) == ("Shut down the PC?", True)
+    assert home.pressed == []
+    # Read before the follow-up window would send it to Claude.
+    assert conversation.handle("yes", follow_up=True).say == "Shutting down the PC."
+    assert home.pressed == ["button.desk_off"] and llm.asked == []
+
+    conversation, home, llm = _pc_conversation(tmp_path)
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle("no", follow_up=True).say == "Okay, I'll leave it."
+    # And once answered, a later yes is nobody's.
+    conversation.handle("Restart the PC.")
+    assert conversation.handle("leave it", follow_up=True).say == "Okay, I'll leave it."
+    assert home.pressed == []
+
+    # Anything else drops it, and is a fresh request - so a yes after that is Claude's.
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("It's sunny. Anything else?"), _answer("Okay."))
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle("what's the weather", follow_up=True).say == "It's sunny. Anything else?"
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == [] and llm.asked == ["what's the weather", "yes"]
+
+
+def test_claudes_shutdown_asks_first_too(tmp_path):
+    conversation, home, llm = _pc_conversation(
+        tmp_path, _answer("Okay.", Action("pc_power", {"action": "restart"}, from_model=True)))
+    assert conversation.handle("could you reboot the thing on my desk").say == "Restart the PC?"
+    assert home.pressed == []
+    assert conversation.handle("yeah go on", follow_up=True).say == "Restarting the PC."
+    assert home.pressed == ["button.desk_again"]
+
+
+def test_a_yes_in_a_new_conversation_presses_nothing(tmp_path):
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay."), _answer("Okay."))
+    conversation.handle("Shut down the PC.")
+    conversation.start()
+    conversation.handle("yes")
+    assert home.pressed == [] and llm.asked == ["yes"]
+
+    # Nor does a yes said to any other question.
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Shall I play some music?"), _answer("Okay."))
+    conversation.handle("I'm bored")
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == []
+
+    # Nor one said with no question listened for - the follow-ups had run out.
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay."))
+    conversation.follow_ups = conversation.max_follow_ups
+    assert not conversation.handle("Shut down the PC.").listen_again
+    conversation.handle("yes")
+    assert home.pressed == []

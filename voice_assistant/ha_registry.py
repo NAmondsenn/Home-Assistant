@@ -263,6 +263,15 @@ class Snapshot:
         """The entity ids of the device's entities."""
         return [entry.entity_id for entry in self.entries.values() if entry.device_id == device_id]
 
+    def device_name(self, device_id: str) -> Optional[str]:
+        """The device's name - the user's own, if they gave one - or None if it isn't known."""
+        return (self.devices.get(device_id) or {}).get("name")
+
+    def wake_buttons(self) -> List[str]:
+        """The entity ids of the Wake-on-LAN integration's buttons, each of which wakes one machine."""
+        return [entry.entity_id for entry in self.entries.values()
+                if entry.platform == "wake_on_lan" and entry.entity_id.startswith("button.")]
+
     @cached_property
     def hass_agent_commands(self) -> Dict[str, Tuple[str, str]]:
         """

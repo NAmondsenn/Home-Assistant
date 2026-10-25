@@ -231,7 +231,7 @@ def brain(tmp_path, monkeypatch, make_config):
     config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"})
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
-                           batteries=None, lists=None, registry=None, tts=FakePiper(), stt=FakeSpeechToText(),
+                           batteries=None, lists=None, pc=None, registry=None, tts=FakePiper(), stt=FakeSpeechToText(),
                            sounds_folder=Path(paths.SOUNDS_DIR))
 
 

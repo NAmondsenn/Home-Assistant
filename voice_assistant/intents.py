@@ -61,6 +61,8 @@ ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
 BATTERY_DEVICE = "mac|phone|tablet|laptop|computer"
 # And the devices found or rung by - those the Home Assistant app is on.
 FOUND_DEVICE = "phone|tablet|mac|laptop"
+# The PC, as ha_guard.PC_LOCK has it - see pc.py.
+PC = r"(?:my |the )?(?:pc|computer)"
 
 # A thing of Home Assistant's for Assist - "the TV", "AdGuard protection", "movie
 # night" - of one to four words, none of them "and", "then" or "plus", so "turn off
@@ -300,6 +302,16 @@ class LocalIntents:
             # plainly, so "put it on my iPad's list" is left alone.
             (r"(?:send|text|put) (?:that|it|this) (?:to|on) (?:my |the )(?P<device>mac|macbook|laptop|tablet|ipad)",
              self._send_to_device),
+            # The PC - see pc.py. Before the lists, whose "put X to Y" would take "put my PC to
+            # sleep" for adding to a list called sleep, and before Assist's shapes, so "lock my
+            # PC" is never Assist's and "is my PC on?" is answered from HASS.Agent's entities.
+            (rf"(?:turn|switch) on {PC}|(?:turn|switch) {PC} on|wake(?: up)? {PC}", self._pc("on")),
+            (rf"(?:turn|switch) off {PC}|(?:turn|switch) {PC} off|shut down {PC}|shut {PC} down", self._pc("off")),
+            (rf"(?:restart|reboot) {PC}", self._pc("restart")),
+            (rf"put {PC} to sleep", self._pc("sleep")),
+            (rf"turn off {PC}(?:'s)? (?:screen|monitor)", self._pc("screen_off")),
+            (rf"lock {PC}", self._pc("lock")),
+            (rf"is {PC} on", self._pc("status")),
             # The to-do lists - see lists.py. Assist is asked first for the adding and
             # ticking off, but only with its own list intents (see ActionExecutor), so
             # "take milk off my shopping list", which Assist reads as removing it, is only
@@ -517,6 +529,9 @@ class LocalIntents:
 
     def _send_to_device(self, found) -> Optional[Dict]:
         return self._result("Okay.", [Action("send_to_phone", {"device": found["device"]})]) if self.home else None
+
+    def _pc(self, action: str):
+        return lambda found: self._result("Okay.", [Action("pc_power", {"action": action})])
 
     def _send_to_phone(self, found) -> Optional[Dict]:
         return self._result("Okay.", [Action("send_to_phone")]) if self.ntfy else None
