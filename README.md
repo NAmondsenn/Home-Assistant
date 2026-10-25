@@ -130,7 +130,7 @@ bash uninstall.sh
 
 Navidrome or Spotify - `music.player` in `config.yaml` says which, and it's Spotify unless you change it. Both are set up on the brain, which plays the music through each satellite's speaker.
 
-**Navidrome.** Make a Navidrome user for Nova (or use your own), then put its password under Keys on the settings page (`nova:10400`, set up below), and its address and user under Settings. Or, on the brain, add the password to `~/.config/nova/.env` yourself:
+**Navidrome.** Make a Navidrome user for Nova (or use your own), then put its password under Keys on the settings page (at `https://` and the brain's name on your tailnet - see [The settings page](#the-settings-page)), and its address and user under Settings. Or, on the brain, add the password to `~/.config/nova/.env` yourself:
 
 ```
 NAVIDROME_PASSWORD=the-password
@@ -282,7 +282,7 @@ Nova serves a page for looking after it from a phone or a laptop - how it's doin
      allow: ["you@example.com"]
    ```
 
-Then restart the brain, and open `https://` and its name on your tailnet - `tailscale status` shows it - on any of your devices. A change has to come from the page itself, so another website can't make one in your name; settings are saved to the brain's `~/.config/nova/config.yaml`, the one before kept as `config.yaml.bak`. A satellite's own settings - the brain's address, and its password - are changed on the satellite, by hand.
+Then restart the brain, and open `https://` and its name on your tailnet - `tailscale status` shows it - on any of your devices. A change has to come from the page itself, so another website can't make one in your name; settings are saved to the brain's `~/.config/nova/config.yaml`, the one before kept as `config.yaml.bak`. Most are used straight away; under each, the page says whether it's used straight away or once Nova restarts, and when a save waits for a restart, it offers one. A satellite's own settings - the brain's address, and its password - are changed on the satellite, by hand.
 
 ### The wake word model
 
@@ -308,7 +308,7 @@ thresholds:
   silence_duration: 0.8
 ```
 
-That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, or one of the wrong kind, stops it with a message naming it - `journalctl -u nova-backend` shows it on the brain, `journalctl --user-unit voice-assistant` on a satellite - rather than being quietly ignored. A setting Nova no longer has, such as `weather.location`, is only warned about, with where it's set now, and can be deleted. Almost everything is set on the brain; a satellite's file has little beyond its brain's address, its name and the wake word.
+That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, one of the wrong kind, or one out of its range (a 5-second silence, say) stops it with a message naming it - `journalctl -u nova-backend` shows it on the brain, `journalctl --user-unit voice-assistant` on a satellite - rather than being quietly ignored. `update.sh` checks them the same way before it stops Nova, and if the new code would refuse them, it says why, takes the code it pulled back out and leaves Nova running as it was. A setting Nova no longer has, such as `weather.location`, is only warned about, with where it's set now, and can be deleted. Almost everything is set on the brain; a satellite's file has little beyond its brain's address, its name and the wake word.
 
 Keys and passwords go in **`~/.config/nova/.env`**, readable only by you, never in a settings file. Everything Nova saves - timers, alarms, volume levels, what it remembers about you, the Spotify sign-in and its logs - is in **`~/.local/share/nova/`**.
 
@@ -324,6 +324,7 @@ The settings most likely to need changing:
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
 | `sounds.listening_enabled`, `sounds.chime_enabled`, `sounds.reminder_enabled`, `web_search.enabled`, `conversation.history_max_age`, `spotify.pause_while_speaking` | The blip, the chime for done, and the sound before alerts and warnings (alarms, timers and reminders always sound), searching the web, how long a conversation's thread is kept, and pausing Spotify while Nova talks. On the settings page, and used straight away. |
 | `ntfy.quiet_from`, `ntfy.quiet_until` | The night, when only the most urgent alerts are read out. |
+| `voice.speed` | How fast Nova speaks, from 0.75 to 1.5 times its usual speed. On the settings page, with a button to hear it first, and used from the next reply. |
 
 ## Running it
 
