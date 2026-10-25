@@ -380,6 +380,30 @@ def test_claude_cant_run_what_it_isnt_offered():
     assert home.asked is None and result.ok is False
 
 
+def test_claude_runs_a_script_or_scene_by_name_and_hears_what_happened():
+    class FakeHome:
+        asked = None
+
+        def run_script(self, name):
+            self.asked = name
+            return {"success": True, "message": "Started Goodnight."}
+
+    home = FakeHome()
+    assert "run_home_script" in [schema["name"] for schema in ActionExecutor(home=home).tool_schemas()]
+    result = ActionExecutor(home=home).execute(Action("run_home_script", {"name": "goodnight"}, from_model=True))
+    assert home.asked == "goodnight" and (result.ok, result.say, result.confirm) == (True, "Started Goodnight.", "speak")
+    # Without a name, Home Assistant isn't asked.
+    home.asked = None
+    result = ActionExecutor(home=home).execute(Action("run_home_script", {"name": " "}, from_model=True))
+    assert home.asked is None and (result.ok, result.say) == (False, "I didn't catch which script or scene to run.")
+
+
+def test_without_home_assistant_no_script_is_offered_or_run():
+    assert "run_home_script" not in [schema["name"] for schema in ActionExecutor().tool_schemas()]
+    result = ActionExecutor().execute(Action("run_home_script", {"name": "goodnight"}, from_model=True))
+    assert (result.ok, result.say) == (False, "Home Assistant isn't set up yet.")
+
+
 def test_claude_works_the_lights_by_light_room_brightness_colour_and_warmth():
     class FakeHome:
         def set_lights(self, on, light=None, area=None, brightness=None, colour=None, warmth=None):

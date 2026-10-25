@@ -34,6 +34,12 @@ sent at all if Assist would act on nothing the guard can see. Without the regist
 the debugging, only Nova's own light sentences go to Assist, with the checks of what
 they name - decision 2's wider rule is off until both answer again.
 
+Nor is a script or scene run - by Assist, by Claude (see run_script) or from the settings
+page - before what it does has been checked: a script's configuration walked whole, and a
+scene's members, for anything above (see works_guarded). One whose contents can't be seen
+is refused too, and so is every one without the registry, which has the key to each
+script's configuration. Claude only runs those exposed to Assist, as Assist would.
+
 What Assist doesn't understand - "dim the lights" - goes to Claude, which works the
 lights through Home Assistant's own services instead, by light or by room, with a
 brightness, colour or warmth. Those services are only ever given lights, by entity
@@ -42,7 +48,8 @@ what Assist does.
 
 The settings page names devices itself, as there's nothing to mishear: it lists the
 lights, to switch and dim, and the scripts and scenes, to run - but nothing else,
-and still no script or scene whose name says it locks or opens anything.
+and still no script or scene whose name says it locks or opens anything, nor any it
+wouldn't run.
 
 Every service Nova calls goes through _call_service, which only calls those in
 SERVICES, so nothing else in Nova can reach a lock, a cover or Home Assistant itself.
@@ -52,7 +59,8 @@ this is the only guard on what Nova's own calls reach.
 Knowing what's in which room - the room Nova's in, and the lights' - and the batteries
 take an administrator's token, as Home Assistant only answers templates for one. With
 an ordinary user's, Nova goes through Assist alone, the settings page has the lights
-without their rooms, and Nova can't tell the batteries.
+without their rooms, and Nova can't tell the batteries - nor see what a script does, so
+it runs none.
 
 The calendar is whichever calendars Home Assistant has, such as a Google Calendar
 added through its Google Calendar integration.
@@ -64,6 +72,7 @@ import math
 import re
 from datetime import date, datetime, time as day_time, timedelta
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
+from urllib.parse import quote
 
 import requests
 
@@ -117,6 +126,24 @@ GUARDED_COVERS = {"door": ("door", "doors"), "garage": ("garage", "garages"), "g
 # The Proxmox integration's platform in the registry. Everything of it is guarded, as
 # its buttons and switches shut down, restart and stop the machines Nova itself runs on.
 PROXMOX = "proxmoxve"
+
+# Why a script or scene isn't run: it works something guarded, or what it does can't be
+# seen. They're told apart in what's said, as "I don't lock, unlock or open anything" is
+# no answer for a script whose contents Home Assistant won't show.
+WORKS_GUARDED = "works something guarded"
+UNSEEN = "can't be seen"
+
+# The domains whose actions, given a whole area, floor or label - or "all", for every
+# entity - could reach something guarded there: homeassistant's reach anything, a door is a
+# cover, the PC's shutdown and Proxmox's are buttons, Proxmox's switches stop the machines
+# Nova runs on, and the scripts and scenes in an area aren't known, so can't be walked.
+# light.turn_off for an area only ever reaches the lights.
+AREA_WIDE = ("homeassistant", "cover", "button", "switch", "script", "scene", *GUARDED)
+AREA_TARGETS = ("area_id", "floor_id", "label_id")
+
+# What could be an entity id in a script's configuration, e.g. "lock.front_door" - or an
+# action's name, which reads as one: "lock.unlock" is the lock domain's, so guarded too.
+ENTITY = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
 
 # Every service Nova calls, by domain, and nothing else - no lock, cover, valve, alarm
 # panel, hassio or homeassistant service. Each is only ever given entities in its own
@@ -261,7 +288,7 @@ PEOPLE_TEMPLATE = """
 
 # What the settings page may switch, and run, by entity id. A light can't let anyone
 # in, whatever it's called; a script or scene could do anything, so its name is
-# checked against SENSITIVE as well.
+# checked against SENSITIVE as well, and what it does with works_guarded.
 LIGHT = re.compile(r"light\.[a-z0-9_]+")
 RUNNABLE = re.compile(r"(script|scene)\.[a-z0-9_]+")
 
@@ -327,6 +354,8 @@ class HomeAssistant:
         self._templates_refused = False
         # Why decision 2's wider rule is off, or None while it's on - see _wider_rule.
         self._wider_off: Optional[str] = None
+        # The scripts whose configuration last couldn't be read - see _script_config.
+        self._unreadable: Set[str] = set()
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -417,6 +446,23 @@ class HomeAssistant:
             return CANT_REACH
         return "Home Assistant had a problem with that."
 
+    def _states(self) -> List[Dict]:
+        """
+        Every entity's state, as /api/states has them - read afresh each time, so a lock
+        added a minute ago is refused too.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If it didn't answer with a list of states, each with its attributes
+                a dict. Those aren't taken for none: a door cover would then have no device
+                class, and pass for a blind.
+        """
+        states = self._request("GET", "/api/states").json()
+        if not isinstance(states, list) or not all(
+                isinstance(state, dict) and isinstance(state.get("attributes", {}), dict) for state in states):
+            raise ValueError("Home Assistant's states aren't a list of states")
+        return states
+
     def command(self, request: str, wider: bool = False, only: Optional[Sequence[str]] = None) -> Dict:
         """
         Asks Home Assistant's Assist to do something, in plain words - once Assist has
@@ -440,7 +486,8 @@ class HomeAssistant:
             is set too when Assist matched nothing, as opposed to failing at something
             it did understand - and when it isn't asked to act, as what it would act on
             can't be told. 'refused' is set when Nova wouldn't ask Assist at all, by the
-            words, by what they name or by what Assist would act on.
+            words, by what they name or by what Assist would act on - which includes a
+            script or scene, named or acted on, that works_guarded refuses.
         """
         refused = {"success": False, "message": REFUSED, "refused": True}
         not_understood = {"success": False, "message": DIDNT_UNDERSTAND, "not_understood": True}
@@ -455,15 +502,8 @@ class HomeAssistant:
             asked["device_id"] = self.device_id
 
         try:
-            # What's there is read afresh each time, so a lock added a minute ago is
-            # refused too. Nothing goes to Assist if it can't be read.
-            states = self._request("GET", "/api/states").json()
-            # Attributes which aren't a dict make the states unreadable, rather than being
-            # taken for none: a door cover would then have no device class, and pass for
-            # a blind.
-            if not isinstance(states, list) or not all(
-                    isinstance(state, dict) and isinstance(state.get("attributes", {}), dict) for state in states):
-                raise ValueError("Home Assistant's states aren't a list of states")
+            # Nothing goes to Assist if what's there can't be read.
+            states = self._states()
             snapshot = self._snapshot()
             if snapshot is None:
                 self._wider_rule("there's no read of Home Assistant's registry to go by")
@@ -500,6 +540,16 @@ class HomeAssistant:
                     logger.warning(f"Refused a Home Assistant request Assist would act on {barred} with: '{request}'",
                                    extra=TRANSCRIPT)
                     return refused
+            # A script or scene is only run once what it does has been checked - one Assist
+            # would act on, and one the request names, as a light sentence can while the
+            # debugging isn't answering: "turn on the porch light", with a script called
+            # "Porch light" which unlocks the front door.
+            runs = [target for target in (match.targets if match else []) if RUNNABLE.fullmatch(target)]
+            runs += [entity for entity in _runnables_named(request, states, snapshot) if entity not in runs]
+            if self._why_not_run(runs, states, snapshot):
+                logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
+                               f"can't be checked: '{request}'", extra=TRANSCRIPT)
+                return refused
             reply = self._request("POST", "/api/conversation/process", json=asked).json()
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
@@ -637,9 +687,9 @@ class HomeAssistant:
 
     def overview(self) -> Dict:
         """
-        The lights, and the scripts and scenes, for the settings page - each by its
-        entity id and name. The lights are in the order of _in_order, with Nova's own
-        room first; the scripts and scenes are in name order.
+        The lights, and the scripts and scenes run() would run, for the settings page -
+        each by its entity id and name. The lights are in the order of _in_order, with
+        Nova's own room first; the scripts and scenes are in name order.
 
         Returns:
             Dict with 'success', and 'lights' and 'routines', or a 'message'. Each light
@@ -648,7 +698,7 @@ class HomeAssistant:
             switch on and off.
         """
         try:
-            states = self._request("GET", "/api/states").json()
+            states = self._states()
             try:
                 lights = self.lights()
             except requests.HTTPError as e:
@@ -660,11 +710,15 @@ class HomeAssistant:
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
+        snapshot = self._snapshot()
         routines = []
         for state in states:
             entity = state.get("entity_id") or ""
             name = (state.get("attributes") or {}).get("friendly_name") or entity
-            if RUNNABLE.fullmatch(entity) and not _sensitive(entity, name):
+            # Only what run() would run, so the page never offers a button which can't work -
+            # and none without the registry, which has the key to each script's contents.
+            if (RUNNABLE.fullmatch(entity) and not _sensitive(entity, name)
+                    and not self.works_guarded(entity, states, snapshot)):
                 routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
         return {"success": True,
                 "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
@@ -1082,11 +1136,13 @@ class HomeAssistant:
         found = self._template(template).strip()
         return None if found in ("", "None") else found
 
+    # Scripts and scenes
+
     def run(self, entity_id: str) -> Dict:
         """
         Runs a script, or sets a scene, from the settings page - never one whose name
-        says it locks or opens anything, which is looked up again first, in case it's
-        been renamed since the page was drawn.
+        says it locks or opens anything, nor one works_guarded refuses. Both are looked
+        at again first, in case it's been renamed or changed since the page was drawn.
 
         Args:
             entity_id: e.g. "script.movie_night" or "scene.relax".
@@ -1098,16 +1154,216 @@ class HomeAssistant:
         if not found:
             return {"success": False, "message": "That isn't a script or a scene."}
         try:
-            state = self._request("GET", f"/api/states/{entity_id}").json()
+            states = self._states()
+            state = next((state for state in states if state.get("entity_id") == entity_id), {})
             name = (state.get("attributes") or {}).get("friendly_name") or entity_id
-            if _sensitive(entity_id, name):
-                logger.warning(f"Refused a sensitive Home Assistant {found[1]} from the settings page: '{name}'")
-                return {"success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."}
+            why = WORKS_GUARDED if _sensitive(entity_id, name) else self._why_not_run([entity_id], states,
+                                                                                     self._snapshot())
+            if why:
+                logger.warning(f"Refused a Home Assistant {found[1]} from the settings page, as it {why}: '{name}'")
+                return {"success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."
+                        if why == WORKS_GUARDED else f"Nova can't see what {name} does, so it doesn't run it."}
             self._call_service(found[1], "turn_on", {"entity_id": entity_id})
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": f"Started {name}." if found[1] == "script" else f"Set {name}."}
+
+    def run_script(self, name: str) -> Dict:
+        """
+        Runs a script, or sets a scene, by what the user called it - for Claude, for "do
+        my goodnight thing". Only one exposed to Assist, as Assist itself would be held
+        to, and never one whose name says it locks or opens anything, nor one
+        works_guarded refuses.
+
+        Args:
+            name: Its name or an other name, as the user said it, e.g. "my goodnight
+                routine" - see _script_name.
+
+        Returns:
+            Dict with 'success' and a 'message': what was done, why it wasn't, or which
+            of several was meant.
+        """
+        # Which are exposed, and the key to each script's configuration, are the registry's.
+        snapshot = self._snapshot()
+        if snapshot is None:
+            return {"success": False, "message": "I can't tell which scripts can be run by voice just now."}
+        try:
+            states = self._states()
+            wanted = _script_name(name)
+            found = {}
+            for state in states:
+                entity = str(state.get("entity_id") or "")
+                called = str((state.get("attributes") or {}).get("friendly_name") or entity)
+                if RUNNABLE.fullmatch(entity) and wanted in {_script_name(other)
+                                                             for other in [called, *snapshot.aliases(entity)]}:
+                    found[entity] = called
+            if not wanted or not found:
+                return {"success": False, "message": "I haven't got a script or scene called that."}
+            if len(found) > 1:
+                names = sorted(found.values(), key=str.lower)
+                return {"success": False, "message": f"Which one, {', '.join(names[:-1])} or {names[-1]}?"}
+            (entity, called), = found.items()
+            kind = entity.partition(".")[0]
+            if not snapshot.exposed(entity):
+                return {"success": False, "message": f"{called} isn't exposed to Assist, so I don't run it by voice."}
+            why = WORKS_GUARDED if _sensitive(entity, called) else self._why_not_run([entity], states, snapshot)
+            if why:
+                logger.warning(f"Refused to run {entity} for Claude, as it {why}")
+                return {"success": False, "message": REFUSED if why == WORKS_GUARDED
+                        else f"I can't see what {called} does, so I don't run it by voice."}
+            logger.info(f"Running {entity} for Claude")
+            self._call_service(kind, "turn_on", {"entity_id": entity})
+        except (requests.RequestException, ValueError) as e:
+            logger.error(f"Home Assistant request failed: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        return {"success": True, "message": f"Started {called}." if kind == "script" else f"Set {called}."}
+
+    def works_guarded(self, entity_id: str, states: List[Dict], snapshot: Optional[Snapshot]) -> bool:
+        """
+        Whether a script or scene works anything never worked by voice (see _guarded), or
+        anything that can't be checked - so it's refused alike by Assist, by Claude and
+        from the settings page.
+
+        A scene is checked by its members. A script's configuration is read from Home
+        Assistant's script editor, by the registry's key for it, and walked whole: every
+        entity it names, every device it acts on, every action given a whole area (see
+        AREA_WIDE), and every script and scene it runs, checked the same way. A template is
+        left to the user. What can't be seen past - an automation, a scene with no members,
+        a configuration that can't be read, or anything without the registry - is refused.
+
+        Args:
+            entity_id: e.g. "script.goodnight".
+            states: Every entity's state, as /api/states has them.
+            snapshot: The registry, or None if it can't be read.
+
+        Returns:
+            Whether it's to be refused. Why is _why_not_run's, which this shares.
+        """
+        return self._why_not_run([entity_id], states, snapshot) is not None
+
+    def _why_not_run(self, entity_ids: Sequence[str], states: List[Dict],
+                     snapshot: Optional[Snapshot]) -> Optional[str]:
+        """
+        Why some scripts and scenes aren't to be run, if they aren't - see works_guarded.
+        Each script is read once, however many of them run it.
+
+        Args:
+            entity_ids: e.g. ["script.goodnight", "scene.relax"].
+            states: Every entity's state, as /api/states has them.
+            snapshot: The registry, or None if it can't be read.
+
+        Returns:
+            WORKS_GUARDED if any of them works something guarded, else UNSEEN if any of
+            them does what can't be checked, else None.
+        """
+        by_id = {state.get("entity_id"): state for state in states}
+        checked: Set[str] = set()
+        # One that wasn't there a moment ago can't be checked - it could be new since.
+        return _worst([self._walk(entity_id, by_id, snapshot, checked) if entity_id in by_id else UNSEEN
+                       for entity_id in entity_ids])
+
+    def _walk(self, part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str]) -> Optional[str]:
+        """
+        Why a piece of a script's configuration isn't to be run, if it isn't. It's walked
+        whole, keys as well as values - scene.apply names each thing as a key - and so is
+        every script, scene or group it names, each once: a script which runs itself, or
+        two which run each other, are each read once rather than for ever.
+
+        Args:
+            part: Any piece of it - a dict, a list or a string - or an entity id, e.g.
+                "script.goodnight", to check that and whatever it runs.
+            by_id: Every entity's state, by entity id.
+            snapshot: The registry, or None if it can't be read.
+            checked: The scripts, scenes and groups walked already, which this adds to.
+
+        Returns:
+            WORKS_GUARDED if any of it works something guarded, else UNSEEN if any of it
+            can't be checked, else None.
+        """
+        if isinstance(part, dict):
+            return _worst([_step_refused(part, by_id, snapshot)]
+                          + [self._walk(item, by_id, snapshot, checked) for pair in part.items() for item in pair])
+        if isinstance(part, list):
+            return _worst([self._walk(item, by_id, snapshot, checked) for item in part])
+        # A template is left alone: it's the user's own, and they exposed what it's in
+        # (0008, "My calls").
+        if not isinstance(part, str) or "{{" in part:
+            return None
+        found = []
+        # Home Assistant takes "light.lamp, lock.front_door" as two entities, in any case.
+        for entity in (piece.strip().lower() for piece in part.split(",")):
+            if not ENTITY.fullmatch(entity):
+                continue
+            domain = entity.partition(".")[0]
+            state = by_id.get(entity)
+            attributes = (state or {}).get("attributes") or {}
+            if domain == "automation":
+                # An automation's contents aren't walked, and one could unlock - nor is what
+                # automation.trigger sets off.
+                found.append(UNSEEN)
+            elif _guarded(entity, attributes, snapshot) is not None:
+                found.append(WORKS_GUARDED)
+            elif state is None or entity in checked:
+                # An action's name, e.g. "light.turn_off", or nothing there to work - or
+                # something walked already.
+                continue
+            elif _target_refused(entity, state, snapshot):
+                # A button the registry hasn't caught up with yet, which could be Proxmox's.
+                found.append(UNSEEN)
+            elif domain == "script":
+                checked.add(entity)
+                config = self._script_config(entity, snapshot)
+                found.append(UNSEEN if config is None else self._walk(config, by_id, snapshot, checked))
+            else:
+                # A scene's members, or a group's, are its entity_id attribute. A scene with
+                # none, as an integration's can be, can't be checked - nor any without the
+                # registry, which says which of its members are Proxmox's or the PC's.
+                members = attributes.get("entity_id")
+                if domain == "scene" and (snapshot is None or not isinstance(members, list)):
+                    found.append(UNSEEN)
+                elif members:
+                    checked.add(entity)
+                    found.append(self._walk(members, by_id, snapshot, checked))
+        return _worst(found)
+
+    def _script_config(self, entity_id: str, snapshot: Optional[Snapshot]) -> Optional[Dict]:
+        """
+        A script's configuration, as Home Assistant's script editor has it - e.g. {"alias":
+        "Goodnight", "sequence": [{"action": "light.turn_off", ...}]} - asked for by the
+        registry's unique id for the script, which is its key there.
+
+        Args:
+            entity_id: e.g. "script.goodnight".
+            snapshot: The registry, or None if it can't be read.
+
+        Returns:
+            It, or None if it can't be read: without the registry, for a script it hasn't
+            got, for one written in YAML outside scripts.yaml (which Home Assistant answers
+            404 for), with a token which isn't an administrator's, or for an answer which
+            isn't a script's - such as one made from a blueprint, whose steps are elsewhere.
+        """
+        if snapshot is None:
+            return None
+        entry = snapshot.entries.get(entity_id)
+        config, why = None, "the registry has no key for it"
+        if entry is not None and entry.unique_id:
+            try:
+                # Quoted whole, so that however the key was made up, it's one part of the path.
+                config = self._request("GET", "/api/config/script/config/" + quote(entry.unique_id, safe="")).json()
+                why = None if isinstance(config, dict) and "sequence" in config else "its answer isn't a script's"
+            except (requests.RequestException, ValueError) as e:
+                why = f"Home Assistant wouldn't say ({e})"
+        # The settings page asks for its list every fifteen seconds, so each script that
+        # can't be read is said once, until it can be.
+        if why is None:
+            self._unreadable.discard(entity_id)
+            return config
+        if entity_id not in self._unreadable:
+            logger.warning(f"Can't see what {entity_id} does, as {why}, so it isn't run by voice or from the "
+                           f"settings page")
+        self._unreadable.add(entity_id)
+        return None
 
     def calendar_names(self) -> List[str]:
         """The calendars to read - those config.yaml names, or every one there is."""
@@ -1289,11 +1545,7 @@ def _names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot
     Returns:
         Whether it's to be refused.
     """
-    # PC_LOCK only excuses words, so a guarded thing's name is looked for with and
-    # without them: neither "turn on the PC lock", for a shutdown button called that,
-    # nor a name with "lock my PC" said in the middle of it, gets by.
-    excused = _runs(_words(PC_LOCK.sub(" ", request.lower())))
-    said = _runs(_words(request)) | excused
+    said, excused = _said(request)
     names, kinds = set(), set()
     for state in states:
         entity = str(state.get("entity_id") or "")
@@ -1301,11 +1553,56 @@ def _names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot
         kind = _guarded(entity, attributes, snapshot)
         if kind is None:
             continue
-        names |= {_words(str(attributes.get("friendly_name") or "")), _words(entity.partition(".")[2].replace("_", " "))}
-        names |= {_words(alias) for alias in (snapshot.aliases(entity) if snapshot else ())}
+        names |= _names(entity, attributes, snapshot)
         kinds |= set(kind)
-    names.discard(())
-    return any("".join(name) in said for name in names) or any(kind in excused for kind in kinds)
+    return any(name in said for name in names) or any(kind in excused for kind in kinds)
+
+
+def _runnables_named(request: str, states: List[Dict], snapshot: Optional[Snapshot]) -> List[str]:
+    """
+    The scripts and scenes a request names, found as _names_guarded finds a guarded thing:
+    by name, the words of its entity id or an other name, as whole words.
+
+    Args:
+        request: e.g. "turn on the porch light".
+        states: Every entity's state, as /api/states has them.
+        snapshot: The registry, or None if it can't be read.
+
+    Returns:
+        Their entity ids, e.g. ["script.porch_light"].
+    """
+    said, _ = _said(request)
+    named = []
+    for state in states:
+        entity = str(state.get("entity_id") or "")
+        if RUNNABLE.fullmatch(entity) and _names(entity, state.get("attributes") or {}, snapshot) & said:
+            named.append(entity)
+    return named
+
+
+def _said(request: str) -> Tuple[Set[str], Set[str]]:
+    """
+    What a request says, for finding names in it as whole words - see _runs.
+
+    Returns:
+        (every run of its words, with and without PC_LOCK's words; the runs of those
+        left once PC_LOCK's are taken out, which alone may say a guarded kind's word).
+    """
+    # PC_LOCK only excuses words, so a guarded thing's name is looked for with and
+    # without them: neither "turn on the PC lock", for a shutdown button called that,
+    # nor a name with "lock my PC" said in the middle of it, gets by.
+    excused = _runs(_words(PC_LOCK.sub(" ", request.lower())))
+    return _runs(_words(request)) | excused, excused
+
+
+def _names(entity_id: str, attributes: Dict, snapshot: Optional[Snapshot]) -> Set[str]:
+    """
+    Every name something goes by, its words run together as _runs has them: its name, the
+    words of its entity id and its other names from the registry - e.g. {"frontdoor"}.
+    """
+    names = {_words(str(attributes.get("friendly_name") or "")), _words(entity_id.partition(".")[2].replace("_", " "))}
+    names |= {_words(alias) for alias in (snapshot.aliases(entity_id) if snapshot else ())}
+    return {"".join(name) for name in names if name}
 
 
 def _runs(words: Tuple[str, ...]) -> Set[str]:
@@ -1337,6 +1634,81 @@ def _target_refused(entity_id: str, state: Optional[Dict], snapshot: Optional[Sn
     # A new Proxmox or HASS.Agent button is in the states at once, but in the registry
     # only up to five minutes later - and both only ever act through buttons.
     return entity_id.partition(".")[0] == "button" and (snapshot is None or snapshot.platform(entity_id) is None)
+
+
+def _worst(reasons: Iterable[Optional[str]]) -> Optional[str]:
+    """The worst of some reasons a script or scene isn't run - WORKS_GUARDED, then UNSEEN - or None for none."""
+    reasons = set(reasons)
+    return WORKS_GUARDED if WORKS_GUARDED in reasons else UNSEEN if UNSEEN in reasons else None
+
+
+def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapshot]) -> Optional[str]:
+    """
+    Why a dict in a script's configuration isn't to be run, by its keys together rather
+    than by any one string in it: the devices it names, or an action given a whole area.
+
+    Args:
+        part: e.g. a step, {"action": "homeassistant.turn_off", "target": {"area_id":
+            "hall"}}, or its target.
+        by_id: Every entity's state, by entity id.
+        snapshot: The registry, or None if it can't be read.
+
+    Returns:
+        WORKS_GUARDED, UNSEEN or None, as for HomeAssistant._walk.
+    """
+    found = []
+    action = part.get("action", part.get("service"))
+    if (isinstance(action, str) and "{{" not in action
+            and action.strip().lower().partition(".")[0] in AREA_WIDE and _reaches_all(part)):
+        found.append(WORKS_GUARDED)
+    devices = part.get("device_id")
+    if devices is not None:
+        # A device action names its device and the domain it acts in, but its entity only
+        # by the registry's own id for it: {"type": "unlock", "device_id": "...",
+        # "entity_id": "4b1e...", "domain": "lock"}.
+        if str(part.get("domain") or "").lower() in GUARDED:
+            found.append(WORKS_GUARDED)
+        for device in devices if isinstance(devices, list) else [devices]:
+            if not isinstance(device, str) or "{{" in device:
+                continue
+            # One the registry hasn't got - or any, without it - could have anything on it.
+            if snapshot is None or device not in snapshot.devices:
+                found.append(UNSEEN)
+            elif any(_guarded(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot) is not None
+                     for entity in snapshot.on_device(device)):
+                found.append(WORKS_GUARDED)
+    return _worst(found)
+
+
+def _reaches_all(step: Dict) -> bool:
+    """
+    Whether an action is given a whole area, floor or label, or "all" for every entity - in
+    its target, or the old way, in its data or the step itself.
+    """
+    for where in (step, step.get("target"), step.get("data"), step.get("data_template")):
+        if not isinstance(where, dict):
+            continue
+        if any(where.get(key) for key in AREA_TARGETS):
+            return True
+        entities = where.get("entity_id")
+        for entity in entities if isinstance(entities, list) else [entities]:
+            if isinstance(entity, str) and "all" in [piece.strip().lower() for piece in entity.split(",")]:
+                return True
+    return False
+
+
+def _script_name(name: str) -> str:
+    """
+    A script's or scene's name as run_script matches it, by its letters and digits alone, as
+    speech-to-text writes a name as it hears it: "my goodnight routine", "The Goodnight
+    script" and "Good night!" are all "goodnight".
+    """
+    words = list(_words(name))
+    if len(words) > 1 and words[0] in ("my", "the"):
+        words = words[1:]
+    if len(words) > 1 and words[-1] in ("script", "scene", "routine"):
+        words = words[:-1]
+    return "".join(words)
 
 
 def _refused(error: Exception) -> bool:

@@ -845,6 +845,19 @@ class ActionExecutor:
             return {"success": False, "message": "I didn't catch whether to switch the lights on or off."}
         return self.home.set_lights(on, light=light, area=area, brightness=brightness, colour=colour, warmth=warmth)
 
+    # What each script or scene does is checked before it's run - see HomeAssistant.run_script.
+    @tool(
+        "Run one of the user's Home Assistant scripts or scenes by name, for wordings like 'do my goodnight "
+        "thing'. Only those exposed to Assist run. What happened is said for you, so just reply 'Okay.'",
+        needs="home",
+        required=["name"],
+        name={"type": "string", "description": "Its name, as the user said it, e.g. 'goodnight'."},
+    )
+    def run_home_script(self, name: Optional[str] = None):
+        if not name or not name.strip():
+            return {"success": False, "message": "I didn't catch which script or scene to run."}
+        return self.home.run_script(name)
+
     @tool(
         "Read the user's calendar for a day or a few days, for 'what have I got on "
         "Thursday?', 'what's on tomorrow?', 'am I busy this weekend?' or 'what's planned "

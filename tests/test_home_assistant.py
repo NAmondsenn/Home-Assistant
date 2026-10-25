@@ -137,9 +137,9 @@ def _thing(entity, name, device_class=None):
 REFUSED = {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
 
 
-def _entry(entity, platform="demo", device=None, original_name=None, aliases=()):
-    """One entity as the registry has it."""
-    return Entry(entity, platform, device, None, entity.partition(".")[2], original_name, tuple(aliases), True)
+def _entry(entity, platform="demo", device=None, original_name=None, aliases=(), exposed=True):
+    """One entity as the registry has it, its unique id its object id."""
+    return Entry(entity, platform, device, None, entity.partition(".")[2], original_name, tuple(aliases), exposed)
 
 
 def _registry(*entries, devices=None):
@@ -825,16 +825,24 @@ def test_without_an_address_and_a_token_its_off(make_config):
 
 STATES = [
     {"entity_id": "script.movie_night", "state": "off", "attributes": {"friendly_name": "Movie night"}},
-    {"entity_id": "scene.relax", "state": "2026-10-20T21:00:00", "attributes": {"friendly_name": "Relax"}},
+    {"entity_id": "scene.relax", "state": "2026-10-20T21:00:00",
+     "attributes": {"friendly_name": "Relax", "entity_id": ["light.kitchen"]}},
     {"entity_id": "script.open_garage", "state": "off", "attributes": {"friendly_name": "Garage"}},
     {"entity_id": "script.leaving", "state": "off", "attributes": {"friendly_name": "Unlock the front door"}},
     {"entity_id": "lock.front_door", "state": "locked", "attributes": {"friendly_name": "Front door"}},
     {"entity_id": "switch.adguard_protection", "state": "on", "attributes": {"friendly_name": "AdGuard protection"}},
 ]
 
+# What Home Assistant's script editor has for Movie night, under the registry's key for it.
+MOVIE_NIGHT = {"/api/config/script/config/movie_night": {
+    "alias": "Movie night", "sequence": [{"action": "light.turn_off", "target": {"entity_id": "light.kitchen"}}]}}
 
-def _state(entity):
-    return next(state for state in STATES if state["entity_id"] == entity)
+
+def _page_house(make_home, answers):
+    """A house with STATES, every one of them in the registry, and what Movie night does - as run() checks it."""
+    home = make_home({"/api/states": STATES, **MOVIE_NIGHT, **answers})
+    home.registry.read = _registry(*[_entry(state["entity_id"]) for state in STATES])
+    return home
 
 
 def test_the_page_is_shown_the_lights_and_only_whats_safe_to_run(make_home):
@@ -844,7 +852,7 @@ def test_the_page_is_shown_the_lights_and_only_whats_safe_to_run(make_home):
                         color_mode="color_temp", color_temp_kelvin=3000),
         _rendered_light("light.porch", "Porch", "Hall", state="off", supported_color_modes=["onoff"]),
         _rendered_light("light.garage", "Garage light", None, state="unavailable", supported_color_modes=None))
-    overview = make_home({"/api/states": STATES, "/api/template": lights}).overview()
+    overview = _page_house(make_home, {"/api/template": lights}).overview()
 
     assert [light["name"] for light in overview["lights"]] == ["Porch", "Kitchen", "Garage light"]
     assert overview["lights"][1] == {"id": "light.kitchen", "name": "Kitchen", "area": "Kitchen", "on": True,
@@ -886,7 +894,7 @@ def test_without_an_administrators_token_the_page_still_has_the_lights(make_home
                "attributes": {"friendly_name": "Kitchen", "brightness": 128, "supported_color_modes": ["color_temp"],
                               "color_mode": "color_temp", "color_temp_kelvin": 3000, "min_color_temp_kelvin": 2500,
                               "max_color_temp_kelvin": 6500, "icon": "mdi:ceiling-light"}}
-    home = make_home({"/api/states": STATES + [kitchen], "/api/template": FakeResponse({}, status=status)})
+    home = _page_house(make_home, {"/api/states": STATES + [kitchen], "/api/template": FakeResponse({}, status=status)})
     overview = home.overview()
 
     assert overview["lights"] == [{"id": "light.kitchen", "name": "Kitchen", "area": None, "on": True,
@@ -981,8 +989,7 @@ def test_only_a_light_is_switched(make_home, entity):
 
 
 def test_a_script_is_run_and_a_scene_set(make_home):
-    home = make_home({"/api/states/script.movie_night": _state("script.movie_night"), "/api/services/script/turn_on": [],
-                      "/api/states/scene.relax": _state("scene.relax"), "/api/services/scene/turn_on": []})
+    home = _page_house(make_home, {"/api/services/script/turn_on": [], "/api/services/scene/turn_on": []})
     assert home.run("script.movie_night") == {"success": True, "message": "Started Movie night."}
     assert home.run("scene.relax") == {"success": True, "message": "Set Relax."}
     assert [(path, sent.get("json")) for _, path, sent in home._session.requests if "services" in path] == [
@@ -993,9 +1000,383 @@ def test_a_script_is_run_and_a_scene_set(make_home):
 @pytest.mark.parametrize("entity", ["script.open_garage", "script.leaving"])
 def test_a_script_which_could_let_anyone_in_isnt_run_from_the_page_either(make_home, entity):
     # Looked up by name again first - one could have been renamed since the page was drawn.
-    home = make_home({f"/api/states/{entity}": _state(entity), "/api/services/script/turn_on": []})
+    home = _page_house(make_home, {"/api/services/script/turn_on": []})
     assert not home.run(entity)["success"]
-    assert [path for _, path, _ in home._session.requests] == [f"/api/states/{entity}"]
+    assert _paths(home) == ["/api/states"]
+
+
+# Scripts and scenes: what each does is checked before it's run - by Assist, by Claude or
+# from the settings page
+
+FRONT_DOOR = _thing("lock.front_door", "Front door")
+PORCH = _thing("light.porch", "Porch light")
+# The PC's sleep button, which is safe by voice, and the HASS.Agent device it's on.
+PC_SLEEP = _thing("button.desk_pc_sleep", "Desk PC Sleep")
+PC_SLEEP_ENTRY = _entry("button.desk_pc_sleep", "mqtt", "desk", "Sleep")
+DESK = {"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}}
+
+# What run_script says when a script or scene can't be checked.
+UNSEEN = "I can't see what {} does, so I don't run it by voice."
+
+
+class NotJSON(FakeResponse):
+    """An answer which isn't JSON, as from a proxy's error page."""
+
+    def json(self):
+        raise json.JSONDecodeError("Expecting value", self.body, 0)
+
+
+def _step(action, **target):
+    """One step of a script, as Home Assistant's script editor writes it - e.g. _step("light.turn_off", area_id="hall")."""
+    return {"action": action, "metadata": {}, "data": {}, "target": target}
+
+
+def _config(alias, *steps):
+    """A script's configuration, as /api/config/script/config/<key> answers for it."""
+    return {"alias": alias, "sequence": list(steps), "mode": "single", "description": ""}
+
+
+# Goodnight as live check 9 found it: the lights off, the music paused if it's playing and
+# the PC put to sleep - by entity id alone, with one if and then.
+GOODNIGHT = _config("Goodnight",
+                    _step("light.turn_off", entity_id=["light.lamp", "light.porch"]),
+                    {"if": [{"condition": "state", "entity_id": "media_player.bedroom", "state": "playing"}],
+                     "then": [_step("media_player.media_pause", entity_id="media_player.bedroom")]},
+                    _step("button.press", entity_id="button.desk_pc_sleep"))
+UNLOCKS = _config("Leaving", _step("lock.unlock", entity_id="lock.front_door"))
+
+
+def _scripted(make_home, scripts, *others, entries=(), devices=None, exposed=True):
+    """
+    A house with these scripts - {entity id: (name, what Home Assistant answers for its
+    configuration)} - and these other things' states. The registry has them all, each with
+    its object id as its key and exposed to Assist as exposed says, bar those given in entries.
+    """
+    states = [_thing(entity, name) for entity, (name, _) in scripts.items()] + list(others)
+    home = make_home({"/api/states": states, "/api/services/script/turn_on": [], "/api/services/scene/turn_on": [],
+                      "/api/conversation/process": _assist("action_done", "Done"), "/api/template": _rendered(),
+                      **{f"/api/config/script/config/{entity.partition('.')[2]}": answer
+                         for entity, (_, answer) in scripts.items()}})
+    given = {entry.entity_id for entry in entries}
+    home.registry.read = _registry(*entries, *[_entry(state["entity_id"], exposed=exposed) for state in states
+                                               if state["entity_id"] not in given], devices=devices)
+    return home
+
+
+def _now(home):
+    """The house's states and registry, as works_guarded is given them."""
+    return home._session.answers["/api/states"], home.registry.read
+
+
+def _ran(home):
+    """The scripts run and scenes set, as each service call's path and entity."""
+    return [(path, sent["json"]) for _, path, sent in home._session.requests if "/api/services/" in path]
+
+
+def _scene(entity, name, members):
+    """A scene's state, its members as its entity_id attribute - or none at all, for None."""
+    attributes = {"friendly_name": name, **({"entity_id": members} if members is not None else {})}
+    return {"entity_id": entity, "state": "2026-10-24T21:00:00", "attributes": attributes}
+
+
+def test_a_scene_with_a_lock_among_its_members_is_refused(make_home):
+    scene = _scene("scene.movie_night", "Movie night", ["light.lamp", "lock.front_door"])
+    home = _scripted(make_home, {}, scene, LAMP, FRONT_DOOR)
+    assert home.works_guarded("scene.movie_night", *_now(home))
+    assert home.run_script("movie night") == {"success": False, "message": REFUSED["message"]}
+    # As is one with a garage among them, by its device class.
+    scene["attributes"]["entity_id"] = ["light.lamp", "cover.side"]
+    home._session.answers["/api/states"].append(_thing("cover.side", "Side", "garage"))
+    assert home.works_guarded("scene.movie_night", *_now(home))
+    # Without them, it's set.
+    scene["attributes"]["entity_id"] = ["light.lamp"]
+    assert not home.works_guarded("scene.movie_night", *_now(home))
+    assert home.run_script("movie night") == {"success": True, "message": "Set Movie night."}
+    assert _ran(home) == [("/api/services/scene/turn_on", {"entity_id": "scene.movie_night"})]
+
+
+def test_a_script_that_unlocks_is_refused(make_home):
+    home = _scripted(make_home, {"script.leaving": ("Leaving", UNLOCKS)}, FRONT_DOOR)
+    assert home.works_guarded("script.leaving", *_now(home))
+    assert home.run_script("leaving") == {"success": False, "message": REFUSED["message"]}
+    # The action alone does it, whatever it's given.
+    home._session.answers["/api/config/script/config/leaving"] = _config(
+        "Leaving", _step("lock.unlock", entity_id="{{ door }}"))
+    assert home.works_guarded("script.leaving", *_now(home))
+    # And the lock, given to any action - here the old way, two entities to a string, under "service" and "data".
+    home._session.answers["/api/config/script/config/leaving"] = _config(
+        "Leaving", {"service": "homeassistant.turn_off", "data": {"entity_id": "light.lamp, Lock.Front_Door"}})
+    assert home.works_guarded("script.leaving", *_now(home))
+    # Nor, as on the settings page, is one whose name says it unlocks, whatever it does.
+    home = _scripted(make_home, {"script.shed": ("Unlock the shed", _config("Shed", _step("light.turn_on",
+                                                                                          entity_id="light.lamp")))})
+    assert home.run_script("unlock the shed") == {"success": False, "message": REFUSED["message"]}
+    assert _ran(home) == []
+
+
+def test_a_script_working_a_group_with_a_garage_in_it_is_refused(make_home):
+    # A group's members, like a scene's, are its entity_id attribute.
+    group = _scene("group.outside", "Outside", ["light.porch", "cover.side"])
+    home = _scripted(make_home, {"script.away": ("Away", _config("Away", _step("cover.open_cover",
+                                                                               entity_id="group.outside")))},
+                     group, PORCH, _thing("cover.side", "Side", "garage"))
+    assert home.works_guarded("script.away", *_now(home))
+    group["attributes"]["entity_id"] = ["light.porch"]
+    assert not home.works_guarded("script.away", *_now(home))
+
+
+def test_a_script_pressing_a_button_the_registry_cant_vouch_for_cant_be_checked(make_home):
+    # A new Proxmox or HASS.Agent button is in the states at once, but in the registry only
+    # up to five minutes later.
+    press = _config("Chime", _step("button.press", entity_id="button.pve3_shutdown"))
+    home = _scripted(make_home, {"script.chime": ("Chime", press)}, _thing("button.pve3_shutdown", "pve3 Shutdown"))
+    home.registry.read = _registry(_entry("script.chime"))
+    assert home.run_script("chime") == {"success": False, "message": UNSEEN.format("Chime")}
+    # Once the registry has it, of a harmless integration, it's pressed.
+    home.registry.read = _registry(_entry("script.chime"), _entry("button.pve3_shutdown"))
+    assert home.run_script("chime") == {"success": True, "message": "Started Chime."}
+
+
+def test_a_script_that_runs_one_that_unlocks_is_refused(make_home):
+    for evening in (_config("Evening", {"action": "script.leaving"}),
+                    _config("Evening", _step("script.turn_on", entity_id="script.leaving")),
+                    _config("Evening", {"if": [], "then": [_step("light.turn_on", entity_id="light.lamp")],
+                                        "else": [{"action": "script.leaving"}]})):
+        home = _scripted(make_home, {"script.evening": ("Evening", evening), "script.leaving": ("Leaving", UNLOCKS)},
+                         LAMP, FRONT_DOOR)
+        assert home.works_guarded("script.evening", *_now(home)), evening
+        assert home.run_script("evening") == {"success": False, "message": REFUSED["message"]}
+
+    # A script which runs itself, or two which run each other, are each read once, not for ever.
+    again = _config("Again", _step("light.turn_on", entity_id="light.lamp"), {"action": "script.again"},
+                    _step("script.turn_on", entity_id=["script.other", "script.again"]))
+    home = _scripted(make_home, {"script.again": ("Again", again),
+                                 "script.other": ("Other", _config("Other", {"action": "script.again"}))}, LAMP)
+    assert not home.works_guarded("script.again", *_now(home))
+    assert _paths(home) == ["/api/config/script/config/again", "/api/config/script/config/other"]
+
+
+def test_a_script_with_a_locks_device_action_is_refused(make_home):
+    # A device action names the lock's device and the registry's own id for it, never its entity id.
+    unlock = {"type": "unlock", "device_id": "door", "entity_id": "4b1e0c7d", "domain": "lock"}
+    entries = [_entry("lock.front_door", device="door"), _entry("light.lamp", device="lamp"),
+               _entry("sensor.hub_signal", device="hub")]
+    devices = {"door": {"name": "Front door"}, "lamp": {"name": "Lamp"}, "hub": {"name": "Hub"}}
+    home = _scripted(make_home, {"script.leaving": ("Leaving", _config("Leaving", unlock))}, FRONT_DOOR, LAMP,
+                     entries=entries, devices=devices)
+    assert home.works_guarded("script.leaving", *_now(home))
+    # By its domain alone, too - and any action on a device with a lock on it.
+    for step in ({**unlock, "device_id": "hub"}, _step("homeassistant.turn_off", device_id="door"),
+                 _step("light.turn_off", device_id=["lamp", "door"])):
+        home._session.answers["/api/config/script/config/leaving"] = _config("Leaving", step)
+        assert home.run_script("leaving") == {"success": False, "message": REFUSED["message"]}, step
+    # A device the registry hasn't got can't be checked.
+    home._session.answers["/api/config/script/config/leaving"] = _config(
+        "Leaving", {"type": "turn_on", "device_id": "stranger", "entity_id": "9f2a", "domain": "light"})
+    assert home.run_script("leaving") == {"success": False, "message": UNSEEN.format("Leaving")}
+    # While a light's device action is fine.
+    home._session.answers["/api/config/script/config/leaving"] = _config(
+        "Leaving", {"type": "turn_on", "device_id": "lamp", "entity_id": "9f2a", "domain": "light"})
+    assert not home.works_guarded("script.leaving", *_now(home))
+
+
+def test_an_area_target_is_refused_only_for_services_that_could_reach_a_lock(make_home):
+    # Ruling 3: any action of these domains, given a whole area, floor or label - or every
+    # entity, as "all" - could reach a lock, a door, the PC's shutdown or Proxmox's buttons
+    # and switches in it.
+    refused = [("homeassistant.turn_off", {"area_id": "hall"}), ("homeassistant.turn_on", {"label_id": "outside"}),
+               ("cover.open_cover", {"floor_id": "ground"}), ("button.press", {"area_id": "study"}),
+               ("switch.turn_off", {"area_id": "rack"}), ("homeassistant.turn_off", {"entity_id": "all"}),
+               ("lock.lock", {"area_id": "hall"}), ("script.turn_on", {"area_id": "hall"})]
+    fine = [("light.turn_off", {"area_id": "hall"}), ("light.turn_off", {"entity_id": "all"}),
+            ("media_player.media_pause", {"floor_id": "ground"})]
+    for (action, target), want in [*[(step, True) for step in refused], *[(step, False) for step in fine]]:
+        home = _scripted(make_home, {"script.away": ("Away", _config("Away", _step(action, **target)))})
+        assert home.works_guarded("script.away", *_now(home)) is want, (action, target)
+    # The old way, with the area in the step's data.
+    home = _scripted(make_home, {"script.away": ("Away", _config("Away", {"service": "homeassistant.turn_off",
+                                                                          "data": {"area_id": "hall"}}))})
+    assert home.works_guarded("script.away", *_now(home))
+
+
+def test_a_templated_target_is_left_to_the_user(make_home):
+    # 0008's "My calls": a script which builds its targets from a template is the user's
+    # own, and they exposed it.
+    porch = _config("Porch", _step("homeassistant.turn_on", entity_id="{{ 'lock.front_door' if late else 'light.porch' }}"))
+    home = _scripted(make_home, {"script.porch": ("Porch", porch)}, FRONT_DOOR, PORCH)
+    assert not home.works_guarded("script.porch", *_now(home))
+    assert home.run_script("porch") == {"success": True, "message": "Started Porch."}
+
+
+@pytest.mark.parametrize("answer", [
+    FakeResponse({"message": "Resource not found"}, status=404),  # written in YAML outside scripts.yaml
+    FakeResponse({"message": "Unauthorized"}, status=403),  # a token which isn't an administrator's
+    NotJSON("<html>Bad gateway</html>"),
+    {"alias": "Goodnight", "use_blueprint": {"path": "goodnight.yaml", "input": {}}},  # no sequence to read
+    ["light.turn_off"],
+    requests.ConnectionError("down"),
+])
+def test_a_script_that_cant_be_checked_is_refused(make_home, answer):
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", answer)}, LAMP)
+    assert home.works_guarded("script.goodnight", *_now(home))
+    # Said apart from working something guarded, on the page as by voice (ruling 2).
+    assert home.run_script("goodnight") == {"success": False, "message": UNSEEN.format("Goodnight")}
+    assert home.run("script.goodnight") == {"success": False,
+                                            "message": "Nova can't see what Goodnight does, so it doesn't run it."}
+    assert _ran(home) == []
+
+
+def test_a_scripts_configuration_is_read_by_its_unique_id(make_home):
+    # Ruling 8: the key is the registry's unique id, which a script made in the editor
+    # needn't share with its object id.
+    home = make_home({"/api/states": [_thing("script.goodnight", "Goodnight"), LAMP],
+                      "/api/config/script/config/1730000000000": GOODNIGHT,
+                      "/api/config/script/config/a%2F..%2Fb": GOODNIGHT})
+    home.registry.read = _registry(Entry("script.goodnight", "script", None, None, "1730000000000", None, (), True),
+                                   _entry("light.lamp"))
+    assert not home.works_guarded("script.goodnight", *_now(home))
+    assert _paths(home) == ["/api/config/script/config/1730000000000"]
+    # A key is sent as one part of the path, never as more of it.
+    home.registry.read = _registry(Entry("script.goodnight", "script", None, None, "a/../b", None, (), True),
+                                   _entry("light.lamp"))
+    assert not home.works_guarded("script.goodnight", *_now(home))
+    assert _paths(home)[-1] == "/api/config/script/config/a%2F..%2Fb"
+    # One the registry hasn't got has no key, so it can't be checked.
+    home.registry.read = _registry(_entry("light.lamp"))
+    assert home.works_guarded("script.goodnight", *_now(home))
+    assert len(_paths(home)) == 2
+
+
+def test_a_script_naming_a_lock_as_a_key_is_refused(make_home):
+    # Ruling 4: scene.apply's own scene names each thing as a key.
+    arrive = _config("Arrive", {"action": "scene.apply",
+                                "data": {"entities": {"light.lamp": "on", "lock.front_door": "unlocked"}}})
+    home = _scripted(make_home, {"script.arrive": ("Arrive", arrive)}, LAMP, FRONT_DOOR)
+    assert home.works_guarded("script.arrive", *_now(home))
+    assert home.run_script("arrive") == {"success": False, "message": REFUSED["message"]}
+
+
+def test_a_script_that_works_an_automation_cant_be_checked(make_home):
+    # Ruling 5: an automation's contents aren't walked, and one could unlock.
+    for step in (_step("automation.trigger", entity_id="automation.arriving"),
+                 _step("homeassistant.turn_on", entity_id="automation.arriving"),
+                 {"action": "automation.turn_on", "target": {"label_id": "doors"}}):
+        home = _scripted(make_home, {"script.arrive": ("Arrive", _config("Arrive", step))},
+                         _thing("automation.arriving", "Arriving"))
+        assert home.run_script("arrive") == {"success": False, "message": UNSEEN.format("Arrive")}, step
+
+
+def test_a_scene_an_integration_made_cant_be_checked(make_home):
+    # Ruling 6: with no entity_id attribute, its members can't be told.
+    home = _scripted(make_home, {}, _scene("scene.hue_relax", "Relax", None))
+    assert home.works_guarded("scene.hue_relax", *_now(home))
+    assert home.run_script("relax") == {"success": False, "message": UNSEEN.format("Relax")}
+    assert _ran(home) == []
+
+
+def test_a_script_that_only_works_the_lights_runs_by_voice(make_home):
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT)}, LAMP, PORCH, PC_SLEEP,
+                     _thing("media_player.bedroom", "Bedroom"), entries=[PC_SLEEP_ENTRY], devices=DESK)
+    assert home.run_script("goodnight") == {"success": True, "message": "Started Goodnight."}
+    assert _ran(home) == [("/api/services/script/turn_on", {"entity_id": "script.goodnight"})]
+    # Asked for as people say it.
+    for said in ("my goodnight routine", "The Goodnight script", "Good night!"):
+        assert home.run_script(said) == {"success": True, "message": "Started Goodnight."}, said
+
+
+def test_a_script_not_exposed_to_assist_isnt_run_by_voice(make_home):
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT)}, LAMP, PORCH, exposed=False)
+    assert home.run_script("goodnight") == {"success": False,
+                                            "message": "Goodnight isn't exposed to Assist, so I don't run it by voice."}
+    assert _paths(home) == ["/api/states"]
+
+
+def test_without_the_registry_no_script_is_run_by_voice(make_home):
+    # Ruling 7: a script's configuration is found by the registry's key for it.
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT)}, LAMP, PORCH)
+    home.registry.read = None
+    assert home.run_script("goodnight") == {"success": False,
+                                            "message": "I can't tell which scripts can be run by voice just now."}
+    assert _paths(home) == []
+
+
+def test_two_scripts_that_fit_are_asked_about(make_home):
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT)}, _scene("scene.bedtime", "Bedtime", []),
+                     entries=[_entry("script.goodnight", aliases=["bedtime"])])
+    assert home.run_script("bedtime") == {"success": False, "message": "Which one, Bedtime or Goodnight?"}
+    assert home.run_script("the hall lights") == {"success": False,
+                                                  "message": "I haven't got a script or scene called that."}
+    assert _ran(home) == []
+
+
+def test_assist_never_runs_a_script_that_unlocks(make_home):
+    home = _scripted(make_home, {"script.evening": ("Evening", UNLOCKS)}, FRONT_DOOR)
+    home.socket.answer = _debugged(_match("HassTurnOn", "script.evening"))
+    assert home.command("run evening", wider=True) == REFUSED
+    # By a name Assist knows it by that the registry hasn't caught up with, too.
+    assert home.command("run nightfall", wider=True) == REFUSED
+    assert "/api/conversation/process" not in _paths(home)
+    # Once it only works the lights, Assist runs it.
+    home._session.answers["/api/config/script/config/evening"] = _config(
+        "Evening", _step("light.turn_on", entity_id="light.porch"))
+    assert home.command("run evening", wider=True) == {"success": True, "message": "Done", "chime": True}
+
+
+def test_a_light_sentence_naming_a_script_that_unlocks_is_refused_without_the_debugging(make_home):
+    # The debugging isn't answering - FakeSocket raises - so only light sentences go to
+    # Assist, and only the checks of what they name stand between Assist and the script.
+    for scripts, entries in (({"script.porch_light": ("Porch light", UNLOCKS)}, ()),
+                             ({"script.welcome": ("Welcome", UNLOCKS)}, [_entry("script.welcome", aliases=["Porch light"])])):
+        home = _scripted(make_home, scripts, FRONT_DOOR, PORCH, entries=entries)
+        assert home.command("turn on the porch light") == REFUSED
+        assert "/api/conversation/process" not in _paths(home)
+        # Its name alone doesn't refuse it: once it only works the lights, the sentence goes to Assist.
+        for path in [path for path in home._session.answers if path.startswith("/api/config/script/config/")]:
+            home._session.answers[path] = _config("Porch light", _step("light.turn_on", entity_id="light.porch"))
+        assert home.command("turn on the porch light")["success"]
+
+
+def test_the_settings_page_wont_run_a_script_that_unlocks_either(make_home):
+    home = _scripted(make_home, {"script.evening": ("Evening", UNLOCKS)}, FRONT_DOOR)
+    assert home.run("script.evening") == {"success": False,
+                                          "message": "Nova doesn't run anything which locks, unlocks or opens."}
+    # Nor, without the registry, one which only works the lights (ruling 7).
+    home._session.answers["/api/config/script/config/evening"] = _config(
+        "Evening", _step("light.turn_on", entity_id="light.porch"))
+    home.registry.read = None
+    assert home.run("script.evening") == {"success": False,
+                                          "message": "Nova can't see what Evening does, so it doesn't run it."}
+    # Nor one that isn't there to check.
+    home.registry.read = _registry(_entry("script.evening"))
+    assert not home.run("script.gone")["success"]
+    assert _ran(home) == []
+
+
+def test_the_page_only_lists_the_scripts_and_scenes_it_can_run(make_home):
+    # Ruling 1: never a button that can't work.
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT), "script.evening": ("Evening", UNLOCKS),
+                                 "script.laptop_sleep": ("Laptop sleep", FakeResponse({}, status=404))},
+                     _scene("scene.relax", "Relax", ["light.lamp"]), _scene("scene.hue_relax", "Hue relax", None),
+                     LAMP, PORCH, FRONT_DOOR, PC_SLEEP, entries=[PC_SLEEP_ENTRY], devices=DESK)
+    assert [routine["id"] for routine in home.overview()["routines"]] == ["script.goodnight", "scene.relax"]
+    # Without the registry, run() would refuse them all, so the page has none.
+    home.registry.read = None
+    overview = home.overview()
+    assert overview["success"] and overview["routines"] == []
+
+
+def test_a_script_that_cant_be_read_is_said_once(make_home, caplog):
+    # The settings page asks for its list every fifteen seconds.
+    home = _scripted(make_home, {"script.laptop_sleep": ("Laptop sleep", FakeResponse({}, status=404))})
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        for _ in range(3):
+            home.overview()
+        home._session.answers["/api/config/script/config/laptop_sleep"] = _config("Laptop sleep")
+        home.overview()
+        home._session.answers["/api/config/script/config/laptop_sleep"] = FakeResponse({}, status=404)
+        home.overview()
+    said = [record for record in caplog.records if "script.laptop_sleep" in record.getMessage()]
+    assert len(said) == 2 and all(record.levelname == "WARNING" for record in said)
 
 
 # Reading and working the lights
