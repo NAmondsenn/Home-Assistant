@@ -1160,9 +1160,16 @@ class SettingsPage:
         names = self._satellite_names()
         if names is None:
             return {"success": False, "message": SATELLITES_UNREADABLE}
-        if name not in names or not self.brain.remove_satellite(name):
+        emptied = self.brain.remove_satellite(name) if name in names else None
+        if emptied is None:
             return {"success": False, "message": f"There's no satellite called {name}."}
         logger.info(f"Settings page: {who} removed the {name} satellite")
+        if not emptied:
+            # Said whatever the question said, which was asked from what the page
+            # last heard - connected then, it may have gone since.
+            return {"success": True, "message": f"Removed {name}. It wasn't connected, so it still has a copy of its "
+                                                f"alarms for the next week - wipe it or connect it before switching "
+                                                f"it on."}
         return {"success": True, "message": f"Removed {name}."}
 
     def make_default(self, name, who: str) -> Dict:

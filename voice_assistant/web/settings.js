@@ -527,8 +527,14 @@ async function newPassword(name) {
 // Removes a satellite, once the user's sure - asked with what happens to what was
 // its, from what the page knows: where its timers and alarms go, whether the default
 // moves, and whether it's away with a copy of its alarms nothing here can empty.
-async function removeSatellite(satellite) {
-  const name = satellite.name;
+// Asked from Nova's state afresh, not the last look's, which can be twenty seconds
+// old - long enough to have shut the Pi down since. Gone in the moment between,
+// Nova's answer says it still has its copy.
+async function removeSatellite(shown) {
+  const name = shown.name;
+  await load();
+  const satellite = satellites.find((other) => other.name === name);
+  if (!satellite) return;
   const others = satellites.filter((other) => other.name !== name);
   const next = satellite.default ? others[0]?.name : satellites.find((other) => other.default)?.name;
   let question = `Remove ${name}? It's let go now, and can't connect again until it's added again.`;

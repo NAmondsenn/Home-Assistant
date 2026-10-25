@@ -560,7 +560,7 @@ def test_removing_a_connected_satellite_empties_its_copy_first(brain, connect):
     assert kitchen.copy() == []
     assert brain.session_for("kitchen") is None and "kitchen" not in brain.sessions
     assert brain.satellites() == ["bedroom"]
-    assert brain.remove_satellite("kitchen") is False
+    assert brain.remove_satellite("kitchen") is None
 
 
 def test_removing_one_thats_away_moves_its_alarms_and_warns(brain, connect, caplog):
@@ -1052,6 +1052,24 @@ def test_a_satellite_is_let_go_outside_the_pages_save_lock(brain, connect, tmp_p
     assert page.new_password("bedroom", "you@example.com")["success"]
     assert page.remove_satellite("kitchen", "you@example.com") == {"success": True, "message": "Removed kitchen."}
     assert {name for name, _ in held} == {"bedroom", "kitchen"} and not any(locked for _, locked in held)
+
+
+def test_the_page_says_when_a_removed_satellite_still_has_its_copy(brain, connect, tmp_path, monkeypatch):
+    # The page's question is asked from what it last heard, up to twenty seconds
+    # old - so a Pi shut down just before is asked about as connected.
+    monkeypatch.setattr(paths, "CONFIG_FILE", str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(paths, "SECRETS_FILE", str(tmp_path / ".env"))
+    page = settings_page_module.SettingsPage(["you@example.com"], port=0, brain=brain)
+    brain.passwords.add("hall", HALL)
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    connected(brain, "kitchen")
+
+    assert brain.remove_satellite("hall") is False
+    assert page.remove_satellite("bedroom", "you@example.com") == {
+        "success": True, "message": "Removed bedroom. It wasn't connected, so it still has a copy of its alarms "
+                                    "for the next week - wipe it or connect it before switching it on."}
+    assert page.remove_satellite("kitchen", "you@example.com") == {"success": True, "message": "Removed kitchen."}
 
 
 def test_a_timer_rings_on_its_satellite_or_waits_for_its_copy(brain, connect):

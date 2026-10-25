@@ -234,9 +234,10 @@ class FakeBrain:
 
     def remove_satellite(self, name):
         if name not in self.known:
-            return False
+            return None
         self.known.remove(name)
-        return True
+        # Whether its copy was emptied - it was connected.
+        return name in self.sessions
 
     def make_default(self, name):
         if name not in self.known:
@@ -1358,7 +1359,9 @@ def test_a_satellite_is_removed_or_made_the_default_on_the_page(served):
     said = [json.loads(post(path, name, X_Nova="page")[2])
             for path, name in [("/api/satellites/remove", "kitchen"), ("/api/satellites/default", "hall"),
                                ("/api/satellites/remove", "ghost"), ("/api/satellites/default", "ghost")]]
-    assert said == [{"success": True, "message": "Removed kitchen."},
+    # The kitchen wasn't connected, so nothing could empty its copy.
+    assert said == [{"success": True, "message": "Removed kitchen. It wasn't connected, so it still has a copy of its "
+                                                 "alarms for the next week - wipe it or connect it before switching it on."},
                     {"success": True, "message": "hall is the default now."},
                     {"success": False, "message": "There's no satellite called ghost."},
                     {"success": False, "message": "There's no satellite called ghost."}]

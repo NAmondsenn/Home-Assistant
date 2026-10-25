@@ -239,6 +239,9 @@ class Brain:
         self._restarts_told: Dict[str, float] = {}
         # Whether what rang on no satellite has been given to the default yet.
         self._unowned_given = False
+        # Whether each satellite removed had its copy of the alarms emptied, for
+        # remove_satellite to say - whichever look handled the removal.
+        self._emptied: Dict[str, bool] = {}
         self._server: Optional[_Server] = None
         self._stopped = threading.Event()
 
@@ -493,7 +496,7 @@ class Brain:
             self._let_go(session)
         return password
 
-    def remove_satellite(self, name: str) -> bool:
+    def remove_satellite(self, name: str) -> Optional[bool]:
         """
         Stops letting a satellite in, as the settings page asks, and handles it
         straight away rather than at the server's next look - see _on_removed.
@@ -502,12 +505,20 @@ class Brain:
             name: The satellite.
 
         Returns:
-            Whether there was one to remove.
+            Whether its copy of the alarms was emptied - False if it wasn't
+            connected, or couldn't be sent the empty one, so it still rings them
+            if it's switched on within the week. None if there was none to remove.
         """
+        # One from a removal before, by the command line, isn't this one's.
+        with self._lock:
+            self._emptied.pop(name, None)
         if not self.passwords.remove(name):
-            return False
+            return None
+        # Handled by this look, or by the server's poll before it - which this
+        # waits for.
         self._shut_out_removed()
-        return True
+        with self._lock:
+            return self._emptied.pop(name, False)
 
     def make_default(self, name: str):
         """
@@ -776,6 +787,8 @@ class Brain:
             with self._sending_alarms:
                 emptied = session.satellite.connected and session.satellite.send_alarms([])
             self._let_go(session)
+        with self._lock:
+            self._emptied[name] = emptied
         if not emptied:
             logger.warning(f"The {name} satellite was removed while it wasn't connected, so it still has a copy "
                            f"of its alarms for the next week, and rings them if it's switched on before then")
