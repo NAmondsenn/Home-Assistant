@@ -162,8 +162,8 @@ timers:
 
 sounds:
   chime_enabled: true
-  # The sound before a reminder or other announcement. A timer's beep and an alarm's
-  # sound always play, whatever this says.
+  # The sound before an alert or a battery warning. What the clock rings - a timer,
+  # a reminder or an alarm - always has its sound, whatever this says.
   reminder_enabled: true
   # A short blip after the wake word (and before a follow-up answer) to say it's listening,
   # and the same blip backwards when it gave up without hearing anything.

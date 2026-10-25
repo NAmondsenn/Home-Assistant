@@ -726,11 +726,12 @@ class Brain:
 
         Args:
             satellite: Where it rings - or None for the default satellite.
-            message, sound, boost, still_wanted, playback: As Session.announce has them.
+            message, sound, boost, still_wanted, playback: As Session.announce has them. Whatever the
+            clock says is ringing, so its sound is never switched off.
         """
         session = self.session_for(satellite)
         if session is not None:
-            session.announce(message, sound, boost, still_wanted=still_wanted, **playback)
+            session.announce(message, sound, boost, still_wanted=still_wanted, ringing=True, **playback)
 
     def _alert(self, alert) -> bool:
         """

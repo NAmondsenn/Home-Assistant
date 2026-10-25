@@ -61,10 +61,6 @@ PLAYBACK_SLACK = 60.0
 # How often waiting for a sound checks whether it's been lost track of, in seconds.
 PLAYBACK_CHECK = 0.1
 
-# The sound before a reminder or other announcement, which sounds.reminder_enabled
-# switches off. A timer's beep and an alarm's sound are never switched off by it.
-REMINDER_SOUND = "announcement_sound.wav"
-
 # How often Home Assistant is asked which device is this satellite's, and which room
 # it's in, in seconds: every half a minute until it's found - it isn't until Home
 # Assistant has taken in the device's MQTT announcement - then every five minutes,
@@ -690,7 +686,7 @@ class Session:
     # What goes off by itself
 
     def announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None,
-                 start=0.0, length=None, level=1.0):
+                 start=0.0, length=None, level=1.0, ringing=False):
         """
         Speaks a message which the user has scheduled, e.g. a timer, on the satellite -
         what the brain's clock calls for the timers and alarms set from it, and what
@@ -714,6 +710,10 @@ class Session:
             length: Seconds of the sound to play, or None for all of it.
             level: How loud the sound plays, as a share of the volume - an alarm
                    builds up from quiet. The message itself is always at full volume.
+            ringing: True for what the clock rings - a timer, a reminder or an alarm -
+                     whose sound is never switched off. Otherwise the sound before an
+                     alert or a battery warning goes if sounds.reminder_enabled is off:
+                     an alarm silenced by a sound switch would be a missed wake-up.
 
         Returns:
             Whether it was said - not if still_wanted turned False first, or it failed, or
@@ -726,6 +726,8 @@ class Session:
         # The music is held from now, before waiting for any conversation to finish,
         # so it doesn't come back in the gap between the two.
         self.music.hold()
+        if not ringing and not self.reminder_sound_enabled:
+            sound = None
         try:
             with self._announcing:
                 return self._announce_in_turn(message, sound, boost, still_wanted, start, length, level)
@@ -752,9 +754,7 @@ class Session:
                            else f"\n{self.assistant_name}: [{sound}]")
 
             # A sound first, so the user knows the assistant is about to speak.
-            # Only the reminder's own sound can be switched off - an alarm that could be silenced
-            # by it would be a missed wake-up, and a timer's beep is how it's noticed.
-            if sound and (sound != REMINDER_SOUND or self.reminder_sound_enabled):
+            if sound:
                 chimed = self._play_announcement(self.speaker.play_file(
                     str(self.brain.sounds_folder / sound), volume=volume * level, kind="announcement",
                     start=start, length=length), still_wanted)

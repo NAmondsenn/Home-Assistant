@@ -140,8 +140,9 @@ class FakeSession:
             self.happened.append(("closed", self.satellite.name, self.number))
 
     def announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None,
-                 start=0.0, length=None, level=1.0):
+                 start=0.0, length=None, level=1.0, ringing=False):
         self.announced.append(message)
+        self.rung = getattr(self, "rung", []) + [ringing]
         return self.said
 
     def alert(self, alert):
@@ -426,6 +427,8 @@ def test_a_timer_rings_on_its_satellite_or_waits_for_its_copy(brain, connect):
     # Rung on the satellite it was set from, which needn't be told which that is - in
     # as many rounds as a tick a minute on brings.
     assert session.announced and set(session.announced) == {"Timer for 1 minute."}
+    # Said as ringing, so no sound switch silences it.
+    assert set(session.rung) == {True}
     # The kitchen isn't there, so the brain says nothing of its reminder: the kitchen
     # rings it from its own copy.
     assert [entry["kind"] for entry in kitchen.copy()] == ["timer"]

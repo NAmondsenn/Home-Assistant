@@ -1168,13 +1168,14 @@ def test_the_reminder_sound_is_switched_off_straight_away(brain, connect, make_s
     assert pi.messages("play_sound") == [] and len(pi.messages("play_stream")) == 1
 
 
-@pytest.mark.parametrize("sound, start", [("alarm_sound.wav", 4.0), ("timer_beep.wav", 0.0)],
-                         ids=["an alarm's later burst", "a timer's beep"])
-def test_the_reminder_sound_switch_never_silences_an_alarm_or_a_timer(brain, connect, make_session, sound, start):
+@pytest.mark.parametrize("sound, start", [("alarm_sound.wav", 4.0), ("timer_beep.wav", 0.0),
+                                           ("announcement_sound.wav", 0.0)],
+                         ids=["an alarm's later burst", "a timer's beep", "a labelled timer's reminder"])
+def test_the_reminder_sound_switch_never_silences_what_the_clock_rings(brain, connect, make_session, sound, start):
     # A wake-up alarm which rang silently after its first line would be a missed wake-up.
     satellite, pi = connect()
     session = make_session(satellite)
     brain.config.apply({("sounds", "reminder_enabled"): False})
 
-    session.announce(None, sound, boost=True, start=start, length=2.0)
+    session.announce(None, sound, boost=True, start=start, length=2.0, ringing=True)
     assert [message["name"] for message in pi.messages("play_sound")] == [sound]
