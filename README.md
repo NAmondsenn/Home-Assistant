@@ -1,6 +1,6 @@
 # Nova
 
-A self-hosted voice assistant, with a Raspberry Pi in each room to talk to. Say "Hey Nova", ask for something, and it answers out loud - timers, reminders, alarms, music from your own Navidrome server or Spotify, the lights and your calendar through Home Assistant, the weather, and general questions through Claude. Everything except the questions themselves and Spotify stays on your own network.
+A self-hosted voice assistant, with a Raspberry Pi in each room to talk to. Say "Hey Nova", ask for something, and it answers out loud - timers, reminders, alarms, music from your own Navidrome server or Spotify, the lights and your calendar through Home Assistant, the weather, and general questions through Claude. Everything stays on your own network except the questions themselves, Spotify, and the notifications and rings sent to the Mac, tablet and phone through the Home Assistant app, which go by its push service.
 
 It's built in two halves - see [docs/decisions/0006](docs/decisions/0006-the-pi-as-a-satellite.md) - and in stages, in [docs/roadmap.md](docs/roadmap.md). The **brain** runs on a home server (a container on PVE2) and does everything which thinks: speech-to-text, Claude, the voice, music, Home Assistant, timers, memory and the settings page. A **satellite** is a Raspberry Pi in a room, which only hears and speaks: its microphone, speaker and wake word. One brain looks after any number of satellites.
 
