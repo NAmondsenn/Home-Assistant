@@ -2457,7 +2457,8 @@ def test_status_leaves_out_network_and_app_sensors_by_their_id(make_home):
 @pytest.mark.parametrize("address", [
     "192.168.0.10", "fe80::1", "aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "10.0.0.2, 10.0.0.3", "10.0.0.2:8080",
     "http://10.0.0.2/", "[fe80::1]", "Loopback on ::1 only", "fe80::1%eth0", "(aa:bb:cc:dd:ee:ff)", "10.0.0.0/24",
-    "Connected to 10.0.0.2.", "aabbccddeeff", "0011223344ab", "Link AABBCCDDEEFF up", "::ffff:10.0.0.2"])
+    "Connected to 10.0.0.2.", "aabbccddeeff", "0011223344ab", "Link AABBCCDDEEFF up", "::ffff:10.0.0.2",
+    "IP:fe80::1", "LAN:2001:db8::1", "addr:fe80::1", "host.10.0.0.2", "...10.0.0.2"])
 def test_status_leaves_out_any_address_whatever_its_called(make_home, address):
     # Searched for anywhere in the state, as an address is still one inside other words.
     home = _status_home(make_home, [_status("sensor.example_router_wan", "Example router WAN", address),
@@ -2468,7 +2469,7 @@ def test_status_leaves_out_any_address_whatever_its_called(make_home, address):
 
 @pytest.mark.parametrize("state", ["on", "21.5", "2026-10-25T10:00:00+00:00", "2026-10-25T10:00:00.123456+00:00",
                                    "1.2.3", "12:30", "12:30:45", "Version 2026.10.1", "heat",
-                                   "500107862016", "1234567890123"])
+                                   "500107862016", "1234567890123", "16:9", "2026-10-25T10:00:00-05:00"])
 def test_status_doesnt_take_an_ordinary_state_for_an_address(make_home, state):
     home = _status_home(make_home, [_status("sensor.example_router_wan", "Example router WAN", state)])
     assert "sensor.example_router_wan" in home.status("example router", now=STATUS_NOW)["message"]
@@ -2488,6 +2489,10 @@ def test_status_finds_a_plural_by_its_singular(make_home):
     assert home.status("any updates?", now=STATUS_NOW)["message"] == \
         "Example NAS firmware (update.example_nas_firmware): off"
     assert home.status("lamps", now=STATUS_NOW)["message"] == "Desk lamp (light.desk_lamp): off"
+    # Not a short word, which is more likely a word of its own than a plural.
+    home = _status_home(make_home, [_status("sensor.gas_meter", "Gas meter", "1203.5", "m³"),
+                                    _status("sensor.garage_temperature", "Garage temperature", "12.5", "°C")])
+    assert home.status("gas", now=STATUS_NOW)["message"] == "Gas meter (sensor.gas_meter): 1203.5 m³"
 
 
 def test_status_gives_a_personal_devices_sensors_only_as_numbers_and_times(make_home):

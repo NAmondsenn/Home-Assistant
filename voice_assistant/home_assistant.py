@@ -262,8 +262,9 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 # prefix - "10.0.0.2:8080", "10.0.0.0/24" - and a hardware (MAC) one, as "aa:bb:cc:dd:ee:ff",
 # "AA-BB-CC-DD-EE-FF" or 12 hex digits run together with a letter among them - twelve
 # digits alone are more likely a count, e.g. bytes used. Four numbers alone make an IPv4
-# address here, whether or not each is under 256.
-IPV4_ADDRESS = re.compile(r"(?<![\d.])\d{1,3}(\.\d{1,3}){3}(?!\d)")
+# address here, whether or not each is under 256 and whatever's before them, as in
+# "host.10.0.0.2".
+IPV4_ADDRESS = re.compile(r"(?<!\d)\d{1,3}(\.\d{1,3}){3}(?!\d)")
 HARDWARE_ADDRESS = re.compile(
     r"(?<![0-9a-f])([0-9a-f]{2}([:-][0-9a-f]{2}){5}|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])",
     re.IGNORECASE)
@@ -1497,19 +1498,25 @@ def _holds_address(state: str) -> bool:
     if IPV4_ADDRESS.search(state) or HARDWARE_ADDRESS.search(state):
         return True
     for run in MAYBE_IPV6.findall(state):
-        # "fe80::1:" at the end of a sentence still holds "fe80::1".
-        for maybe in {run, run.rstrip(":")}:
-            try:
-                ipaddress.IPv6Address(maybe)
-                return True
-            except ValueError:
-                pass
+        # Its leading groups dropped one at a time, so a label in front - "LAN:2001:db8::1",
+        # where "a" is a hex digit - can't hide one, and "fe80::1:" at the end of a
+        # sentence still holds "fe80::1".
+        groups = run.split(":")
+        for start in range(len(groups)):
+            rest = ":".join(groups[start:])
+            for maybe in {rest, rest.strip(":"), rest.rstrip(":")}:
+                try:
+                    ipaddress.IPv6Address(maybe)
+                    return True
+                except ValueError:
+                    pass
     return False
 
 
 def _forms(word: str) -> Tuple[str, ...]:
     """A word asked about, and without its "s" if it has one - "updates" is about update.*."""
-    return (word, word[:-1]) if len(word) > 2 and word.endswith("s") else (word,)
+    # Only for a longer word - "gas" is a word of its own, not more than one "ga".
+    return (word, word[:-1]) if len(word) > 3 and word.endswith("s") else (word,)
 
 
 def _personal(entity: str, snapshot: Snapshot) -> bool:
