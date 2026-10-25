@@ -597,3 +597,18 @@ def test_batteries_are_only_offered_with_home_assistant():
     assert "get_batteries" in offered(ActionExecutor(batteries=FakeBatteries()))
     assert "get_batteries" not in offered(ActionExecutor())
     assert ActionExecutor().execute(Action("get_batteries")).say == "Battery levels need Home Assistant."
+
+
+# What Claude reads of the house
+
+def test_home_status_is_only_offered_with_home_assistant():
+    def offered(executor):
+        return {schema["name"]: schema for schema in executor.tool_schemas()}
+
+    schema = offered(ActionExecutor(home=object()))["home_status"]
+    assert schema["description"].startswith("Read the state of things in Home Assistant")
+    assert schema["input_schema"]["required"] == ["about"]
+    assert "home_status" not in offered(ActionExecutor())
+    assert ActionExecutor().execute(Action("home_status", {"about": "sunset"})).say == "Home Assistant isn't set up yet."
+    # It's the one tool whose answer goes back to Claude rather than being said.
+    assert ActionExecutor().read_tools() == ["home_status"]

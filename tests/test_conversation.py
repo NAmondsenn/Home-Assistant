@@ -55,14 +55,17 @@ class FakeLLM:
         self.replies = list(replies)
         self.asked, self.remembered, self.recorded, self.tool_answers = [], [], [], []
         self.contexts, self.lights = [], []
+        # What Claude reads before answering, and what it's told - see LLMHandler.process_query.
+        self.to_read, self.read = [], []
 
     def forget_stale_history(self):
         pass
 
-    def process_query(self, text, context=None, lights=None):
+    def process_query(self, text, context=None, lights=None, read=None):
         self.asked.append(text)
         self.contexts.append(context)
         self.lights.append(lights)
+        self.read += [read(action) for action in self.to_read]
         return self.replies.pop(0)
 
     def remember(self, text, reply):
@@ -78,9 +81,11 @@ class FakeActions:
         self.results = results or {}
         self.home = home
         self.run = []
+        self.params = []
 
     def execute(self, action):
         self.run.append(action.tool)
+        self.params.append(action.params)
         return self.results.get(action.tool, ActionResult(True, "Done."))
 
 
@@ -122,6 +127,19 @@ def test_a_plain_answer_is_said_and_remembered():
     reply = _conversation(llm=llm).handle("what's the capital of France")
     assert (reply.say, reply.sounds, reply.listen_again) == ("Paris.", [], False)
     assert llm.recorded == [("what's the capital of France", "Paris.")]
+
+
+def test_claude_reads_home_status_rather_than_it_being_said():
+    # What home_status reads is for Claude to answer from, not to be said as it is.
+    llm = FakeLLM(_answer("Sunset's at 5:52 PM."))
+    llm.to_read = [Action("home_status", {"about": "sunset"}, from_model=True)]
+    actions = FakeActions({"home_status": ActionResult(
+        True, "Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52")})
+    reply = _conversation(llm=llm, actions=actions).handle("when's sunset?")
+    assert llm.read == ["Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52"]
+    assert (actions.run, actions.params) == (["home_status"], [{"about": "sunset"}])
+    assert reply.say == "Sunset's at 5:52 PM."
+    assert llm.recorded == [("when's sunset?", "Sunset's at 5:52 PM.")]
 
 
 def test_a_local_command_never_reaches_claude():

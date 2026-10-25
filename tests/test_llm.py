@@ -18,8 +18,9 @@ from voice_assistant.llm import LLMHandler
 
 class FakeClient:
     """
-    Stands in for the Anthropic client. Returns the given reply, or raises the given
-    error, and keeps every request so the test can look at what was sent.
+    Stands in for the Anthropic client. Returns the given reply - or each of a list of
+    them in turn - or raises the given error, and keeps every request so the test can
+    look at what was sent, its messages as they were then.
     """
 
     def __init__(self, outcome):
@@ -33,10 +34,10 @@ class FakeClient:
         return self
 
     def create(self, **request):
-        self.requests.append(request)
+        self.requests.append({**request, "messages": list(request["messages"])})
         if isinstance(self.outcome, BaseException):
             raise self.outcome
-        return self.outcome
+        return self.outcome.pop(0) if isinstance(self.outcome, list) else self.outcome
 
 
 def _reply(text, *tools, stop_reason="end_turn"):
@@ -55,9 +56,9 @@ def _error(cls):
     return error
 
 
-def _tool(name, **params):
+def _tool(name, use_id="toolu_1", **params):
     """A tool_use block, shaped like the ones the API returns."""
-    return SimpleNamespace(type="tool_use", name=name, input=params)
+    return SimpleNamespace(type="tool_use", id=use_id, name=name, input=params)
 
 
 @pytest.fixture
@@ -210,6 +211,56 @@ def test_every_tool_call_is_run_not_just_the_first(llm):
     result = llm.process_query("pause the music and set a ten minute timer")
 
     assert [action.tool for action in result["actions"]] == ["control_playback", "set_timer"]
+
+
+# Reading before answering
+
+def test_a_read_tools_answer_goes_back_to_claude():
+    llm = LLMHandler(api_key=None, read_tools=["home_status"])
+    asking = _reply("Let me check.", _tool("home_status", use_id="t1", about="sunset"))
+    llm.client = FakeClient([asking, _reply("Sunset's at 5:52 PM.")])
+    read = []
+
+    def reader(action):
+        read.append(action)
+        return "Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52"
+
+    result = llm.process_query("when's sunset?", read=reader)
+    assert read == [Action("home_status", {"about": "sunset"}, from_model=True)]
+    first, second = llm.client.requests
+    assert second["messages"][:-2] == first["messages"]
+    assert second["messages"][-2:] == [
+        {"role": "assistant", "content": asking.content},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                      "content": "Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52"}]}]
+    assert (result["response"], result["actions"], result["success"]) == ("Sunset's at 5:52 PM.", [], True)
+    # Only the final reply is kept, as for any other turn.
+    assert (llm.history[-1]["assistant"], llm.history[-1]["tools"]) == ("Sunset's at 5:52 PM.", [])
+
+
+def test_reads_stop_after_two_rounds():
+    # A model which keeps reading can't hold the answer up for long: its last call is
+    # run as an ordinary action, and said.
+    llm = LLMHandler(api_key=None, read_tools=["home_status"])
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id=f"t{n}", about="sunset")) for n in range(5)])
+    result = llm.process_query("when's sunset?", read=lambda action: "Nothing in Home Assistant matches that.")
+    assert len(llm.client.requests) == 1 + llm_module.MOST_READS == 3
+    assert result["actions"] == [Action("home_status", {"about": "sunset"}, from_model=True)]
+    # Without a way to read, a read tool is an ordinary action too.
+    llm.client = FakeClient([_reply("", _tool("home_status", about="sunset"))])
+    assert llm.process_query("when's sunset?")["actions"] == [Action("home_status", {"about": "sunset"}, from_model=True)]
+    assert len(llm.client.requests) == 1
+
+
+def test_a_read_tool_beside_another_tool_is_run_as_an_action():
+    # Read, then answered by Claude, the timer beside it would be lost - or set twice.
+    llm = LLMHandler(api_key=None, read_tools=["home_status"])
+    llm.client = FakeClient([_reply("Okay.", _tool("home_status", use_id="t1", about="sunset"),
+                                    _tool("set_timer", use_id="t2", duration_seconds=600))])
+    read = []
+    result = llm.process_query("when's sunset, and set a ten minute timer", read=read.append)
+    assert read == [] and len(llm.client.requests) == 1
+    assert [action.tool for action in result["actions"]] == ["home_status", "set_timer"]
 
 
 # History

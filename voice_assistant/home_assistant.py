@@ -36,6 +36,9 @@ an ordinary user's, Nova goes through Assist alone, the settings page has the li
 without their rooms, and Nova can't tell the batteries - nor see what a script does, so
 it runs none.
 
+Claude can read the state of anything else - "is Navidrome up?" - with status, which
+only reads /api/states and calls nothing.
+
 The calendar is whichever calendars Home Assistant has, such as a Google Calendar
 added through its Google Calendar integration.
 """
@@ -44,6 +47,7 @@ import json
 import logging
 import math
 import re
+import time
 from datetime import date, datetime, time as day_time, timedelta
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import quote
@@ -51,7 +55,7 @@ from urllib.parse import quote
 import requests
 
 from voice_assistant import network
-from voice_assistant.clock import spoken_clock_time
+from voice_assistant.clock import format_duration, spoken_clock_time
 from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, names_guarded,
                                       runnables_named, sensitive, sensitive_words, split_words, target_refused,
                                       why_not_run)
@@ -234,6 +238,25 @@ MOST_OTHERS_IN_OVERVIEW = 5
 # most matches said.
 SEARCH_DAYS = 90
 MOST_FOUND = 3
+
+# The most things status gives Claude, the best matches first - "is the PC on?" matches
+# every one of the PC's sensors, and each is more for Claude to read.
+MOST_STATUS = 8
+
+# What status leaves out: the batteries and charging states, which get_batteries says
+# (see batteries.py), and the phone's whereabouts, which its geocoded location gives as
+# an address.
+NOT_STATUS_CLASSES = ("battery", "battery_charging")
+NOT_STATUS_ENDINGS = ("_battery_level", "_battery_state", "_geocoded_location")
+
+# Seconds after which a state is given with how old it is - a PC switched off still
+# has the last CPU temperature it reported, which isn't how warm it is now.
+STATUS_STALE_AFTER = 3600
+
+# A state which is a moment, e.g. "2026-10-20T16:52:00+00:00" for the next sunset.
+TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}.*")
+
+NOTHING_MATCHES = "Nothing in Home Assistant matches that."
 
 
 class NotAllowed(ValueError):
@@ -1070,6 +1093,55 @@ class HomeAssistant:
         found = self._template(template).strip()
         return None if found in ("", "None") else found
 
+    # What Claude reads
+
+    def status(self, about: str, now: Optional[float] = None) -> Dict:
+        """
+        The state of whatever best matches the words asked about, for Claude to answer
+        "when's sunset?" or "is Navidrome up?" from. It's only read: nothing is called,
+        and of each entity's attributes only its unit is given, so no address or
+        coordinates - and no battery, which is get_batteries'.
+
+        Each entity scores how many of the words asked begin a word of its name, its
+        entity id or its area's name, so "navidrome" finds "Navidrome status" and
+        "update.navidrome_update" alike.
+
+        Args:
+            about: The words asked about, e.g. "navidrome".
+            now: The time to tell each state's age from, as time.time() has it - only
+                given by the tests.
+
+        Returns:
+            Dict with 'success' and 'message' - up to MOST_STATUS lines, the best match
+            first, e.g. "Navidrome status (binary_sensor.navidrome_status, Homelab): on".
+        """
+        try:
+            states = self._states()
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f"Couldn't read Home Assistant's states: {e}")
+            return {"success": False, "message": self._failure_message(e)}
+        now = time.time() if now is None else now
+        # Without the registry, nothing has an area, which is no reason not to answer.
+        snapshot = self._snapshot()
+        asked = set(split_words(about))
+        found = []
+        for state in states:
+            entity = str(state.get("entity_id") or "")
+            attributes = state.get("attributes") or {}
+            if attributes.get("device_class") in NOT_STATUS_CLASSES or entity.endswith(NOT_STATUS_ENDINGS):
+                continue
+            name = str(attributes.get("friendly_name") or entity)
+            area = snapshot.area_name(entity) if snapshot else None
+            words = split_words(f"{name} {entity} {area or ''}")
+            score = sum(1 for word in asked if any(its.startswith(word) for its in words))
+            if score:
+                found.append((-score, name.lower(), entity, name, area, state))
+        if not found:
+            return {"success": True, "message": NOTHING_MATCHES}
+        best = sorted(found, key=lambda match: match[:3])[:MOST_STATUS]
+        return {"success": True, "message": "\n".join(_status_said(name, area, state, now)
+                                                       for *_, name, area, state in best)}
+
     # Scripts and scenes
 
     def run(self, entity_id: str) -> Dict:
@@ -1348,6 +1420,40 @@ def _refused(error: Exception) -> bool:
     """Whether Home Assistant turned a template down, as it does for a token which isn't an administrator's."""
     status = getattr(getattr(error, "response", None), "status_code", None)
     return isinstance(error, requests.HTTPError) and status in (401, 403)
+
+
+def _status_said(name: str, area: Optional[str], state: Dict, now: float) -> str:
+    """
+    One entity's state, as status gives it.
+
+    Args:
+        name: Its name, e.g. "Navidrome update".
+        area: Its area's name, or None.
+        state: It, as /api/states has it.
+        now: The time now, as time.time() has it.
+
+    Returns:
+        e.g. "Navidrome update (update.navidrome_update, Homelab): off, as of 3 hours ago".
+    """
+    entity = state.get("entity_id")
+    value = str(state.get("state"))
+    # Given in local time, as everything else Claude's told is - see LLMHandler._situation.
+    if TIMESTAMP.fullmatch(value):
+        try:
+            value = datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            pass
+    unit = (state.get("attributes") or {}).get("unit_of_measurement")
+    said = f"{name} ({entity}, {area}): {value}" if area else f"{name} ({entity}): {value}"
+    if unit:
+        said += f" {unit}"
+    # When it was last heard from, though unchanged - "last_updated" alone would make a
+    # temperature steady all day look hours old.
+    try:
+        age = now - datetime.fromisoformat(str(state.get("last_reported") or state.get("last_updated"))).timestamp()
+    except ValueError:
+        return said
+    return said + (f", as of {format_duration(age)} ago" if age > STATUS_STALE_AFTER else "")
 
 
 def _plain(text: str) -> str:

@@ -191,7 +191,8 @@ class Session:
 
         # Claude, offered whichever of those tools can actually work here, and told
         # what's known about the user.
-        self.llm = LLMHandler(config=config, tools=self.actions.tool_schemas(), memory=brain.memory)
+        self.llm = LLMHandler(config=config, tools=self.actions.tool_schemas(),
+                              read_tools=self.actions.read_tools(), memory=brain.memory)
 
         # How each thing the user says is answered - everything between hearing it and
         # saying the reply. See conversation.py.

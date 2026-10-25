@@ -182,7 +182,7 @@ def _words(text: str) -> str:
 
 
 def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (), for_model: bool = True,
-         **parameters: Dict[str, Any]) -> Callable:
+         reads: bool = False, **parameters: Dict[str, Any]) -> Callable:
     """
     Declares an ActionExecutor method as a tool the model can call.
 
@@ -194,6 +194,8 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
         for_model: Whether the model is offered it at all. False for one which only
             a local command or the offline keyword fallback may run - the model has a
             better tool, and execute refuses the model's own call to it.
+        reads: Whether it only reads something for the model to answer from, so its
+            answer goes back to the model rather than being said - see read_tools.
         parameters: Each parameter's JSON schema, by name - the method's own
             keyword arguments, which it's called with.
 
@@ -201,8 +203,8 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
         A decorator which marks the method, leaving it otherwise unchanged.
     """
     def declare(method: Callable) -> Callable:
-        method.tool = {"description": description, "needs": needs,
-                       "required": list(required), "for_model": for_model, "parameters": parameters}
+        method.tool = {"description": description, "needs": needs, "required": list(required),
+                       "for_model": for_model, "reads": reads, "parameters": parameters}
         return method
     return declare
 
@@ -258,6 +260,13 @@ class ActionExecutor:
                                   "required": method.tool["required"]}}
                 for name, method in self.tools().items()
                 if method.tool["for_model"] and self._available(method)]
+
+    def read_tools(self) -> List[str]:
+        """
+        The tools which only read something for the model to answer from - see
+        LLMHandler.process_query, which sends their answers back to it.
+        """
+        return [name for name, method in self.tools().items() if method.tool["reads"]]
 
     def _available(self, method: Callable) -> bool:
         needs = method.tool["needs"]
@@ -858,6 +867,25 @@ class ActionExecutor:
         if not isinstance(name, str) or not name.strip():
             return {"success": False, "message": "I didn't catch which script or scene to run."}
         return self.home.run_script(name)
+
+    # Only ever read, by Claude, to answer from - see HomeAssistant.status.
+    @tool(
+        "Read the state of things in Home Assistant - the house, the devices and the homelab - for "
+        "'when's sunset?', 'is Navidrome up?', 'any updates?', 'is the PC on?' or 'how warm is the "
+        "bedroom?'. Give the words asked about. For batteries, use get_batteries. You get the answer "
+        "to reply from.",
+        needs="home",
+        reads=True,
+        required=["about"],
+        about={
+            "type": "string",
+            "description": "The words asked about, e.g. 'sunset', 'navidrome', 'update' or 'bedroom temperature'.",
+        },
+    )
+    def home_status(self, about: Optional[str] = None):
+        if not isinstance(about, str) or not about.strip():
+            return {"success": False, "message": "I didn't catch what to look up."}
+        return self.home.status(about)
 
     @tool(
         "Read the user's calendar for a day or a few days, for 'what have I got on "

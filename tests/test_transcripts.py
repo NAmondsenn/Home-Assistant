@@ -113,7 +113,7 @@ class FakeLLM:
     def forget_stale_history(self):
         pass
 
-    def process_query(self, text, context=None, lights=None):
+    def process_query(self, text, context=None, lights=None, read=None):
         return {"response": "Okay.", "actions": [self.actions.pop(0)], "success": True}
 
     def remember(self, text, reply):

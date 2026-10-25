@@ -2341,3 +2341,78 @@ def test_the_offline_fallback_sends_a_light_sentence_but_not_one_joining_more(ma
     assert (result.ok, result.understood) == (False, False) and _paths(home) == ["/api/states"]
     result = ActionExecutor(home=home).execute(fallback("Turn off the lights."))
     assert result.ok and _asked(home)["text"] == "Turn off the lights."
+
+
+# What Claude reads of the house - see HomeAssistant.status
+
+# Noon on Tuesday 20 October 2026, in UTC - 1 PM in London, on BST.
+STATUS_NOW = datetime(2026, 10, 20, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+
+
+def _status(entity, name, state, unit=None, reported="2026-10-20T11:30:00+00:00", **attributes):
+    """A state as /api/states has it, with when it was last reported."""
+    attributes = {"friendly_name": name, **({"unit_of_measurement": unit} if unit else {}), **attributes}
+    return {"entity_id": entity, "state": state, "attributes": attributes,
+            "last_reported": reported, "last_updated": "2026-10-19T08:00:00+00:00"}
+
+
+def test_status_gives_the_best_few_matches_with_their_state_and_age(make_home):
+    things = [_status("sensor.navidrome_uptime", "Navidrome uptime", "12", "d"),
+              _status("binary_sensor.navidrome_status", "Navidrome status", "on"),
+              _status("update.navidrome_update", "Navidrome update", "off", reported="2026-10-20T09:00:00+00:00"),
+              _status("sensor.sun_next_setting", "Sun next setting", "2026-10-20T16:52:00+00:00",
+                      device_class="timestamp"),
+              _status("sensor.bedroom_temperature", "Temperature", "19.5", "°C"),
+              _status("light.desk_lamp", "Desk lamp", "off")]
+    things += [_status(f"switch.plug_{number}", f"Plug {number}", "on") for number in range(10)]
+    home = make_home({"/api/states": things})
+    home.registry.read = Snapshot(entries={"sensor.bedroom_temperature": Entry(
+        "sensor.bedroom_temperature", "demo", None, "bedroom", "temp", None, (), True)},
+        devices={}, areas={"bedroom": "Bedroom"}, read_at=0.0)
+
+    assert home.status("navidrome", now=STATUS_NOW) == {"success": True, "message": "\n".join([
+        "Navidrome status (binary_sensor.navidrome_status): on",
+        "Navidrome update (update.navidrome_update): off, as of 3 hours ago",
+        "Navidrome uptime (sensor.navidrome_uptime): 12 d"])}
+    # Each asked word that begins a word of the name counts, so the uptime comes first.
+    assert home.status("navidrome uptime", now=STATUS_NOW)["message"].splitlines()[0] == \
+        "Navidrome uptime (sensor.navidrome_uptime): 12 d"
+    # A timestamp is said in local time, and the area counts as a word of the name.
+    assert home.status("next setting", now=STATUS_NOW)["message"] == \
+        "Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52"
+    assert home.status("How warm is the bedroom?", now=STATUS_NOW)["message"] == \
+        "Temperature (sensor.bedroom_temperature, Bedroom): 19.5 °C"
+    # No more than the best few, and nothing is called.
+    assert len(home.status("plug", now=STATUS_NOW)["message"].splitlines()) == home_assistant.MOST_STATUS == 8
+    assert set(_paths(home)) == {"/api/states"}
+
+
+def test_status_leaves_out_batteries_and_where_things_are(make_home):
+    things = [_status("sensor.s25_ultra_battery_level", "S25 Ultra battery level", "80", "%", device_class="battery"),
+              _status("sensor.s25_ultra_battery_state", "S25 Ultra battery state", "discharging"),
+              _status("binary_sensor.s25_ultra_is_charging", "S25 Ultra is charging", "off",
+                      device_class="battery_charging"),
+              _status("sensor.s25_ultra_geocoded_location", "S25 Ultra geocoded location", "1 Example Road",
+                      Locality="Exampleton"),
+              _status("device_tracker.s25_ultra", "S25 Ultra", "home", latitude=51.5, longitude=-0.1,
+                      gps_accuracy=12),
+              _status("sensor.s25_ultra_wifi_connection", "S25 Ultra wifi connection", "ExampleNet")]
+    home = make_home({"/api/states": things})
+    message = home.status("s25 ultra", now=STATUS_NOW)["message"]
+    assert message == ("S25 Ultra (device_tracker.s25_ultra): home\n"
+                       "S25 Ultra wifi connection (sensor.s25_ultra_wifi_connection): ExampleNet")
+    for left_out in ("battery", "charging", "Example Road", "Exampleton", "51.5", "0.1", "12"):
+        assert left_out not in message
+
+
+def test_status_says_when_nothing_matches(make_home):
+    home = make_home({"/api/states": [_status("light.desk_lamp", "Desk lamp", "off")]})
+    assert home.status("kettle") == {"success": True, "message": "Nothing in Home Assistant matches that."}
+    assert home.status("?!") == {"success": True, "message": "Nothing in Home Assistant matches that."}
+
+
+def test_status_with_home_assistant_down_says_so(make_home):
+    home = make_home({"/api/states": requests.ConnectionError("down")})
+    assert home.status("navidrome") == {"success": False, "message": "I can't reach Home Assistant right now."}
+    result = ActionExecutor(home=home).execute(Action("home_status", {"about": "navidrome"}, from_model=True))
+    assert result.say == "I can't reach Home Assistant right now."

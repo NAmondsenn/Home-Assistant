@@ -5,7 +5,9 @@ Claude, for whatever the local commands don't cover: each request is sent with w
 on the clock, the lights and the room Nova's in, what's known about the user and the
 last few exchanges, and Claude answers in words, or by calling the tools it's offered
 (see actions.py) - or both. Each tool call comes back as an Action, marked as the
-model's, so it can only run what it was offered.
+model's, so it can only run what it was offered. A tool which only reads something,
+such as home_status, is run straight away instead, and its answer sent back for
+Claude to reply from.
 
 With Claude out of reach - no key, or no internet - a few keywords are matched instead
 (see _parse_action), so the music and the lights can still be worked.
@@ -16,7 +18,7 @@ import re
 import time
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 import anthropic
 from anthropic import Anthropic
 from voice_assistant.actions import Action
@@ -30,12 +32,17 @@ OFFLINE_MESSAGE = "Sorry, I can't reach the internet right now. Timers, alarms a
 
 logger = logging.getLogger(__name__)
 
+# The most rounds of reading Claude may do before it answers - one is usually enough,
+# and each is another request to wait for before anything's said.
+MOST_READS = 2
+
 
 class LLMHandler:
     """Claude, with the conversation so far, for one satellite's session."""
 
     def __init__(self, config=None, api_key=None, model=None, max_tokens=None,
-                 temperature=None, history_length=None, assistant_name=None, tools=None, memory=None):
+                 temperature=None, history_length=None, assistant_name=None, tools=None, memory=None,
+                 read_tools: Sequence[str] = ()):
         """
         Each argument left out comes from config.yaml.
 
@@ -51,6 +58,8 @@ class LLMHandler:
             tools: The tools to offer, in the API's format - see
                 ActionExecutor.tool_schemas.
             memory: The Memory, whose facts go with every request, or None.
+            read_tools: The names of the tools which only read something for the model
+                to answer from - see ActionExecutor.read_tools.
         """
         # Pulls llm, conversation, assistant and web_search sections from config.yaml
         llm_config = config.section("llm") if config else {}
@@ -92,6 +101,7 @@ class LLMHandler:
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
         # The tools the model is offered, in the API's format - see ActionExecutor.tool_schemas.
         self.tools = list(tools or [])
+        self.read_tools = set(read_tools)
         # What's known about the user, given to the model with every request - see memory.py.
         self.memory = memory
 
@@ -341,17 +351,23 @@ class LLMHandler:
             situation += f" {lights.rstrip('.')}."
         return situation + "] "
 
-    def process_query(self, text, context=None, lights=None):
+    def process_query(self, text, context=None, lights=None, read: Optional[Callable[[Action], str]] = None):
         """
         Asks Claude to answer what the user said, with the recent conversation and
         the tools it may call. The keyword parser (_parse_action) is only used when
         Claude can't be reached - no API key, no network, or a failed request - so
         "pause the music" still works offline.
 
+        When all Claude does is call read tools, they're read straight away and their
+        answers sent back to it, up to MOST_READS times, so it replies from them -
+        "Sunset's at 5:52 PM." rather than the sensor's own line.
+
         Args:
             text: What the user said.
             context: The timers and reminders running, as said to Claude.
             lights: The lights and the room Nova is in, as said to Claude, or None.
+            read: Runs a read tool's Action and gives what it said, or None for every
+                tool call to come back as an action.
 
         Returns:
             Dict with 'response' (what to say), 'actions' (the Actions asked for)
@@ -422,6 +438,20 @@ class LLMHandler:
                     break
                 logger.info("Search paused by the API, continuing the turn...")
                 messages.append({"role": "assistant", "content": response.content})
+                response = client.messages.create(
+                    model=self.model_name, system=system, messages=messages, **request_kwargs)
+
+            # Only when every call is a read. One beside another tool - "when's sunset, and
+            # set a timer" - is run as an ordinary action with it, as asking again after the
+            # read would leave the timer either never set or asked for a second time.
+            for _ in range(MOST_READS):
+                uses = [block for block in response.content if getattr(block, "type", None) == "tool_use"]
+                if read is None or not uses or not all(use.name in self.read_tools for use in uses):
+                    break
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": use.id,
+                     "content": read(self._action_from_tool_use(use)) or "Done."} for use in uses]})
                 response = client.messages.create(
                     model=self.model_name, system=system, messages=messages, **request_kwargs)
 

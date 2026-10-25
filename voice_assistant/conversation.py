@@ -287,7 +287,9 @@ class Conversation:
         # room's. Left out if Home Assistant isn't there, or is too slow to wait for.
         home = self.actions.home
         lights = (home.describe_lights(timeout=LIGHTS_TIMEOUT) if home else "") or None
-        return self.llm.process_query(text, context=timers, lights=lights)
+        # What Claude reads, such as home_status, goes back to it to answer from.
+        return self.llm.process_query(text, context=timers, lights=lights,
+                                      read=lambda action: self.actions.execute(action).say)
 
     def _run(self, actions: List[Action]) -> List[ActionResult]:
         """
