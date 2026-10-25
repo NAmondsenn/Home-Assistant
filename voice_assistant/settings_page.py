@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import parse_qs, urlsplit
 
+import requests
 import yaml
 
 from voice_assistant import paths, storage, timeline
@@ -45,7 +46,7 @@ from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
 from voice_assistant.ntfy import RETOPIC
-from voice_assistant.spotify_controller import SpotifySignIn, spotify_oauth
+from voice_assistant.spotify_controller import SpotifySignIn, SpotifySignInError, spotify_oauth
 from voice_assistant.undo import UndoShelf
 
 # Logger setup
@@ -300,6 +301,7 @@ class SettingsPage:
         """
         The sign-in to Spotify the page offers - when it's the player, and its keys
         were set as Nova started, as the satellites' Spotify is made from those too.
+        Spotify always shows its page, so "Sign in again" can choose another account.
 
         Args:
             running: The Config Nova started with, or None.
@@ -307,7 +309,7 @@ class SettingsPage:
         if running is None or (running.section("music").get("player") or "spotify").strip().lower() != "spotify":
             return None
         try:
-            return SpotifySignIn(spotify_oauth())
+            return SpotifySignIn(spotify_oauth(show_dialog=True))
         except ValueError:
             return None
 
@@ -972,9 +974,20 @@ class SettingsPage:
             return {"success": False, "message": "Nova isn't set up to sign in to Spotify."}
         try:
             self._spotify.finish(address)
-        except ValueError as e:
+        except SpotifySignInError as e:
             logger.info(f"Settings page: {who} couldn't sign in to Spotify")
             return {"success": False, "message": str(e)}
+        # Anything else's own words aren't for the page - a pasted "http://[x" gives
+        # urllib's "Invalid IPv6 URL", and an answer from Spotify that isn't JSON one of
+        # requests'. Neither is logged with its words, which could be the address's.
+        except ValueError as e:
+            logger.warning(f"Settings page: {who} couldn't sign in to Spotify: {type(e).__name__}")
+            return {"success": False, "message": "Spotify didn't accept that sign-in - start again."}
+        except requests.RequestException as e:
+            logger.warning(f"Settings page: couldn't reach Spotify to sign in: {type(e).__name__}")
+            return {"success": False, "message": "Couldn't reach Spotify - try again."}
+        # The old account's playlists are no use if this is another's.
+        self._playlists.clear()
         logger.info(f"Settings page: {who} signed in to Spotify")
         return {"success": True, "message": "Signed in to Spotify."}
 

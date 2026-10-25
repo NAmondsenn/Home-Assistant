@@ -10,6 +10,7 @@ than remote-controlling whichever phone or laptop Spotify happened to list first
 import os
 import re
 import secrets
+import threading
 import time
 import random
 import difflib
@@ -25,6 +26,12 @@ from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.music import means_liked_songs
 
 logger = logging.getLogger(__name__)
+
+# spotipy's own debug lines have the client's secret, in the auth header, and a sign-in's
+# code, and urllib3's the addresses asked for - so they're kept to warnings, whatever
+# Nova's own level.
+for _name in ("spotipy", "urllib3"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 # How long a single Spotify request may take, in seconds, and how many times it's
 # retried. spotipy's own defaults (5 seconds, retried 3 times with back-off) could
@@ -55,13 +62,25 @@ SCOPE = ("user-read-playback-state,user-modify-playback-state,"
 # each in a few sizes.
 COVER_SIZE = 300
 
+# How many sign-ins have been made since Nova started, so each controller drops what it
+# kept of the account before - see SpotifyController._signed_in.
+_sign_ins = 0
 
-def spotify_oauth() -> SpotifyOAuth:
+
+class SpotifySignInError(ValueError):
+    """A sign-in to Spotify which didn't work, said as the page says it."""
+
+
+def spotify_oauth(show_dialog: bool = False) -> SpotifyOAuth:
     """
     Nova's OAuth client for Spotify, from the keys in .env.
 
     Every call refreshes an expired token through it, with spotipy's own request, which
     otherwise waits for ever - the client's time limit doesn't cover it.
+
+    Args:
+        show_dialog: Whether Spotify shows its page even to an account which has agreed
+            before, so another account can be chosen - spotipy only takes it here.
 
     Returns:
         The client, keeping its token in paths.SPOTIFY_TOKEN_FILE.
@@ -76,7 +95,8 @@ def spotify_oauth() -> SpotifyOAuth:
     if not all([client_id, client_secret, redirect_uri]):
         raise ValueError("Spotify credentials not found in .env")
     return SpotifyOAuth(client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri,
-                        scope=SCOPE, cache_path=paths.SPOTIFY_TOKEN_FILE, requests_timeout=REQUEST_TIMEOUT)
+                        scope=SCOPE, cache_path=paths.SPOTIFY_TOKEN_FILE, requests_timeout=REQUEST_TIMEOUT,
+                        show_dialog=show_dialog)
 
 
 def _keep_private(path: str):
@@ -110,6 +130,9 @@ class SpotifySignIn:
         """
         self.oauth = oauth
         self._state: Optional[str] = None
+        # Each request to the page has a thread of its own, so two finishes at once, or a
+        # start between a finish's read and its clear, could otherwise share a state.
+        self._lock = threading.Lock()
 
     def start(self) -> str:
         """
@@ -118,8 +141,10 @@ class SpotifySignIn:
         Returns:
             The address to open in a browser, to sign in to Spotify there.
         """
-        self._state = secrets.token_urlsafe()
-        return self.oauth.get_authorize_url(state=self._state)
+        state = secrets.token_urlsafe()
+        with self._lock:
+            self._state = state
+        return self.oauth.get_authorize_url(state=state)
 
     def finish(self, pasted: str):
         """
@@ -133,28 +158,43 @@ class SpotifySignIn:
             pasted: The address, pasted from the browser's address bar.
 
         Raises:
-            ValueError: If the address isn't from the sign-in started, or none was, or
-                it hasn't got Spotify's code in it - nothing is sent to Spotify - or if
-                Spotify turned the sign-in down, as it does once Cancel's pressed.
+            SpotifySignInError: If the address isn't from the sign-in started, or none
+                was, or it hasn't got Spotify's code in it - nothing is sent to Spotify -
+                or if Spotify turned the sign-in down, as it does once Cancel's pressed,
+                or the token couldn't be kept.
+            requests.RequestException: If Spotify couldn't be reached.
         """
-        state, self._state = self._state, None
+        global _sign_ins
+        with self._lock:
+            state, self._state = self._state, None
         try:
             given, code = self.oauth.parse_auth_response_url(str(pasted).strip())
-        except SpotifyOauthError:
+        except SpotifyOauthError as e:
             # The address had error= in it - Cancel, on Spotify's page.
-            raise ValueError("Spotify didn't accept that sign-in - start again.") from None
+            logger.info(f"Spotify turned the sign-in down: {e.error}")
+            raise SpotifySignInError("Spotify didn't accept that sign-in - start again.") from None
         # Compared in constant time, as GoogleSignIn does, and as bytes, since
         # compare_digest won't take a string with "é" in it.
         if state is None or not secrets.compare_digest((given or "").encode("utf-8"), state.encode("ascii")):
-            raise ValueError("That address isn't from the sign-in this page started - start again.")
+            raise SpotifySignInError("That address isn't from the sign-in this page started - start again.")
         if not code:
-            raise ValueError("That address hasn't got Spotify's code in it - copy all of it.")
+            raise SpotifySignInError("That address hasn't got Spotify's code in it - copy all of it.")
         try:
             # Not from the cache, which would hand back the sign-in being replaced.
-            self.oauth.get_access_token(code, as_dict=False, check_cache=False)
-        except SpotifyOauthError:
-            raise ValueError("Spotify didn't accept that sign-in - start again.") from None
+            token = self.oauth.get_access_token(code, as_dict=False, check_cache=False)
+        except SpotifyOauthError as e:
+            # Its error - invalid_grant, invalid_client - is the only clue to a wrong
+            # redirect address or secret, and isn't secret itself.
+            logger.info(f"Spotify turned the sign-in down: {e.error}")
+            raise SpotifySignInError("Spotify didn't accept that sign-in - start again.") from None
+        # spotipy only warns when it can't write the cache, so it's read back - for this
+        # token, not an older sign-in still there.
+        if (self.oauth.cache_handler.get_cached_token() or {}).get("access_token") != token:
+            logger.error(f"Couldn't save the sign-in to Spotify in {self.oauth.cache_handler.cache_path}")
+            raise SpotifySignInError("Couldn't save the sign-in - check Nova's data folder.")
         _keep_private(self.oauth.cache_handler.cache_path)
+        with self._lock:
+            _sign_ins += 1
         logger.info("Signed in to Spotify")
 
     def signed_in(self) -> bool:
@@ -213,6 +253,8 @@ class SpotifyController:
         self.cache_path = paths.SPOTIFY_TOKEN_FILE
 
         self.sp = None
+        # The sign-ins made since Nova started, as this last knew - see _signed_in.
+        self._sign_ins = _sign_ins
         # Tracks whether the assistant paused the music itself,
         # only resuming playback it actually interrupted.
         self._paused_for_speech = False
@@ -260,7 +302,13 @@ class SpotifyController:
         Whether there's a Spotify login to use - looking for one again without one, so
         a sign-in made on the settings page since this started is used from the next
         command, with no restart. That only reads the cache.
+
+        After a new sign-in, which could be to another account, the speaker and the
+        playlists kept are dropped, so they're the new account's.
         """
+        if self._sign_ins != _sign_ins:
+            self._sign_ins = _sign_ins
+            self._device = self._active_here = self._playlists = None
         return bool(self.sp) or self._authenticate()
 
     def authenticate_first_time(self):

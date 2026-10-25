@@ -5,8 +5,10 @@ of spotipy's client and OAuth classes so nothing goes to Spotify.
 """
 
 import json
+import logging
 import os
 import stat
+import threading
 import time
 from urllib.parse import parse_qs, parse_qsl, urlsplit
 
@@ -166,13 +168,16 @@ class FakeCacheFile:
 class FakeSignInOAuth:
     """
     Stands in for SpotifyOAuth through a sign-in, as spotipy 2.26.0 on the brain has
-    it: no show_dialog, and the token written with the default permissions.
+    it: show_dialog only on the constructor, not get_authorize_url, and the token
+    written with the default permissions - or, as save_fails, not written at all,
+    which spotipy only warns about.
     """
 
     def __init__(self, cache_path):
         self.cache_handler = FakeCacheFile(cache_path)
         self.asked = []
         self.refuse = False
+        self.save_fails = False
 
     def get_authorize_url(self, state=None):
         return f"https://accounts.spotify.com/authorize?client_id=client-id&state={state}"
@@ -189,6 +194,8 @@ class FakeSignInOAuth:
         self.asked.append((code, as_dict, check_cache))
         if self.refuse:
             raise spotify_controller.SpotifyOauthError("error: invalid_grant", error="invalid_grant")
+        if self.save_fails:
+            return "the-access-token"
         with open(self.cache_handler.cache_path, "w") as file:
             json.dump({"access_token": "the-access-token", "refresh_token": "the-refresh-token"}, file)
         os.chmod(self.cache_handler.cache_path, 0o644)
@@ -256,6 +263,69 @@ def test_a_cancelled_spotify_sign_in_is_answered(tmp_path):
     with pytest.raises(ValueError, match="Spotify didn't accept that sign-in - start again."):
         sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
     assert not sign_in.signed_in()
+
+
+def test_a_sign_in_that_couldnt_be_kept_isnt_said_to_have_worked(tmp_path):
+    cache = tmp_path / "spotify_token.json"
+    oauth = FakeSignInOAuth(cache)
+    oauth.save_fails = True
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+    state = _state(sign_in.start())
+    with pytest.raises(ValueError, match="Couldn't save the sign-in - check Nova's data folder."):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+    # An older sign-in still in the cache isn't taken for the new one.
+    cache.write_text(json.dumps({"access_token": "an-older-token", "refresh_token": "older"}))
+    state = _state(sign_in.start())
+    with pytest.raises(ValueError, match="Couldn't save the sign-in"):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+
+
+def test_two_finishes_at_once_use_the_state_once(tmp_path):
+    oauth = FakeSignInOAuth(tmp_path / "spotify_token.json")
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+    address = f"{CALLBACK}?code=the-code&state={_state(sign_in.start())}"
+    together = threading.Barrier(8)
+
+    def finish():
+        together.wait()
+        try:
+            sign_in.finish(address)
+        except ValueError:
+            pass
+
+    threads = [threading.Thread(target=finish) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(oauth.asked) == 1
+
+
+def test_signing_in_again_lets_another_account_be_chosen(make_controller):
+    # Spotify skips its page for an account which has agreed before, unless asked to
+    # show it - and spotipy 2.26.0 takes that only on the constructor.
+    controller = make_controller(cached=SAVED)
+    assert not controller.oauth.kwargs.get("show_dialog", False)
+    spotify_controller.spotify_oauth(show_dialog=True)
+    assert controller.oauth.kwargs["show_dialog"] is True
+
+
+def test_a_new_sign_in_drops_what_was_kept_of_the_account_before(make_controller, tmp_path):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeSpotifyAPI()
+    controller.play_playlist("workout")
+    sign_in = spotify_controller.SpotifySignIn(FakeSignInOAuth(tmp_path / "spotify_token.json"))
+    sign_in.finish(f"{CALLBACK}?code=the-code&state={_state(sign_in.start())}")
+    controller.sp.calls.clear()
+    controller.play_playlist("workout")
+    assert "playlists" in controller.sp.calls and "devices" in controller.sp.calls
+
+
+def test_spotipy_never_logs_a_secret_whatever_novas_level(caplog):
+    # Its own debug lines have the client's secret, in the auth header, and the code.
+    caplog.set_level(logging.DEBUG)
+    for name in ("spotipy", "spotipy.oauth2", "urllib3", "urllib3.connectionpool"):
+        assert not logging.getLogger(name).isEnabledFor(logging.INFO)
 
 
 def test_a_session_uses_a_sign_in_made_after_it_started(make_controller, monkeypatch):

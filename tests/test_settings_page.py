@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 import pytest
+import requests
 import yaml
 
 from voice_assistant import logging_setup, paths
@@ -410,6 +411,7 @@ class FakeSpotifyOAuth:
     """Stands in for spotipy's SpotifyOAuth through a sign-in, writing the cache as it does."""
 
     def __init__(self, **kwargs):
+        self.kwargs = kwargs
         self.cache_handler = SimpleNamespace(cache_path=kwargs["cache_path"], get_cached_token=self._cached)
 
     def _cached(self):
@@ -454,6 +456,47 @@ def test_the_spotify_sign_in_is_offered_with_no_satellite_connected(spotify, mak
     assert _page(running=spotify).music_state()["spotify"] == {"signed_in": False}
     # Navidrome has no sign-in.
     assert "spotify" not in _page(running=make_config(music={"player": "navidrome"}), sessions={}).music_state()
+
+
+def _finish_spotify(page, address="http://127.0.0.1:8888/callback?code=the-code"):
+    state = parse_qs(urlsplit(page.start_spotify_sign_in(LOGIN)["url"]).query)["state"][0]
+    return page.finish_spotify_sign_in(f"{address}&state={state}", LOGIN)
+
+
+def _raises(error):
+    def get_access_token(self, code=None, as_dict=True, check_cache=True):
+        raise error
+    return get_access_token
+
+
+@pytest.mark.parametrize("error, said", [
+    (requests.ConnectionError("api.spotify.com unreachable"), "Couldn't reach Spotify - try again."),
+    (requests.Timeout("too slow"), "Couldn't reach Spotify - try again."),
+    # Anything else's own words never reach the page.
+    (ValueError("Invalid IPv6 URL"), "Spotify didn't accept that sign-in - start again."),
+])
+def test_a_spotify_sign_in_that_goes_wrong_is_answered_plainly(spotify, monkeypatch, error, said):
+    monkeypatch.setattr(FakeSpotifyOAuth, "get_access_token", _raises(error))
+    page = _page(running=spotify, sessions={})
+    assert _finish_spotify(page) == {"success": False, "message": said}
+
+
+def test_a_spotify_sign_in_that_couldnt_be_saved_says_so(spotify, monkeypatch):
+    # spotipy only warns when it can't write the cache.
+    monkeypatch.setattr(FakeSpotifyOAuth, "get_access_token", lambda self, code=None, **kwargs: "the-access-token")
+    page = _page(running=spotify, sessions={})
+    assert _finish_spotify(page) == {"success": False,
+                                     "message": "Couldn't save the sign-in - check Nova's data folder."}
+    assert page.music_state()["spotify"] == {"signed_in": False}
+
+
+def test_the_page_lets_another_spotify_account_be_chosen_and_forgets_the_old_ones_playlists(spotify):
+    page = _page(running=spotify, sessions={"bedroom": FakeSession(music=FakePlayer())})
+    assert page._spotify.oauth.kwargs["show_dialog"] is True
+    page.music_state()
+    assert page._playlists
+    assert _finish_spotify(page)["success"]
+    assert page._playlists == {}
 
 
 def test_the_page_signs_in_to_spotify(spotify, monkeypatch, caplog):
@@ -928,6 +971,8 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         # Spotify's tab is opened in the click itself, before anything's waited for.
         assert b'"/api/spotify/start"' in body and b'"/api/spotify/finish"' in body
         assert b'const tab = window.open("", "_blank");\n  // So' in body and b'id="spotify-address"' in _ask(served, "/")[2]
+        # A tab closed while Nova was asked gets the link instead.
+        assert b"const opened = Boolean(tab && !tab.closed);" in body
 
 
 def test_a_change_has_to_come_from_the_page_itself(served):

@@ -836,9 +836,11 @@ async function startSpotify() {
     toast(result.message || "That didn't work.", false);
     return;
   }
+  // The tab could have been closed while Nova was asked.
+  const opened = Boolean(tab && !tab.closed);
   document.getElementById("spotify-link").href = result.url;
-  document.getElementById("spotify-link-note").hidden = Boolean(tab);
-  if (tab) tab.location = result.url;
+  document.getElementById("spotify-link-note").hidden = opened;
+  if (opened) tab.location = result.url;
   document.getElementById("spotify-finish").hidden = false;
 }
 
