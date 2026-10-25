@@ -831,7 +831,8 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 }
 
 .field .detail {
-  color: rgba(150, 161, 192, 0.75);
+  color: var(--dusk);
+  opacity: 0.75;
   font-size: 12px;
 }
 
