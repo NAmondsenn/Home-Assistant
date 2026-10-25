@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from voice_assistant import network
 from voice_assistant.batteries import HOME_FAILURES, find, said
 from voice_assistant.home_assistant import CANT_REACH
+from voice_assistant.lists import names_list
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -1001,11 +1002,20 @@ class ActionExecutor:
     @staticmethod
     def _unreached(reply: Dict, said: Optional[str]) -> Dict:
         """
-        A list's failure to reach Home Assistant, as Claude's when no list was named - "I've
-        got a headache" is ticking something off to the local rule, but a sentence about the
-        world mustn't end at "I can't reach Home Assistant".
+        A list's failure to reach Home Assistant, as Claude's when the words don't say it's
+        a list - "I've got a headache" is ticking something off to the local rule, and "put
+        Drake on Spotify" adding to a list, but a sentence about the world mustn't end at "I
+        can't reach Home Assistant".
+
+        Args:
+            reply: What Lists said.
+            said: The list as it was said, or None for none.
+
+        Returns:
+            The reply, with 'not_understood' when Home Assistant couldn't be reached and
+            the words have no "list" in them.
         """
-        if not reply.get("success") and reply.get("message") == CANT_REACH and not said:
+        if not reply.get("success") and reply.get("message") == CANT_REACH and not names_list(said):
             return {**reply, "not_understood": True}
         return reply
 
@@ -1021,7 +1031,16 @@ class ActionExecutor:
     def add_to_list(self, item: Optional[str] = None, list: Optional[str] = None, command: Optional[str] = None):
         if not item:
             return {"success": False, "message": "I didn't catch what to add."}
-        return self._assist_first(command, "HassListAddItem") or self.lists.add([item], list)
+        assisted = self._assist_first(command, "HassListAddItem")
+        if assisted:
+            return assisted
+        reply = self._unreached(self.lists.add([item], list), list)
+        # Only the offline fallback gives no command. Its "add a reminder to call mum"
+        # isn't a list, so the model's own reply - that Claude can't be reached - is said
+        # rather than "I haven't got a list called that.".
+        if command is None and reply.get("not_understood"):
+            return {**reply, "message": ""}
+        return reply
 
     @tool(
         "Read a list.",
@@ -1031,7 +1050,7 @@ class ActionExecutor:
     )
     def read_list(self, list: Optional[str] = None):
         # Always Nova's own, which says what's on it in a way that can be listened to.
-        return self.lists.read(list)
+        return self._unreached(self.lists.read(list), list)
 
     @tool(
         "Tick a thing off a list.",
@@ -1041,15 +1060,19 @@ class ActionExecutor:
         item={"type": "string", "description": "The thing, as the user said it."},
         list={"type": "string", "description": "The list, as the user said it, or left out to look through all."},
         command={"type": "string", "description": "The request, for Assist to be asked first."},
+        exact={"type": "boolean", "description": "Whether only a thing with the same words will do."},
     )
-    def tick_off_list(self, item: Optional[str] = None, list: Optional[str] = None, command: Optional[str] = None):
+    def tick_off_list(self, item: Optional[str] = None, list: Optional[str] = None, command: Optional[str] = None,
+                      exact: bool = False):
         if not item:
             return {"success": False, "message": "I didn't catch what to tick off."}
         # Anything else Assist would read it as - HassTurnOn, for "tick off milk on my
         # shopping list" - isn't sent, so Nova ticks it off. What Assist itself said is
         # never Claude's, as once sent it may have ticked it off.
-        return self._assist_first(command, "HassListCompleteItem") or self._unreached(self.lists.tick_off(item, list),
-                                                                                       list)
+        assisted = self._assist_first(command, "HassListCompleteItem")
+        if assisted:
+            return assisted
+        return self._unreached(self.lists.tick_off(item, list, exact=bool(exact)), list)
 
     @tool(
         "Add things to, read, or tick things off one of the user's to-do lists in Home Assistant. Split several "

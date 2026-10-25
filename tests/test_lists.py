@@ -239,8 +239,10 @@ def test_with_no_list_named_every_list_is_looked_through(make_lists):
     lists = make_lists(items={"todo.todo": ["ring the bank"], "todo.shopping_list": ["milk"]})
     assert lists.tick_off("milk", None)["message"] == "Ticked off milk on your shopping list."
     assert lists.home.ticked == [("todo.shopping_list", "todo.shopping_list-0")]
-    assert lists.tick_off("cheese", "shopping") == {"success": False,
-                                                    "message": "I can't see cheese on your shopping list."}
+    assert lists.tick_off("cheese", "my shopping list") == {"success": False,
+                                                            "message": "I can't see cheese on your shopping list."}
+    # Without the word "list", it may not be about the list at all - "take Friday off work".
+    assert lists.tick_off("cheese", "shopping")["not_understood"] is True
     # The same thing on two lists asks which list.
     lists = make_lists(items={"todo.todo": ["milk"], "todo.shopping_list": ["milk"]})
     assert lists.tick_off("milk", None)["message"] == "Which list, Shopping list or todo?"

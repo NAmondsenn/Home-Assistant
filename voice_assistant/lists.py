@@ -183,7 +183,7 @@ def say_items(name: str, items: List[Dict]) -> str:
     return f"Your {_list_said(name)} has {_joined(said)}."
 
 
-def _names_list(said: Optional[str]) -> bool:
+def names_list(said: Optional[str]) -> bool:
     """Whether what was said for a list has the word "list" in it - "my calendar" hasn't."""
     return bool(said) and bool(re.search(r"\blists?\b", said.lower()))
 
@@ -259,7 +259,7 @@ class Lists:
     def _not_found(self, said: Optional[str], sentence: str) -> Dict:
         """What's said when no one list fits - and when none does, for words naming no list, it goes to Claude."""
         result = {"success": False, "message": sentence}
-        if sentence == NO_SUCH_LIST and not _names_list(said):
+        if sentence == NO_SUCH_LIST and not names_list(said):
             result["not_understood"] = True
         return result
 
@@ -316,17 +316,19 @@ class Lists:
             return _failed("read a list", e)
         return {"success": True, "message": say_items(found["name"], items)}
 
-    def tick_off(self, item: str, said: Optional[str]) -> Dict:
+    def tick_off(self, item: str, said: Optional[str], exact: bool = False) -> Dict:
         """
         Ticks a thing off a list - marking it done, never deleting it.
 
         Args:
             item: The thing as it was said, e.g. "the milk".
             said: The list as it was said, or None to look through every list.
+            exact: Whether only a thing with the same words will do - for "I've got the
+                flu", a sentence about the world, which mustn't tick off "Flu jab".
 
         Returns:
             Dict with 'success' and a spoken 'message', and 'not_understood' for words
-            which name no list - or, with no list said, fit nothing on any list.
+            which name no list - or, without the word "list" in them, fit nothing on it.
         """
         named = bool(said and list_words(said))
         try:
@@ -339,11 +341,14 @@ class Lists:
                 lists = self.home.todo_lists()
             things = [{**thing, "list": found} for found in lists for thing in self.home.list_items(found["id"])]
             fits = match_item(item, things)
+            if exact:
+                fits = [thing for thing in fits if _item_words(thing["summary"]) == _item_words(item)]
             if not fits:
                 where = f"your {_list_said(lists[0]['name'])}" if named else "your lists"
                 result = {"success": False, "message": f"I can't see {item} on {where}."}
-                # "I've got work tomorrow" sounds like ticking work off, but fits nothing.
-                if not named and not _names_list(said):
+                # "I've got work tomorrow" sounds like ticking work off, but fits nothing - and
+                # "take Friday off work", with a Work list, isn't about the list.
+                if not names_list(said):
                     result["not_understood"] = True
                 return result
             # By their words, so "milk" and "Milk" are one thing, wherever it's on.

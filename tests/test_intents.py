@@ -4,6 +4,7 @@ Checks which everyday commands are handled without Claude, and - just as much -
 which are left to it.
 """
 
+import re
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -411,7 +412,7 @@ def test_what_the_list_rules_mustnt_catch_is_left_alone(text, tool):
         "item": "milk", "list": "my shopping list", "command": "take milk off my shopping list"})),
     ("Cross the eggs off the shopping list.", Action("tick_off_list", {
         "item": "the eggs", "list": "the shopping list", "command": "cross the eggs off the shopping list"})),
-    ("I've got the milk.", Action("tick_off_list", {"item": "milk", "list": None, "command": "i've got the milk"})),
+    ("I've got the milk.", Action("tick_off_list", {"item": "milk", "list": None, "exact": True})),
 ])
 def test_a_list_is_read_and_things_ticked_off_without_claude(text, action):
     assert _actions(text) == [action]
@@ -425,3 +426,45 @@ def test_without_home_assistant_the_list_rules_leave_it_to_claude(text):
     # "I've got a headache" is a sentence about the world, which a brain without Home
     # Assistant would otherwise answer with "Lists need Home Assistant."
     assert _actions(text, home=None) is None
+
+
+@pytest.mark.parametrize("text, item, said", [
+    # The last " to " or " on " is the list's, so a thing can have one too.
+    ("Add a trip to Ikea to my list.", "a trip to ikea", "my list"),
+    ("Put a letter to the council on my list.", "a letter to the council", "my list"),
+    # "To do" is a list's name, never where the thing goes.
+    ("Add milk to my to do list.", "milk", "my to do list"),
+    ("Add milk to my to-do list.", "milk", "my to do list"),
+    ("Put the radio on my shopping list.", "the radio", "my shopping list"),
+    # Without commas, three words can't be told from one thing of three words.
+    ("Add eggs milk bread to my list.", "eggs milk bread", "my list"),
+])
+def test_a_thing_is_taken_up_to_the_last_to_or_on(text, item, said):
+    command = re.sub(r"[^a-z0-9' ]", " ", text.lower()).strip()
+    assert _actions(text) == [Action("add_to_list", {"item": item, "list": said, "command": " ".join(command.split())})]
+
+
+@pytest.mark.parametrize("text", [
+    # Only pointing back, by any of the words for it.
+    "Add them to my shopping list.", "Put all of those on my list.", "Add these to my list.", "Tick them off.",
+    "Tick both off my list.", "I've got them.", "Take those off my shopping list.", "Add the other one to my list.",
+    # Several things, joined other ways.
+    "Add eggs plus milk to my list.", "Add eggs as well as milk to my list.",
+    # Possessives of Nova's own things and the devices.
+    "Add a note to my phone's notes.", "Put lunch on my calendar's day.",
+    # Ticking off from what isn't a list.
+    "Tick milk off my calendar.", "Tick it off my list.", "Tick milk off my list and the eggs.",
+])
+def test_what_else_the_list_rules_mustnt_catch_is_left_alone(text):
+    assert _actions(text) is None
+
+
+def test_a_thing_is_ticked_off_a_list_said_after_it():
+    assert _actions("Tick milk off my shopping list.") == [Action("tick_off_list", {
+        "item": "milk", "list": "my shopping list", "command": "tick milk off my shopping list"})]
+
+
+def test_ive_got_only_ticks_off_an_exact_fit_and_never_asks_assist():
+    # "I've got the flu" is a sentence about the world - only "flu" itself on a list is
+    # ticked off, and Assist, which has no such sentence, is never sent it.
+    assert _actions("I've got the flu.") == [Action("tick_off_list", {"item": "flu", "list": None, "exact": True})]

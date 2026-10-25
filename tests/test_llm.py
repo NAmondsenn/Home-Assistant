@@ -469,6 +469,9 @@ def test_thinking_is_off_and_temperature_only_sent_when_set(llm):
     ("Add eggs, milk and bread to my shopping list.", "eggs milk and bread", "shopping"),
     ("add milk to notes", "milk", "notes"),
     ("Add salt and vinegar crisps to the todo list.", "salt and vinegar crisps", "todo"),
+    # The last " to " is the list's, and "to do" is a list's name.
+    ("Add a trip to Ikea to my list.", "a trip to ikea", "list"),
+    ("Add milk to my to-do list.", "milk", "to do"),
 ])
 def test_offline_several_things_are_added_as_one(llm, said, item, where):
     llm.client = FakeClient(_error(anthropic.APIConnectionError))
@@ -476,7 +479,9 @@ def test_offline_several_things_are_added_as_one(llm, said, item, where):
 
 
 @pytest.mark.parametrize("said", ["Add ten minutes to the timer.", "Add the dentist to my calendar.",
-                                  "Add it to my list.", "Add to my list.", "What should I add to my list?"])
+                                  "Add it to my list.", "Add to my list.", "What should I add to my list?",
+                                  "Add them to my shopping list.", "Add all of those to my list.",
+                                  "Add a note to my phone's notes."])
 def test_offline_what_isnt_a_list_isnt_added_to_one(llm, said):
     llm.client = FakeClient(_error(anthropic.APIConnectionError))
     assert llm.process_query(said)["actions"] == []

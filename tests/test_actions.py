@@ -668,7 +668,7 @@ class FakeSession:
         answer = self.answers[path]
         if isinstance(answer, Exception):
             raise answer
-        return FakeResponse(answer)
+        return FakeResponse(answer(kwargs.get("json")) if callable(answer) else answer)
 
 
 class FakeSocket:
@@ -679,9 +679,6 @@ class FakeSocket:
 
     def call(self, messages):
         return [{"results": [self.found]}]
-
-
-SHOPPING = {"entity_id": "todo.shopping_list", "state": "1", "attributes": {"friendly_name": "Shopping list"}}
 
 
 def _debugged(intent, *targets):
@@ -700,24 +697,27 @@ def make_lists_executor(tmp_path, monkeypatch):
 
     monkeypatch.setattr(network, "online", lambda: True)
 
-    def factory(found, answers=None, items=("milk",)):
-        snapshot = Snapshot(entries={"todo.shopping_list": Entry("todo.shopping_list", "shopping_list", None, None,
-                                                                 "shopping_list", None, (), True)},
-                            devices={}, areas={}, read_at=0.0)
+    def factory(found, answers=None, items=("milk",), lists=None):
+        # Each list's things, by its entity id - the shopping list's alone, unless a test says.
+        lists = lists or {"todo.shopping_list": ("Shopping list", items)}
+        snapshot = Snapshot(entries={entity: Entry(entity, "local_todo", None, None, entity, None, (), True)
+                                     for entity in lists}, devices={}, areas={}, read_at=0.0)
         home = HomeAssistant("http://homeassistant.local:8123/", "token",
                              registry=type("Registry", (), {"snapshot": lambda self: snapshot})())
         home._session = FakeSession({
-            "/api/states": [SHOPPING],
+            "/api/states": [{"entity_id": entity, "state": str(len(things)), "attributes": {"friendly_name": name}}
+                            for entity, (name, things) in lists.items()],
             "/api/conversation/process": {"response": {"response_type": "action_done",
                                                        "speech": {"plain": {"speech": "Added milk"}}}},
             "/api/services/todo/add_item": [],
             "/api/services/todo/update_item": [],
-            "/api/services/todo/get_items?return_response": {"service_response": {"todo.shopping_list": {
-                "items": [{"summary": item, "uid": f"uid-{item}", "status": "needs_action"} for item in items]}}},
+            "/api/services/todo/get_items?return_response": lambda asked: {"service_response": {asked["entity_id"]: {
+                "items": [{"summary": item, "uid": f"uid-{item}", "status": "needs_action"}
+                          for item in lists[asked["entity_id"]][1]]}}},
             **(answers or {})})
         home.socket = FakeSocket(found)
-        lists = Lists(home, ChoiceStore(str(tmp_path / "lists.json"), {"main": None}))
-        return ActionExecutor(home=home, lists=lists), home._session.requests
+        return ActionExecutor(home=home, lists=Lists(home, ChoiceStore(str(tmp_path / "lists.json"), {"main": None}))), \
+            home._session.requests
     return factory
 
 
@@ -846,3 +846,67 @@ def test_lists_are_only_offered_with_home_assistant():
     # Claude can't run the local ones, which pass free text to Assist.
     result = ActionExecutor(lists=object()).execute(Action("add_to_list", {"item": "milk"}, from_model=True))
     assert result.ok is False
+
+
+def _ticked(sent):
+    return [sent_json for path, sent_json in sent if path == "/api/services/todo/update_item"]
+
+
+@pytest.mark.parametrize("said, on_list", [("flu", "Flu jab"), ("car", "Wash the car"), ("time", "Time sheet")])
+def test_ive_got_ticks_off_only_an_exact_fit(make_lists_executor, said, on_list):
+    # "I've got the flu" is a sentence about the world, never "Flu jab" ticked off - it's Claude's.
+    executor, sent = make_lists_executor(None, items=(on_list,))
+    result = executor.execute(Action("tick_off_list", {"item": said, "list": None, "exact": True}))
+    assert (result.ok, result.understood) == (False, False)
+    assert _ticked(sent) == [] and "/api/conversation/process" not in _sent(sent)
+    # The thing itself is ticked off.
+    executor, sent = make_lists_executor(None, items=(on_list, said))
+    result = executor.execute(Action("tick_off_list", {"item": said, "list": None, "exact": True}))
+    assert (result.ok, result.say) == (True, f"Ticked off {said} on your shopping list.")
+
+
+def test_a_list_named_without_the_word_list_and_nothing_fitting_goes_to_claude(make_lists_executor):
+    executor, sent = make_lists_executor(None, lists={"todo.work": ("Work", ("Send the report",))})
+    result = executor.execute(Action("tick_off_list", {"item": "friday", "list": "work",
+                                                       "command": "take friday off work"}))
+    assert (result.ok, result.understood) == (False, False) and _ticked(sent) == []
+    # Said, when the words say it's a list.
+    result = executor.execute(Action("tick_off_list", {"item": "friday", "list": "my work list",
+                                                       "command": "take friday off my work list"}))
+    assert (result.ok, result.understood, result.say) == (False, True, "I can't see friday on your work list.")
+
+
+@pytest.mark.parametrize("failure", [requests.ConnectionError("refused"), requests.Timeout("no answer")])
+@pytest.mark.parametrize("tool, params", [
+    ("add_to_list", {"item": "drake", "list": "spotify", "command": "put drake on spotify"}),
+    ("read_list", {"list": "netflix"}),
+    ("tick_off_list", {"item": "friday", "list": "work", "command": "take friday off work"}),
+])
+def test_words_naming_no_list_go_to_claude_with_home_assistant_down(make_lists_executor, failure, tool, params):
+    executor, sent = make_lists_executor(None, {"/api/states": failure})
+    result = executor.execute(Action(tool, params))
+    assert (result.ok, result.understood) == (False, False)
+    # Words saying it's a list are told it can't be reached.
+    executor, _ = make_lists_executor(None, {"/api/states": failure})
+    result = executor.execute(Action(tool, {**params, "list": "my shopping list"}))
+    assert (result.ok, result.understood, result.say) == (False, True, "I can't reach Home Assistant right now.")
+
+
+def test_offline_a_list_that_isnt_there_says_claude_cant_be_reached(make_lists_executor):
+    # The fallback's "add a reminder to call mum" isn't a list, and the offline message
+    # (the model's reply) is said rather than "I haven't got a list called that.".
+    executor, _ = make_lists_executor(None)
+    results = [executor.execute(Action("add_to_list", {"item": "a reminder", "list": "call mum"}))]
+    assert confirm(results, fallback="Sorry, I can't reach the internet right now.")[1] == [
+        "Sorry, I can't reach the internet right now."]
+
+
+def test_an_assist_error_after_sending_is_said_not_done_again(make_lists_executor):
+    failed = {"response": {"response_type": "error", "data": {"code": "failed_to_handle"},
+                           "speech": {"plain": {"speech": "An unexpected error occurred"}}}}
+    executor, sent = make_lists_executor(_debugged("HassListAddItem", "todo.shopping_list"),
+                                         {"/api/conversation/process": failed})
+    result = executor.execute(Action("add_to_list", {"item": "milk", "list": "my shopping list",
+                                                     "command": "add milk to my shopping list"}))
+    assert (result.ok, result.say) == (False, "An unexpected error occurred")
+    assert _sent(sent) == ["/api/conversation/process"]
