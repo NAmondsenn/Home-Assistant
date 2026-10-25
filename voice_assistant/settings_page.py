@@ -1034,6 +1034,11 @@ class SettingsPage:
         """Adds or changes one of the user's routines - see Routines.save."""
         if self.brain.routines is None or not isinstance(routine, dict):
             return {"success": False, "message": "That didn't make sense."}
+        # Never one for a name nobody has: it would be saved, but never run. An empty
+        # one is the default's, as Routines keeps it.
+        name = str(routine.get("satellite") or "").strip()
+        if name and name not in self.brain.satellites():
+            return {"success": False, "message": f"There's no satellite called {name}."}
         result = self.brain.routines.save(routine)
         if result["success"]:
             logger.info(f"Settings page: {who} saved a routine")

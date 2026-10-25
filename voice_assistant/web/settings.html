@@ -165,6 +165,14 @@
               </span>
             </div>
           </div>
+          <!-- Only with more than one satellite to choose from. -->
+          <div class="field" id="routine-satellite-field" hidden>
+            <label for="routine-satellite">Runs on</label>
+            <span class="select">
+              <select id="routine-satellite"></select>
+              <svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg>
+            </span>
+          </div>
           <div class="field">
             <label for="routine-steps">Steps, a line each, as you'd say them to Nova</label>
             <textarea id="routine-steps" rows="5" spellcheck="false" placeholder="what's the weather&#10;what's on today&#10;turn on the kitchen lights"></textarea>

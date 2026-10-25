@@ -183,6 +183,11 @@ class FakeSession:
         self.busy = False
         # How many times Stop was pressed for it.
         self.stopped = 0
+        # The routines it was told to run.
+        self.routines_run = []
+
+    def run_routine(self, routine):
+        self.routines_run.append(routine["name"])
 
     def set_muted(self, muted):
         self.muted = muted
@@ -224,6 +229,8 @@ class FakeBrain:
 
     def run_routine(self, routine):
         self.ran.append(routine)
+        # The brain's own, so it finds the routine's satellite as it does on the brain.
+        return Brain.run_routine(self, routine)
 
     def remove_satellite(self, name):
         if name not in self.known:
@@ -1276,6 +1283,43 @@ def test_an_alarm_is_never_set_for_a_satellite_the_brain_doesnt_know(files):
     # One which is merely away is the brain's to set alarms for.
     assert page.add_alarm("07:30", None, LOGIN, "garage")["success"]
     assert page.brain.clock.alarms == [(7, 30, None, "garage")]
+
+
+def test_a_routine_keeps_its_satellite_when_saved_on_the_page(files):
+    page = _page(sessions=_two_satellites(), routines=Routines(path=str(files / "routines.json")))
+    routine = {"name": "Lights out", "phrases": "lights out", "steps": "turn off the lights", "satellite": "kitchen"}
+    assert page.save_routine(routine, LOGIN)["success"]
+    saved = page.state()["routines"][0]
+    assert saved["satellite"] == "kitchen"
+    # Saved again as the editor sends it - with the satellite it started at.
+    assert page.save_routine(dict(saved, name="Lights off"), LOGIN)["success"]
+    assert [(r["name"], r["satellite"]) for r in page.state()["routines"]] == [("Lights off", "kitchen")]
+    # An empty one is the default's, as Routines keeps it.
+    assert page.save_routine(dict(saved, satellite=""), LOGIN)["success"]
+    assert page.state()["routines"][0]["satellite"] is None
+
+
+def test_a_routine_for_a_satellite_not_let_in_is_refused(files):
+    page = _page(sessions={"bedroom": FakeSession()}, known=["bedroom", "garage"],
+                 routines=Routines(path=str(files / "routines.json")))
+    for ghost in ("ghosst", 5):
+        assert page.save_routine({"name": "Lights out", "steps": "turn off the lights", "satellite": ghost}, LOGIN) == {
+            "success": False, "message": f"There's no satellite called {ghost}."}
+    assert page.state()["routines"] == []
+    # One which is merely away is the brain's to keep routines for.
+    assert page.save_routine({"name": "Lights out", "steps": "turn off the lights", "satellite": "garage"}, LOGIN)["success"]
+
+
+def test_run_on_the_page_runs_a_routine_on_its_own_satellite(files):
+    page = _page(sessions=_two_satellites(), routines=Routines(path=str(files / "routines.json")))
+    page.save_routine({"name": "Lights out", "steps": "turn off the lights", "satellite": "kitchen"}, LOGIN)
+    routine = page.state()["routines"][0]
+    assert page.start_routine(routine["id"], LOGIN)["success"]
+    sessions = page.brain.sessions
+    deadline = time.monotonic() + 2
+    while not sessions["kitchen"].routines_run and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert sessions["kitchen"].routines_run == ["Lights out"] and sessions["bedroom"].routines_run == []
 
 
 def test_a_satellite_which_doesnt_exist_is_handled_everywhere(served):

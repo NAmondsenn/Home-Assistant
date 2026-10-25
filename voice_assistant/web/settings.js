@@ -1151,10 +1151,25 @@ function openEditor(routine) {
   document.getElementById("routine-at").value = routine ? routine.at : "";
   document.getElementById("routine-repeat").value = routine ? routine.repeat : "daily";
   document.getElementById("routine-steps").value = routine ? routine.steps.join("\n") : "";
+  showRunsOn(routine ? routine.satellite || "" : "");
   document.getElementById("delete-routine").hidden = !routine;
   document.getElementById("new-routine").hidden = true;
   document.getElementById("routine-editor").hidden = false;
   document.getElementById("routine-name").focus();
+}
+
+// The editor's "Runs on", from the satellites the brain lets in - the default first, as
+// "", which is what a routine keeps while it has no satellite of its own. Saving sends
+// the choice, so a routine saved on the page keeps the satellite it had.
+function showRunsOn(chosen) {
+  const field = document.getElementById("routine-satellite-field");
+  field.hidden = satellites.length < 2;
+  const fallback = satellites.find((satellite) => satellite.default);
+  const options = [new Option(fallback ? `The default (${fallback.name})` : "The default", ""),
+                   ...satellites.map((satellite) => new Option(satellite.name, satellite.name))];
+  document.getElementById("routine-satellite").replaceChildren(...options);
+  // A satellite since removed is no longer offered, so it starts at the default.
+  document.getElementById("routine-satellite").value = satellites.some((satellite) => satellite.name === chosen) ? chosen : "";
 }
 
 function closeEditor() {
@@ -1673,8 +1688,12 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("routine-editor").addEventListener("submit", async (event) => {
     event.preventDefault();
     const field = (id) => document.getElementById(id).value;
+    // With the choice hidden, a routine is saved as it was - not dropped to the default.
+    const runsOn = document.getElementById("routine-satellite-field").hidden && editing
+      ? editing.satellite || "" : field("routine-satellite");
     const routine = { id: editing ? editing.id : undefined, name: field("routine-name"), phrases: field("routine-phrases"),
-                      at: field("routine-at"), repeat: field("routine-repeat"), steps: field("routine-steps") };
+                      at: field("routine-at"), repeat: field("routine-repeat"), steps: field("routine-steps"),
+                      satellite: runsOn };
     const result = await change("/api/routines", { routine });
     if (result.success) closeEditor();
   });
