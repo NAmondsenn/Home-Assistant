@@ -497,9 +497,13 @@ function showProblems() {
     return row;
   });
   const list = document.getElementById("problems");
-  list.classList.toggle("clamped", !allProblems);
   list.replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
+  // Measured as they'd be cut, even while all are shown, so that once nothing's left out
+  // or cut short any more there's no "Show fewer" that would change nothing.
+  list.classList.add("clamped");
   const cut = [...list.querySelectorAll(".what")].some((what) => what.scrollHeight > what.clientHeight);
+  if (recentProblems.length <= FEWEST_PROBLEMS && !cut) allProblems = false;
+  list.classList.toggle("clamped", !allProblems);
   const all = document.getElementById("problems-all");
   all.hidden = !allProblems && recentProblems.length <= FEWEST_PROBLEMS && !cut;
   all.textContent = allProblems ? "Show fewer" : "Show all";
@@ -1915,8 +1919,35 @@ function seeded(seed) {
   };
 }
 
+// Keeps the toasts, and a field tabbed to, clear of the save bar, as tall as it's drawn -
+// a long save error, or an iPhone's home bar under it, makes it taller. Its height goes to
+// --save-bar through the CSSOM, which the page's CSP lets through where a style attribute
+// wouldn't be. The toasts are lifted only while the bar's on screen, and its corners are
+// rounded only where it ends the form, not while it's stuck to the screen's bottom.
+function followSaveBar() {
+  const bar = document.querySelector(".save-bar");
+  const page = document.documentElement;
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(() => page.style.setProperty("--save-bar", `${bar.offsetHeight}px`)).observe(bar);
+  }
+  if (!("IntersectionObserver" in window)) {
+    // Lifted all the time, as it can't be told when the bar's in view.
+    page.classList.add("save-bar-shown");
+    return;
+  }
+  // The screen less its bottom pixel, so a bar stuck to the bottom is never wholly in it,
+  // while one ending the form, above the bottom, is.
+  new IntersectionObserver((entries) => {
+    // The newest, should several have queued up.
+    const seen = entries[entries.length - 1];
+    page.classList.toggle("save-bar-shown", seen.isIntersecting);
+    bar.classList.toggle("stuck", seen.isIntersecting && seen.intersectionRatio < 1);
+  }, { rootMargin: "0px 0px -1px 0px", threshold: [0, 1] }).observe(bar);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   drawSky();
+  followSaveBar();
   let resized = null;
   window.addEventListener("resize", () => {
     clearTimeout(resized);

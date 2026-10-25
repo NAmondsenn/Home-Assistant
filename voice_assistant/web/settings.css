@@ -34,9 +34,9 @@
   /* Corners get tighter as things get smaller, and buttons are round. */
   --panel-round: 18px;
   --field-round: 10px;
-  /* How far up the toasts sit: above the save bar, which keeps to the bottom of the
-     screen while the settings are in view, and so above an iPhone's home bar too. */
-  --toasts-at: calc(max(16px, env(safe-area-inset-bottom)) + 80px);
+  /* How far up the toasts sit: clear of an iPhone's home bar - and, while the save bar
+     is on screen, above it (see html.save-bar-shown below). */
+  --toasts-at: max(24px, env(safe-area-inset-bottom));
   color-scheme: dark;
 }
 
@@ -51,9 +51,14 @@
 html {
   min-height: 100%;
   background: var(--deep) linear-gradient(180deg, var(--night), var(--deep)) no-repeat;
-  /* So a field tabbed to isn't left under the save bar. */
-  scroll-padding-bottom: 96px;
+  /* So a field tabbed to isn't left under the save bar - --save-bar is its height as
+     drawn, set by followSaveBar in settings.js, and the guess is a line's worth until then. */
+  scroll-padding-bottom: calc(var(--save-bar, 84px) + 12px);
 }
+
+/* The save bar is on screen, so the toasts go above it, however tall it is - a long
+   save error takes three lines on a phone. */
+html.save-bar-shown { --toasts-at: calc(var(--save-bar, 84px) + 12px); }
 
 body {
   margin: 0;
@@ -952,6 +957,10 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   color: var(--dusk);
   font-size: 14px;
 }
+
+/* Stuck to the screen's bottom, mid-form, its rounded corners would show the fields
+   scrolling by behind them - they're only for where it ends the form. */
+.save-bar.stuck { border-radius: 0; }
 
 /* Why a save didn't work, said here too as it stays in view. */
 .save-bar p.bad { color: var(--ember); }
