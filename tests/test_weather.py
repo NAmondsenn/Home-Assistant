@@ -238,11 +238,13 @@ def test_late_at_night_today_is_still_today_and_tomorrow_is_the_next_day(choices
 
 
 def test_the_hours_are_right_across_the_clocks_going_back(choices, zone):
-    # 25 October 2026: in London, 1 AM comes twice, and the day has 25 hours.
+    # 25 October 2026: in London, 1 AM comes twice, and the day has 25 hours. Only the first
+    # 1 AM - on summer time, as now is - has rain, so losing it, or keeping the second's dry
+    # hour in its place, says "around 3 AM", and putting 3 AM first says "until 1 AM".
     now = datetime(2026, 10, 25, 0, 30).astimezone()
     home = FakeHome([{**_entity(), "reported": now.timestamp()}], [_day(0, now=now), _day(1, now=now)],
-                    _met_hours(now, lambda local: (
-        local.date() == now.date() and local.hour in (1, 3))))
+                    _met_hours(now, lambda local: local.date() == now.date() and (
+                        (local.hour == 1 and local.utcoffset() == now.utcoffset()) or local.hour == 3)))
     assert _said(home, choices, now=now).endswith(
         "Today, a high of 14 and a low of 8, with rain likely from about 1 AM until 3 AM.")
     assert _said(home, choices, "tomorrow", now=now) == \
