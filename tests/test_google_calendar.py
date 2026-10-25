@@ -9,9 +9,11 @@ gives it, so nothing ever reaches Google. Every id, secret, code and token is ma
 
 import base64
 import hashlib
+import inspect
 import json
 import logging
 import os
+import re
 import stat
 import time
 from datetime import date, datetime, timedelta
@@ -59,9 +61,15 @@ class FakeGoogle:
         self.asked = []
         # What each GET was sent with besides its address - its params, headers and timeout.
         self.fetched = []
+        # Each POST, as it was sent.
+        self.posted = []
 
-    def post(self, url, data=None, timeout=None, **kwargs):
-        self.asked.append((url, dict(data or {})))
+    def post(self, url, data=None, json=None, headers=None, timeout=None, **kwargs):
+        # Nova only ever posts for a token or a new event - see test_nova_never_changes_or_deletes_an_event.
+        if url != google_calendar.TOKEN and not url.endswith("/events"):
+            raise AssertionError(f"Nothing should be posted to {url}")
+        self.asked.append((url, dict(data or json or {})))
+        self.posted.append({"url": url, "json": json, "headers": dict(headers or {}), "timeout": timeout})
         return self._answer(url)
 
     def get(self, url, params=None, headers=None, timeout=None, **kwargs):
@@ -1075,3 +1083,196 @@ def test_being_there_now_says_so():
 def test_nothing_coming_up_says_so():
     from voice_assistant.google_calendar import describe_next
     assert describe_next("uni", [], 1, date(2026, 10, 20), NOW) == "You haven't got uni in the next two weeks."
+
+
+# Adding to the calendar
+
+SATURDAY = date(2026, 10, 24)
+
+
+@pytest.fixture
+def for_adding(monkeypatch, tmp_path):
+    """
+    Makes GoogleCalendars to add to: Personal, the user's own and primary, and Work, which
+    they own too - and Uni, shared with them, which Google won't let Nova add to. Each
+    calendar takes one event, unless answers gives what Google answers.
+    """
+    monkeypatch.setattr(google_calendar.network, "online", lambda: True)
+
+    def make(new_events=None, answers=None):
+        entries = [_entry("calendar-personal", "Personal", primary=True), _entry("calendar-work", "Work"),
+                   _entry("calendar-uni", "Uni", access_role="reader")]
+        google = FakeGoogle(**{LIST: [_calendar_list(*entries)],
+                               **{_events_url(entry["id"]): list(answers or [_inserted()]) for entry in entries}})
+        choices = _choices(tmp_path)
+        if new_events:
+            choices.change(lambda state: state.update(new_events=new_events))
+        return GoogleCalendar(FakeSignIn(), choices, session=google)
+
+    return make
+
+
+def _inserted():
+    """Google's answer to an event added - the event, as events.insert gives it back."""
+    return {"kind": "calendar#event", "id": "made-up-event", "status": "confirmed"}
+
+
+def _added(calendar):
+    """Each event sent to be added, as (calendar id, what was sent)."""
+    prefix = "https://www.googleapis.com/calendar/v3/calendars/"
+    return [(posted["url"][len(prefix):-len("/events")], posted["json"]) for posted in calendar._session.posted]
+
+
+def test_a_new_event_goes_to_the_primary_calendar_and_lasts_an_hour(for_adding):
+    calendar = for_adding()
+
+    assert calendar.add("Dentist", "2026-10-29 15:00", today=SATURDAY) == {
+        "success": True, "message": "Added Dentist, Thursday the 29th at 3 PM."}
+    # The clocks went back on the 25th, so the 29th is on GMT.
+    assert _added(calendar) == [("calendar-personal", {"summary": "Dentist",
+                                                       "start": {"dateTime": "2026-10-29T15:00:00+00:00"},
+                                                       "end": {"dateTime": "2026-10-29T16:00:00+00:00"}})]
+    [posted] = calendar._session.posted
+    assert posted["headers"]["Authorization"] == f"Bearer {ACCESS_TOKEN}"
+    assert posted["timeout"] == google_calendar.REQUEST_TIMEOUT
+    assert google_calendar.DEFAULT_LENGTH == timedelta(hours=1)
+
+    # Before they went back, it's on BST, and an end given is kept.
+    calendar = for_adding()
+    assert calendar.add("Coffee with Sam", "2026-10-24 10:30", end="2026-10-24 11:15", today=SATURDAY)["message"] \
+        == "Added Coffee with Sam, Saturday the 24th at 10:30 AM."
+    assert _added(calendar)[0][1]["start"] == {"dateTime": "2026-10-24T10:30:00+01:00"}
+    assert _added(calendar)[0][1]["end"] == {"dateTime": "2026-10-24T11:15:00+01:00"}
+
+
+def test_with_no_time_its_all_day(for_adding):
+    calendar = for_adding()
+    assert calendar.add("Holiday", "2026-10-30", today=SATURDAY) == {
+        "success": True, "message": "Added Holiday, Friday the 30th, all day."}
+    assert _added(calendar)[0][1] == {"summary": "Holiday", "start": {"date": "2026-10-30"},
+                                      "end": {"date": "2026-10-31"}}
+
+    # all_day makes a time all day too, and an end day is included.
+    calendar = for_adding()
+    calendar.add("Holiday", "2026-10-30 09:00", end="2026-11-01", all_day=True, today=SATURDAY)
+    assert _added(calendar)[0][1] == {"summary": "Holiday", "start": {"date": "2026-10-30"},
+                                      "end": {"date": "2026-11-02"}}
+
+
+def test_a_time_that_cant_be_read_or_ends_first_isnt_added(for_adding):
+    calendar = for_adding()
+    for start, end in (("Thursday at 3", None), ("2026-10-29 15:00", "about four"), ("", None)):
+        assert calendar.add("Dentist", start, end=end, today=SATURDAY) == {
+            "success": False, "message": "I didn't catch when that is."}
+    for start, end in (("2026-10-29 15:00", "2026-10-29 14:00"), ("2026-10-30", "2026-10-29")):
+        assert calendar.add("Dentist", start, end=end, today=SATURDAY) == {
+            "success": False, "message": "That ends before it starts."}
+    assert calendar.add("  ", "2026-10-29 15:00", today=SATURDAY) == {
+        "success": False, "message": "I didn't catch what to add."}
+    assert calendar._session.posted == []
+
+
+def test_a_calendar_named_is_used(for_adding):
+    for named in ("work", "Work", "shifts"):
+        calendar = for_adding()
+        assert calendar.add("Shift", "2026-10-31 09:00", calendar=named, today=SATURDAY) == {
+            "success": True, "message": "Added Shift to Work, Saturday the 31st at 9 AM."}, named
+        assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-work"]
+
+    # The one new events go to anyway isn't named.
+    calendar = for_adding()
+    assert calendar.add("Dentist", "2026-10-29 15:00", calendar="personal", today=SATURDAY)["message"] == \
+        "Added Dentist, Thursday the 29th at 3 PM."
+    assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal"]
+
+
+def test_the_chosen_calendar_is_used_until_its_gone(for_adding):
+    calendar = for_adding(new_events="calendar-work")
+    assert calendar.add("Shift", "2026-10-31 09:00", today=SATURDAY)["message"] == \
+        "Added Shift, Saturday the 31st at 9 AM."
+    # The primary, named, is now the one that isn't where new events go.
+    assert calendar.add("Dentist", "2026-10-29 15:00", calendar="personal", today=SATURDAY)["message"] == \
+        "Added Dentist to Personal, Thursday the 29th at 3 PM."
+    assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-work", "calendar-personal"]
+
+    # Deleted in Google, new events go to the primary again.
+    calendar._known_at = None
+    calendar._session.answers[LIST].append(_calendar_list(_entry("calendar-personal", "Personal", primary=True)))
+    calendar._session.answers[_events_url("calendar-personal")].append(_inserted())
+    assert calendar.add("Shift", "2026-11-07 09:00", today=SATURDAY)["message"] == \
+        "Added Shift, Saturday the 7th of November at 9 AM."
+    assert _added(calendar)[-1][0] == "calendar-personal"
+
+    # And one chosen that Nova can't add to is never tried.
+    calendar = for_adding(new_events="calendar-uni")
+    calendar.add("Dentist", "2026-10-29 15:00", today=SATURDAY)
+    assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal"]
+
+
+def test_a_calendar_nova_cant_add_to_says_so(for_adding):
+    calendar = for_adding()
+    assert calendar.add("Lecture", "2026-10-29 15:00", calendar="uni", today=SATURDAY) == {
+        "success": False, "message": "I can't add to Uni - Google only lets me add to your own calendars."}
+    assert calendar.add("Gym", "2026-10-29 15:00", calendar="gym", today=SATURDAY) == {
+        "success": False, "message": "I haven't got a calendar called that."}
+    assert calendar._session.posted == []
+
+
+def test_an_event_next_month_says_which_month(for_adding):
+    calendar = for_adding(answers=[_inserted(), _inserted()])
+    assert calendar.add("Dentist", "2026-11-02 10:30", today=date(2026, 10, 30))["message"] == \
+        "Added Dentist, Monday the 2nd of November at 10:30 AM."
+    assert calendar.add("Dentist", "2026-11-02", today=date(2026, 11, 1))["message"] == \
+        "Added Dentist, Monday the 2nd, all day."
+
+
+def _refused(status, reason="forbidden"):
+    return FakeResponse(status, {"error": {"code": status, "errors": [{"domain": "global", "reason": reason}]}})
+
+
+@pytest.mark.parametrize("answer, said, posts", [
+    (_refused(403), "Google wouldn't add that.", 1),
+    (_refused(500, "backendError"), "Google wouldn't add that.", 1),
+    (_refused(403, "rateLimitExceeded"), "Google wouldn't add that.", 1),
+    # Sent, but unanswered - so it may well have been added, and isn't sent again.
+    (requests.ReadTimeout("Read timed out."), "Google didn't answer in time, so I can't tell whether Dentist was "
+                                              "added.", 1),
+    (FakeResponse(200, "not an event"), "Google's answer didn't say, so I can't tell whether Dentist was added.", 1),
+    # Never sent, so certainly not added.
+    (requests.ConnectTimeout("Connection timed out."), CANT_REACH_GOOGLE, 1),
+    (requests.ConnectionError("Name or service not known"), CANT_REACH_GOOGLE, 1),
+    # Turned down before it ran out, the access token is got afresh once - Google added nothing.
+    (_refused(401, "authError"), NEEDS_SIGN_IN, 2),
+])
+def test_nothing_is_said_added_unless_google_took_it(for_adding, caplog, answer, said, posts):
+    calendar = for_adding(answers=[answer, answer])
+    with caplog.at_level(logging.INFO):
+        assert calendar.add("Dentist", "2026-10-29 15:00", today=SATURDAY) == {"success": False, "message": said}
+    assert len(calendar._session.posted) == posts
+    # Neither the calendar's id - for the primary, the user's email address - nor the event is logged.
+    assert caplog.records and not any("calendar-" in record.getMessage() or "Dentist" in record.getMessage()
+                                      for record in caplog.records)
+
+
+def test_adding_without_google_says_why(for_adding, monkeypatch, token_file):
+    calendar = for_adding()
+    monkeypatch.setattr(google_calendar.network, "online", lambda: False)
+    assert calendar.add("Dentist", "2026-10-29 15:00", today=SATURDAY) == {
+        "success": False, "message": CANT_REACH_GOOGLE}
+    assert calendar._session.asked == []
+
+    monkeypatch.setattr(google_calendar.network, "online", lambda: True)
+    calendar.sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=FakeGoogle())
+    assert calendar.add("Dentist", "2026-10-29 15:00", today=SATURDAY) == {"success": False, "message": NEEDS_SIGN_IN}
+    assert calendar._session.posted == []
+
+
+def test_nova_never_changes_or_deletes_an_event():
+    # FakeGoogle can only GET, and POST to the token address or an events list, so no test
+    # in this file has Nova do anything else to Google.
+    assert {name for name in vars(FakeGoogle) if not name.startswith("_")} == {"get", "post"}
+    source = inspect.getsource(google_calendar)
+    assert not re.search(r"\b(PATCH|PUT|DELETE)\b", source)
+    assert not re.search(r"\.(patch|put|delete|request)\(", source)
+    # The token, and an event added - nothing else is posted.
+    assert source.count(".post(") == 2

@@ -295,6 +295,36 @@ def test_the_calendar_is_only_offered_once_google_is_set_up():
     assert "The user's activities" not in offered["get_activity"]["description"]
 
 
+def test_add_to_calendar_is_only_offered_once_google_is_set_up():
+    executor = ActionExecutor()
+    assert "add_to_calendar" not in [schema["name"] for schema in executor.tool_schemas()]
+    result = executor.execute(Action("add_to_calendar", {"summary": "Dentist", "start": "2026-10-29 15:00"}))
+    assert (result.ok, result.say) == (False, "The calendar isn't set up yet.")
+
+    class FakeCalendar:
+        def activity_calendars(self):
+            return {}
+
+        def add(self, summary, start, end=None, all_day=None, calendar=None):
+            self.asked = (summary, start, end, all_day, calendar)
+            return {"success": True, "message": "Added Shift to Work, Saturday the 31st at 9 AM."}
+
+    calendar = FakeCalendar()
+    executor = ActionExecutor(calendar=calendar)
+    offered = {schema["name"]: schema for schema in executor.tool_schemas()}
+    assert offered["add_to_calendar"]["description"] == (
+        "Add an event to the user's Google calendar, for 'put the dentist on Thursday at 3'. start and end are "
+        "local 'YYYY-MM-DD HH:MM', or 'YYYY-MM-DD' for all day; leave end out for an hour. Give calendar only "
+        "when the user names one, e.g. 'work'. What was added is said for you, so just reply 'Okay.'")
+    assert offered["add_to_calendar"]["input_schema"]["required"] == ["summary", "start"]
+    assert set(offered["add_to_calendar"]["input_schema"]["properties"]) == {"summary", "start", "end", "all_day",
+                                                                           "calendar"}
+    result = executor.execute(Action("add_to_calendar", {"summary": "Shift", "start": "2026-10-31 09:00",
+                                                         "calendar": "work"}, from_model=True))
+    assert calendar.asked == ("Shift", "2026-10-31 09:00", None, None, "work")
+    assert (result.ok, result.say) == (True, "Added Shift to Work, Saturday the 31st at 9 AM.")
+
+
 def test_without_home_assistant_the_lights_say_so():
     for action in (Action("control_home", {"command": "lights on"}), Action("set_lights", {"on": True})):
         result = ActionExecutor().execute(action)

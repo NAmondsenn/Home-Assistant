@@ -1011,6 +1011,23 @@ class ActionExecutor:
         return self._calendar_days(start, days,
                                    lambda first, days: self.calendar.activity(activity or "", first, days))
 
+    @tool(
+        "Add an event to the user's Google calendar, for 'put the dentist on Thursday at 3'. start and end are "
+        "local 'YYYY-MM-DD HH:MM', or 'YYYY-MM-DD' for all day; leave end out for an hour. Give calendar only "
+        "when the user names one, e.g. 'work'. What was added is said for you, so just reply 'Okay.'",
+        needs="calendar",
+        required=["summary", "start"],
+        summary={"type": "string", "description": "What the event is, as it'd be written on the calendar, e.g. "
+                                                  "'Dentist'."},
+        start={"type": "string", "description": "When it starts, worked out from today's date."},
+        end={"type": "string", "description": "When it ends, only when the user said - an end day is included."},
+        all_day={"type": "boolean", "description": "Whether it's all day. Leave out for a day without a time."},
+        calendar={"type": "string", "description": "The calendar the user named, as they said it."},
+    )
+    def add_to_calendar(self, summary: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None,
+                        all_day: Optional[bool] = None, calendar: Optional[str] = None):
+        return self.calendar.add(summary or "", start or "", end=end, all_day=all_day, calendar=calendar)
+
     @staticmethod
     def _calendar_days(start: Optional[str], days: Optional[int], read) -> Dict:
         """Reads the calendar for the days the model gave, if it gave a day which can be read."""

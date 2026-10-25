@@ -14,7 +14,9 @@ page can do it, it's done once with a command on the brain, the way Spotify's is
 
 It's plain HTTPS with requests - an authorisation code with PKCE, from a "Desktop
 app" client of the user's own - rather than a Google library, which would be one more
-dependency for three requests.
+dependency for four requests: the token, the list of calendars, reading events, and
+adding one. Nothing here changes or deletes an event - the scope Google has for adding
+would let it, so it's this module that never asks.
 
 Every calendar in Google's own list of the user's is read, so one added later turns up
 by itself. With Google out of reach there's no calendar - no copy is kept. Each but the
@@ -32,7 +34,7 @@ import secrets
 import threading
 import time
 from datetime import date, datetime, time as day_time, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 import requests
@@ -100,6 +102,7 @@ GOOGLES_OWN = "@group.v.calendar.google.com"
 SAME_AS = {"work": ("working", "shift", "shifts"), "uni": ("university", "lecture", "lectures", "class", "classes")}
 
 CANT_REACH_GOOGLE = "I can't reach Google's calendar right now."
+NO_ANSWER = "Google didn't answer in time"
 NEEDS_SIGN_IN = "I need signing in to Google again. That's done with a command on the brain."
 
 # Most events said for one day before the rest are only counted.
@@ -120,6 +123,9 @@ MOST_OTHERS_IN_OVERVIEW = 5
 # most matches said.
 SEARCH_DAYS = 90
 MOST_FOUND = 3
+
+# How long an event added with no end lasts.
+DEFAULT_LENGTH = timedelta(hours=1)
 
 
 class SignInNeeded(Exception):
@@ -652,10 +658,213 @@ class GoogleCalendar:
                                                               now or datetime.now().astimezone())}
         return {"success": True, "message": describe_activity(word, events, first, days, today or date.today())}
 
+    def add(self, summary: str, start: str, end: Optional[str] = None, all_day: Optional[bool] = None,
+            calendar: Optional[str] = None, today: Optional[date] = None) -> Dict:
+        """
+        Adds an event to one of the user's own calendars, for "put the dentist on Thursday
+        at 3". It's sent once, never again by itself: Google may have added it already.
+
+        Args:
+            summary: What the event is, e.g. "Dentist".
+            start: When it starts, local - "YYYY-MM-DD HH:MM", or "YYYY-MM-DD" for all day.
+            end: When it ends, the same way - an end day is included. None for
+                DEFAULT_LENGTH, or for the one day.
+            all_day: Whether it's all day, even with a time given.
+            calendar: The calendar the user named, by its name or an activity's word -
+                "work" is Work. None for the one new events go to.
+            today: Today's date - only given by the tests.
+
+        Returns:
+            Dict with 'success' and what was added, or why not, as the 'message'.
+        """
+        summary = summary.strip() if isinstance(summary, str) else ""
+        if not summary:
+            return {"success": False, "message": "I didn't catch what to add."}
+        times = _event_times(start, end, all_day)
+        if isinstance(times, str):
+            return {"success": False, "message": times}
+        try:
+            found = self._calendar_to_add_to(calendar)
+            if isinstance(found, str):
+                return {"success": False, "message": found}
+            chosen, default = found
+            self._insert(chosen["id"], {"summary": summary, "start": times[0], "end": times[1]})
+        except _NotSure as e:
+            logger.warning(f"Couldn't tell whether Google added an event: {e}")
+            return {"success": False, "message": f"{e.said}, so I can't tell whether {summary} was added."}
+        except READ_FAILURES as e:
+            return _not_added(e)
+        logger.info("Added an event to Google's calendar")
+        to = f" to {chosen['name']}" if chosen["id"] != default["id"] and chosen["name"] else ""
+        return {"success": True, "message": f"Added {summary}{to}, {_added_when(times[0], today or date.today())}."}
+
+    def _calendar_to_add_to(self, named: Optional[str]) -> Union[str, Tuple[Dict, Dict]]:
+        """
+        The calendar to add to, and the one new events go to.
+
+        Args:
+            named: The calendar the user named, or None.
+
+        Returns:
+            (the calendar, the one new events go to), or what to say when it can't be added to.
+
+        Raises:
+            The same as calendars.
+        """
+        calendars = self.calendars()
+        chosen_id = self.choices.get("new_events")
+        default = next((each for each in calendars if each["id"] == chosen_id and each["writable"]), None) or \
+            next((each for each in calendars if each["primary"]), None) or \
+            {"id": "primary", "name": "", "primary": True, "writable": True}
+        if not isinstance(named, str) or not named.strip():
+            return default, default
+        said = _as_said(named)
+        matches = [each for each in calendars if _as_said(each["name"]) == said]
+        word = self.activity_words().get(said)
+        if not matches and word is not None:
+            matches = [self.activity_calendars()[word]]
+        if not matches:
+            return "I haven't got a calendar called that."
+        writable = [each for each in matches if each["writable"]]
+        if not writable:
+            return f"I can't add to {matches[0]['name']} - Google only lets me add to your own calendars."
+        return writable[0], default
+
+    def _insert(self, calendar_id: str, event: Dict):
+        """
+        Asks Google to add an event, once. Only a 401 is sent again, with a fresh access
+        token: Google turned it down unread, so added nothing.
+
+        Args:
+            calendar_id: The calendar to add it to.
+            event: The event, as Google's events.insert takes it.
+
+        Raises:
+            _NotSure: If it was sent but Google's answer didn't say it was added.
+            SignInNeeded: If there's no sign-in, or Google no longer accepts it.
+            requests.RequestException: If Google couldn't be reached, or refused it.
+        """
+        if not network.online():
+            raise requests.ConnectionError("No network connection")
+        url = f"{CALENDARS}/{quote(calendar_id, safe='')}/events"
+        for _ in range(2):
+            headers = {"Authorization": f"Bearer {self.sign_in.access_token()}"}
+            try:
+                response = self._session.post(url, json=event, headers=headers, timeout=REQUEST_TIMEOUT)
+            except requests.ConnectTimeout:
+                # Never sent, so certainly not added.
+                raise
+            except requests.Timeout as e:
+                # Sent, but unanswered - so it may well have been added.
+                raise _NotSure(NO_ANSWER, "no answer in time") from e
+            if response.status_code != 401:
+                break
+            self.sign_in.drop_access_token()
+        if response.status_code == 401:
+            raise SignInNeeded("Google turned Nova's access token down.")
+        response.raise_for_status()
+        try:
+            answer = response.json()
+        except ValueError:
+            answer = None
+        if not isinstance(answer, dict) or not answer.get("id"):
+            raise _NotSure("Google's answer didn't say", f"a {response.status_code} without an event")
+
+
+class _NotSure(Exception):
+    """An event was sent to Google, but whether it was added can't be told."""
+
+    def __init__(self, said: str, why: str):
+        """
+        Args:
+            said: How it's said, before "so I can't tell whether ... was added".
+            why: Why, for the log - without the event, or its calendar's id.
+        """
+        super().__init__(why)
+        self.said = said
+
 
 # What reading the calendar can fail with: no sign-in, Google out of reach or refusing,
 # or an answer of the wrong shape.
 READ_FAILURES = (SignInNeeded, requests.RequestException, ValueError, KeyError, TypeError)
+
+
+def _not_added(error: Exception) -> Dict:
+    """
+    What's said when an event certainly wasn't added, depending on why. As with _failed,
+    only the kind of failure is logged.
+    """
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    logger.error(f"Couldn't add to the calendar: {type(error).__name__}{f' {status}' if status else ''}")
+    if isinstance(error, SignInNeeded):
+        return {"success": False, "message": NEEDS_SIGN_IN}
+    if isinstance(error, requests.HTTPError):
+        return {"success": False, "message": "Google wouldn't add that."}
+    return {"success": False, "message": CANT_REACH_GOOGLE}
+
+
+def _when_said(when: str) -> Union[date, datetime, None]:
+    """
+    A time the model gave, as a local datetime, or a date for a day alone - or None if
+    it can't be read.
+    """
+    when = when.strip() if isinstance(when, str) else ""
+    try:
+        if len(when) == 10:
+            return date.fromisoformat(when)
+        # A time without a zone is the brain's own.
+        return datetime.fromisoformat(when).astimezone()
+    except ValueError:
+        return None
+
+
+def _event_times(start: str, end: Optional[str], all_day: Optional[bool]) -> Union[str, Tuple[Dict, Dict]]:
+    """
+    An event's start and end, as Google's events.insert takes them.
+
+    Args:
+        start: When it starts, local - "YYYY-MM-DD HH:MM", or "YYYY-MM-DD" for all day.
+        end: When it ends, the same way, or None.
+        all_day: Whether it's all day, even with a time given.
+
+    Returns:
+        (start, end) - each {"dateTime": local RFC 3339} or {"date"} - or what to say
+        when they can't be used.
+    """
+    first = _when_said(start)
+    last = _when_said(end) if end else None
+    if first is None or (end and last is None):
+        return "I didn't catch when that is."
+    if all_day is True or not isinstance(first, datetime):
+        first = first.date() if isinstance(first, datetime) else first
+        last = (last.date() if isinstance(last, datetime) else last) if last else first
+        if last < first:
+            return "That ends before it starts."
+        # Google's end day is the day after, so the end day given is included.
+        return {"date": first.isoformat()}, {"date": (last + timedelta(days=1)).isoformat()}
+    if last is not None and not isinstance(last, datetime):
+        return "I didn't catch when that is."
+    # Added on, then put in the brain's zone again, so an hour over the clocks going back is
+    # still an hour, at its own offset.
+    last = last or (first + DEFAULT_LENGTH).astimezone()
+    if last < first:
+        return "That ends before it starts."
+    return {"dateTime": first.isoformat()}, {"dateTime": last.isoformat()}
+
+
+def _added_when(start: Dict, today: date) -> str:
+    """
+    When an event added starts, as it's said back - the weekday and the day of the month
+    always, so a mistake is heard: "Thursday the 29th at 3 PM", "Monday the 2nd of
+    November, all day".
+    """
+    if "date" in start:
+        day, at = date.fromisoformat(start["date"]), ", all day"
+    else:
+        when = datetime.fromisoformat(start["dateTime"])
+        day, at = when.date(), f" at {spoken_clock_time(when.hour, when.minute).replace(':00', '')}"
+    month = f" of {day.strftime('%B')}" if (day.year, day.month) != (today.year, today.month) else ""
+    return f"{day.strftime('%A')} the {_ordinal(day.day)}{month}{at}"
 
 
 def _rate_limited(response) -> bool:
@@ -858,8 +1067,13 @@ def spoken_day(day: date, today: date) -> str:
         return "tomorrow"
     if today < day < today + timedelta(days=7):
         return day.strftime("%A")
-    suffix = "th" if 11 <= day.day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day.day % 10, "th")
-    return f"{day.strftime('%A')} the {day.day}{suffix} of {day.strftime('%B')}"
+    return f"{day.strftime('%A')} the {_ordinal(day.day)} of {day.strftime('%B')}"
+
+
+def _ordinal(number: int) -> str:
+    """A day of the month as it's said, e.g. "2nd" or "11th"."""
+    suffix = "th" if 11 <= number % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
 
 
 def _on(day: date, today: date) -> str:
