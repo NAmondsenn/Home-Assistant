@@ -398,6 +398,21 @@ def test_claude_runs_a_script_or_scene_by_name_and_hears_what_happened():
     assert home.asked is None and (result.ok, result.say) == (False, "I didn't catch which script or scene to run.")
 
 
+def test_a_script_name_that_isnt_words_is_answered_as_no_name():
+    class FakeHome:
+        asked = None
+
+        def run_script(self, name):
+            self.asked = name
+            return {"success": True, "message": "Started Goodnight."}
+
+    home = FakeHome()
+    for name in (5, ["goodnight"], None):
+        result = ActionExecutor(home=home).execute(Action("run_home_script", {"name": name}, from_model=True))
+        assert (result.ok, result.say) == (False, "I didn't catch which script or scene to run."), name
+    assert home.asked is None
+
+
 def test_without_home_assistant_no_script_is_offered_or_run():
     assert "run_home_script" not in [schema["name"] for schema in ActionExecutor().tool_schemas()]
     result = ActionExecutor().execute(Action("run_home_script", {"name": "goodnight"}, from_model=True))

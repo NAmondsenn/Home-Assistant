@@ -1379,6 +1379,133 @@ def test_a_script_that_cant_be_read_is_said_once(make_home, caplog):
     assert len(said) == 2 and all(record.levelname == "WARNING" for record in said)
 
 
+def _script_entry(entity, key):
+    """A script as the registry has it, under its own key - which renaming its entity id leaves as it was."""
+    return Entry(entity, "script", None, None, key, None, (), True)
+
+
+def test_a_script_called_by_its_key_is_walked_after_its_entity_id_is_renamed(make_home):
+    # Home Assistant names each script's own action by its key, so {"action": "script.leaving"}
+    # runs the script whose key is "leaving", whatever its entity id is now.
+    states = [_thing("script.evening", "Evening"), _thing("script.leave_home", "Leave home"), FRONT_DOOR]
+    home = make_home({"/api/states": states, "/api/services/script/turn_on": [],
+                      "/api/config/script/config/evening": _config("Evening", {"action": "script.leaving"}),
+                      "/api/config/script/config/leaving": UNLOCKS})
+    home.registry.read = _registry(_script_entry("script.evening", "evening"),
+                                   _script_entry("script.leave_home", "leaving"), _entry("lock.front_door"))
+    assert home.run_script("evening") == {"success": False, "message": REFUSED["message"]}
+    # A script's action that's no script's key, nor any entity id, can't be checked.
+    home._session.answers["/api/config/script/config/evening"] = _config("Evening", {"action": "script.nowhere"})
+    assert home.run_script("evening") == {"success": False, "message": UNSEEN.format("Evening")}
+    # While the script domain's own actions are only its own.
+    home._session.answers["/api/config/script/config/evening"] = _config(
+        "Evening", {"action": "script.reload"}, _step("script.turn_off", entity_id="script.evening"))
+    assert home.run_script("evening") == {"success": True, "message": "Started Evening."}
+    # With another script given the entity id script.leaving since, the one of that key is
+    # still walked as well, whichever was meant.
+    home._session.answers["/api/config/script/config/evening"] = _config("Evening", {"action": "script.leaving"})
+    states.append(_thing("script.leaving", "Bedtime"))
+    home._session.answers["/api/config/script/config/bedtime"] = _config("Bedtime")
+    home.registry.read = _registry(*home.registry.read.entries.values(), _script_entry("script.leaving", "bedtime"))
+    assert home.works_guarded("script.evening", *_now(home))
+
+
+# A registry id, as Home Assistant takes in place of an entity id - only it can say whose it is.
+REGISTRY_ID = "0123456789abcdef0123456789abcdef"
+
+
+def test_a_script_giving_an_entity_by_its_registry_id_cant_be_checked(make_home):
+    for step in (_step("button.press", entity_id=REGISTRY_ID),
+                 {"service": "cover.open_cover", "data": {"entity_id": ["light.lamp", REGISTRY_ID.upper()]}},
+                 {"action": "switch.turn_off", "entity_id": f"light.lamp, {REGISTRY_ID}"}):
+        home = _scripted(make_home, {"script.away": ("Away", _config("Away", step))}, LAMP)
+        assert home.run_script("away") == {"success": False, "message": UNSEEN.format("Away")}, step
+    # "all" and "none" are Home Assistant's own words, not ids.
+    home = _scripted(make_home, {"script.away": ("Away", _config("Away", _step("light.turn_off", entity_id="all"),
+                                                                 _step("light.turn_on", entity_id="none")))})
+    assert not home.works_guarded("script.away", *_now(home))
+
+
+def test_a_script_with_a_service_template_given_an_area_cant_be_run(make_home):
+    # Home Assistant still takes service_template as a step's action, plain or templated.
+    home = _scripted(make_home, {"script.away": ("Away", _config("Away", {"service_template": "button.press",
+                                                                          "target": {"area_id": "study"}}))})
+    assert home.works_guarded("script.away", *_now(home))
+    assert home.run_script("away") == {"success": False, "message": REFUSED["message"]}
+
+
+def test_a_script_handing_a_sentence_to_assist_or_publishing_over_mqtt_cant_be_checked(make_home):
+    # Inside Home Assistant, Nova's guard doesn't stand between conversation.process and
+    # Assist - and HASS.Agent takes its commands over MQTT.
+    for step in ({"action": "conversation.process", "data": {"text": "unlock the front door",
+                                                              "agent_id": "conversation.home_assistant"}},
+                 {"action": "mqtt.publish", "data": {"topic": "hass.agent/commands/desk_pc/shutdown", "payload": ""}}):
+        home = _scripted(make_home, {"script.arrive": ("Arrive", _config("Arrive", step))}, FRONT_DOOR)
+        assert home.run_script("arrive") == {"success": False, "message": UNSEEN.format("Arrive")}, step
+    # Though a helper's change, and an event, are left to the user, as any change can set off an automation.
+    home = _scripted(make_home, {"script.arrive": ("Arrive", _config(
+        "Arrive", _step("input_boolean.turn_on", entity_id="input_boolean.home"), {"event": "arrived", "event_data": {}}))},
+        _thing("input_boolean.home", "Home"))
+    assert home.run_script("arrive") == {"success": True, "message": "Started Arrive."}
+
+
+class TooDeep(FakeResponse):
+    """An answer nested deeper than Python's json will decode."""
+
+    def json(self):
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON array from a unicode string")
+
+
+def test_a_script_too_deep_to_walk_cant_be_checked_and_nothing_raises(make_home):
+    deep = _step("light.turn_on", entity_id="light.lamp")
+    for _ in range(3000):
+        deep = {"sequence": [deep]}
+    home = _scripted(make_home, {"script.deep": ("Deep", _config("Deep", deep))}, LAMP)
+    assert home.works_guarded("script.deep", *_now(home))
+    assert home.run_script("deep") == {"success": False, "message": UNSEEN.format("Deep")}
+    assert home.run("script.deep") == {"success": False, "message": "Nova can't see what Deep does, so it doesn't run it."}
+    assert home.overview()["routines"] == []
+    home.socket.answer = _debugged(_match("HassTurnOn", "script.deep"))
+    assert home.command("run deep", wider=True) == REFUSED
+    # Nor an answer too deep to decode, nor a long enough chain of scripts, each running the next.
+    home._session.answers["/api/config/script/config/deep"] = TooDeep("[[[[")
+    assert home.run_script("deep") == {"success": False, "message": UNSEEN.format("Deep")}
+    links = {f"script.link_{n}": (f"Link {n}", _config(f"Link {n}", {"action": f"script.link_{n + 1}"}))
+             for n in range(600)}
+    home = _scripted(make_home, {**links, "script.link_600": ("Link 600", _config("Link 600"))})
+    assert home.works_guarded("script.link_0", *_now(home))
+    assert _ran(home) == []
+
+
+def test_a_script_run_by_two_others_is_read_once_a_refresh(make_home):
+    lights = _config("Lights", _step("light.turn_on", entity_id="light.lamp"))
+    home = _scripted(make_home, {"script.morning": ("Morning", _config("Morning", {"action": "script.lights"})),
+                                 "script.evening": ("Evening", _config("Evening", {"action": "script.lights"})),
+                                 "script.lights": ("Lights", lights)}, LAMP)
+    assert [routine["id"] for routine in home.overview()["routines"]] == ["script.evening", "script.lights",
+                                                                         "script.morning"]
+    assert _paths(home).count("/api/config/script/config/lights") == 1
+    home.overview()
+    assert _paths(home).count("/api/config/script/config/lights") == 2
+
+
+def test_a_lock_buried_in_a_scripts_choose_parallel_repeat_or_variables_is_found(make_home):
+    unlock = _step("lock.unlock", entity_id="lock.front_door")
+    # A helper whose door comes from its variables, which is the user's own template - so
+    # only the variables it's given name the lock.
+    helper = _config("Helper", _step("homeassistant.turn_off", entity_id="{{ door }}"))
+    for buried in ({"choose": [{"conditions": [{"condition": "state", "entity_id": "light.lamp", "state": "on"}],
+                                "sequence": [_step("light.turn_off", entity_id="light.lamp")]}], "default": [unlock]},
+                   {"parallel": [_step("light.turn_on", entity_id="light.lamp"), {"sequence": [unlock]}]},
+                   {"repeat": {"count": 2, "sequence": [unlock]}},
+                   {"action": "script.turn_on", "target": {"entity_id": "script.helper"},
+                    "data": {"variables": {"door": "lock.front_door"}}}):
+        home = _scripted(make_home, {"script.away": ("Away", _config("Away", buried)), "script.helper": ("Helper", helper)},
+                         LAMP, FRONT_DOOR)
+        assert home.run_script("away") == {"success": False, "message": REFUSED["message"]}, buried
+    assert not home.works_guarded("script.helper", *_now(home))
+
+
 # Reading and working the lights
 
 # The attributes the lights template asks Home Assistant for, as the settings page and Claude need them.

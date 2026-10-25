@@ -854,7 +854,7 @@ class ActionExecutor:
         name={"type": "string", "description": "Its name, as the user said it, e.g. 'goodnight'."},
     )
     def run_home_script(self, name: Optional[str] = None):
-        if not name or not name.strip():
+        if not isinstance(name, str) or not name.strip():
             return {"success": False, "message": "I didn't catch which script or scene to run."}
         return self.home.run_script(name)
 

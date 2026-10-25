@@ -141,6 +141,19 @@ UNSEEN = "can't be seen"
 AREA_WIDE = ("homeassistant", "cover", "button", "switch", "script", "scene", *GUARDED)
 AREA_TARGETS = ("area_id", "floor_id", "label_id")
 
+# What a step of a script calls its action, old and new - Home Assistant still takes all three.
+ACTION_KEYS = ("action", "service", "service_template")
+
+# Actions which hand what they're given on to something the guard doesn't stand in front of,
+# so what they'd do can't be checked - by domain or in full. Any of the conversation domain's
+# gives a sentence to Assist inside Home Assistant, as conversation.process with "unlock the
+# front door" does, and mqtt.publish could press HASS.Agent's commands by their topic.
+PASSED_ON = ("conversation", "mqtt.publish")
+
+# The script domain's own actions. Every other script.<name> is a script's own action, named
+# by its key - see _walk.
+SCRIPT_SERVICES = ("turn_on", "turn_off", "toggle", "reload")
+
 # What could be an entity id in a script's configuration, e.g. "lock.front_door" - or an
 # action's name, which reads as one: "lock.unlock" is the lock domain's, so guarded too.
 ENTITY = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
@@ -354,8 +367,10 @@ class HomeAssistant:
         self._templates_refused = False
         # Why decision 2's wider rule is off, or None while it's on - see _wider_rule.
         self._wider_off: Optional[str] = None
-        # The scripts whose configuration last couldn't be read - see _script_config.
+        # The scripts whose configuration last couldn't be read - see _script_config - and
+        # those found too deep to walk, each said once.
         self._unreadable: Set[str] = set()
+        self._too_deep: Set[str] = set()
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -711,6 +726,8 @@ class HomeAssistant:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         snapshot = self._snapshot()
+        # Each script's configuration is read once a draw, however many others run it.
+        configs: Dict[str, Optional[Dict]] = {}
         routines = []
         for state in states:
             entity = state.get("entity_id") or ""
@@ -718,7 +735,7 @@ class HomeAssistant:
             # Only what run() would run, so the page never offers a button which can't work -
             # and none without the registry, which has the key to each script's contents.
             if (RUNNABLE.fullmatch(entity) and not _sensitive(entity, name)
-                    and not self.works_guarded(entity, states, snapshot)):
+                    and not self.works_guarded(entity, states, snapshot, configs=configs)):
                 routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
         return {"success": True,
                 "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
@@ -1219,7 +1236,8 @@ class HomeAssistant:
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": f"Started {called}." if kind == "script" else f"Set {called}."}
 
-    def works_guarded(self, entity_id: str, states: List[Dict], snapshot: Optional[Snapshot]) -> bool:
+    def works_guarded(self, entity_id: str, states: List[Dict], snapshot: Optional[Snapshot], *,
+                      configs: Optional[Dict[str, Optional[Dict]]] = None) -> bool:
         """
         Whether a script or scene works anything never worked by voice (see _guarded), or
         anything that can't be checked - so it's refused alike by Assist, by Claude and
@@ -1228,42 +1246,66 @@ class HomeAssistant:
         A scene is checked by its members. A script's configuration is read from Home
         Assistant's script editor, by the registry's key for it, and walked whole: every
         entity it names, every device it acts on, every action given a whole area (see
-        AREA_WIDE), and every script and scene it runs, checked the same way. A template is
-        left to the user. What can't be seen past - an automation, a scene with no members,
-        a configuration that can't be read, or anything without the registry - is refused.
+        AREA_WIDE), and every script and scene it runs - by entity id, or by a script's own
+        action, named by its key - checked the same way. A template is left to the user.
+        What can't be seen past is refused: an automation, an action that hands its words
+        on (see PASSED_ON), an entity given by the registry's own id for it, a scene with no
+        members, a configuration that can't be read or is too deep to walk, and anything
+        without the registry.
 
         Args:
             entity_id: e.g. "script.goodnight".
             states: Every entity's state, as /api/states has them.
             snapshot: The registry, or None if it can't be read.
+            configs: The script configurations read so far - see _why_not_run.
 
         Returns:
             Whether it's to be refused. Why is _why_not_run's, which this shares.
         """
-        return self._why_not_run([entity_id], states, snapshot) is not None
+        return self._why_not_run([entity_id], states, snapshot, configs) is not None
 
-    def _why_not_run(self, entity_ids: Sequence[str], states: List[Dict],
-                     snapshot: Optional[Snapshot]) -> Optional[str]:
+    def _why_not_run(self, entity_ids: Sequence[str], states: List[Dict], snapshot: Optional[Snapshot],
+                     configs: Optional[Dict[str, Optional[Dict]]] = None) -> Optional[str]:
         """
         Why some scripts and scenes aren't to be run, if they aren't - see works_guarded.
-        Each script is read once, however many of them run it.
+        Each is walked on its own, so that a script another has walked already is still
+        checked for itself - but each script's configuration is read once.
 
         Args:
             entity_ids: e.g. ["script.goodnight", "scene.relax"].
             states: Every entity's state, as /api/states has them.
             snapshot: The registry, or None if it can't be read.
+            configs: The script configurations read so far, by entity id - None for a
+                configuration that can't be read - which this adds to. Shared by the caller
+                for a settings page draw, and otherwise None, to read them afresh.
 
         Returns:
             WORKS_GUARDED if any of them works something guarded, else UNSEEN if any of
             them does what can't be checked, else None.
         """
         by_id = {state.get("entity_id"): state for state in states}
-        checked: Set[str] = set()
-        # One that wasn't there a moment ago can't be checked - it could be new since.
-        return _worst([self._walk(entity_id, by_id, snapshot, checked) if entity_id in by_id else UNSEEN
-                       for entity_id in entity_ids])
+        configs = {} if configs is None else configs
+        reasons = []
+        for entity_id in entity_ids:
+            # One that wasn't there a moment ago can't be checked - it could be new since.
+            if entity_id not in by_id:
+                reasons.append(UNSEEN)
+                continue
+            try:
+                reasons.append(self._walk(entity_id, by_id, snapshot, set(), configs))
+            except RecursionError:
+                # A configuration nested deeper than Python will walk or decode, or a long
+                # enough chain of scripts each running the next, can't be checked - and
+                # mustn't take the request, or the settings page's draw, with it.
+                if entity_id not in self._too_deep:
+                    logger.warning(f"Can't see what {entity_id} does, as it goes too deep to follow, so it isn't "
+                                   f"run by voice or from the settings page")
+                self._too_deep.add(entity_id)
+                reasons.append(UNSEEN)
+        return _worst(reasons)
 
-    def _walk(self, part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str]) -> Optional[str]:
+    def _walk(self, part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str],
+              configs: Dict[str, Optional[Dict]]) -> Optional[str]:
         """
         Why a piece of a script's configuration isn't to be run, if it isn't. It's walked
         whole, keys as well as values - scene.apply names each thing as a key - and so is
@@ -1276,26 +1318,49 @@ class HomeAssistant:
             by_id: Every entity's state, by entity id.
             snapshot: The registry, or None if it can't be read.
             checked: The scripts, scenes and groups walked already, which this adds to.
+            configs: The script configurations read so far - see _why_not_run.
 
         Returns:
             WORKS_GUARDED if any of it works something guarded, else UNSEEN if any of it
             can't be checked, else None.
+
+        Raises:
+            RecursionError: For a configuration, or a chain of scripts, too deep to follow.
         """
         if isinstance(part, dict):
             return _worst([_step_refused(part, by_id, snapshot)]
-                          + [self._walk(item, by_id, snapshot, checked) for pair in part.items() for item in pair])
+                          + [self._walk(item, by_id, snapshot, checked, configs)
+                             for pair in part.items() for item in pair])
         if isinstance(part, list):
-            return _worst([self._walk(item, by_id, snapshot, checked) for item in part])
-        # A template is left alone: it's the user's own, and they exposed what it's in
-        # (0008, "My calls").
-        if not isinstance(part, str) or "{{" in part:
-            return None
+            return _worst([self._walk(item, by_id, snapshot, checked, configs) for item in part])
         found = []
-        # Home Assistant takes "light.lamp, lock.front_door" as two entities, in any case.
-        for entity in (piece.strip().lower() for piece in part.split(",")):
+        # A template is left out: it's the user's own, and they exposed what it's in (0008,
+        # "My calls").
+        for entity in _pieces(part):
             if not ENTITY.fullmatch(entity):
                 continue
-            domain = entity.partition(".")[0]
+            domain, _, name = entity.partition(".")
+            if domain == "script" and (name not in SCRIPT_SERVICES or entity in by_id):
+                if entity in checked:
+                    continue
+                checked.add(entity)
+                # Home Assistant gives each script an action of its own, named by its key -
+                # the registry's unique id for it - which stays as it was when the script's
+                # entity id is renamed: {"action": "script.leaving"} can run
+                # script.leave_home. So the script of that key is walked as well as any of
+                # that entity id, and a name that's neither can't be checked.
+                keyed = _keyed_script(name, snapshot)
+                if keyed not in (None, entity):
+                    found.append(self._walk(keyed, by_id, snapshot, checked, configs))
+                if entity not in by_id:
+                    if keyed is None:
+                        found.append(UNSEEN)
+                    continue
+                if entity not in configs:
+                    configs[entity] = self._script_config(entity, snapshot)
+                config = configs[entity]
+                found.append(UNSEEN if config is None else self._walk(config, by_id, snapshot, checked, configs))
+                continue
             state = by_id.get(entity)
             attributes = (state or {}).get("attributes") or {}
             if domain == "automation":
@@ -1311,10 +1376,6 @@ class HomeAssistant:
             elif _target_refused(entity, state, snapshot):
                 # A button the registry hasn't caught up with yet, which could be Proxmox's.
                 found.append(UNSEEN)
-            elif domain == "script":
-                checked.add(entity)
-                config = self._script_config(entity, snapshot)
-                found.append(UNSEEN if config is None else self._walk(config, by_id, snapshot, checked))
             else:
                 # A scene's members, or a group's, are its entity_id attribute. A scene with
                 # none, as an integration's can be, can't be checked - nor any without the
@@ -1324,7 +1385,7 @@ class HomeAssistant:
                     found.append(UNSEEN)
                 elif members:
                     checked.add(entity)
-                    found.append(self._walk(members, by_id, snapshot, checked))
+                    found.append(self._walk(members, by_id, snapshot, checked, configs))
         return _worst(found)
 
     def _script_config(self, entity_id: str, snapshot: Optional[Snapshot]) -> Optional[Dict]:
@@ -1645,7 +1706,8 @@ def _worst(reasons: Iterable[Optional[str]]) -> Optional[str]:
 def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapshot]) -> Optional[str]:
     """
     Why a dict in a script's configuration isn't to be run, by its keys together rather
-    than by any one string in it: the devices it names, or an action given a whole area.
+    than by any one string in it: what a step's action is given, the action itself, or the
+    devices it names.
 
     Args:
         part: e.g. a step, {"action": "homeassistant.turn_off", "target": {"area_id":
@@ -1657,10 +1719,25 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
         WORKS_GUARDED, UNSEEN or None, as for HomeAssistant._walk.
     """
     found = []
-    action = part.get("action", part.get("service"))
-    if (isinstance(action, str) and "{{" not in action
-            and action.strip().lower().partition(".")[0] in AREA_WIDE and _reaches_all(part)):
-        found.append(WORKS_GUARDED)
+    action = next((part[key] for key in ACTION_KEYS if key in part), None)
+    if action is not None:
+        # What an action's given is in its target, or the old way, its data or the step itself.
+        given = [where for where in (part, part.get("target"), part.get("data"), part.get("data_template"))
+                 if isinstance(where, dict)]
+        entities = [piece for where in given for piece in _pieces(where.get("entity_id"))]
+        # Home Assistant also takes an entity by the registry's own id for it, e.g.
+        # "0123...cdef", which only it can say whose it is. A device action's entity is
+        # given that way too, but that calls no action, and its device is checked instead.
+        if any(piece not in ("", "all", "none") and not ENTITY.fullmatch(piece) for piece in entities):
+            found.append(UNSEEN)
+        if isinstance(action, str) and "{{" not in action:
+            action = action.strip().lower()
+            domain = action.partition(".")[0]
+            if domain in AREA_WIDE and ("all" in entities
+                                        or any(where.get(key) for where in given for key in AREA_TARGETS)):
+                found.append(WORKS_GUARDED)
+            if domain in PASSED_ON or action in PASSED_ON:
+                found.append(UNSEEN)
     devices = part.get("device_id")
     if devices is not None:
         # A device action names its device and the domain it acts in, but its entity only
@@ -1680,21 +1757,23 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
     return _worst(found)
 
 
-def _reaches_all(step: Dict) -> bool:
+def _pieces(value) -> List[str]:
     """
-    Whether an action is given a whole area, floor or label, or "all" for every entity - in
-    its target, or the old way, in its data or the step itself.
+    The entities some configuration gives, as Home Assistant reads them - in any case, and
+    several to a string: "light.lamp, Lock.Front_Door" is ["light.lamp", "lock.front_door"].
+    From a string or a list of them, leaving templates out - see HomeAssistant._walk.
     """
-    for where in (step, step.get("target"), step.get("data"), step.get("data_template")):
-        if not isinstance(where, dict):
-            continue
-        if any(where.get(key) for key in AREA_TARGETS):
-            return True
-        entities = where.get("entity_id")
-        for entity in entities if isinstance(entities, list) else [entities]:
-            if isinstance(entity, str) and "all" in [piece.strip().lower() for piece in entity.split(",")]:
-                return True
-    return False
+    strings = value if isinstance(value, list) else [value]
+    return [piece.strip().lower() for string in strings if isinstance(string, str) and "{{" not in string
+            for piece in string.split(",")]
+
+
+def _keyed_script(key: str, snapshot: Optional[Snapshot]) -> Optional[str]:
+    """The entity id of the script whose key - the registry's unique id for it - this is, or None."""
+    if snapshot is None:
+        return None
+    return next((entry.entity_id for entry in snapshot.entries.values()
+                 if entry.platform == "script" and entry.unique_id.lower() == key), None)
 
 
 def _script_name(name: str) -> str:
