@@ -326,7 +326,8 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 # "host.10.0.0.2".
 IPV4_ADDRESS = re.compile(r"(?<!\d)\d{1,3}(\.\d{1,3}){3}(?!\d)")
 # An IPv4 address in an entity id, whose dots Home Assistant makes underscores - a Ping
-# entity for 10.0.0.1 is binary_sensor.10_0_0_1.
+# entity for 10.0.0.1 is binary_sensor.10_0_0_1. A hardware address in one is
+# HARDWARE_ADDRESS's, over the id's words - see _private.
 IPV4_IN_ID = re.compile(r"(?<!\d)\d{1,3}(_\d{1,3}){3}(?!\d)")
 HARDWARE_ADDRESS = re.compile(
     r"(?<![0-9a-f])([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
@@ -1876,10 +1877,12 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
     if attributes.get("device_class") in NOT_STATUS_CLASSES:
         return True
     # A Ping entity is named after the host it pings, so its name and entity id are
-    # looked at as well as its state - and its area, which is a name too.
+    # looked at as well as its state - and its area, which is a name too. A BLE or Shelly
+    # sensor's id carries its device's hardware address, however plain its name:
+    # sensor.ble_temperature_a4c1381234ab.
     area = snapshot.area_name(entity) if snapshot else None
     if (any(_holds_address(text) for text in (state, str(attributes.get("friendly_name") or ""), area or ""))
-            or IPV4_IN_ID.search(entity)):
+            or IPV4_IN_ID.search(entity) or HARDWARE_ADDRESS.search(entity.replace("_", " "))):
         return True
     # Only a sensor's or a text entity's state can be free text - a light's is on or off,
     # whatever the device. A text entity holds whatever was typed into it, on any device.
