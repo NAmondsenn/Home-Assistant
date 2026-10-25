@@ -937,6 +937,61 @@ def test_googles_own_calendars_arent_activities(make_calendar, tmp_path):
     assert list(calendar.activity_calendars()) == ["work", "holidays in united kingdom"]
 
 
+# Calendars named by an email address - the user's own primary, as Google names it, and
+# another person's shared with them. Both addresses are made up.
+OWN_ADDRESS = "me@example.com"
+THEIR_ADDRESS = "someone@example.com"
+
+
+def _named_by_addresses(make_calendar, tmp_path, activities=None):
+    """A calendar whose primary and a shared one are named by addresses, beside Work - each with a day on."""
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": []},
+                             activities=activities)
+    calendar._session.answers[LIST] = [_calendar_list(
+        _entry("calendar-personal", OWN_ADDRESS, primary=True), _entry("calendar-work", "Work"),
+        _entry("calendar-theirs", THEIR_ADDRESS, access_role="reader"))]
+    calendar._session.answers[_events_url("calendar-personal")] = [_events_page(
+        _google_event("Dentist", "2026-10-21T08:00:00+01:00", "2026-10-21T08:30:00+01:00"))]
+    calendar._session.answers[_events_url("calendar-work")] = [_events_page(
+        _google_event("Late", "2026-10-21T15:30:00+01:00", "2026-10-21T22:00:00+01:00"))]
+    calendar._session.answers[_events_url("calendar-theirs")] = [_events_page(
+        _google_event("Office", "2026-10-21T09:00:00+01:00", "2026-10-21T17:00:00+01:00"))]
+    return calendar
+
+
+def test_a_calendar_named_by_an_address_isnt_an_activity(make_calendar, tmp_path, caplog):
+    # Another person's calendar shared with the user is named by their email address. As
+    # an activity it went to Claude in get_activity's description, and was said aloud.
+    calendar = _named_by_addresses(make_calendar, tmp_path)
+    with caplog.at_level(logging.INFO):
+        message = calendar.agenda(date(2026, 10, 21), 1, today=date(2026, 10, 20))["message"]
+    assert message == ("Tomorrow, you've got Dentist at 8:00 AM, Office at 9:00 AM, and work from 3:30 PM "
+                       "until 10:00 PM.")
+    assert list(calendar.activity_calendars()) == ["work"]
+    assert not any("example" in word for word in calendar.activity_words())
+    assert not any("example" in record.getMessage() for record in caplog.records)
+
+
+def test_a_calendar_named_by_an_address_switched_on_is_said_without_it(make_calendar, tmp_path, caplog):
+    calendar = _named_by_addresses(make_calendar, tmp_path,
+                                   activities={"calendar-personal": True, "calendar-theirs": True})
+    with caplog.at_level(logging.INFO):
+        message = calendar.agenda(date(2026, 10, 21), 1, today=date(2026, 10, 20))["message"]
+    assert message == ("Tomorrow, you've got your calendar from 8:00 AM until 8:30 AM, a shared calendar from "
+                       "9:00 AM until 5:00 PM, and work from 3:30 PM until 10:00 PM.")
+    assert list(calendar.activity_calendars()) == ["your calendar", "work", "a shared calendar"]
+    # Nor can it be asked about by name - "your" and "a" would be heard as activities.
+    assert not any("example" in word or word.split()[0] in ("your", "a") for word in calendar.activity_words())
+    assert not any("example" in record.getMessage() for record in caplog.records)
+
+
+def test_an_events_calendar_is_never_given_by_an_address(make_calendar, tmp_path):
+    calendar = _named_by_addresses(make_calendar, tmp_path)
+    found = calendar.events(date(2026, 10, 21), 1)
+    assert {event["calendar_id"]: event["calendar"] for event in found} == {
+        "calendar-personal": "your calendar", "calendar-work": "Work", "calendar-theirs": "a shared calendar"}
+
+
 def test_an_all_day_event_on_an_activity_calendar_is_said_by_its_own_name(make_calendar):
     # An activity is a stretch of time - a training day on the Work calendar isn't "work, all day".
     calendar = make_calendar(calendars={"calendar-personal": [], "calendar-work": [
@@ -1232,6 +1287,27 @@ def test_a_calendar_nova_cant_add_to_says_so(for_adding):
     assert calendar.add("Gym", "2026-10-29 15:00", calendar="gym", today=SATURDAY) == {
         "success": False, "message": "I haven't got a calendar called that."}
     assert calendar._session.posted == []
+
+
+def test_a_calendar_named_by_an_address_is_never_said_when_adding(for_adding, caplog):
+    # Google names the user's own primary by their email address.
+    calendar = for_adding(new_events="calendar-work", primary=OWN_ADDRESS, answers=[_inserted()] * 3)
+    calendar._session.answers[LIST] = [_calendar_list(
+        _entry("calendar-personal", OWN_ADDRESS, primary=True), _entry("calendar-work", "Work"),
+        _entry("calendar-theirs", THEIR_ADDRESS, access_role="reader"),
+        _entry("calendar-mine-too", "other@example.com"))]
+    calendar._session.answers[_events_url("calendar-mine-too")] = [_inserted()]
+    with caplog.at_level(logging.INFO):
+        for named in ("my calendar", "personal", OWN_ADDRESS):
+            assert calendar.add("Dentist", "2026-10-29 15:00", calendar=named, today=SATURDAY)["message"] == \
+                "Added Dentist to your calendar, Thursday the 29th at 3 PM.", named
+        assert calendar.add("Dentist", "2026-10-29 15:00", calendar="other@example.com", today=SATURDAY)["message"] \
+            == "Added Dentist to a shared calendar, Thursday the 29th at 3 PM."
+        assert calendar.add("Lecture", "2026-10-29 15:00", calendar=THEIR_ADDRESS, today=SATURDAY) == {
+            "success": False, "message": "I can't add to a shared calendar - Google only lets me add to your own "
+                                         "calendars."}
+    assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal"] * 3 + ["calendar-mine-too"]
+    assert not any("example" in record.getMessage() for record in caplog.records)
 
 
 def test_an_event_next_month_says_which_month(for_adding):

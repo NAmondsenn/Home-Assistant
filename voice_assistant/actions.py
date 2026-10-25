@@ -27,6 +27,7 @@ import requests
 from voice_assistant import network
 from voice_assistant.batteries import HOME_FAILURES, find, said
 from voice_assistant.devices import AppDevice, ring_call, said_as, where
+from voice_assistant.google_calendar import named_by_address
 from voice_assistant.home_assistant import CANT_REACH, HomeAssistant, NotAllowed
 from voice_assistant.lists import NO_ANSWER, names_list
 
@@ -305,9 +306,11 @@ class ActionExecutor:
         The user's activities, named as Google has them, to end get_activity's description -
         " The user's activities: Uni and Work." - or nothing while there are none. In order,
         so a list Google gives in another order doesn't change the tools, and the API's cache.
+        One named by an email address, switched on as an activity, is never told - a person's
+        calendar shared with the user is named by their address.
         """
-        names = sorted((calendar["name"].strip() for calendar in self.calendar.activity_calendars().values()),
-                       key=str.lower)
+        names = sorted((calendar["name"].strip() for calendar in self.calendar.activity_calendars().values()
+                        if not named_by_address(calendar)), key=str.lower)
         if not names:
             return ""
         return f" The user's activities: {names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]}."

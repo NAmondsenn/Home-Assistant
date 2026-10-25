@@ -21,7 +21,8 @@ would let it, so it's this module that never asks.
 Every calendar in Google's own list of the user's is read, so one added later turns up
 by itself. With Google out of reach there's no calendar - no copy is kept. Each but the
 user's own is an activity, by its name - "when's gym tomorrow?" works as soon as there's
-a Gym calendar.
+a Gym calendar. A calendar named by an email address - the user's own, as Google names it,
+or a person's own shared with them - is never said by it, or told to Claude.
 """
 
 import argparse
@@ -135,6 +136,12 @@ WHEN_GIVEN = re.compile(r"\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?")
 
 # What the user's own calendar is called, whatever Google names it - "my calendar", "my own".
 OWN_CALENDAR = {"", "primary", "personal", "own", "mine", "main"}
+
+# How a calendar named by an email address is said, and told to Claude, in its place - the
+# user's own, which Google names by their address, and any other, usually a person's own
+# shared with the user, named by theirs.
+YOUR_CALENDAR = "your calendar"
+A_SHARED_CALENDAR = "a shared calendar"
 
 
 class SignInNeeded(Exception):
@@ -486,19 +493,22 @@ class GoogleCalendar:
     def activity_calendars(self) -> Dict[str, Dict]:
         """
         The activities, from the calendars Google listed last, without asking it: every
-        calendar but the user's own and Google's own (see GOOGLES_OWN), unless
-        calendars.json says otherwise for it.
+        calendar but the user's own, Google's own (see GOOGLES_OWN) and one named by an
+        email address, unless calendars.json says otherwise for it.
 
         Returns:
-            Each activity's word - its calendar's name, in lower case - to its calendar.
+            Each activity's word - its calendar's name as it's said, in lower case - to its calendar.
         """
         chosen = self.choices.get("activities")
         chosen = chosen if isinstance(chosen, dict) else {}
         found: Dict[str, Dict] = {}
         for calendar in self.known():
             choice = chosen.get(calendar["id"])
-            word = calendar["name"].strip().lower()
-            by_default = not calendar["primary"] and not calendar["id"].endswith(GOOGLES_OWN)
+            word = spoken_name(calendar).strip().lower()
+            # A person's calendar shared with the user is named by their email address, and
+            # is no more an activity than the holidays are.
+            by_default = not calendar["primary"] and not calendar["id"].endswith(GOOGLES_OWN) and \
+                not named_by_address(calendar)
             if word and (choice if isinstance(choice, bool) else by_default):
                 # Of two calendars with one name, the first in Google's list is the one heard.
                 found.setdefault(word, calendar)
@@ -511,12 +521,16 @@ class GoogleCalendar:
         too - "uni" for "Uni timetable" - unless another activity's name starts with it, or
         it's SAME_AS's for another, as "working" is Work's beside "Working group". Each is
         as the request is, once intents.py has tidied it - "Work (Tesco)" is "work tesco".
+        One named by an email address isn't heard at all - "a shared calendar" would be
+        heard by "a".
 
         Returns:
             e.g. {"work": "work", "works": "work", "shift": "work", ...}.
         """
         names: Dict[str, str] = {}
-        for word in self.activity_calendars():
+        for word, calendar in self.activity_calendars().items():
+            if named_by_address(calendar):
+                continue
             # Of two that tidy alike - "Work" and "Work!" - the first listed, as activity_calendars has it.
             names.setdefault(_as_said(word), word)
         names.pop("", None)
@@ -546,7 +560,7 @@ class GoogleCalendar:
 
         Returns:
             The events, earliest first, each a dict with "summary", "start", "end",
-            "all_day", "calendar", its calendar's name, and "calendar_id" - start a local
+            "all_day", "calendar", its calendar's name as it's said (see spoken_name), and "calendar_id" - start a local
             datetime, or a date for an all-day event.
 
         Raises:
@@ -557,7 +571,7 @@ class GoogleCalendar:
         Reading every calendar, one Google won't give the events of - deleted, or no longer
         shared - is left out, with a warning, and the rest are read.
         """
-        names = {calendar["id"]: calendar["name"] for calendar in self.calendars()}
+        names = {calendar["id"]: spoken_name(calendar) for calendar in self.calendars()}
         # Each end made from its own day, not the start plus so many hours, so a day the
         # clocks change on is still from midnight to midnight.
         window = {"timeMin": datetime.combine(first, day_time()).astimezone().isoformat(),
@@ -709,7 +723,7 @@ class GoogleCalendar:
         except READ_FAILURES as e:
             return _not_added(e)
         logger.info("Added an event to Google's calendar")
-        to = f" to {chosen['name']}" if chosen["id"] != default["id"] and chosen["name"] else ""
+        to = f" to {spoken_name(chosen)}" if chosen["id"] != default["id"] and chosen["name"] else ""
         return {"success": True, "message": f"Added {summary}{to}, {_added_when(times[0], today)}."}
 
     def _calendar_to_add_to(self, named: Optional[str]) -> Union[str, Tuple[Dict, Dict]]:
@@ -747,7 +761,7 @@ class GoogleCalendar:
             return "I haven't got a calendar called that."
         writable = [each for each in matches if each["writable"]]
         if not writable:
-            return f"I can't add to {matches[0]['name']} - Google only lets me add to your own calendars."
+            return f"I can't add to {spoken_name(matches[0])} - Google only lets me add to your own calendars."
         return writable[0], default
 
     def _insert(self, calendar_id: str, event: Dict):
@@ -931,6 +945,30 @@ def _added_when(start: Dict, today: date) -> str:
     else:
         month = ""
     return f"{day.strftime('%A')} the {_ordinal(day.day)}{month}{at}"
+
+
+def named_by_address(calendar: Dict) -> bool:
+    """
+    Whether a calendar is named by an email address - as Google names the user's own, and
+    a person's own shared with them, by theirs - which is never said, or told to Claude.
+    """
+    return "@" in calendar["name"]
+
+
+def spoken_name(calendar: Dict) -> str:
+    """
+    A calendar's name as it's said, and told to Claude: its own, or for one named by an
+    email address, YOUR_CALENDAR or A_SHARED_CALENDAR.
+
+    Args:
+        calendar: A calendar, as GoogleCalendar.calendars gives it.
+
+    Returns:
+        e.g. "Work", "your calendar" or "a shared calendar".
+    """
+    if not named_by_address(calendar):
+        return calendar["name"]
+    return YOUR_CALENDAR if calendar["primary"] else A_SHARED_CALENDAR
 
 
 def _rate_limited(response) -> bool:

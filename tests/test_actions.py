@@ -295,6 +295,27 @@ def test_the_calendar_is_only_offered_once_google_is_set_up():
     assert "The user's activities" not in offered["get_activity"]["description"]
 
 
+def test_claude_is_never_told_a_calendar_named_by_an_address():
+    # A calendar shared by another person is named by their email address - made up here -
+    # which would otherwise go to Anthropic with every request, switched on as an activity.
+    class FakeCalendar:
+        def __init__(self, *calendars):
+            self.calendars = calendars
+
+        def activity_calendars(self):
+            return {word: {"id": f"calendar-{index}", "name": name, "primary": False, "writable": False}
+                    for index, (word, name) in enumerate(self.calendars)}
+
+    def told(*calendars):
+        schemas = ActionExecutor(calendar=FakeCalendar(*calendars)).tool_schemas()
+        return next(schema["description"] for schema in schemas if schema["name"] == "get_activity")
+
+    described = told(("work", "Work"), ("a shared calendar", "someone@example.com"))
+    assert described.endswith("The user's activities: Work.") and "example" not in described
+    described = told(("a shared calendar", "someone@example.com"))
+    assert "The user's activities" not in described and "example" not in described
+
+
 def test_add_to_calendar_is_only_offered_once_google_is_set_up():
     executor = ActionExecutor()
     assert "add_to_calendar" not in [schema["name"] for schema in executor.tool_schemas()]
