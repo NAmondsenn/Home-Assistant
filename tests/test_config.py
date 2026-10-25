@@ -4,7 +4,11 @@ Checks settings are read from config.yaml, with the install's own on top, and th
 mistake in the install's file is caught rather than ignored.
 """
 
+import json
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -302,6 +306,71 @@ def test_battery_marks_are_from_1_to_99(tmp_path, marks):
 
 def test_update_checks_the_settings_before_stopping_nova():
     text = (Path(__file__).parent.parent / "update.sh").read_text()
-    check_at = text.index("from voice_assistant.config import Config; Config()")
+    check_at = text.index("\nsettings_check || exit 1\n")
     assert check_at < text.index("\nstop_service\n")
-    assert "exit 1" in text[check_at:text.index("\nstop_service\n")]
+
+
+def _run_update_check(tmp_path, own, python=None):
+    """Runs update.sh's own check block against a scratch config, as the Pi's user would."""
+    root = Path(__file__).parent.parent
+    text = (root / "update.sh").read_text()
+    block = text[text.index("# BEGIN settings check"):text.index("# END settings check")]
+    (tmp_path / "config.yaml").write_text(own)
+    script = ('problem() { echo "PROBLEM $*" >&2; }\nas_user() { "$@"; }\n' + block
+              + "settings_check\necho \"status $?\"\n")
+    env = {**os.environ, "NOVA_CONFIG": str(tmp_path), "PROJECT_DIRECTORY": str(root),
+           "PYTHON": python or sys.executable}
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+
+
+def test_update_check_refuses_bad_settings_and_passes_good_ones(tmp_path):
+    good = _run_update_check(tmp_path, "thresholds:\n  silence_duration: 1\n")
+    assert "status 0" in good.stdout and "PROBLEM" not in good.stderr
+
+    bad = _run_update_check(tmp_path, "thresholds:\n  silence_duration: 5\n")
+    assert "status 1" in bad.stdout
+    assert "settings won't start it" in bad.stderr
+    assert "'thresholds.silence_duration' should be from 0.2 to 3, not 5" in bad.stderr
+    assert "Traceback" not in bad.stderr
+
+
+def test_update_check_tells_broken_code_from_bad_settings(tmp_path):
+    fake = tmp_path / "python"
+    fake.write_text("#!/bin/bash\necho \"ModuleNotFoundError: No module named 'yaml'\"\nexit 2\n")
+    fake.chmod(0o755)
+    broken = _run_update_check(tmp_path, "", python=str(fake))
+    assert "status 1" in broken.stdout
+    assert "whatever the settings" in broken.stderr and "settings won't start it" not in broken.stderr
+
+
+@pytest.mark.parametrize("setting, value", [
+    ("mqtt.port", ".inf"), ("mqtt.port", ".nan"), ("mqtt.port", "-.inf"),
+    ("conversation.history_max_age", ".nan"), ("thresholds.silence_duration", ".inf"),
+    ("voice.speed", ".nan"),
+])
+def test_infinity_and_nan_are_refused_with_the_settings_own_message(tmp_path, setting, value):
+    section, name = setting.split(".")
+    (tmp_path / "config.yaml").write_text(f"{section}:\n  {name}: {value}\n")
+    with pytest.raises(ConfigError, match=f"'{setting}' should be"):
+        Config(path=str(tmp_path / "config.yaml"))
+
+
+@pytest.mark.parametrize("text", ["Infinity", "-Infinity", "NaN"])
+def test_infinity_and_nan_from_the_pages_json_get_a_sentence_too(text):
+    value = json.loads(text)
+    for section, name in (("mqtt", "port"), ("thresholds", "silence_duration"),
+                          ("conversation", "history_max_age")):
+        assert limit_problem(section, name, value).startswith("should be")
+
+
+def test_a_bare_scheme_is_not_an_address():
+    for scheme in ("http://", "https://"):
+        assert limit_problem("ntfy", "url", scheme)
+    assert limit_problem("ntfy", "url", "http://a") is None
+
+
+def test_an_unquoted_time_gets_the_time_sentence(tmp_path):
+    (tmp_path / "config.yaml").write_text("ntfy:\n  quiet_from: 23:00\n")
+    with pytest.raises(ConfigError) as caught:
+        Config(path=str(tmp_path / "config.yaml"))
+    assert "'ntfy.quiet_from' should be a time of day, from 00:00 to 23:59, not 1380" in str(caught.value)

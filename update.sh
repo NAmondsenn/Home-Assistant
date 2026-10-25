@@ -67,11 +67,38 @@ fi
 
 # The new code reads the settings as it starts, so a setting it refuses is found out
 # here, while the old version is still running, rather than after it has been stopped.
-if ! error=$(cd "$PROJECT_DIRECTORY" && as_user "$PYTHON" -c 'from voice_assistant.config import Config; Config()' 2>&1); then
-    problem "The new code is in place, but Nova's settings won't start it - put them right, then run this again. Nova is still running the old code until it next restarts:"
-    echo "$error" | tail -n 5 >&2
-    exit 1
-fi
+# Exit 1 from the check is the settings, 2 is the code itself (a missing package, say).
+# BEGIN settings check
+settings_check() {
+    local output status=0
+    output=$(cd "$PROJECT_DIRECTORY" && as_user "$PYTHON" -c '
+import sys
+try:
+    from voice_assistant.config import Config, ConfigError
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+    sys.exit(2)
+try:
+    Config()
+except ConfigError as e:
+    print(e)
+    sys.exit(1)
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+    sys.exit(2)
+' 2>&1) || status=$?
+    if [ "$status" = 1 ]; then
+        problem "The new code is in place, but Nova's settings won't start it - put them right, then run this again. Nova is still running the old code until it next restarts:"
+    elif [ "$status" != 0 ]; then
+        problem "The new code is in place, but it won't start on this machine, whatever the settings - fix that, then run this again. Nova is still running the old code until it next restarts:"
+    fi
+    if [ "$status" != 0 ]; then
+        echo "$output" | tail -n 5 >&2
+        return 1
+    fi
+}
+# END settings check
+settings_check || exit 1
 
 step "Restarting"
 stop_service

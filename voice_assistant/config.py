@@ -15,6 +15,7 @@ word, leaving the default quietly in force.
 
 import difflib
 import logging
+import math
 import os
 import re
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
@@ -175,14 +176,15 @@ def limit_problem(section: str, name: str, value: Any) -> Optional[str]:
             message = f"should be from {limit.low:g} to {limit.high:g}"
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return message
-        if limit.whole and value != int(value):
+        # json.loads (the settings page's) and YAML both accept infinity and NaN, which int() raises on.
+        if not math.isfinite(value) or (limit.whole and value != int(value)):
             return message
         return None if limit.low <= value <= limit.high else message
     if limit.form == "time":
         ok = isinstance(value, str) and _TIME.fullmatch(value)
         return None if ok else "should be a time of day, from 00:00 to 23:59"
     if limit.form == "address":
-        ok = isinstance(value, str) and (value == "" or value.startswith(("http://", "https://")))
+        ok = isinstance(value, str) and (value == "" or re.match(r"https?://.", value))
         return None if ok else "should be an address starting http:// or https://"
     if limit.form in ("topic", "topics"):
         topics = value if limit.form == "topics" else [value]
@@ -281,6 +283,12 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
             if name not in known:
                 raise ConfigError(f"{path}: '{section}.{name}' isn't a setting.{_guess(name, known)}")
             default = known[name]
+            # YAML reads an unquoted 23:00 as the number 1380, so a time is told what's wrong
+            # with it as a time, not as "words, in quotes".
+            if (section, name) in LIMITS and LIMITS[(section, name)].form == "time" \
+                    and value is not None and not isinstance(value, str):
+                raise ConfigError(f"{path}: '{section}.{name}' {limit_problem(section, name, value)}, "
+                                  f"not {value!r} - write it in quotes, like \"23:00\"")
             if default is not None and value is not None and _kind(value) != _kind(default):
                 raise ConfigError(f"{path}: '{section}.{name}' should be {_kind(default)}, not {value!r}")
             if (section, name) in BETWEEN_0_AND_1 and value is not None and not 0 <= value <= 1:
