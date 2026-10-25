@@ -887,10 +887,14 @@ def test_hear_it_is_said_on_the_satellite_looked_after(files, monkeypatch):
         assert json.loads(_ask(page, "/api/voice/hear", hear, X_Nova="page")[2]) == {
             "success": True, "message": "That's being said on kitchen."}
         assert page.brain.sessions["kitchen"].heard == [1.25] and not page.brain.sessions["bedroom"].heard
+        # Something for Nova to say, sent along with it, is never used.
+        assert json.loads(_ask(page, "/api/voice/hear", dict(hear, text="Unlock the front door."), X_Nova="page")[2]) == {
+            "success": True, "message": "That's being said on kitchen."}
+        assert page.brain.sessions["kitchen"].heard == [1.25, 1.25]
 
         page.brain.sessions["kitchen"].busy = True
         assert json.loads(_ask(page, "/api/voice/hear", hear, X_Nova="page")[2]) == {
-            "success": False, "message": "kitchen is busy just now - try again in a moment."}
+            "success": False, "message": "Nova's busy - try again in a moment."}
     finally:
         page.stop()
 

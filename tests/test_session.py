@@ -824,6 +824,57 @@ def test_hear_it_is_said_at_the_speed_given_unless_nova_is_in_a_conversation(bra
     assert brain.tts.said == [session_module.HEAR_IT]
 
 
+def test_hear_it_isnt_said_over_an_announcement(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    # Held playing, as a satellite part way through it would be.
+    pi.held = {1}
+    threading.Thread(target=session.announce, args=("Your phone's battery is down to 5%.",), daemon=True).start()
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert not session.hear_voice(1.25)
+    assert session_module.HEAR_IT not in brain.tts.said
+
+
+def test_hear_it_isnt_said_over_a_routine(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = SimpleNamespace(start=lambda: None, run_routine=lambda routine: Reply(say="It's sunny."))
+    pi.held = {1}
+    threading.Thread(target=session.run_routine, args=({"name": "Good morning", "steps": []},), daemon=True).start()
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert not session.hear_voice(1.25)
+    assert session_module.HEAR_IT not in brain.tts.said
+
+
+def test_hear_it_isnt_said_over_anything_ringing(brain, connect, make_session, monkeypatch):
+    # Least of all an alarm, between its bursts as much as during them.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    ringing = ["kitchen"]
+    monkeypatch.setattr(brain.clock, "is_ringing", lambda satellite=None: satellite in ringing)
+    assert session.hear_voice(1.25)
+    assert wait_for(lambda: pi.messages("stream_end"))
+
+    ringing.append("bedroom")
+    assert not session.hear_voice(1.25)
+    assert brain.tts.said == [session_module.HEAR_IT]
+
+
+def test_hear_it_isnt_said_over_the_last_one(brain, connect, make_session):
+    # Pressed again while it's still being said.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    pi.held = {1}
+    assert session.hear_voice(1.25)
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert not session.hear_voice(1.0)
+
+    pi.say("played", id=pi.messages("play_stream")[0]["id"])
+    assert wait_for(lambda: session._last_hearing.done)
+    assert session.hear_voice(1.0)
+    assert brain.tts.speeds == [1.25, 1.0]
+
+
 def test_what_nova_is_doing_is_kept_for_the_settings_page(brain, make_session, monkeypatch):
     session = make_session()
     seen = {}

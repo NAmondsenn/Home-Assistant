@@ -356,15 +356,11 @@ class Brain:
             except Exception:
                 logger.exception("Keeping what's said in the logs couldn't be changed until Nova restarts")
                 unused.append(("logging", "log_transcripts"))
-        if ("voice", "speed") in changes:
-            try:
-                self._change_speed(changes[("voice", "speed")])
-            except Exception:
-                logger.exception("Piper couldn't be told of the new speaking speed, so it's used once Nova restarts")
-                unused.append(("voice", "speed"))
+        if ("voice", "speed") in changes and not self._change_speed(changes[("voice", "speed")]):
+            unused.append(("voice", "speed"))
         return unused
 
-    def _change_speed(self, speed: float):
+    def _change_speed(self, speed: float) -> bool:
         """
         Has Piper speak at a new speed from the next reply, and makes the phrase each
         satellite says while it can't reach the brain again at it, sending it to each
@@ -372,16 +368,38 @@ class Brain:
 
         Args:
             speed: How fast, e.g. 1.25.
+
+        Returns:
+            Whether Piper speaks at it now. Anything which went wrong is logged.
         """
-        self.tts.set_speed(speed)
+        try:
+            self.tts.set_speed(speed)
+        except Exception:
+            # set_speed changes the speed before it stops the Piper left waiting at the
+            # old one, so it can fail with the new speed already in use.
+            if self.tts.speed != speed:
+                logger.exception("Piper couldn't be told of the new speaking speed, so it's used once Nova restarts")
+                return False
+            logger.exception("Piper speaks at the new speed, but something went wrong getting it ready")
+        try:
+            self._send_phrase()
+        except Exception:
+            logger.exception("The phrase for when the server can't be reached couldn't be made again, "
+                             "so it stays at the old speaking speed")
+        return True
+
+    def _send_phrase(self):
+        """Makes the phrase again at Piper's speed, and sends it to each satellite connected."""
         # Made before the lock is taken, as Piper takes a moment over it.
         phrase = self._make_phrase()
+        if phrase is None:
+            # The old one is better than none - for a satellite connecting later too.
+            logger.warning("The phrase for when the server can't be reached stays at the old speaking speed")
+            return
         # Which are connected is seen with the lock held, so one just connecting either
         # is sent it here or is caught up after, with it - see _catch_up.
         with self._sending_phrase:
             self.phrase = phrase
-            if phrase is None:
-                return
             with self._lock:
                 satellites = [session.satellite for session in self.sessions.values()]
             for satellite in satellites:

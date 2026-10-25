@@ -74,7 +74,8 @@ class FakePiper:
         def pieces():
             if on_start:
                 on_start()
-            yield np.full(2205, 0.5, np.float32)
+            # Quieter the faster it's set, so what's said at each speed can be told apart.
+            yield np.full(2205, 0.5 / self.speed, np.float32)
         return pieces()
 
     def close(self):
@@ -1220,6 +1221,50 @@ def test_the_cant_reach_phrase_is_made_again_at_the_new_speed(brain, connect):
     assert brain.apply_settings({("voice", "speed"): 1.25}) == []
     assert brain.tts.speed == 1.25 and brain.tts.said.count(brain_module.FALLBACK_PHRASE) == 2
     assert wait_for(lambda: len(bedroom.messages("phrase")) == len(kitchen.messages("phrase")) == 2)
+
+
+def test_a_satellite_connecting_as_the_speed_changes_ends_up_with_the_new_phrase(brain, connect):
+    # It's caught up on its own thread while the page's save makes the phrase again on
+    # another - so either could send first, but never the old one last.
+    serving(brain)
+    old = brain.phrase
+    with brain._sending_phrase:
+        kitchen = connect(brain, "kitchen", KITCHEN)
+        assert wait_for(lambda: kitchen.messages("alarms") and brain.session_for("kitchen") is not None)
+        changing = threading.Thread(target=brain.apply_settings, args=({("voice", "speed"): 1.25},))
+        changing.start()
+        assert wait_for(lambda: brain.tts.said.count(brain_module.FALLBACK_PHRASE) == 2)
+        time.sleep(0.05)
+        assert not kitchen.messages("phrase")
+    changing.join(5)
+    assert brain.phrase != old
+    assert wait_for(lambda: kitchen.messages("phrase"))
+    assert wait_for(lambda: [payload for message, payload in kitchen.received
+                             if message["type"] == "phrase"][-1] == brain.phrase[0])
+
+
+def test_a_speed_piper_couldnt_take_waits_for_a_restart(brain, caplog):
+    def refuse(speed):
+        raise OSError("Piper's gone")
+
+    brain.tts.set_speed = refuse
+    assert brain.apply_settings({("voice", "speed"): 1.25}) == [("voice", "speed")]
+    assert "so it's used once Nova restarts" in caplog.text
+
+
+def test_a_speed_in_use_is_said_to_be_though_getting_piper_ready_failed(brain):
+    # set_speed changes the speed first, so it can fail after Piper speaks at it.
+    old = brain.phrase
+
+    def half(speed):
+        brain.tts.speed = speed
+        raise OSError("The old Piper wouldn't stop")
+
+    brain.tts.set_speed = half
+    # And Piper says nothing for the phrase, so the one each satellite has is kept.
+    brain.tts.stream = lambda message, on_start=None, remember=True, speed=None: iter([])
+    assert brain.apply_settings({("voice", "speed"): 1.25}) == []
+    assert brain.phrase == old is not None
 
 
 def test_the_battery_watcher_runs_while_the_brain_does_and_stops_with_it(brain, home_assistant_token, make_brain):

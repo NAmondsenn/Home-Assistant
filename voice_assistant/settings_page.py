@@ -582,7 +582,7 @@ class SettingsPage:
         if session is None:
             return self._not_connected(name)
         if not session.hear_voice(float(speed)):
-            return {"success": False, "message": f"{name} is busy just now - try again in a moment."}
+            return {"success": False, "message": "Nova's busy - try again in a moment."}
         logger.info(f"Settings page: {who} heard the speaking speed {speed:g} on the {name} satellite")
         return {"success": True, "message": f"That's being said on {name}."}
 

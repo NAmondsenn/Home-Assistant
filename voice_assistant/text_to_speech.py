@@ -105,6 +105,9 @@ class TextToSpeech:
         # A Piper process with its voice loaded, waiting for something to say.
         self._waiting: Optional[subprocess.Popen] = None
         self._recent: "OrderedDict[str, np.ndarray]" = OrderedDict()
+        # Set by close, after which nothing is left waiting - a save racing shutdown
+        # would otherwise start a Piper nobody stops. See _prepare_next.
+        self._closed = False
 
         logger.info(f"Piper TTS initialised with model: {self.model_path}")
 
@@ -161,9 +164,9 @@ class TextToSpeech:
 
     def _take_piper(self, speed: float) -> subprocess.Popen:
         """
-        A Piper process ready for some text: the one already loaded and waiting if
-        there is one at that speed, or a fresh one if two things are being said at
-        once, or the speed is another.
+        A Piper process ready for some text at Nova's own speed: the one already
+        loaded and waiting if there is one at that speed, or a fresh one if two things
+        are being said at once, or the speed changed since it was read.
 
         Args:
             speed: How fast it's to speak.
@@ -177,6 +180,7 @@ class TextToSpeech:
             if speed == self.speed:
                 process, self._waiting = self._waiting, None
         if process is None or process.poll() is not None:
+            self._stop(process)
             process = self._start_piper(speed)
         return process
 
@@ -187,8 +191,10 @@ class TextToSpeech:
         would slow it down.
         """
         with self._lock:
-            if self._waiting is not None and self._waiting.poll() is None:
+            if self._closed or (self._waiting is not None and self._waiting.poll() is None):
                 return
+            # One which died waiting - its pipes closed now, not whenever it's collected.
+            self._stop(self._waiting)
             try:
                 self._waiting = self._start_piper()
             except OSError as e:
@@ -204,9 +210,11 @@ class TextToSpeech:
             text: What to say.
             on_start: Called once the first of the audio is ready, e.g. to time it.
             remember: Keep it in case the same is said again soon - see RECENT_PHRASES.
-            speed: How fast to say it, or None for self.speed. Another speed - the
+            speed: How fast to say it, or None for self.speed. Any speed given - the
                 settings page's "Hear it", at a speed not yet saved - has a Piper of
-                its own, and nothing it says is kept.
+                its own, and nothing it says is kept, even at Nova's own speed: it
+                mustn't take the Piper waiting for a reply, nor push a timer's phrase
+                out of the ones kept.
 
         Yields:
             The audio, as float32 samples at self.sample_rate. Nothing if synthesis
@@ -222,7 +230,7 @@ class TextToSpeech:
         # Read once, so what's said is all at the one speed even if it's changed meanwhile.
         made_at = self.speed if speed is None else speed
         with self._lock:
-            one_off = made_at != self.speed
+            one_off = speed is not None or made_at != self.speed
             recent = None if one_off else self._recent.get(text)
             if recent is not None:
                 self._recent.move_to_end(text)
@@ -236,7 +244,7 @@ class TextToSpeech:
         process = None
         pieces = []
         try:
-            process = self._take_piper(made_at)
+            process = self._start_piper(made_at) if one_off else self._take_piper(made_at)
             # Passed on stdin rather than as an argument or through a shell, so
             # nothing in a reply can ever be run as a command.
             process.stdin.write(text.encode("utf-8") + b"\n")
@@ -321,7 +329,7 @@ class TextToSpeech:
 
     @staticmethod
     def _stop(process: Optional[subprocess.Popen]):
-        """Stops a Piper process left waiting for something to say, if there is one."""
+        """Stops a Piper process, if there is one and it's still going, and closes its pipes."""
         if process is None:
             return
         if process.poll() is None:
@@ -354,8 +362,9 @@ class TextToSpeech:
         return output_file
 
     def close(self):
-        """Stops the Piper process waiting for something to say."""
+        """Stops the Piper process waiting for something to say, and has none started again."""
         with self._lock:
+            self._closed = True
             process, self._waiting = self._waiting, None
         self._stop(process)
 

@@ -126,6 +126,10 @@ class Session:
         # so dragging a slider doesn't pile them up - see boop.
         self._last_boop = None
         self._boop_lock = threading.Lock()
+        # The last "Hear it" the settings page played, so another isn't said over it -
+        # see hear_voice.
+        self._last_hearing = None
+        self._hearing_lock = threading.Lock()
         # Set once the session is closed, which ends run() - see close.
         self._closed = threading.Event()
         self._closing = threading.Lock()
@@ -920,14 +924,20 @@ class Session:
             speed: How fast, e.g. 1.25 - the slider's, saved or not.
 
         Returns:
-            Whether it's being said - False while Nova's in a conversation, which it
-            would talk over.
+            Whether it's being said - False while the satellite is saying anything else,
+            which it would talk over: a conversation, an announcement or a routine,
+            something ringing - never an alarm - or the last "Hear it".
         """
-        if not self._idle.is_set():
-            return False
-        tts = self.brain.tts
-        self.speaker.play_stream(tts.stream(HEAR_IT, speed=speed), tts.sample_rate, volume=self.volume.get("general"))
-        return True
+        with self._hearing_lock:
+            hearing = self._last_hearing
+            if (not self._idle.is_set() or self._announcing.locked()
+                    or self.brain.clock.is_ringing(satellite=self.satellite.name)
+                    or (hearing is not None and not hearing.done)):
+                return False
+            tts = self.brain.tts
+            self._last_hearing = self.speaker.play_stream(tts.stream(HEAR_IT, speed=speed), tts.sample_rate,
+                                                          volume=self.volume.get("general"))
+            return True
 
     def _device_controls(self) -> DeviceControls:
         """What Home Assistant sees and does of the satellite - see ha_device.py."""

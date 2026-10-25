@@ -139,27 +139,44 @@ def test_something_said_again_soon_comes_from_memory(tts):
     assert tts.started() == before
 
 
+def wait_for(condition, seconds=5):
+    for _ in range(int(seconds / 0.005)):
+        if condition():
+            return True
+        time.sleep(0.005)
+    return False
+
+
 def test_piper_speaks_at_the_chosen_speed(make_tts):
     # Piper's flag is how long each sound lasts, so a quarter faster is 0.8 of the length.
+    # Started twice: the warm-up, then the one left waiting.
     tts = make_tts(voice={"speed": 1.25})
-    time.sleep(0.3)
-    assert tts.speed == 1.25
-    assert tts.scales() and set(tts.scales()) == {"0.8"}
+    assert wait_for(lambda: len(tts.scales()) == 2)
+    assert tts.speed == 1.25 and tts.scales() == ["0.8", "0.8"]
 
 
 def test_a_new_speed_starts_the_next_piper_at_once(tts):
     # So the next reply after a change on the page finds one loaded, rather than
     # loading its voice then or being said at the old speed.
     list(tts.stream("Your timer is done"))
-    time.sleep(0.3)
+    assert wait_for(lambda: len(tts.scales()) == 3)
     waiting = tts._waiting
     assert tts._recent and tts.scales()[-1] == "1.0"
 
     tts.set_speed(1.25)
     assert waiting.poll() is not None
     assert tts._waiting is not waiting and tts._waiting.poll() is None
-    time.sleep(0.3)
+    assert wait_for(lambda: len(tts.scales()) == 4)
     assert tts.scales()[-1] == "0.8" and not tts._recent
+
+    # The next reply takes it, starting nothing but the one to wait after it - and
+    # nothing at the old speed.
+    next_one = tts._waiting
+    assert sum(len(piece) for piece in tts.stream("one two")) == 200
+    assert next_one.poll() is not None
+    assert wait_for(lambda: len(tts.scales()) == 5)
+    time.sleep(0.1)
+    assert tts.scales()[3:] == ["0.8", "0.8"]
 
 
 def test_a_reply_under_way_at_the_old_speed_isnt_kept(tts):
@@ -173,11 +190,53 @@ def test_a_reply_under_way_at_the_old_speed_isnt_kept(tts):
 
 def test_hear_it_speaks_at_the_sliders_speed_without_changing_nova(tts):
     # The page's "Hear it" plays the slider's speed before it's saved.
-    time.sleep(0.3)
+    assert wait_for(lambda: tts._waiting is not None and len(tts.scales()) == 2)
     waiting = tts._waiting
     assert sum(len(piece) for piece in tts.stream("one two", speed=0.75)) == 200
     assert tts.scales()[-1] == "1.3333"
     assert tts.speed == 1.0 and tts._waiting is waiting and not tts._recent
+
+
+def test_hear_it_at_novas_own_speed_still_leaves_her_piper_and_what_shes_kept(tts):
+    # It mustn't take the Piper loaded for the next reply, nor push a timer's phrase
+    # out of the ones kept.
+    for number in range(text_to_speech.RECENT_PHRASES):
+        list(tts.stream(f"Timer {number} is done"))
+    assert wait_for(lambda: tts._waiting is not None and tts._waiting.poll() is None)
+    waiting, kept = tts._waiting, list(tts._recent)
+
+    assert sum(len(piece) for piece in tts.stream("one two", speed=1.0)) == 200
+    assert tts._waiting is waiting and waiting.poll() is None
+    assert list(tts._recent) == kept
+
+
+def test_a_piper_which_died_waiting_has_its_pipes_closed(tts):
+    # Not left for the garbage collector to close, whenever that is.
+    assert wait_for(lambda: tts._waiting is not None)
+    died = tts._waiting
+    died.kill()
+    died.wait()
+    list(tts.stream("one two"))
+    assert died.stdin.closed and died.stdout.closed and died.stderr.closed
+
+    assert wait_for(lambda: tts._waiting is not None)
+    died = tts._waiting
+    died.kill()
+    died.wait()
+    tts._prepare_next()
+    assert died.stdout.closed and tts._waiting is not died
+
+
+def test_nothing_is_left_waiting_once_closed(tts):
+    # A save racing Nova stopping would otherwise start a Piper nobody stops.
+    assert wait_for(lambda: tts._waiting is not None)
+    tts.close()
+    before = tts.started()
+    tts.set_speed(1.25)
+    list(tts.stream("one two"))
+    time.sleep(0.2)
+    assert tts._waiting is None and tts.started() == before + 1
+
 
 
 def test_a_failed_synthesis_says_nothing_and_doesnt_raise(tts, caplog):
