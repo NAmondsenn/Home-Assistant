@@ -1,7 +1,7 @@
 """
 Home Assistant Module.
 
-Works the lights, and reads the calendar, through Home Assistant.
+Works the lights, and reads the calendar and the weather, through Home Assistant.
 
 Nova signs in as a Home Assistant user of its own, with a long-lived access token,
 and asks for things in plain words through Home Assistant's own Assist - "turn off
@@ -26,7 +26,8 @@ and still no script or scene whose name says it locks or opens anything, nor any
 wouldn't run.
 
 Every service Nova calls goes through _call_service, which only calls those in
-SERVICES, so nothing else in Nova can reach a lock, a cover or Home Assistant itself.
+SERVICES, so nothing else in Nova can reach a lock, a cover or Home Assistant itself -
+and only asks those in RETURNS, which only read, for an answer.
 Nova's token is an administrator's, which could do anything in Home Assistant, so
 this is the only guard on what Nova's own calls reach.
 
@@ -40,7 +41,8 @@ Claude can read the state of anything else - "is Navidrome up?" - with status, w
 only reads /api/states and calls nothing.
 
 The calendar is whichever calendars Home Assistant has, such as a Google Calendar
-added through its Google Calendar integration.
+added through its Google Calendar integration, and the weather is its own, Met's for
+its home location - see weather.py.
 """
 
 import ipaddress
@@ -84,8 +86,11 @@ DEFAULT_AGENT = "conversation.home_assistant"
 # domain, and only the lights' an area as well, which light.turn_on and light.turn_off
 # take as just the lights in it. A cover service added here would need each cover
 # checked with ha_guard.guarded too, as a door's as much a cover as a blind is.
-SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",)}
+SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",),
+            "weather": ("get_forecasts",)}
 BY_AREA = ("light",)
+# The services Nova asks for an answer from - only reads, which change nothing.
+RETURNS = {("weather", "get_forecasts"), ("todo", "get_items")}
 
 # How far "dim" and "brighten" move a light, in points of brightness. 30 is steps that
 # can be told apart across a room - 10 isn't - and a light at 40% takes two to go dark.
@@ -1104,7 +1109,7 @@ class HomeAssistant:
             return {"success": False, "message": self._failure_message(e)}
         return {"success": True, "message": "Done.", "chime": True}
 
-    def _call_service(self, domain: str, service: str, data: Dict):
+    def _call_service(self, domain: str, service: str, data: Dict, returns: bool = False) -> Optional[Dict]:
         """
         Calls a Home Assistant service - the only place Nova does, so what it may
         call is decided here alone, by SERVICES.
@@ -1114,10 +1119,16 @@ class HomeAssistant:
             service: The service, e.g. "turn_on".
             data: What it's given: its targets, by entity_id - or area_id, for the
                 lights - and anything else it takes, e.g. {"brightness_pct": 30}.
+            returns: Whether to ask for the service's answer, which only those in
+                RETURNS may be.
+
+        Returns:
+            The service's answer, by entity id, with returns - else None.
 
         Raises:
             NotAllowed: If SERVICES doesn't have the service, or it's given anything
-                outside its own domain, or nothing to act on.
+                outside its own domain, or nothing to act on - or it's asked for an
+                answer RETURNS doesn't have.
             requests.RequestException: If Home Assistant couldn't be asked.
         """
         entities = data.get("entity_id")
@@ -1125,11 +1136,19 @@ class HomeAssistant:
         targets = {key for key in data if key in ("entity_id", "area_id", "device_id", "floor_id", "label_id")}
         allowed_targets = {"entity_id", "area_id"} if domain in BY_AREA else {"entity_id"}
         if (service not in SERVICES.get(domain, ()) or not targets or targets - allowed_targets
+                or (returns and (domain, service) not in RETURNS)
                 or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
                            for entity in entities)):
             logger.warning(f"Refused to call {domain}.{service} with {data}")
             raise NotAllowed(f"{domain}.{service}")
-        self._request("POST", f"/api/services/{domain}/{service}", json=data)
+        response = self._request("POST", f"/api/services/{domain}/{service}" + ("?return_response" if returns else ""),
+                                 json=data)
+        if not returns:
+            return None
+        answer = response.json()
+        if not isinstance(answer, dict):
+            raise ValueError(f"Home Assistant's answer from {domain}.{service} isn't one")
+        return answer.get("service_response")
 
     def _area_id(self, name: str) -> Optional[str]:
         """
@@ -1387,6 +1406,58 @@ class HomeAssistant:
             logger.warning(f"Can't see what {name} does, as {why}, so it isn't run by voice or from the "
                            f"settings page")
         self._unreadable.add(name)
+
+    def weather_entities(self) -> List[Dict]:
+        """
+        Home Assistant's weather entities - Met's for its home location, as it's set up.
+
+        Returns:
+            Each as {"id", "name", "state", "attributes", "reported"}, with "reported"
+            when it last heard from Met, in epoch seconds - from last_reported, which
+            moves even when nothing's changed, else last_updated - or None if neither
+            can be read.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its states can't be read.
+        """
+        entities = []
+        for state in self._states():
+            entity = str(state.get("entity_id", ""))
+            if not entity.startswith("weather."):
+                continue
+            attributes = state.get("attributes") or {}
+            try:
+                reported = datetime.fromisoformat(str(state.get("last_reported") or state.get("last_updated")))
+            except ValueError:
+                reported = None
+            entities.append({"id": entity, "name": attributes.get("friendly_name") or entity,
+                             "state": state.get("state"), "attributes": attributes,
+                             "reported": reported.timestamp() if reported else None})
+        return entities
+
+    def forecasts(self, entity_id: str, kind: str) -> List[Dict]:
+        """
+        A weather entity's forecast, from weather.get_forecasts.
+
+        Args:
+            entity_id: The weather entity, e.g. "weather.forecast_home".
+            kind: "daily" or "hourly".
+
+        Returns:
+            Its entries, each with "datetime" and whatever Met gives, e.g. "condition",
+            "temperature" and "precipitation".
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its answer isn't a forecast.
+        """
+        answer = self._call_service("weather", "get_forecasts", {"entity_id": entity_id, "type": kind}, returns=True)
+        mine = answer.get(entity_id) if isinstance(answer, dict) else None
+        forecast = mine.get("forecast") if isinstance(mine, dict) else None
+        if not isinstance(forecast, list) or not all(isinstance(entry, dict) for entry in forecast):
+            raise ValueError(f"{entity_id}'s forecast isn't a list of entries")
+        return forecast
 
     def calendar_names(self) -> List[str]:
         """The calendars to read - those config.yaml names, or every one there is."""

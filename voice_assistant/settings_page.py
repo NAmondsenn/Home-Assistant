@@ -66,7 +66,6 @@ SAFETY_HEADERS = {
 
 # The settings on the page - the ones most likely to change - and what each is for.
 EDITABLE = [
-    ("weather", "location", "Your town or city, for the weather"),
     ("music", "player", "What plays the music"),
     ("navidrome", "url", "Navidrome's address"),
     ("navidrome", "username", "Navidrome's user for Nova"),

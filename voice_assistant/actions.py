@@ -37,7 +37,7 @@ UNAVAILABLE = {
     "music": "The music isn't available right now.",
     "clock": "Timers aren't available right now.",
     "volume": "Volume control isn't available right now.",
-    "weather": "The weather isn't available right now.",
+    "weather": "The weather needs Home Assistant.",
     "home": "Home Assistant isn't set up yet.",
     "memory": "I can't remember things right now.",
     "ntfy": "Notifications aren't set up yet.",

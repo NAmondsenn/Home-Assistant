@@ -1,8 +1,8 @@
 # Every setting, with its default. Don't change them here: put just the ones you want
 # different in ~/.config/nova/config.yaml, in the same sections - e.g.
 #
-#   weather:
-#     location: "Leeds"
+#   music:
+#     player: "navidrome"
 #
 # That file is this install's own, outside the repository, so an update never touches
 # it. It's checked against this one as Nova starts, so a misspelt setting is caught.
@@ -222,8 +222,3 @@ mqtt:
   # the machine's own name, so a second Nova is a second device. Changing it later
   # makes a new device, leaving the old one to be deleted in Home Assistant.
   name: "Nova"
-
-weather:
-  # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
-  # is free and needs no key. Until it's set, Nova says it doesn't know where you are.
-  location: ""

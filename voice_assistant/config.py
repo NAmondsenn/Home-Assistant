@@ -16,7 +16,7 @@ word, leaving the default quietly in force.
 import difflib
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -41,6 +41,14 @@ POSITIVE = {("batteries", "check_every"), ("batteries", "stale_after")}
 # starting, so they're let through with a warning instead. Any other section config.yaml
 # doesn't have is still a mistake.
 RETIRED = ("speech_to_text", "moonshine", "whisper")
+
+# Each setting which has left config.yaml, and where it's set now. An install's file
+# often still has one - the brain's own had weather.location once the weather was Home
+# Assistant's - and refusing it would stop Nova starting over a setting nothing reads,
+# so it's let through, and a section holding only these, with a warning saying so.
+REMOVED: Dict[Tuple[str, str], str] = {
+    ("weather", "location"): "the weather is Home Assistant's own, for its home location",
+}
 
 
 class ConfigError(ValueError):
@@ -107,6 +115,20 @@ def marks_problem(marks: Any, count: int, who: str) -> Optional[str]:
     return None
 
 
+def removed(settings: Dict) -> List[Tuple[str, str]]:
+    """
+    The settings in REMOVED an install's file still has.
+
+    Args:
+        settings: The install's settings.
+
+    Returns:
+        Each as (section, name), e.g. [("weather", "location")].
+    """
+    return [(section, name) for section, values in settings.items() if isinstance(values, dict)
+            for name in values if (section, name) in REMOVED]
+
+
 def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
     """
     Checks an install's settings against config.yaml's.
@@ -118,7 +140,7 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
 
     Returns:
         The sections it has which are no longer used - see RETIRED - and so aren't
-        checked, and are to be left out.
+        checked, and are to be left out. The settings in REMOVED aren't checked either.
 
     Raises:
         ConfigError: Naming the first setting which is wrong, and how.
@@ -128,10 +150,14 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
         if section in retired:
             continue
         if section not in defaults:
+            if isinstance(values, dict) and values and all((section, name) in REMOVED for name in values):
+                continue
             raise ConfigError(f"{path}: there's no '{section}' section.{_guess(section, defaults)}")
         if not isinstance(values, dict):
             raise ConfigError(f"{path}: '{section}' should be settings under it, indented, like config.yaml's")
         for name, value in values.items():
+            if (section, name) in REMOVED:
+                continue
             known = defaults[section]
             if name not in known:
                 raise ConfigError(f"{path}: '{section}.{name}' isn't a setting.{_guess(name, known)}")
@@ -179,20 +205,26 @@ class Config:
         if not self.data:
             raise ValueError(f"Config file at {self.defaults_path} is empty or invalid")
 
-        # Only the settings it names are changed - "weather: {location: ...}" leaves
-        # the rest of config.yaml's weather section as it is.
+        # Only the settings it names are changed - "music: {player: ...}" leaves the
+        # rest of config.yaml's music section as it is.
         if os.path.exists(self.path):
             settings = _read(self.path)
             retired = check(settings, self.data, self.path)
+            gone = removed(settings)
             for name, values in settings.items():
-                if name not in retired:
-                    self.data[name] = {**self.data[name], **values}
+                # A section holding only removed settings isn't config.yaml's any more.
+                if name not in retired and name in self.data:
+                    self.data[name] = {**self.data[name],
+                                       **{key: value for key, value in values.items() if (name, key) not in gone}}
             if not quiet:
                 logger.info(f"Settings loaded from {self.path}")
                 if retired:
                     logger.warning(f"{self.path} still has the {', '.join(retired)} section"
                                    f"{'s' if len(retired) > 1 else ''}, which Nova no longer uses - "
                                    f"{'they' if len(retired) > 1 else 'it'} can be deleted")
+                for section, name in gone:
+                    logger.warning(f"{self.path}: '{section}.{name}' is no longer used - "
+                                   f"{REMOVED[(section, name)]} - so it can be deleted")
 
     def section(self, name):
         """

@@ -227,7 +227,7 @@ def test_the_page_shows_whats_set_and_never_a_key(files):
     assert state["volumes"] == {"general": 60, "alarm": 80, "music": 40}
     assert state["memories"] == ["Your sister is called Amy."]
     assert state["clock"]["timers"][0]["name"] == "pizza reminder"
-    assert {"weather.location", "ntfy.alerts"} <= {setting["key"] for setting in state["settings"]}
+    assert {"navidrome.url", "ntfy.alerts"} <= {setting["key"] for setting in state["settings"]}
     # What belongs to a satellite - the brain's address, and the satellite's own password - isn't on the brain's page.
     assert "backend.address" not in {setting["key"] for setting in state["settings"]}
     assert "NOVA_BACKEND_TOKEN" not in keys
@@ -277,14 +277,14 @@ def test_a_restart_is_asked_for_once_whats_saved_differs_from_whats_running(file
     running = Config()
     page = _page(running=running)
     assert not page.state()["restart_needed"]
-    page.save_settings({"weather.location": "Bristol"}, LOGIN)
+    page.save_settings({"navidrome.url": "http://music.local:4533"}, LOGIN)
     assert page.state()["restart_needed"]
 
 
 def test_looking_at_the_settings_isnt_logged(files, caplog):
     # The page asks every 20 seconds while it's open, which was a "Settings loaded"
     # line each time - thousands a day, burying what the log is for.
-    (files / "config.yaml").write_text("weather:\n  location: Bristol\n")
+    (files / "config.yaml").write_text("navidrome:\n  url: http://music.local:4533\n")
     page = _page(running=Config())
     with caplog.at_level(logging.INFO):
         caplog.clear()
@@ -414,27 +414,37 @@ def test_only_novas_own_keys_are_saved_and_nothing_odd(files, name, value):
 
 
 def test_settings_are_saved_as_only_whats_different_with_a_copy_of_the_old_file(files):
-    (files / "config.yaml").write_text("# My own settings\nweather:\n  location: Leeds\n")
-    result = _page().save_settings({"weather.location": "Bristol", "ntfy.alerts": "homelab, servers",
+    (files / "config.yaml").write_text("# My own settings\nnavidrome:\n  url: http://old.local:4533\n")
+    result = _page().save_settings({"navidrome.url": "http://music.local:4533", "ntfy.alerts": "homelab, servers",
                                     "thresholds.silence_duration": "0.7", "logging.log_transcripts": False,
                                     # The same as config.yaml's, so left out of the file.
                                     "music.player": "spotify"}, LOGIN)
 
     assert result["success"]
     assert yaml.safe_load((files / "config.yaml").read_text()) == {
-        "weather": {"location": "Bristol"}, "ntfy": {"alerts": ["homelab", "servers"]},
+        "navidrome": {"url": "http://music.local:4533"}, "ntfy": {"alerts": ["homelab", "servers"]},
         "thresholds": {"silence_duration": 0.7}, "logging": {"log_transcripts": False}}
     assert (files / "config.yaml.bak").read_text().startswith("# My own settings")
 
 
+def test_the_page_can_save_with_a_removed_setting_still_in_the_file(files):
+    # The brain's own file still has weather.location from before the weather was Home Assistant's.
+    (files / "config.yaml").write_text("weather:\n  location: Leeds\n")
+    page = _page()
+    assert "weather.location" not in {setting["key"] for setting in page.state()["settings"]}
+    assert page.save_settings({"navidrome.url": "http://music.local:4533"}, LOGIN)["success"]
+    assert yaml.safe_load((files / "config.yaml").read_text())["navidrome"] == {"url": "http://music.local:4533"}
+    assert not page.save_settings({"weather.location": "Leeds"}, LOGIN)["success"]
+
+
 def test_saving_settings_keeps_the_header_setup_wrote(files):
     # yaml drops comments, so the first save from the page lost it.
-    _page().save_settings({"weather.location": "Bristol"}, LOGIN)
+    _page().save_settings({"navidrome.url": "http://music.local:4533"}, LOGIN)
     assert (files / "config.yaml").read_text().startswith(page_module.SETTINGS_HEADER)
 
 
 @pytest.mark.parametrize("save, first, second, kept", [
-    ("save_settings", {"weather.location": "Bristol"}, {"ntfy.quiet_from": "22:00"},
+    ("save_settings", {"navidrome.url": "http://music.local:4533"}, {"ntfy.quiet_from": "22:00"},
      lambda files: yaml.safe_load((files / "config.yaml").read_text())),
     ("set_key", ("HA_TOKEN", "first-token"), ("NTFY_TOKEN", "second-token"),
      lambda files: (files / ".env").read_text()),
@@ -626,7 +636,7 @@ def test_a_change_which_cant_be_saved_is_answered(served, monkeypatch):
 
     monkeypatch.setattr(page_module.storage, "save_text", full)
     for path, body in (("/api/keys", {"name": "HA_TOKEN", "value": "a-token"}),
-                       ("/api/settings", {"changes": {"weather.location": "Bristol"}})):
+                       ("/api/settings", {"changes": {"navidrome.url": "http://music.local:4533"}})):
         assert json.loads(_ask(served, path, body, X_Nova="page")[2]) == {
             "success": False, "message": "Couldn't save that."}
 

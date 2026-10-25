@@ -1,6 +1,6 @@
 # Nova
 
-A self-hosted voice assistant, with a Raspberry Pi in each room to talk to. Say "Hey Nova", ask for something, and it answers out loud - timers, reminders, alarms, music from your own Navidrome server or Spotify, the lights and your calendar through Home Assistant, the weather, and general questions through Claude. Everything except the questions themselves, the weather and Spotify stays on your own network.
+A self-hosted voice assistant, with a Raspberry Pi in each room to talk to. Say "Hey Nova", ask for something, and it answers out loud - timers, reminders, alarms, music from your own Navidrome server or Spotify, the lights and your calendar through Home Assistant, the weather, and general questions through Claude. Everything except the questions themselves and Spotify stays on your own network.
 
 It's built in two halves - see [docs/decisions/0006](docs/decisions/0006-the-pi-as-a-satellite.md) - and in stages, in [docs/roadmap.md](docs/roadmap.md). The **brain** runs on a home server (a container on PVE2) and does everything which thinks: speech-to-text, Claude, the voice, music, Home Assistant, timers, memory and the settings page. A **satellite** is a Raspberry Pi in a room, which only hears and speaks: its microphone, speaker and wake word. One brain looks after any number of satellites.
 
@@ -14,7 +14,7 @@ It's built in two halves - see [docs/decisions/0006](docs/decisions/0006-the-pi-
 - **In Home Assistant** - Nova is a device there, with its volumes, next alarm, timers, stop, restart, a box to make it say something, and a switch to mute its microphone. See "Nova in Home Assistant" below.
 - **Your calendar** - "what have I got on Thursday?", "am I busy this weekend?", from whichever calendars Home Assistant has, such as Google Calendar. "What have I got on this week?" is an overview - which days there's work or uni, and anything else by day - rather than every time of every day. "When's my MOT?" looks for one thing, up to three months ahead. And "what time do I have work tomorrow?", "when's my next shift?" or "when do I finish uni today?" - say what each is called on the calendar in `home_assistant.activities`.
 - **Batteries** - "how's my Mac's battery?", "what's my phone on?" or "battery levels", for every device Home Assistant has a battery level for. Nova also warns you as one runs low. See "Batteries" below.
-- **The weather** - now, today or tomorrow, from Open-Meteo.
+- **The weather** - now, today or tomorrow, from Home Assistant's own weather: Met's forecast, for Home Assistant's home location, so there's nothing to set in Nova. With the internet down, Home Assistant still has its last forecast, and Nova says how old it is once it's over three hours old. A home with more than one weather entity uses the first by entity id.
 - **Anything else** - answered by Claude, which can search the web when you ask it to ("search for...", "look up...").
 - **Follow-ups** - when Nova asks you something, just answer; there's no need to say "Hey Nova" again.
 - **Talking over it** - "Hey Nova" is heard over the music Nova plays and over its own replies, which stop the moment it's said. "Hey Nova, stop" stops whatever it's saying or playing.
@@ -23,7 +23,7 @@ It's built in two halves - see [docs/decisions/0006](docs/decisions/0006-the-pi-
 - **Routines** - several things at once from a few words of your choosing ("Hey Nova, good morning"), or by themselves at a set time: each step is something you'd say to Nova - "what's the weather", "turn on the kitchen lights", "play my morning playlist" - done just as if you had, so a routine can do anything Nova can. Made and run on the settings page, and kept in `~/.local/share/nova/routines.json`.
 - **A settings page** - how Nova's doing, what's playing, your lights and Home Assistant's scripts and scenes, your batteries and when each warns, its volumes, timers and alarms, what it remembers, its keys and its main settings, from your phone or laptop - over your tailnet, and only for you.
 
-The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the brain without asking Claude, so they're quicker. With the internet down, the brain still handles timers, alarms, the time, the lights and Navidrome; anything which needs Spotify, the forecast or Claude says straight away that it can't reach the internet, rather than going quiet. With the brain unreachable, a satellite can't understand anything, and says so - but its timers and alarms, which it keeps a copy of, still ring, and "stop" still stops them.
+The everyday commands - timers, pause, skip, volume, the time, the weather, the lights and the calendar - are recognised on the brain without asking Claude, so they're quicker. With the internet down, the brain still handles timers, alarms, the time, the lights, the weather (Home Assistant's last forecast) and Navidrome; anything which needs Spotify or Claude says straight away that it can't reach the internet, rather than going quiet. With the brain unreachable, a satellite can't understand anything, and says so - but its timers and alarms, which it keeps a copy of, still ring, and "stop" still stops them.
 
 ## How it works
 
@@ -268,13 +268,13 @@ runuser -u nova -- venv/bin/pip install --no-deps -r requirements-backend.txt   
 The repository's `config.yaml` has every setting, with its default and a comment saying what it's for - the wake word, how long to wait for you to talk, timer and alarm behaviour, the music player, and more. Don't change it there: put just the settings you want different in **`~/.config/nova/config.yaml`**, in the same sections, and they're used on top:
 
 ```yaml
-weather:
-  location: "Leeds"
 music:
   player: "navidrome"
+thresholds:
+  silence_duration: 0.8
 ```
 
-That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, or one of the wrong kind, stops it with a message naming it - `journalctl -u nova-backend` shows it on the brain, `journalctl --user-unit voice-assistant` on a satellite - rather than being quietly ignored. Almost everything is set on the brain; a satellite's file has little beyond its brain's address, its name and the wake word.
+That file is this install's own, outside the repository, so an update never touches it and your settings never end up on GitHub. It's checked as Nova starts: a misspelt setting, or one of the wrong kind, stops it with a message naming it - `journalctl -u nova-backend` shows it on the brain, `journalctl --user-unit voice-assistant` on a satellite - rather than being quietly ignored. A setting Nova no longer has, such as `weather.location`, is only warned about, with where it's set now, and can be deleted. Almost everything is set on the brain; a satellite's file has little beyond its brain's address, its name and the wake word.
 
 Keys and passwords go in **`~/.config/nova/.env`**, readable only by you, never in a settings file. Everything Nova saves - timers, alarms, volume levels, what it remembers about you, the Spotify sign-in and its logs - is in **`~/.local/share/nova/`**.
 
@@ -282,7 +282,6 @@ The settings most likely to need changing:
 
 | Setting | What it's for |
 | --- | --- |
-| `weather.location` | Your town or city. Empty until you set it. |
 | `music.player` | `navidrome` or `spotify`. |
 | `backend.address` | On a satellite, its brain, as `name:port`. |
 | `thresholds.vad_threshold` | How sure Nova must be that it's hearing speech. Raise it if noise keeps it listening; lower it if quiet speech is missed. |

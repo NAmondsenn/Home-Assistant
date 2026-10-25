@@ -134,11 +134,17 @@ On the brain. The failure is said out loud: "took too long" (a slow connection),
 
 ## The weather doesn't work
 
-Set `weather.location` in the brain's `~/.config/nova/config.yaml` to your town or city, then restart it (`systemctl restart nova-backend`, as root).
+The weather is Home Assistant's own - Met's forecast, for its home location - so it needs Home Assistant set up on the brain (`home_assistant.url`, and `HA_TOKEN` in its `.env`). Without it, Nova says "The weather needs Home Assistant."
+
+- **"Home Assistant hasn't got a weather forecast."** It has no weather entity. Add the Met.no integration in Home Assistant (Settings > Devices & services), which forecasts for the home location set in Settings > System > General.
+- **"Home Assistant's forecast isn't available right now."** The weather entity is unavailable - Home Assistant's log says why.
+- **"That's Home Assistant's forecast from 5 hours ago."** Home Assistant couldn't reach Met for over three hours, so it's the last forecast it had. Check Home Assistant's internet.
+- **The forecast is for somewhere else.** With more than one weather entity, Nova uses the first by entity id.
+- **The log warns `'weather.location' is no longer used`.** The weather no longer needs a place in Nova's settings: delete the `weather` section, and `location` under it, from the brain's `~/.config/nova/config.yaml`.
 
 ## Nova won't start after a settings change
 
-The log of whichever it was - the brain or the satellite - ends with what's wrong and where, e.g. `'thresholds.silence_duraton' isn't a setting. Did you mean 'silence_duration'?`. Fix it in that one's `~/.config/nova/config.yaml` and restart it. A file from before the brain heard for the satellites may still have `speech_to_text`, `moonshine` or `whisper` sections - they're no longer used, and only warned about, so they can be deleted.
+The log of whichever it was - the brain or the satellite - ends with what's wrong and where, e.g. `'thresholds.silence_duraton' isn't a setting. Did you mean 'silence_duration'?`. Fix it in that one's `~/.config/nova/config.yaml` and restart it. A file from before the brain heard for the satellites may still have `speech_to_text`, `moonshine` or `whisper` sections - they're no longer used, and only warned about, so they can be deleted. So is a setting Nova no longer has, such as `weather.location`, with where it's set now.
 
 ## Nova restarted by itself
 

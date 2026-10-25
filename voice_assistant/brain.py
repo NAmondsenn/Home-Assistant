@@ -29,6 +29,7 @@ import numpy as np
 
 from voice_assistant import paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
+from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock, spoken_clock_time
 from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
@@ -234,7 +235,6 @@ class Brain:
         self.memory = Memory()
         # The user's own routines - see routines.py.
         self.routines = Routines()
-        self.weather = Weather(config=config)
 
         # The user's own ntfy server, both ways: alerts said out loud as they arrive,
         # and things sent to their phone. None if it isn't set up - see ntfy.py.
@@ -252,6 +252,10 @@ class Brain:
         if self.home:
             self.home.registry = self.registry
         self.batteries = self._make_battery_watcher() if self.home else None
+        # Home Assistant's own weather, and which of its weather entities to use, for a
+        # home with several - see weather.py.
+        self.weather = (Weather(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "weather.json"), {"entity": None}))
+                        if self.home else None)
 
         # Every satellite's timers and alarms, rung on the satellite each was set from.
         # Started in run(), once what rings on no satellite has gone to the default.

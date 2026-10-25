@@ -1026,6 +1026,19 @@ def test_the_brain_has_no_battery_watcher_without_home_assistant(make_brain, mon
     assert make_brain().batteries is None
 
 
+def test_the_brain_has_the_weather_only_with_home_assistant(make_brain, home_assistant_token, monkeypatch,
+                                                             tmp_path):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    assert brain.weather.home is brain.home
+    # Which weather entity is used, with several, is kept in the brain's own data folder.
+    assert brain.weather.choices.path == str(tmp_path / "weather.json")
+    assert brain.weather.choices.get("entity") is None
+
+    monkeypatch.delenv("HA_TOKEN")
+    assert make_brain(home_assistant=HOME_ASSISTANT).weather is None
+    assert make_brain().weather is None
+
+
 def test_the_brain_reads_the_registry_when_home_assistant_is_set_up(make_brain, home_assistant_token, monkeypatch):
     brain = make_brain(home_assistant=HOME_ASSISTANT)
     assert isinstance(brain.registry, HomeRegistry)

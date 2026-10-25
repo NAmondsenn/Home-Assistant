@@ -897,6 +897,42 @@ def test_every_service_call_goes_through_the_one_allowlist():
     assert inspect.getsource(home_assistant).count("/api/services/") == 1
 
 
+# The weather, as live check 3 found Met's through Home Assistant.
+FORECAST_HOME = {"entity_id": "weather.forecast_home", "state": "partlycloudy",
+                 "attributes": {"temperature": 12.3, "humidity": 80, "friendly_name": "Forecast Home"},
+                 "last_changed": "2026-10-24T09:00:00+00:00", "last_reported": "2026-10-24T12:30:00+00:00",
+                 "last_updated": "2026-10-24T12:00:00+00:00"}
+HOURLY = [{"condition": "rainy", "datetime": "2026-10-24T15:00:00+00:00", "humidity": 90, "precipitation": 0.4,
+           "temperature": 11.0, "uv_index": 0.3, "wind_bearing": 220, "wind_speed": 25.2, "cloud_coverage": 100}]
+GET_FORECASTS = "/api/services/weather/get_forecasts?return_response"
+
+
+def test_the_forecast_is_asked_for_its_answer_through_the_allowlist(make_home):
+    home = make_home({GET_FORECASTS: {"changed_states": [],
+                                      "service_response": {"weather.forecast_home": {"forecast": HOURLY}}}})
+    assert home.forecasts("weather.forecast_home", "hourly") == HOURLY
+    assert home._session.requests == [
+        ("POST", GET_FORECASTS, {"json": {"entity_id": "weather.forecast_home", "type": "hourly"}})]
+
+    # Only what's meant to answer may be asked for an answer.
+    with pytest.raises(NotAllowed):
+        home._call_service("light", "turn_on", {"entity_id": "light.lamp"}, returns=True)
+    assert len(home._session.requests) == 1
+
+
+def test_the_weather_entities_are_read_with_when_each_was_last_reported(make_home):
+    no_report = {**FORECAST_HOME, "entity_id": "weather.other_place", "attributes": {}}
+    del no_report["last_reported"]
+    home = make_home({"/api/states": [_thing("light.lamp", "Lamp"), FORECAST_HOME, no_report]})
+    assert home.weather_entities() == [
+        {"id": "weather.forecast_home", "name": "Forecast Home", "state": "partlycloudy",
+         "attributes": FORECAST_HOME["attributes"],
+         "reported": datetime.fromisoformat("2026-10-24T12:30:00+00:00").timestamp()},
+        # Without last_reported, last_updated says when.
+        {"id": "weather.other_place", "name": "weather.other_place", "state": "partlycloudy", "attributes": {},
+         "reported": datetime.fromisoformat("2026-10-24T12:00:00+00:00").timestamp()}]
+
+
 @pytest.mark.parametrize("failure, said", [
     (requests.ConnectionError("refused"), "I can't reach Home Assistant right now."),
     (FakeResponse({}, status=401), "HA_TOKEN in the .env file needs checking"),
