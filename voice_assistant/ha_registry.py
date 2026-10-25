@@ -134,13 +134,24 @@ class HomeSocket:
 
     @staticmethod
     def _receive(connection, deadline: float) -> Dict:
-        """The next message, waiting no longer than the call's deadline has left."""
+        """
+        The next message, waiting no longer than the call's deadline has left.
+
+        Raises:
+            HomeSocketError: At the deadline, or for a frame which isn't one message.
+        """
         left = deadline - time.monotonic()
         if left <= 0:
             raise HomeSocketError("timed out")
         if hasattr(connection, "settimeout"):
             connection.settimeout(left)
-        return json.loads(connection.recv())
+        message = json.loads(connection.recv())
+        # Home Assistant only sends a list of messages to a client which asks for that,
+        # which Nova doesn't - so anything but one message is a bad answer, said as one
+        # rather than left to fail as an AttributeError further on.
+        if not isinstance(message, dict):
+            raise HomeSocketError(f"expected a message, got {type(message).__name__}")
+        return message
 
     def _converse(self, connection, messages: List[Dict], deadline: float) -> List[Any]:
         """Does the talking of call() on a connection, which call() then closes."""

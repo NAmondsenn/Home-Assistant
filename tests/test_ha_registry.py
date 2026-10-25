@@ -94,6 +94,21 @@ def test_a_timeout_raises_and_closes(connect):
     assert slow.closed
 
 
+@pytest.mark.parametrize("frame", ["[]", "[{\"type\": \"auth_required\"}]", "\"auth_required\"", "null"])
+def test_a_frame_which_isnt_a_message_raises_and_closes(connect, frame):
+    # Home Assistant sends several messages to a frame, as a list, to clients which ask
+    # for that - Nova doesn't, so a frame that isn't one message is a bad answer.
+    class Odd(FakeConnection):
+        def recv(self):
+            return frame
+
+    odd = Odd()
+    connect(odd)
+    with pytest.raises(HomeSocketError):
+        HomeSocket("http://ha.test:8123", "token").call([{"type": "one"}])
+    assert odd.closed
+
+
 def test_the_address_is_home_assistants_own_websocket():
     assert HomeSocket("http://homeassistant.local:8123/", "t").url == "ws://homeassistant.local:8123/api/websocket"
     assert HomeSocket("https://home.example.test", "t").url == "wss://home.example.test/api/websocket"
