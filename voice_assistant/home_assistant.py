@@ -498,6 +498,7 @@ class HomeAssistant:
                                extra=TRANSCRIPT)
                 return refused
 
+            by_id = {state.get("entity_id"): state for state in states}
             # Told the same device as Assist, which find_device can change meanwhile.
             match, unanswered = self._assist_targets(request, asked.get("device_id"))
             if snapshot is not None:
@@ -516,7 +517,6 @@ class HomeAssistant:
                     logger.info(f"Not sent to Assist, which reads it as {what} on {match.targets}: '{request}'",
                                 extra=TRANSCRIPT)
                     return not_understood
-                by_id = {state.get("entity_id"): state for state in states}
                 barred = [target for target in match.targets if target_refused(target, by_id.get(target), snapshot)]
                 if barred:
                     logger.warning(f"Refused a Home Assistant request Assist would act on {barred} with: '{request}'",
@@ -525,8 +525,11 @@ class HomeAssistant:
             # A script or scene is only run once what it does has been checked - one Assist
             # would act on, and one the request names, as a light sentence can while the
             # debugging isn't answering: "turn on the porch light", with a script called
-            # "Porch light" which unlocks the front door.
-            runs = [target for target in (match.targets if match else []) if RUNNABLE.fullmatch(target)]
+            # "Porch light" which unlocks the front door. So is a group worked, as Home
+            # Assistant works every member of it: a cover group "Front of house" opens the
+            # garage door in it.
+            runs = [target for target in (match.targets if match else [])
+                    if RUNNABLE.fullmatch(target) or _members(by_id.get(target)) is not None]
             runs += [entity for entity in runnables_named(request, states, snapshot) if entity not in runs]
             if why_not_run(runs, states, snapshot, self._script_config, self._too_deep):
                 logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
@@ -1452,6 +1455,12 @@ def _script_name(name: str) -> str:
     if len(words) > 1 and words[-1] in ("script", "scene", "routine"):
         words = words[:-1]
     return "".join(words)
+
+
+def _members(state: Optional[Dict]) -> Optional[List]:
+    """A group's members - its entity_id attribute, as a scene's are - or None for what isn't one."""
+    members = ((state or {}).get("attributes") or {}).get("entity_id")
+    return members if isinstance(members, list) else None
 
 
 def _refused(error: Exception) -> bool:

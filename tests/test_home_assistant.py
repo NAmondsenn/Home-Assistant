@@ -669,6 +669,32 @@ def test_anything_acting_the_registry_cant_vouch_for_is_refused(make_home, entit
     assert home.command("is new on", wider=True)["success"]
 
 
+def test_a_group_assist_would_act_on_is_refused_for_a_guarded_member(make_home):
+    # The final review's repro: a cover group holding the garage door and a blind is one
+    # target, and Home Assistant opens every member.
+    garage, blind = _thing("cover.garage", "Garage", "garage"), _thing("cover.blind", "Blind", "blind")
+    group = _scene("cover.front", "Front of house", ["cover.garage", "cover.blind"])
+    home = _assisted(make_home, [group, garage, blind],
+                     [_entry("cover.front", "group"), _entry("cover.garage"), _entry("cover.blind")],
+                     _match("HassTurnOn", "cover.front"))
+    assert home.command("open front of house", wider=True) == REFUSED
+    # So is a light group with a lock among its members, as an old-style group can be.
+    porch = _scene("light.porch_group", "Porch", ["light.lamp", "lock.main"])
+    home = _assisted(make_home, [porch, LAMP, MAIN_LOCK],
+                     [_entry("light.porch_group", "group"), _entry("light.lamp"), _entry("lock.main")],
+                     _match("HassTurnOn", "light.porch_group"))
+    assert home.command("turn on the porch") == REFUSED
+    # And one named in a light sentence while the debugging isn't answering.
+    home.socket.answer = HomeSocketError("not answering")
+    assert home.command("turn on the porch") == REFUSED
+    assert "/api/conversation/process" not in _paths(home)
+    # With only harmless members, it's sent.
+    porch["attributes"]["entity_id"] = ["light.lamp"]
+    assert home.command("turn on the porch")["success"]
+    home.socket.answer = _debugged(_match("HassTurnOn", "light.porch_group"))
+    assert home.command("turn on the porch")["success"]
+
+
 @pytest.mark.parametrize("wider", [True, False])
 def test_a_sentence_assist_matches_nothing_in_isnt_sent(make_home, wider):
     home = _assisted(make_home, [LAMP], [_entry("light.lamp")], None)

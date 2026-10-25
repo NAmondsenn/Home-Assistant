@@ -223,8 +223,9 @@ def names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot]
 
 def runnables_named(request: str, states: List[Dict], snapshot: Optional[Snapshot]) -> List[str]:
     """
-    The scripts and scenes a request names, found as names_guarded finds a guarded thing:
-    by name, the words of its entity id or an other name, as whole words.
+    The scripts, scenes and groups a request names, found as names_guarded finds a guarded
+    thing: by name, the words of its entity id or an other name, as whole words. A group
+    is anything with its members as its entity_id attribute, of any domain.
 
     Args:
         request: e.g. "turn on the porch light".
@@ -238,7 +239,9 @@ def runnables_named(request: str, states: List[Dict], snapshot: Optional[Snapsho
     named = []
     for state in states:
         entity = str(state.get("entity_id") or "")
-        if RUNNABLE.fullmatch(entity) and _names(entity, state.get("attributes") or {}, snapshot) & said:
+        attributes = state.get("attributes") or {}
+        if ((RUNNABLE.fullmatch(entity) or isinstance(attributes.get("entity_id"), list))
+                and _names(entity, attributes, snapshot) & said):
             named.append(entity)
     return named
 
