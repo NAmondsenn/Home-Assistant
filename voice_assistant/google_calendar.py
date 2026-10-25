@@ -106,6 +106,7 @@ SAME_AS = {"work": ("working", "shift", "shifts"), "uni": ("university", "lectur
 CANT_REACH_GOOGLE = "I can't reach Google's calendar right now."
 NO_ANSWER = "Google didn't answer in time"
 LOST = "I lost Google partway through"
+TROUBLE = "Google had trouble"
 NEEDS_SIGN_IN = "I need signing in to Google again. That's done with a command on the brain."
 
 # Most events said for one day before the rest are only counted.
@@ -774,7 +775,8 @@ class GoogleCalendar:
             event: The event, as Google's events.insert takes it.
 
         Raises:
-            _NotSure: If it was sent but Google's answer didn't say it was added.
+            _NotSure: If it was sent but Google's answer didn't say it was added - Google's
+                own trouble, a 5xx, too.
             SignInNeeded: If there's no sign-in, or Google no longer accepts it.
             requests.RequestException: If Google couldn't be reached, or refused it.
         """
@@ -802,6 +804,11 @@ class GoogleCalendar:
             self.sign_in.drop_access_token()
         if response.status_code == 401:
             raise SignInNeeded("Google turned Nova's access token down.")
+        # Google's own trouble may come after it was added - a 502 or 504 is a front end
+        # that got no answer from behind it, and a 500 backendError is one Google says to
+        # retry - so asking again could add it twice. Reading, it's only out of reach.
+        if response.status_code >= 500:
+            raise _NotSure(TROUBLE, f"a {response.status_code}")
         response.raise_for_status()
         try:
             answer = response.json()
@@ -838,8 +845,8 @@ def _not_added(error: Exception) -> Dict:
     logger.error(f"Couldn't add to the calendar: {type(error).__name__}{f' {status}' if status else ''}")
     if isinstance(error, SignInNeeded):
         return {"success": False, "message": NEEDS_SIGN_IN}
-    # Google's own trouble, or it slowing Nova down, is Google out of reach, as when
-    # reading - only a 4xx otherwise is the event refused.
+    # Google slowing Nova down is Google out of reach, as when reading - only a 4xx
+    # otherwise is the event refused. Its own trouble, a 5xx, is never here: see _insert.
     if isinstance(error, requests.HTTPError) and status is not None and 400 <= status < 500 and status != 429 \
             and not _rate_limited(error.response):
         return {"success": False, "message": "Google wouldn't add that."}

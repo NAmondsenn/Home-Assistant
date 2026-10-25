@@ -1356,15 +1356,14 @@ def _refused(status, reason="forbidden"):
 
 
 LOST = "I lost Google partway through, so I can't tell whether Dentist was added."
+TROUBLE = "Google had trouble, so I can't tell whether Dentist was added."
 
 
 @pytest.mark.parametrize("answer, said, posts", [
     # Refused.
     (_refused(403), "Google wouldn't add that.", 1),
     (_refused(400, "invalid"), "Google wouldn't add that.", 1),
-    # Google's own trouble, or slowing Nova down - as when reading.
-    (_refused(500, "backendError"), CANT_REACH_GOOGLE, 1),
-    (_refused(503, "backendError"), CANT_REACH_GOOGLE, 1),
+    # Google slowing Nova down - as when reading.
     (_refused(403, "rateLimitExceeded"), CANT_REACH_GOOGLE, 1),
     (_refused(403, "userRateLimitExceeded"), CANT_REACH_GOOGLE, 1),
     (_refused(429, "rateLimitExceeded"), CANT_REACH_GOOGLE, 1),
@@ -1372,6 +1371,12 @@ LOST = "I lost Google partway through, so I can't tell whether Dentist was added
     (requests.ReadTimeout("Read timed out."), "Google didn't answer in time, so I can't tell whether Dentist was "
                                               "added.", 1),
     (FakeResponse(200, "not an event"), "Google's answer didn't say, so I can't tell whether Dentist was added.", 1),
+    # Google's own trouble - a front end that got no answer from behind it, or a backendError,
+    # which Google says to retry - may have come after it was added.
+    (_refused(500, "backendError"), TROUBLE, 1),
+    (_refused(502, "backendError"), TROUBLE, 1),
+    (_refused(503, "backendError"), TROUBLE, 1),
+    (FakeResponse(504, "Gateway Timeout"), TROUBLE, 1),
     (requests.ConnectionError(urllib3.exceptions.ProtocolError(
         "Connection aborted.", ConnectionResetError(104, "Connection reset by peer"))), LOST, 1),
     (requests.ConnectionError("Connection aborted."), LOST, 1),
