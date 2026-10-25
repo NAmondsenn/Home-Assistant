@@ -9,7 +9,7 @@ The REST API has none of this: it knows the states, not what an entity is, which
 it belongs to, what the user calls it or which room it's in. Reading it here, rather
 than keeping a list of entity ids in code or config, means a new lock, a renamed light
 or a moved device is known about within five minutes with nothing changed in Nova
-(decision 7) - and the guard on what Nova may work (see home_assistant.py) can go by
+(decision 7) - and the guard on what Nova may work (see ha_guard.py) can go by
 what a thing is, not by what it's called.
 
 The registry isn't read for every request: a snapshot is at most five minutes old,
