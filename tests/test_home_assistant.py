@@ -706,8 +706,9 @@ def test_the_refusal_says_why_the_registry_cant_vouch(make_home, caplog):
                      _match("HassTurnOn", "switch.heater"))
     with caplog.at_level("WARNING", logger="voice_assistant.home_assistant"):
         assert home.command("turn on the heater", wider=True) == REFUSED
-    assert ("switch.heater is not in Home Assistant's registry - give it a unique id to work it by voice"
-            in caplog.records[-1].message)
+    assert caplog.records[-1].message == (
+        "Refused a Home Assistant request Assist would act on ['switch.heater'] (switch.heater is not in Home "
+        "Assistant's registry - give it a unique id to work it by voice) with: 'turn on the heater'")
     # Without a read of the registry at all, it's that which is said instead.
     home.registry.read = None
     home.socket.answer = _debugged(_match("HassTurnOn", "light.lamp"))
@@ -1837,6 +1838,26 @@ def test_scripts_assist_would_run_together_are_looked_up_together(make_home):
     home.socket.answer = _debugged(_match("HassTurnOn", "script.lamp_off", "script.dim"))
     assert home.command("run lamp off and dim", wider=True)["success"]
     assert home.socket.lookup_calls() == 1 and home.socket.lookups() == ["script.lamp_off", "script.dim"]
+
+
+def test_a_draw_only_looks_up_the_scripts_it_would_walk(make_home):
+    # One whose name says it unlocks is never offered, so its key isn't asked for.
+    lights_only = _config("Lights", _step("light.turn_off", entity_id="light.lamp"))
+    home = _scripted(make_home, {"script.dim": ("Dim", lights_only), "script.unlock_door": ("Unlock door", UNLOCKS)},
+                     LAMP, FRONT_DOOR)
+    assert [routine["id"] for routine in home.overview()["routines"]] == ["script.dim"]
+    assert home.socket.lookups() == ["script.dim"]
+
+
+def test_a_bad_entry_in_a_batch_fails_only_its_own_script(make_home):
+    lights_only = _config("Lights", _step("light.turn_off", entity_id="light.lamp"))
+    home = _scripted(make_home, {f"script.lights_{number}": (f"Lights {number}", lights_only) for number in range(3)},
+                     LAMP)
+    live = {**home.registry.read.entries}
+    del live["script.lights_1"]
+    home.socket.live = live
+    assert [routine["id"] for routine in home.overview()["routines"]] == ["script.lights_0", "script.lights_2"]
+    assert home.socket.lookup_calls() == 1
 
 
 @pytest.mark.parametrize("answer", [[], "odd", {"script.goodnight": "goodnight"}, {"script.goodnight": {}},
@@ -3081,6 +3102,12 @@ def test_status_leaves_out_anything_with_a_hardware_address_in_its_id(make_home)
               _status("sensor.shelly1_c45bbe123456_temperature", "Example temperature", "20.5", "°C"),
               _status("sensor.x_a4_c1_38_12_34_ab", "Example temperature", "22.5", "°C"),
               _status("sensor.x_a4_c1_38_ab_12_cd", "Example temperature", "23.5", "°C"),
+              # A GUID too, run together or in its groups, whatever its letters - the PC's
+              # network sensors are named after their adapter's.
+              _status("sensor.windows_pc_network_32113e4d1a6c4d418be75feec6c69c40", "Example temperature", "1",
+                      "°C"),
+              _status("sensor.example_32113e4d1a6c4d418be75feec6c69c40", "Example temperature", "2", "°C"),
+              _status("sensor.example_1a2b3c4d_5e6f_47a8_b9c0_123456789012", "Example temperature", "3", "°C"),
               _status("sensor.example_temperature", "Example temperature", "19.5", "°C")]
     home = _status_home(make_home, things)
     assert home.status("example temperature", now=STATUS_NOW)["message"] == \
@@ -3088,7 +3115,9 @@ def test_status_leaves_out_anything_with_a_hardware_address_in_its_id(make_home)
     # While a model's number in an id is no address, nor are twelve digits alone - more
     # likely a count.
     for entity in ("sensor.pve2_cpu_usage", "sensor.s25_ultra_storage", "sensor.example_500107862016",
-                   "sensor.nextcloud_cpu_load_last_15_minutes", "sensor.backup_2026_10_25_1230"):
+                   "sensor.nextcloud_cpu_load_last_15_minutes", "sensor.backup_2026_10_25_1230",
+                   # Nor is an address read from the middle of a word - "e:1:2:a:b:c" here.
+                   "sensor.zone_1_2_a_b_c"):
         home = _status_home(make_home, [_status(entity, "Example thing", "31")])
         assert entity in home.status("example thing", now=STATUS_NOW)["message"], entity
 

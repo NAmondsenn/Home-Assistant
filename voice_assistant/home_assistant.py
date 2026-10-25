@@ -326,13 +326,20 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 # "host.10.0.0.2".
 IPV4_ADDRESS = re.compile(r"(?<!\d)\d{1,3}(\.\d{1,3}){3}(?!\d)")
 # An IPv4 address in an entity id, whose dots Home Assistant makes underscores - a Ping
-# entity for 10.0.0.1 is binary_sensor.10_0_0_1. A hardware address in one is
-# HARDWARE_ADDRESS's, over the id's words - see _private.
+# entity for 10.0.0.1 is binary_sensor.10_0_0_1.
 IPV4_IN_ID = re.compile(r"(?<!\d)\d{1,3}(_\d{1,3}){3}(?!\d)")
-HARDWARE_ADDRESS = re.compile(
-    r"(?<![0-9a-f])([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
-    r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])",
-    re.IGNORECASE)
+_HARDWARE = (r"([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
+             r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])")
+HARDWARE_ADDRESS = re.compile(r"(?<![0-9a-f])" + _HARDWARE, re.IGNORECASE)
+# A hardware address in an entity id, read with its underscores as colons - run together,
+# sensor.ble_temperature_a4c1381234ab, or with the colons Home Assistant makes
+# underscores, sensor.ble_a4_c1_38_ab_12_cd - starting at a word, so the "e" of "zone" in
+# sensor.zone_1_2_a_b_c isn't one. And a GUID, run together or in its groups, whatever its
+# letters: the PC's network sensors are named after their adapter's, and a GUID tells one
+# machine's hardware from another's as an address does.
+HARDWARE_IN_ID = re.compile(r"(?<![0-9a-z])(" + _HARDWARE
+                            + r"|([0-9a-f]{32}|[0-9a-f]{8}(:[0-9a-f]{4}){3}:[0-9a-f]{12})(?![0-9a-z]))",
+                            re.IGNORECASE)
 # A run of hex digits and colons, each tried as an IPv6 address - "fe80::1" in "[fe80::1]".
 # A time, "12:30:45", isn't one.
 MAYBE_IPV6 = re.compile(r"[0-9a-f:]*:[0-9a-f:]*", re.IGNORECASE)
@@ -595,8 +602,8 @@ class HomeAssistant:
                           if (why := why_target_refused(target, by_id.get(target), snapshot)) is not None}
                 if barred:
                     whys = "; ".join(f"{target} is {why}" for target, why in barred.items())
-                    logger.warning(f"Refused a Home Assistant request Assist would act on {list(barred)} with "
-                                   f"({whys}): '{request}'", extra=TRANSCRIPT)
+                    logger.warning(f"Refused a Home Assistant request Assist would act on {list(barred)} ({whys}) "
+                                   f"with: '{request}'", extra=TRANSCRIPT)
                     return refused
             # A script or scene is only run once what it does has been checked - one Assist
             # would act on, and one the request names, as a light sentence can while the
@@ -791,19 +798,22 @@ class HomeAssistant:
         snapshot = self._snapshot()
         # Each script's key and configuration are read once a draw, however many others run
         # it - and every script's key in one round, as the walk would only ask for one at a
-        # time. Without the registry, none is checked, so none is looked up.
-        scripts = self._scripts()
-        if snapshot is not None:
-            scripts.look_up([entity for entity in (state.get("entity_id") or "" for state in states)
-                             if RUNNABLE.fullmatch(entity) and entity.startswith("script.")])
-        routines = []
+        # time - only those it would walk, as one whose name says it unlocks never is.
+        # Without the registry, none is checked, so none is looked up.
+        offered = []
         for state in states:
             entity = state.get("entity_id") or ""
             name = (state.get("attributes") or {}).get("friendly_name") or entity
+            if RUNNABLE.fullmatch(entity) and not sensitive(entity, name):
+                offered.append((entity, name))
+        scripts = self._scripts()
+        if snapshot is not None:
+            scripts.look_up([entity for entity, _ in offered if entity.startswith("script.")])
+        routines = []
+        for entity, name in offered:
             # Only what run() would run, so the page never offers a button which can't work -
             # and none without the registry, which has the key to each script's contents.
-            if (RUNNABLE.fullmatch(entity) and not sensitive(entity, name)
-                    and not self.works_guarded(entity, states, snapshot, scripts=scripts)):
+            if not self.works_guarded(entity, states, snapshot, scripts=scripts):
                 routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
         return {"success": True,
                 "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
@@ -1878,12 +1888,11 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
         return True
     # A Ping entity is named after the host it pings, so its name and entity id are
     # looked at as well as its state - and its area, which is a name too. A BLE or Shelly
-    # sensor's id carries its device's hardware address, however plain its name - run
-    # together, sensor.ble_temperature_a4c1381234ab, or with the colons Home Assistant
-    # makes underscores, sensor.ble_a4_c1_38_ab_12_cd.
+    # sensor's id carries its device's hardware address, however plain its name - see
+    # HARDWARE_IN_ID.
     area = snapshot.area_name(entity) if snapshot else None
     if (any(_holds_address(text) for text in (state, str(attributes.get("friendly_name") or ""), area or ""))
-            or IPV4_IN_ID.search(entity) or HARDWARE_ADDRESS.search(entity.replace("_", ":"))):
+            or IPV4_IN_ID.search(entity) or HARDWARE_IN_ID.search(entity.replace("_", ":"))):
         return True
     # Only a sensor's or a text entity's state can be free text - a light's is on or off,
     # whatever the device. A text entity holds whatever was typed into it, on any device.

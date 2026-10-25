@@ -96,7 +96,9 @@ UNSEEN = "can't be seen"
 # Why Assist isn't asked to act on something, as the log says it. Something with no unique
 # id - a YAML template switch, a scene with no id, an old-style group - is never in the
 # registry, so it's refused for good, not only until the registry's next read: the log
-# says what would let it be worked.
+# says what would let it be worked. An old-style group can't take one, and is made a
+# group helper in the UI instead (see docs/troubleshooting.md). A new entity is told the
+# same for its first five minutes, as the two can't be told apart.
 NOT_IN_STATES = "not in Home Assistant's states"
 GUARDED_TARGET = "never worked by voice"
 UNREGISTERED = "not in Home Assistant's registry - give it a unique id to work it by voice"
