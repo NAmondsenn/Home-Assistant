@@ -2382,6 +2382,23 @@ def test_lights_are_found_by_name_other_name_or_room(make_home):
     assert called("attic lights") is None and called("the toaster") is None
 
 
+def test_a_name_shared_across_rooms_is_novas_rooms_light(make_home):
+    # As Assist has it: "dim the lamp", with a Lamp in the bedroom and one in the kitchen,
+    # is the bedroom's when Nova's there.
+    kitchen_lamp = _rendered_light("light.kitchen_lamp", "Lamp", "Kitchen", brightness=204)
+    bedroom_lamp = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=204)
+    home = _house(make_home, bedroom_lamp, kitchen_lamp)
+    assert home.dim("down", "the lamp")["success"]
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.lamp"], "brightness_pct": 50})]
+    assert home.switch_lights(False, "the lamp")["success"]
+    assert _dimmed(home)[-1] == ("turn_off", {"entity_id": ["light.lamp"]})
+    # Elsewhere, or with no Lamp in Nova's room, it's both, as before.
+    for area in ("Hall", None):
+        home.area = area
+        assert [light["id"] for light in home.lights_called("lamp", home.lights())] == ["light.lamp",
+                                                                                      "light.kitchen_lamp"]
+
+
 def test_dimming_steps_each_light_down_from_where_it_is(make_home):
     lamp = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=204)
     bedroom = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=51)

@@ -886,7 +886,8 @@ class HomeAssistant:
             lights: The lights, as lights() has them.
 
         Returns:
-            The lights named, whether by name or by another name; else, for "lights" or
+            The lights named, whether by name or by another name - only those in Nova's
+            room, if some of them are; else, for "lights" or
             "lamp" alone, those in Nova's room - none if that isn't known; else those in
             the room named, e.g. "bedroom lights". None if the words mean nothing Nova
             knows.
@@ -901,7 +902,10 @@ class HomeAssistant:
         # light in the room too.
         named = [light for light in lights if said in [_plain(name) for name in [light["name"], *light["aliases"]]]]
         if named:
-            return named
+            # A name shared across rooms is Nova's own room's, as Assist has it: "dim the
+            # lamp", with a Lamp in the bedroom and one in the kitchen, is the bedroom's.
+            here = [light for light in named if self.area and light["area"] == self.area]
+            return here or named
         if said in GENERIC_LIGHT_WORDS:
             return [light for light in lights if self.area and light["area"] == self.area]
         room = said.rsplit(" ", 1)[0] if said.rsplit(" ", 1)[-1] in GENERIC_LIGHT_WORDS else None
