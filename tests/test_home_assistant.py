@@ -916,6 +916,28 @@ def test_any_sentence_of_assists_goes_to_claude_when_home_assistant_cant_be_reac
     assert home.command("turn on the lamp") == {"success": False, "message": "I can't reach Home Assistant right now."}
 
 
+@pytest.mark.parametrize("failure, to_claude", [
+    (requests.ReadTimeout("slow"), False), (requests.ConnectionError("aborted"), False),
+    (requests.ConnectTimeout("slow to connect"), True)])
+def test_a_sentence_assist_may_have_acted_on_isnt_given_to_claude(make_home, failure, to_claude):
+    # Once it's been sent, Assist may have run "run goodnight" with no answer back in
+    # time - and Claude's run_home_script would run it again. Only a connection never
+    # made can't have reached Assist.
+    home = _assisted(make_home, [TV], [_entry("switch.tv")], _match("HassTurnOff", "switch.tv"))
+    home._session.answers["/api/conversation/process"] = failure
+    result = home.command("turn off the tv", wider=True)
+    assert result == (DIDNT_UNDERSTAND if to_claude else {"success": False, "message": "I can't reach Home Assistant "
+                                                                                       "right now."})
+
+
+def test_a_sentence_never_sent_for_want_of_a_network_is_given_to_claude(make_home, monkeypatch):
+    home = _assisted(make_home, [TV], [_entry("switch.tv")], _match("HassTurnOff", "switch.tv"))
+    # The network goes once the states are read, so the sentence is never sent.
+    monkeypatch.setattr(network, "online", lambda: not home._session.requests)
+    assert home.command("turn off the tv", wider=True) == DIDNT_UNDERSTAND
+    assert _paths(home) == ["/api/states"]
+
+
 def test_a_token_home_assistant_refuses_is_said_for_any_sentence(make_home):
     # Home Assistant answered, so the user is told what needs putting right.
     home = make_home({"/api/states": FakeResponse({}, status=401)})

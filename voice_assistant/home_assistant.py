@@ -296,6 +296,10 @@ class NotAllowed(ValueError):
     """A service call SERVICES doesn't allow, which nothing in Nova should ever make."""
 
 
+class NoNetwork(requests.ConnectionError):
+    """There's no network at all, so Home Assistant isn't asked - nothing was sent."""
+
+
 class HomeAssistant:
     """One Home Assistant, reached over its REST API."""
 
@@ -376,7 +380,7 @@ class HomeAssistant:
         # with the Pi's cable out: "turn on the lamp" waited 20 seconds for its name
         # to fail to be looked up before saying so.
         if not network.online():
-            raise requests.ConnectionError("No network connection")
+            raise NoNetwork("No network connection")
         timeout = REQUEST_TIMEOUT if timeout is None else timeout
         response = self._session.request(method, self.url + path, timeout=timeout, **kwargs)
         response.raise_for_status()
@@ -467,9 +471,10 @@ class HomeAssistant:
             something done, since the lights changing speaks for itself. 'not_understood'
             is set too when Assist matched nothing, as opposed to failing at something
             it did understand - and when it isn't asked to act, as what it would act on
-            can't be told, or when a wider request can't reach Home Assistant. 'refused' is set when Nova wouldn't ask Assist at all, by the
-            words, by what they name or by what Assist would act on - which includes a
-            script or scene, named or acted on, that works_guarded refuses.
+            can't be told, or when a wider request can't reach Home Assistant before it's
+            sent. 'refused' is set when Nova wouldn't ask Assist at all, by the words, by
+            what they name or by what Assist would act on - which includes a script, scene
+            or group, named or acted on, that works_guarded refuses.
         """
         refused = {"success": False, "message": REFUSED, "refused": True}
         not_understood = {"success": False, "message": DIDNT_UNDERSTAND, "not_understood": True}
@@ -483,6 +488,9 @@ class HomeAssistant:
             # in, so Nova's room is what's switched when no room is named.
             asked["device_id"] = self.device_id
 
+        # Whether the sentence has gone to Assist, which may then have acted on it whatever
+        # comes back.
+        posted = False
         try:
             # Nothing goes to Assist if what's there can't be read.
             states = self._states()
@@ -535,6 +543,7 @@ class HomeAssistant:
                 logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
                                f"can't be checked: '{request}'", extra=TRANSCRIPT)
                 return refused
+            posted = True
             reply = self._request("POST", "/api/conversation/process", json=asked).json()
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
@@ -542,7 +551,12 @@ class HomeAssistant:
             # open?" - so it's Claude's when Home Assistant can't be reached, as it is with
             # the wider rule off. A light sentence still says why it wasn't done, and so
             # does any sentence Home Assistant answered with an error, such as a bad token.
-            if wider and isinstance(e, (requests.ConnectionError, requests.Timeout)):
+            # Once it's been sent, though, only a connection never made is Claude's: with
+            # no answer in time, Assist may still have run "run goodnight", which Claude's
+            # run_home_script would run again.
+            unreached = (requests.ConnectTimeout, NoNetwork) if posted else (requests.ConnectionError,
+                                                                             requests.Timeout)
+            if wider and isinstance(e, unreached):
                 return not_understood
             return {"success": False, "message": self._failure_message(e)}
 
