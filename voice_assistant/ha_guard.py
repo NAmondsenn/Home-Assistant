@@ -36,9 +36,12 @@ they'd act on is vouched for, so Nova's own lights do them instead.
 Nor is a script or scene run - by Assist, by Claude (see
 home_assistant.HomeAssistant.run_script) or from the settings page - before what it does
 has been checked: a script's configuration walked whole, and a scene's members, for
-anything above (see home_assistant.HomeAssistant.works_guarded). One whose contents can't
-be seen is refused too, and so is every one without the registry, which has the key to
-each script's configuration. Claude only runs those exposed to Assist, as Assist would.
+anything above (see home_assistant.HomeAssistant.works_guarded). A script is read by its
+key: the key its own action names, or the one Home Assistant gives its entity id now,
+looked up afresh rather than from the registry's snapshot, which can be five minutes
+behind a rename. One whose contents can't be seen is refused too, and so is every one
+without the registry, which says what's Proxmox's and the PC's. Claude only runs those
+exposed to Assist, as Assist would.
 """
 
 import logging
@@ -389,17 +392,44 @@ def _pieces(value) -> List[str]:
             for piece in string.split(",")]
 
 
-def _keyed_script(key: str, snapshot: Optional[Snapshot]) -> Optional[str]:
-    """The entity id of the script whose key - the registry's unique id for it - this is, or None."""
-    if snapshot is None:
-        return None
-    return next((entry.entity_id for entry in snapshot.entries.values()
-                 if entry.platform == "script" and entry.unique_id.lower() == key), None)
+class Scripts:
+    """
+    How a check reads scripts: each one's configuration by its key, and which key a
+    script's entity id has now - each asked for once a check, however many scripts name
+    it, and afresh for the next check.
+    """
+
+    def __init__(self, read_config: Callable[[str, str], Optional[Dict]], key_of: Callable[[str], Optional[str]]):
+        """
+        Args:
+            read_config: Reads a script's configuration by its key, given the script as
+                it's named for saying it can't be read, e.g. ("leaving", "script.leaving")
+                - or gives None if it can't be read. See
+                home_assistant.HomeAssistant._script_config.
+            key_of: Looks up the key a script's entity id has in Home Assistant now, or
+                gives None if that can't be told - see
+                home_assistant.HomeAssistant._script_key.
+        """
+        self._read_config = read_config
+        self._key_of = key_of
+        self._configs: Dict[str, Optional[Dict]] = {}
+        self._keys: Dict[str, Optional[str]] = {}
+
+    def config(self, key: str, name: str) -> Optional[Dict]:
+        """The configuration of the script of this key, or None if it can't be read."""
+        if key not in self._configs:
+            self._configs[key] = self._read_config(key, name)
+        return self._configs[key]
+
+    def key(self, entity_id: str) -> Optional[str]:
+        """The key of the script with this entity id now, or None if it can't be told."""
+        if entity_id not in self._keys:
+            self._keys[entity_id] = self._key_of(entity_id)
+        return self._keys[entity_id]
 
 
-def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optional[Snapshot],
-                read_config: Callable[[str, Optional[Snapshot]], Optional[Dict]], too_deep: Set[str],
-                configs: Optional[Dict[str, Optional[Dict]]] = None) -> Optional[str]:
+def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optional[Snapshot], scripts: Scripts,
+                too_deep: Set[str]) -> Optional[str]:
     """
     Why some scripts and scenes aren't to be run, if they aren't - see
     home_assistant.HomeAssistant.works_guarded.
@@ -410,20 +440,16 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
         entity_ids: e.g. ["script.goodnight", "scene.relax"].
         states: Every entity's state, as /api/states has them.
         snapshot: The registry, or None if it can't be read.
-        read_config: Reads a script's configuration by its entity id, or gives None if
-            it can't be read - home_assistant.HomeAssistant._script_config.
+        scripts: How to read the scripts, and what's been read of them so far - shared by
+            the caller for a settings page draw, and otherwise new, to read them afresh.
         too_deep: The scripts and scenes said already to go too deep to follow, which
             this adds to - the HomeAssistant's own, so each is said once.
-        configs: The script configurations read so far, by entity id - None for a
-            configuration that can't be read - which this adds to. Shared by the caller
-            for a settings page draw, and otherwise None, to read them afresh.
 
     Returns:
         WORKS_GUARDED if any of them works something guarded, else UNSEEN if any of
         them does what can't be checked, else None.
     """
     by_id = {state.get("entity_id"): state for state in states}
-    configs = {} if configs is None else configs
     reasons = []
     for entity_id in entity_ids:
         # One that wasn't there a moment ago can't be checked - it could be new since.
@@ -431,7 +457,7 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
             reasons.append(UNSEEN)
             continue
         try:
-            reasons.append(_walk(entity_id, by_id, snapshot, set(), configs, read_config))
+            reasons.append(_walk(entity_id, by_id, snapshot, set(), scripts))
         except RecursionError:
             # A configuration nested deeper than Python will walk or decode, or a long
             # enough chain of scripts each running the next, can't be checked - and
@@ -444,9 +470,8 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
     return _worst(reasons)
 
 
-def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str],
-          configs: Dict[str, Optional[Dict]],
-          read_config: Callable[[str, Optional[Snapshot]], Optional[Dict]]) -> Optional[str]:
+def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str], scripts: Scripts,
+          action: bool = False) -> Optional[str]:
     """
     Why a piece of a script's configuration isn't to be run, if it isn't. It's walked
     whole, keys as well as values - scene.apply names each thing as a key - and so is
@@ -459,8 +484,9 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
         by_id: Every entity's state, by entity id.
         snapshot: The registry, or None if it can't be read.
         checked: The scripts, scenes and groups walked already, which this adds to.
-        configs: The script configurations read so far - see why_not_run.
-        read_config: Reads a script's configuration - see why_not_run.
+        scripts: How to read the scripts - see why_not_run.
+        action: Whether it's what a step calls its action, e.g. "script.leaving", rather
+            than an entity id or anything else.
 
     Returns:
         WORKS_GUARDED if any of it works something guarded, else UNSEEN if any of it
@@ -470,11 +496,13 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
         RecursionError: For a configuration, or a chain of scripts, too deep to follow.
     """
     if isinstance(part, dict):
-        return _worst([_step_refused(part, by_id, snapshot)]
-                      + [_walk(item, by_id, snapshot, checked, configs, read_config)
-                         for pair in part.items() for item in pair])
+        found = [_step_refused(part, by_id, snapshot)]
+        for key, value in part.items():
+            found += [_walk(key, by_id, snapshot, checked, scripts),
+                      _walk(value, by_id, snapshot, checked, scripts, action=key in ACTION_KEYS)]
+        return _worst(found)
     if isinstance(part, list):
-        return _worst([_walk(item, by_id, snapshot, checked, configs, read_config) for item in part])
+        return _worst([_walk(item, by_id, snapshot, checked, scripts) for item in part])
     found = []
     # A template is left out: it's the user's own, and they exposed what it's in (0008,
     # "My calls").
@@ -482,32 +510,26 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
         if not ENTITY.fullmatch(entity):
             continue
         domain, _, name = entity.partition(".")
+        if domain == "script" and action:
+            # Home Assistant gives each script an action of its own, named by its key,
+            # which stays as it was when the script's entity id is renamed:
+            # {"action": "script.leaving"} runs the script whose key is "leaving", whatever
+            # its entity id is now - so it's read by that key. The script domain's own
+            # actions only ever act on the entities they're given.
+            if name not in SCRIPT_SERVICES:
+                found.append(_walk_script(name, entity, by_id, snapshot, checked, scripts))
+            continue
         if domain == "script" and (name not in SCRIPT_SERVICES or entity in by_id):
             if entity in checked:
                 continue
             checked.add(entity)
-            # Home Assistant gives each script an action of its own, named by its key -
-            # the registry's unique id for it - which stays as it was when the script's
-            # entity id is renamed: {"action": "script.leaving"} can run
-            # script.leave_home. So the script of that key is walked as well as any of
-            # that entity id, and a name that's neither can't be checked.
-            keyed = _keyed_script(name, snapshot)
-            if keyed is not None and keyed not in by_id:
-                # The registry can be up to five minutes behind a rename, still putting
-                # the key at an entity id the states no longer have - so which script it
-                # is now can't be told.
-                found.append(UNSEEN)
-            elif keyed not in (None, entity):
-                found.append(_walk(keyed, by_id, snapshot, checked, configs, read_config))
-            if entity not in by_id:
-                if keyed is None:
-                    found.append(UNSEEN)
-                continue
-            if entity not in configs:
-                configs[entity] = read_config(entity, snapshot)
-            config = configs[entity]
-            found.append(UNSEEN if config is None
-                         else _walk(config, by_id, snapshot, checked, configs, read_config))
+            # An entity id is whichever script has it now, which the registry can be up to
+            # five minutes behind - a rename, or two scripts swapping entity ids, would
+            # read the wrong one's configuration. So its key is asked for afresh, and a
+            # script that wasn't there a moment ago, or whose key can't be told, can't be
+            # checked.
+            key = scripts.key(entity) if entity in by_id and snapshot is not None else None
+            found.append(UNSEEN if key is None else _walk_script(key, entity, by_id, snapshot, checked, scripts))
             continue
         state = by_id.get(entity)
         attributes = (state or {}).get("attributes") or {}
@@ -533,5 +555,28 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
                 found.append(UNSEEN)
             elif members:
                 checked.add(entity)
-                found.append(_walk(members, by_id, snapshot, checked, configs, read_config))
+                found.append(_walk(members, by_id, snapshot, checked, scripts))
     return _worst(found)
+
+
+def _walk_script(key: str, name: str, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str],
+                 scripts: Scripts) -> Optional[str]:
+    """
+    Why the script of this key isn't to be run, if it isn't - its configuration walked, once
+    a check. Without the registry, which says what's Proxmox's and the PC's, none can be.
+
+    Args:
+        key: Its key, e.g. "leaving".
+        name: It as it's named, e.g. "script.leaving", for saying it can't be read.
+        by_id, snapshot, checked, scripts: As for _walk.
+
+    Returns:
+        As for _walk.
+    """
+    # Keys share checked with entity ids, which never have a space in them.
+    walked = "script key " + key
+    if walked in checked:
+        return None
+    checked.add(walked)
+    config = scripts.config(key, name) if snapshot is not None else None
+    return UNSEEN if config is None else _walk(config, by_id, snapshot, checked, scripts)

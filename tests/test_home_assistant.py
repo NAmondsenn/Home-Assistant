@@ -9,6 +9,7 @@ import json
 import time
 from datetime import date, datetime, timedelta
 from types import SimpleNamespace
+from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -78,17 +79,36 @@ class FakeSocket:
     the debugging's answer - so no test reaches a network.
     """
 
-    def __init__(self, session):
+    def __init__(self, session, registry):
         self.session = session
+        self.registry = registry
         self.answer = HomeSocketError("not answering")
+        # The registry as Home Assistant has it now, by entity id, for a script's key looked
+        # up afresh - the snapshot's, unless a test says it's moved on since - or an error
+        # to raise instead.
+        self.live: Optional[Dict[str, Entry]] = None
+        self.lookup_fails: Optional[Exception] = None
         # Each call's messages, with how many requests the REST API had been sent by then.
         self.calls = []
 
     def call(self, messages):
         self.calls.append((messages, len(self.session.requests)))
+        if messages[0].get("type") == "config/entity_registry/get":
+            if self.lookup_fails is not None:
+                raise self.lookup_fails
+            live = self.live if self.live is not None else (self.registry.read.entries if self.registry.read else {})
+            entry = live.get(messages[0]["entity_id"])
+            if entry is None:
+                raise HomeSocketError("config/entity_registry/get failed: {'code': 'not_found'}")
+            return [{"entity_id": entry.entity_id, "platform": entry.platform, "unique_id": entry.unique_id}]
         if isinstance(self.answer, Exception):
             raise self.answer
         return [self.answer]
+
+    def lookups(self):
+        """The entity ids whose registry entries were looked up afresh."""
+        return [messages[0]["entity_id"] for messages, _ in self.calls
+                if messages[0].get("type") == "config/entity_registry/get"]
 
 
 class FakeRegistry:
@@ -112,7 +132,7 @@ def make_home():
         # A house with nothing in it, unless a test says otherwise - which is what's
         # checked before anything goes to Assist.
         home._session = FakeSession({"/api/states": [], **answers})
-        home.socket = FakeSocket(home._session)
+        home.socket = FakeSocket(home._session, home.registry)
         return home
     return factory
 
@@ -1522,8 +1542,9 @@ def test_a_script_called_by_its_key_is_walked_after_its_entity_id_is_renamed(mak
     home.registry.read = _registry(_script_entry("script.evening", "evening"),
                                    _script_entry("script.leave_home", "leaving"), _entry("lock.front_door"))
     assert home.run_script("evening") == {"success": False, "message": REFUSED["message"]}
-    # A script's action that's no script's key, nor any entity id, can't be checked.
+    # A script's action that's no key the script editor has can't be checked.
     home._session.answers["/api/config/script/config/evening"] = _config("Evening", {"action": "script.nowhere"})
+    home._session.answers["/api/config/script/config/nowhere"] = FakeResponse({}, status=404)
     assert home.run_script("evening") == {"success": False, "message": UNSEEN.format("Evening")}
     # While the script domain's own actions are only its own.
     home._session.answers["/api/config/script/config/evening"] = _config(
@@ -1538,9 +1559,10 @@ def test_a_script_called_by_its_key_is_walked_after_its_entity_id_is_renamed(mak
     assert home.works_guarded("script.evening", *_now(home))
 
 
-def test_a_scripts_key_the_registry_has_at_a_renamed_entity_cant_be_checked(make_home):
+def test_a_script_called_by_its_key_is_read_by_that_key_whatever_the_registry_has_at_it(make_home):
     # The registry can be up to five minutes behind a rename: here it still has the script
-    # whose key is "leaving" at script.leaving, which the states now call script.front_door_routine.
+    # whose key is "leaving" at script.leaving, which the states now call
+    # script.front_door_routine. The key is read straight, so that's no matter.
     states = [_thing("script.evening", "Evening"), _thing("script.front_door_routine", "Front door routine"),
               FRONT_DOOR]
     home = make_home({"/api/states": states, "/api/services/script/turn_on": [],
@@ -1548,7 +1570,7 @@ def test_a_scripts_key_the_registry_has_at_a_renamed_entity_cant_be_checked(make
                       "/api/config/script/config/leaving": UNLOCKS})
     home.registry.read = _registry(_script_entry("script.evening", "evening"), _script_entry("script.leaving", "leaving"),
                                    _entry("lock.front_door"))
-    assert home.run_script("evening") == {"success": False, "message": UNSEEN.format("Evening")}
+    assert home.run_script("evening") == {"success": False, "message": REFUSED["message"]}
     # Nor is it taken for another script whose key is the entity id's object id the
     # registry still has for it.
     states.append(_thing("script.bedtime", "Bedtime"))
@@ -1556,12 +1578,65 @@ def test_a_scripts_key_the_registry_has_at_a_renamed_entity_cant_be_checked(make
     home.registry.read = _registry(_script_entry("script.evening", "evening"),
                                    _script_entry("script.old_name", "leaving"),
                                    _script_entry("script.bedtime", "old_name"), _entry("lock.front_door"))
-    assert home.run_script("evening") == {"success": False, "message": UNSEEN.format("Evening")}
-    # Once the registry has caught up, it's walked and refused for what it works.
-    home.registry.read = _registry(_script_entry("script.evening", "evening"),
-                                   _script_entry("script.front_door_routine", "leaving"), _entry("lock.front_door"))
     assert home.run_script("evening") == {"success": False, "message": REFUSED["message"]}
     assert _ran(home) == []
+
+
+def test_a_script_named_by_entity_id_is_read_by_its_key_as_home_assistant_has_it_now(make_home):
+    # The final review's repro: within the registry's five minutes, script.leaving was
+    # renamed script.leave_home - keeping its key "leaving" - and another script, of key
+    # "b", which unlocks, was given script.leaving. Goodnight runs script.leaving, which
+    # is now the one that unlocks, so its key is looked up afresh, never the snapshot's.
+    states = [_thing("script.goodnight", "Goodnight"), _thing("script.leave_home", "Leave home"),
+              _thing("script.leaving", "Leaving"), FRONT_DOOR]
+    home = make_home({"/api/states": states, "/api/services/script/turn_on": [],
+                      "/api/config/script/config/goodnight": _config(
+                          "Goodnight", _step("script.turn_on", entity_id="script.leaving")),
+                      "/api/config/script/config/leaving": _config("Leave home"),
+                      "/api/config/script/config/b": UNLOCKS})
+    home.registry.read = _registry(_script_entry("script.goodnight", "goodnight"),
+                                   _script_entry("script.leaving", "leaving"), _entry("lock.front_door"))
+    home.socket.live = {entry.entity_id: entry for entry in (
+        _script_entry("script.goodnight", "goodnight"), _script_entry("script.leave_home", "leaving"),
+        _script_entry("script.leaving", "b"), _entry("lock.front_door"))}
+    assert home.run_script("goodnight") == {"success": False, "message": REFUSED["message"]}
+    assert home.run("script.leaving")["success"] is False
+    # Each over the WebSocket, as Home Assistant has it at the time.
+    assert home.socket.lookups()[:2] == ["script.goodnight", "script.leaving"]
+    assert _ran(home) == []
+
+
+def test_two_scripts_swapping_keys_are_each_read_by_their_own_now(make_home):
+    # A swap leaves the same entity ids in the states and the snapshot, so it can't be
+    # told from them: script.a was "ka", which only works the lights, and is now "kb",
+    # which unlocks.
+    states = [_thing("script.goodnight", "Goodnight"), _thing("script.a", "A"), _thing("script.b", "B"),
+              FRONT_DOOR, LAMP]
+    home = make_home({"/api/states": states, "/api/services/script/turn_on": [],
+                      "/api/config/script/config/goodnight": _config(
+                          "Goodnight", _step("script.turn_on", entity_id="script.a")),
+                      "/api/config/script/config/ka": _config("A", _step("light.turn_on", entity_id="light.lamp")),
+                      "/api/config/script/config/kb": UNLOCKS})
+    home.registry.read = _registry(_script_entry("script.goodnight", "goodnight"), _script_entry("script.a", "ka"),
+                                   _script_entry("script.b", "kb"), _entry("lock.front_door"), _entry("light.lamp"))
+    home.socket.live = {**home.registry.read.entries, "script.a": _script_entry("script.a", "kb"),
+                        "script.b": _script_entry("script.b", "ka")}
+    assert home.run_script("goodnight") == {"success": False, "message": REFUSED["message"]}
+    assert home.run_script("a") == {"success": False, "message": REFUSED["message"]}
+    assert home.run_script("b") == {"success": True, "message": "Started B."}
+    assert _ran(home) == [("/api/services/script/turn_on", {"entity_id": "script.b"})]
+
+
+def test_a_script_whose_key_cant_be_looked_up_cant_be_checked(make_home):
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT)}, LAMP, PORCH,
+                     _thing("media_player.bedroom", "Bedroom"), PC_SLEEP, entries=[PC_SLEEP_ENTRY], devices=DESK)
+    assert home.run_script("goodnight") == {"success": True, "message": "Started Goodnight."}
+    for failure in (HomeSocketError("timed out"), HomeSocketError("config/entity_registry/get failed: not_found")):
+        home.socket.lookup_fails = failure
+        assert home.run_script("goodnight") == {"success": False, "message": UNSEEN.format("Goodnight")}
+        assert home.run("script.goodnight")["success"] is False
+        assert home.overview()["routines"] == []
+    assert _ran(home) == [("/api/services/script/turn_on", {"entity_id": "script.goodnight"})]
 
 
 # A registry id, as Home Assistant takes in place of an entity id - only it can say whose it is.

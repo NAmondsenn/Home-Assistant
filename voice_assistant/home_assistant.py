@@ -57,7 +57,7 @@ import requests
 
 from voice_assistant import network
 from voice_assistant.clock import format_duration, spoken_clock_time
-from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, names_guarded,
+from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, Scripts, names_guarded,
                                       runnables_named, sensitive, sensitive_words, split_words, target_refused,
                                       why_not_run)
 from voice_assistant.ha_registry import HASS_AGENT_MAKER, HomeRegistry, HomeSocket, HomeSocketError, Snapshot
@@ -334,8 +334,8 @@ class HomeAssistant:
         self._templates_refused = False
         # Why decision 2's wider rule is off, or None while it's on - see _wider_rule.
         self._wider_off: Optional[str] = None
-        # The scripts whose configuration last couldn't be read - see _script_config - and
-        # those found too deep to walk, each said once.
+        # The scripts whose key or configuration last couldn't be read - see _script_config -
+        # and those found too deep to walk, each said once.
         self._unreadable: Set[str] = set()
         self._too_deep: Set[str] = set()
         self._session = requests.Session()
@@ -531,7 +531,7 @@ class HomeAssistant:
             runs = [target for target in (match.targets if match else [])
                     if RUNNABLE.fullmatch(target) or _members(by_id.get(target)) is not None]
             runs += [entity for entity in runnables_named(request, states, snapshot) if entity not in runs]
-            if why_not_run(runs, states, snapshot, self._script_config, self._too_deep):
+            if why_not_run(runs, states, snapshot, self._scripts(), self._too_deep):
                 logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
                                f"can't be checked: '{request}'", extra=TRANSCRIPT)
                 return refused
@@ -702,8 +702,8 @@ class HomeAssistant:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         snapshot = self._snapshot()
-        # Each script's configuration is read once a draw, however many others run it.
-        configs: Dict[str, Optional[Dict]] = {}
+        # Each script's key and configuration are read once a draw, however many others run it.
+        scripts = self._scripts()
         routines = []
         for state in states:
             entity = state.get("entity_id") or ""
@@ -711,7 +711,7 @@ class HomeAssistant:
             # Only what run() would run, so the page never offers a button which can't work -
             # and none without the registry, which has the key to each script's contents.
             if (RUNNABLE.fullmatch(entity) and not sensitive(entity, name)
-                    and not self.works_guarded(entity, states, snapshot, configs=configs)):
+                    and not self.works_guarded(entity, states, snapshot, scripts=scripts)):
                 routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
         return {"success": True,
                 "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
@@ -1205,7 +1205,7 @@ class HomeAssistant:
             state = next((state for state in states if state.get("entity_id") == entity_id), {})
             name = (state.get("attributes") or {}).get("friendly_name") or entity_id
             why = WORKS_GUARDED if sensitive(entity_id, name) else why_not_run(
-                [entity_id], states, self._snapshot(), self._script_config, self._too_deep)
+                [entity_id], states, self._snapshot(), self._scripts(), self._too_deep)
             if why:
                 logger.warning(f"Refused a Home Assistant {found[1]} from the settings page, as it {why}: '{name}'")
                 return {"success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."
@@ -1255,7 +1255,7 @@ class HomeAssistant:
             if not snapshot.exposed(entity):
                 return {"success": False, "message": f"{called} isn't exposed to Assist, so I don't run it by voice."}
             why = WORKS_GUARDED if sensitive(entity, called) else why_not_run([entity], states, snapshot,
-                                                                               self._script_config, self._too_deep)
+                                                                               self._scripts(), self._too_deep)
             if why:
                 logger.warning(f"Refused to run {entity} for Claude, as it {why}")
                 return {"success": False, "message": REFUSED if why == WORKS_GUARDED
@@ -1268,70 +1268,102 @@ class HomeAssistant:
         return {"success": True, "message": f"Started {called}." if kind == "script" else f"Set {called}."}
 
     def works_guarded(self, entity_id: str, states: List[Dict], snapshot: Optional[Snapshot], *,
-                      configs: Optional[Dict[str, Optional[Dict]]] = None) -> bool:
+                      scripts: Optional[Scripts] = None) -> bool:
         """
         Whether a script or scene works anything never worked by voice (see
         ha_guard.guarded), or anything that can't be checked - so it's refused alike by
         Assist, by Claude and from the settings page.
 
         A scene is checked by its members. A script's configuration is read from Home
-        Assistant's script editor, by the registry's key for it, and walked whole: every
-        entity it names, every device it acts on, every action given a whole area (see
+        Assistant's script editor, by its key, and walked whole: every entity it names,
+        every device it acts on, every action given a whole area (see
         ha_guard.AREA_WIDE), and every script and scene it runs - by entity id, or by a
-        script's own action, named by its key - checked the same way. A template is left
-        to the user. What can't be seen past is refused: an automation, an action that
-        hands its words on (see ha_guard.PASSED_ON), an entity given by the registry's own
-        id for it, a scene with no members, a configuration that can't be read or is too
-        deep to walk, and anything without the registry.
+        script's own action, named by its key - checked the same way. A script's key is
+        looked up afresh for its entity id each time, never taken from the registry's
+        snapshot, which can be five minutes behind a rename. A template is left to the
+        user. What can't be seen past is refused: an automation, an action that hands its
+        words on (see ha_guard.PASSED_ON), an entity given by the registry's own id for it
+        that the registry hasn't got, a scene with no members, a script whose key can't be
+        looked up, a configuration that can't be read or is too deep to walk, and anything
+        without the registry.
 
         Args:
             entity_id: e.g. "script.goodnight".
             states: Every entity's state, as /api/states has them.
             snapshot: The registry, or None if it can't be read.
-            configs: The script configurations read so far - see ha_guard.why_not_run.
+            scripts: What's been read of the scripts so far, shared for a settings page
+                draw - or None, to read them afresh.
 
         Returns:
             Whether it's to be refused. Why is ha_guard.why_not_run's, which this shares.
         """
-        return why_not_run([entity_id], states, snapshot, self._script_config, self._too_deep, configs) is not None
+        return why_not_run([entity_id], states, snapshot, scripts or self._scripts(), self._too_deep) is not None
 
-    def _script_config(self, entity_id: str, snapshot: Optional[Snapshot]) -> Optional[Dict]:
+    def _scripts(self) -> Scripts:
+        """How a check reads the scripts, each once - see ha_guard.Scripts."""
+        return Scripts(self._script_config, self._script_key)
+
+    def _script_key(self, entity_id: str) -> Optional[str]:
         """
-        A script's configuration, as Home Assistant's script editor has it - e.g. {"alias":
-        "Goodnight", "sequence": [{"action": "light.turn_off", ...}]} - asked for by the
-        registry's unique id for the script, which is its key there.
+        The key a script's entity id has in Home Assistant now - the registry's unique id
+        for it, and its key in the script editor - looked up afresh over the WebSocket, as
+        the registry's snapshot can be five minutes behind a rename. One round of about 20
+        ms, within the socket's own deadline.
 
         Args:
             entity_id: e.g. "script.goodnight".
-            snapshot: The registry, or None if it can't be read.
 
         Returns:
-            It, or None if it can't be read: without the registry, for a script it hasn't
-            got, for one written in YAML outside scripts.yaml (which Home Assistant answers
-            404 for), with a token which isn't an administrator's, or for an answer which
-            isn't a script's - such as one made from a blueprint, whose steps are elsewhere.
+            e.g. "goodnight", or None if Home Assistant doesn't answer in time, or the
+            registry hasn't got the script or has no key for it.
         """
-        if snapshot is None:
+        try:
+            entry, = self.socket.call([{"type": "config/entity_registry/get", "entity_id": entity_id}])
+        except (HomeSocketError, ValueError) as e:
+            why = f"Home Assistant's registry wouldn't say which script it is now ({e})"
+        else:
+            key = entry.get("unique_id") if isinstance(entry, dict) else None
+            if isinstance(key, str) and key:
+                return key
+            why = "Home Assistant's registry has no key for it"
+        self._cant_see(entity_id, why)
+        return None
+
+    def _script_config(self, key: str, name: str) -> Optional[Dict]:
+        """
+        A script's configuration, as Home Assistant's script editor has it - e.g. {"alias":
+        "Goodnight", "sequence": [{"action": "light.turn_off", ...}]} - asked for by its key.
+
+        Args:
+            key: e.g. "goodnight".
+            name: The script as it's named, e.g. "script.goodnight", for saying it can't be read.
+
+        Returns:
+            It, or None if it can't be read: for a key the script editor hasn't got, for a
+            script written in YAML outside scripts.yaml (which Home Assistant answers 404
+            for), with a token which isn't an administrator's, or for an answer which isn't
+            a script's - such as one made from a blueprint, whose steps are elsewhere.
+        """
+        try:
+            # Quoted whole, so that however the key was made up, it's one part of the path.
+            config = self._request("GET", "/api/config/script/config/" + quote(key, safe="")).json()
+        except (requests.RequestException, ValueError) as e:
+            self._cant_see(name, f"Home Assistant wouldn't say ({e})")
             return None
-        entry = snapshot.entries.get(entity_id)
-        config, why = None, "the registry has no key for it"
-        if entry is not None and entry.unique_id:
-            try:
-                # Quoted whole, so that however the key was made up, it's one part of the path.
-                config = self._request("GET", "/api/config/script/config/" + quote(entry.unique_id, safe="")).json()
-                why = None if isinstance(config, dict) and "sequence" in config else "its answer isn't a script's"
-            except (requests.RequestException, ValueError) as e:
-                why = f"Home Assistant wouldn't say ({e})"
+        if not (isinstance(config, dict) and "sequence" in config):
+            self._cant_see(name, "its answer isn't a script's")
+            return None
+        self._unreadable.discard(name)
+        return config
+
+    def _cant_see(self, name: str, why: str):
+        """Says a script can't be checked, and why - once, until it can be."""
         # The settings page asks for its list every fifteen seconds, so each script that
         # can't be read is said once, until it can be.
-        if why is None:
-            self._unreadable.discard(entity_id)
-            return config
-        if entity_id not in self._unreadable:
-            logger.warning(f"Can't see what {entity_id} does, as {why}, so it isn't run by voice or from the "
+        if name not in self._unreadable:
+            logger.warning(f"Can't see what {name} does, as {why}, so it isn't run by voice or from the "
                            f"settings page")
-        self._unreadable.add(entity_id)
-        return None
+        self._unreadable.add(name)
 
     def calendar_names(self) -> List[str]:
         """The calendars to read - those config.yaml names, or every one there is."""
