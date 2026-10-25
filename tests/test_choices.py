@@ -76,6 +76,27 @@ def test_keep_holds_a_change_in_memory_when_the_save_fails(tmp_path, monkeypatch
     assert "Couldn't save the name: disk full" in caplog.text
 
 
+def test_keep_never_changes_the_live_state_in_place(tmp_path, monkeypatch):
+    # A reader holding the lock may be looking at the state without a copy.
+    store = ChoiceStore(str(tmp_path / "choices.json"), DEFAULTS)
+
+    def failing(path, data, indent=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(storage, "save_json", failing)
+    before = store.state
+    calls = []
+
+    def change(state):
+        calls.append(1)
+        state["names"]["a"] = 1
+
+    store.keep(change, "name")
+    assert before == DEFAULTS and store.state is not before
+    # Made once, to the copy kept.
+    assert calls == [1] and store.get("names") == {"a": 1}
+
+
 def test_two_threads_changes_are_both_kept(tmp_path):
     path = str(tmp_path / "choices.json")
     store = ChoiceStore(path, DEFAULTS)

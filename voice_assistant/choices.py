@@ -77,15 +77,20 @@ class ChoiceStore:
 
     def keep(self, change: Callable[[Dict], object], what: str):
         """
-        Makes a change, or, if it can't be saved, makes it in memory alone.
+        Makes a change, or, if it can't be saved, keeps it in memory alone.
 
         Args:
-            change: Called with the state, which it changes in place.
+            change: Called with a copy of the state, which it changes in place.
             what: What is being kept, for the warning, e.g. "held warning".
+
+        Raises:
+            TypeError: If the change leaves something JSON can't hold. Nothing is changed.
         """
         with self.lock:
+            new = copy.deepcopy(self._state)
+            change(new)
             try:
-                self.change(change)
+                storage.save_json(self.path, new)
             except OSError as e:
-                change(self._state)
                 logger.warning(f"Couldn't save the {what}: {e}")
+            self._state = new
