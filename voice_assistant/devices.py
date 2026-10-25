@@ -8,9 +8,9 @@ geocoded location sensor names, and its notify service. What kind of device each
 and which one "my phone" means, are batteries.py's own rules, so "my phone" is the same
 device for both.
 
-Where a device is never goes to Claude when it's asked for locally - see
-Conversation.handle, which gives Claude's history only that it was said. The place is
-the user's, and Claude's history goes to Anthropic with every later request.
+Where a device is never goes to Claude, whoever asked - see Conversation.handle, which
+gives Claude's history only that it was said. The place is the user's, and Claude's
+history goes to Anthropic with every later request.
 """
 
 from dataclasses import dataclass
@@ -21,6 +21,9 @@ from voice_assistant.clock import format_duration
 
 # What a tracker says when it can't tell where its device is.
 UNKNOWN_STATES = ("unavailable", "unknown", "")
+# What a part of a place is when it isn't there - the Android app gives a town it hasn't
+# got as the word "null" (live, 25 Oct), which would be "near Example Road, null".
+MISSING_PARTS = ("null", "none", "unknown", "unavailable", "")
 
 
 @dataclass
@@ -39,7 +42,7 @@ class AppDevice:
         tracker: Its tracker's state, e.g. "home", "not_home" or a zone's name, or None
             with no tracker.
         reported: When its tracker last reported, in epoch seconds, or None.
-        place: Where its geocoded location sensor says it is, e.g. "High Street, Leeds",
+        place: Where its geocoded location sensor says it is, e.g. "Example Road, Sometown",
             or None.
     """
 
@@ -84,17 +87,22 @@ class AppDevice:
 
 def _place(place: Optional[Dict]) -> Optional[str]:
     """
-    The place a geocoded location sensor names, e.g. "High Street, Leeds" - its street and
-    town, else the first two parts of its state, which is the whole address.
+    The place a geocoded location sensor names, e.g. "Example Road, Sometown" - its street and
+    town, or whichever of them it has, else the first two parts of its state, which is the
+    whole address.
     """
     if not place:
         return None
-    if place.get("thoroughfare") and place.get("locality"):
-        return f"{place['thoroughfare']}, {place['locality']}"
-    state = str(place.get("state") or "").strip()
-    if state.lower() in UNKNOWN_STATES:
-        return None
-    return ", ".join(part.strip() for part in state.split(",")[:2] if part.strip()) or None
+    parts = [_part(place.get("thoroughfare")), _part(place.get("locality"))]
+    if not any(parts):
+        parts = [_part(part) for part in str(place.get("state") or "").split(",")[:2]]
+    return ", ".join(part for part in parts if part) or None
+
+
+def _part(value) -> Optional[str]:
+    """One part of a place as text, e.g. "Sometown" - or None for one that isn't there, such as "null"."""
+    text = "" if value is None else str(value).strip()
+    return None if text.lower() in MISSING_PARTS else text
 
 
 def said_as(device: AppDevice) -> str:
@@ -116,7 +124,7 @@ def where(device: AppDevice, now: float) -> str:
 
     Returns:
         "Your phone's at home.", "Your phone's at Work." in another zone, "Your phone's
-        near High Street, Leeds, as of 10 minutes ago." away with a place, "Your phone's
+        near Example Road, Sometown, as of 10 minutes ago." away with a place, "Your phone's
         away from home, as of 10 minutes ago." without one, or "I can't tell where your
         phone is." with no tracker, or one that can't tell.
     """

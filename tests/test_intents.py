@@ -365,6 +365,34 @@ def test_the_phone_is_found_and_rung_without_claude():
     assert _actions("What's my phone on?") == [Action("get_batteries", {"device": "phone"})]
     assert _actions("Where's my phone charger?") is None
     assert _actions("Find my phone and turn off the lamp.") is None
+    # Without Home Assistant it's still Nova's, which says so, rather than Claude's.
+    assert _actions("Where's my phone?", home=None) == [Action("find_device", {"device": "phone", "ring": False})]
+
+
+@pytest.mark.parametrize("text", [
+    "Find my phone number",
+    "Ring my mum",
+    "Ring my phone in five minutes",
+    "Where's the Mac's charger?",
+    "Where's my phone case",
+    "Where is my tablet's charger",
+    "Find my keys",
+    "Where's the TV remote?",
+    "Find the laptop bag",
+    "Ring the doorbell",
+])
+def test_what_the_find_device_rules_mustnt_catch_is_left_alone(text):
+    # 0003: local rules stay strict - only the device itself, said plainly.
+    actions = _actions(text)
+    assert not actions or all(action.tool != "find_device" for action in actions)
+
+
+def test_the_find_device_rules_come_before_assists_shapes():
+    # So "find my phone" is never a thing of Home Assistant's, should Assist ever learn a "find" shape.
+    rules = LocalIntents(home=HOME)._rules
+    finding = [n for n, (pattern, _) in enumerate(rules) if "(?P<device>phone|tablet|mac|laptop)" in pattern]
+    assisting = [n for n, (_, handle) in enumerate(rules) if getattr(handle, "__name__", "") in ("_assist", "_ask")]
+    assert len(finding) == 2 and assisting and max(finding) < min(assisting)
 
 
 # Lists - see lists.py

@@ -19,7 +19,7 @@ come first.
 import logging
 import re
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from voice_assistant.actions import Action
 from voice_assistant.clock import spoken_clock_time
@@ -323,12 +323,14 @@ class LocalIntents:
             (rf"(?:open|close) {THING}", self._assist),
         ]
 
-    def match(self, text: str) -> Optional[Dict]:
+    def match(self, text: str, only: Optional[Sequence[str]] = None) -> Optional[Dict]:
         """
         Handles a request locally, if it's one of the everyday commands.
 
         Args:
             text: What the user said.
+            only: The tools a rule may give, or None for any - so a rule giving any other
+                is passed over, e.g. ["find_device"] while Nova listens for an answer.
 
         Returns:
             A result shaped like LLMHandler.process_query's - a "response" and a list
@@ -344,6 +346,9 @@ class LocalIntents:
             if not found:
                 continue
             result = handle(found)
+            if result is not None and only is not None and not (
+                    result["actions"] and all(action.tool in only for action in result["actions"])):
+                continue
             if result is not None:
                 logger.info(f"Handled locally: '{text}'" + (f" (actions: {result['actions']})"
                                                             if result["actions"] else ""), extra=TRANSCRIPT)

@@ -44,8 +44,11 @@ class FakeIntents:
     def __init__(self, handles=None):
         self.handles = handles or {}
 
-    def match(self, text):
-        return self.handles.get(text)
+    def match(self, text, only=None):
+        handled = self.handles.get(text)
+        if handled and only is not None and not all(action.tool in only for action in handled["actions"]):
+            return None
+        return handled
 
 
 class FakeLLM:
@@ -154,7 +157,7 @@ def test_a_local_command_never_reaches_claude():
 def test_where_my_phone_is_never_reaches_claude_when_asked_locally():
     # Claude's history goes to Anthropic with every later request, so a place said for a
     # local "where's my phone?" is kept from it - it only hears that it was said.
-    where = "Your phone's near High Street, Leeds, as of 10 minutes ago."
+    where = "Your phone's near Example Road, Sometown, as of 10 minutes ago."
     intents = FakeIntents({"where's my phone": _answer("Okay.", Action("find_device", {"device": "phone",
                                                                                        "ring": False}))})
     actions = FakeActions({"find_device": ActionResult(True, where, private=True)})
@@ -165,10 +168,38 @@ def test_where_my_phone_is_never_reaches_claude_when_asked_locally():
     assert llm.recorded == [("where's my phone", "I said where your phone is.")]
     assert llm.tool_answers == [["I said where your phone is."]]
 
-    # Claude's own call is kept as any other's, with what it said.
-    llm = FakeLLM(_answer("Okay.", Action("find_device", {"device": "phone"}, from_model=True)))
-    _conversation(llm=llm, actions=actions).handle("any idea where I left my phone?")
-    assert llm.recorded == [("any idea where I left my phone?", where)] and llm.tool_answers == [[where]]
+
+
+def test_where_a_device_is_never_reaches_claude_even_when_claude_asked():
+    # Claude needs no place to answer anything it's asked, so its own call is kept from it too -
+    # beside anything else the turn said, which it keeps.
+    where = "Your phone's near Example Road, Sometown, as of 10 minutes ago."
+    llm = FakeLLM(_answer("Okay.", Action("find_device", {"device": "phone"}, from_model=True),
+                          Action("set_timer", {"duration_seconds": 600}, from_model=True)))
+    actions = FakeActions({"find_device": ActionResult(True, where, private=True),
+                           "set_timer": ActionResult(True, "Timer set for 10 minutes.")})
+    reply = _conversation(llm=llm, actions=actions).handle("where did I leave my phone, and set a ten minute timer")
+    assert reply.say == f"{where} Timer set for 10 minutes."
+    assert llm.recorded == [("where did I leave my phone, and set a ten minute timer",
+                             "I said where your phone is. Timer set for 10 minutes.")]
+    assert llm.tool_answers == [["I said where your phone is.", "Timer set for 10 minutes."]]
+    assert "Example Road" not in str((llm.recorded, llm.tool_answers, llm.remembered))
+
+
+def test_where_my_phone_is_still_found_locally_when_nova_was_listening_for_an_answer():
+    # After "Anything else?", "where's my phone?" can't be its answer, so it's still Nova's own -
+    # and Claude, which isn't asked, never hears where.
+    where = "Your phone's near Example Road, Sometown, as of 10 minutes ago."
+    intents = LocalIntents(home=object())
+    actions = FakeActions({"find_device": ActionResult(True, where, private=True)})
+    llm = FakeLLM(_answer("Okay."))
+    reply = _conversation(intents=intents, llm=llm, actions=actions).handle("Where's my phone?", follow_up=True)
+    assert reply.say == where and llm.asked == [] and actions.run == ["find_device"]
+    assert llm.remembered == [("Where's my phone?", "I said where your phone is.")]
+    assert "Example Road" not in str((llm.recorded, llm.tool_answers))
+    # Anything else in the window is still the conversation's, so "stop" isn't the music's.
+    _conversation(intents=intents, llm=llm, actions=actions).handle("pause", follow_up=True)
+    assert llm.asked == ["pause"]
 
 
 def test_the_answer_to_a_question_isnt_taken_for_a_local_command():

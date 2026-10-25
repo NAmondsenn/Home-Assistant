@@ -648,7 +648,7 @@ def _app_device(name="s25-ultra", maker="samsung", model="SM-S938B", notify="mob
                 tracker="not_home", age=600.0):
     return {"device": f"dev_{name}", "name": name, "maker": maker, "model": model, "notify": notify,
             "tracker": {"state": tracker, "reported": time.time() - age},
-            "place": {"state": "High Street, Leeds", "thoroughfare": "High Street", "locality": "Leeds"}}
+            "place": {"state": "Example Road, Sometown", "thoroughfare": "Example Road", "locality": "Sometown"}}
 
 
 def test_find_device_says_where_without_ringing():
@@ -662,7 +662,7 @@ def test_ring_my_phone_rings_wherever_the_user_is():
     # Away from home it's still rung - it may be in the car, or a friend's.
     home = FakeAppHome([_app_device()])
     result = ActionExecutor(home=home).execute(Action("find_device", {"device": "phone", "ring": True}))
-    assert result.say == "Your phone's near High Street, Leeds, as of 10 minutes ago. Ringing your phone."
+    assert result.say == "Your phone's near Example Road, Sometown, as of 10 minutes ago. Ringing your phone."
     assert result.private
     assert [(service, message) for service, message, _ in home.sent] == [("mobile_app_s25_ultra", "TTS")]
 
@@ -702,6 +702,9 @@ def test_find_device_is_offered_with_home_assistant():
         "Say where one of the user's devices is - their phone, tablet or Mac - and ring it if asked ('find my "
         "phone', 'make my tablet ring'). What's found is said for you, so just reply 'Okay.'")
     assert "find_device" not in {s["name"] for s in ActionExecutor().tool_schemas()}
+    assert ActionExecutor().execute(Action("find_device", {"device": "phone"})).say == "Home Assistant isn't set up yet."
+    # Its answers are the user's alone - see Conversation.handle.
+    assert ActionExecutor.private_tools() == ["find_device"]
     # What it finds is said, never read back to Claude.
     assert "find_device" not in ActionExecutor().read_tools()
 

@@ -21,11 +21,11 @@ IPHONE = dict(name="iphone", maker="Apple", model="iPhone17,1", notify="mobile_a
 
 
 def test_an_app_device_is_built_from_what_home_assistant_says():
-    phone = AppDevice.from_home(_found(place={"state": "1 High Street, Leeds, LS1 1AA, UK",
-                                              "thoroughfare": "High Street", "locality": "Leeds"}))
+    phone = AppDevice.from_home(_found(place={"state": "1 Example Road, Sometown, EX1 1AA, UK",
+                                              "thoroughfare": "Example Road", "locality": "Sometown"}))
     assert phone == AppDevice(id="dev_s25-ultra", name="S25 Ultra", kind="mobile", phone=True, computer=False,
                               apple=False, notify="mobile_app_s25_ultra", tracker="not_home",
-                              reported=TEN_MINUTES_AGO, place="High Street, Leeds")
+                              reported=TEN_MINUTES_AGO, place="Example Road, Sometown")
     mac = AppDevice.from_home(_found(**MAC, tracker=None))
     assert (mac.kind, mac.phone, mac.computer, mac.apple, mac.tracker, mac.reported) == \
         ("other", False, True, True, None, None)
@@ -45,11 +45,20 @@ def test_where_a_device_is_is_said_from_its_tracker():
 
     assert said(tracker="home") == "Your phone's at home."
     assert said(tracker="Work") == "Your phone's at Work."
-    assert said(place={"state": "1 High Street, Leeds, LS1 1AA, UK", "thoroughfare": "High Street",
-                       "locality": "Leeds"}) == "Your phone's near High Street, Leeds, as of 10 minutes ago."
+    assert said(place={"state": "1 Example Road, Sometown, EX1 1AA, UK", "thoroughfare": "Example Road",
+                       "locality": "Sometown"}) == "Your phone's near Example Road, Sometown, as of 10 minutes ago."
     # Without the parts, the first two of the sensor's state.
-    assert said(place={"state": "1 High Street, Leeds, LS1 1AA, UK", "thoroughfare": None, "locality": None}) == \
-        "Your phone's near 1 High Street, Leeds, as of 10 minutes ago."
+    assert said(place={"state": "1 Example Road, Sometown, EX1 1AA, UK", "thoroughfare": None, "locality": None}) == \
+        "Your phone's near 1 Example Road, Sometown, as of 10 minutes ago."
+    # The Android app gives a town it hasn't got as the word "null" (live, 25 Oct), so it's only the street.
+    for missing in ("null", "None", "unknown", "Unavailable", " ", None):
+        assert said(place={"state": "12 Example Road, null", "thoroughfare": "Example Road",
+                           "locality": missing}) == "Your phone's near Example Road, as of 10 minutes ago."
+    assert said(place={"state": "null", "thoroughfare": "NULL", "locality": "null"}) == \
+        "Your phone's away from home, as of 10 minutes ago."
+    # A part that isn't text is still said as text, without its spaces.
+    assert said(place={"state": "", "thoroughfare": " Example Road ", "locality": 12}) == \
+        "Your phone's near Example Road, 12, as of 10 minutes ago."
     assert said() == "Your phone's away from home, as of 10 minutes ago."
     assert said(place={"state": "unknown", "thoroughfare": None, "locality": None}) == \
         "Your phone's away from home, as of 10 minutes ago."

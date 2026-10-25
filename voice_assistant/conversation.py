@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from voice_assistant.actions import Action, ActionResult, confirm
+from voice_assistant.actions import Action, ActionExecutor, ActionResult, confirm
 from voice_assistant.devices import told_claude
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.timeline import Timeline
@@ -182,7 +182,9 @@ class Conversation:
         # away without going to Claude, so they still work offline. Not the answer to
         # a question the assistant asked, though, which needs the conversation so far
         # to make sense of. See intents.py.
-        result = None if follow_up else self.intents.match(text)
+        # Bar one whose tool's answer is the user's alone - "where's my phone?" - which can't be
+        # the answer to anything Nova asks, and which Claude, once asked, would hear.
+        result = self.intents.match(text, only=ActionExecutor.private_tools()) if follow_up else self.intents.match(text)
         local = result is not None
         if local:
             timeline.note(local_intent=True)
@@ -200,16 +202,9 @@ class Conversation:
         # nothing in is asked of Claude, as if no local command had matched. Only
         # remembered once that's known, or the request would be in the model's history
         # twice: here, and again from its own answer.
-        # Where the phone is, asked for locally, is the user's alone: Claude's history goes to
-        # Anthropic with every later request, so it only has that it was said. Claude's own
-        # find_device call is kept as any other's - it was Claude that was asked.
-        kept_from_claude = None
         if local and all(action_result.understood for action_result in action_results):
-            private = next((action for action, action_result in zip(actions, action_results)
-                            if action_result.private), None)
-            if private:
-                kept_from_claude = told_claude(private.params.get("device") or "phone")
-            self.llm.remember(text, kept_from_claude or result["response"])
+            stand_ins = _stand_ins(actions, action_results)
+            self.llm.remember(text, next(iter(stand_ins.values()), result["response"]))
         elif local:
             logger.info("Home Assistant didn't understand that, so asking Claude")
             timeline.note(local_intent=False)
@@ -269,10 +264,17 @@ class Conversation:
         # comes back on the next turn. Only what's spoken is recorded: an action
         # confirmed by a chime or by the music changing keeps the model's own "Okay.".
         # What each action said goes with it, as the tools' own answers.
-        if result.get("success") and kept_from_claude:
-            self.llm.record_reply(text, kept_from_claude, [kept_from_claude])
-        elif result.get("success"):
-            self.llm.record_reply(text, response_text, [action_result.say for action_result in action_results])
+        # Where the phone is - a private answer - is the user's alone, whoever asked for it:
+        # Claude's history goes to Anthropic with every later request, so it only has that it
+        # was said, in place of the words. Claude needs no place to answer anything it's asked.
+        if result.get("success"):
+            stand_ins = _stand_ins(actions, action_results)
+            recorded = response_text
+            for index, stand_in in stand_ins.items():
+                if action_results[index].say:
+                    recorded = recorded.replace(action_results[index].say, stand_in)
+            self.llm.record_reply(text, recorded, [stand_ins.get(index, action_result.say)
+                                                   for index, action_result in enumerate(action_results)])
 
         # If the assistant asked something, it listens straight away for the answer -
         # but only so many times in a row.
@@ -347,3 +349,16 @@ class Conversation:
         if self.chime_enabled:
             return Reply(sounds=[("success_chime.wav", "general")])
         return Reply(shown=message)
+
+
+def _stand_ins(actions: List[Action], results: List[ActionResult]) -> Dict[int, str]:
+    """
+    What Claude's history has in place of each private answer, by its action's place in the
+    turn - e.g. {0: "I said where your phone is."}.
+
+    Args:
+        actions: The actions the turn ran.
+        results: What each said, in the same order.
+    """
+    return {index: told_claude(str(action.params.get("device") or "phone"))
+            for index, (action, result) in enumerate(zip(actions, results)) if result.private}

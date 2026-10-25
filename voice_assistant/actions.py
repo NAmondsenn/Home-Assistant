@@ -22,13 +22,13 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from voice_assistant import network
 import requests
 
+from voice_assistant import network
 from voice_assistant.batteries import HOME_FAILURES, find, said
 from voice_assistant.devices import AppDevice, ring_call, said_as, where
 from voice_assistant.home_assistant import CANT_REACH, NotAllowed
-from voice_assistant.lists import names_list
+from voice_assistant.lists import NO_ANSWER, names_list
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -196,7 +196,7 @@ def bare_acknowledgement(text: str) -> bool:
 
 
 def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (), for_model: bool = True,
-         reads: bool = False, **parameters: Dict[str, Any]) -> Callable:
+         reads: bool = False, private: bool = False, **parameters: Dict[str, Any]) -> Callable:
     """
     Declares an ActionExecutor method as a tool the model can call.
 
@@ -210,6 +210,8 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
             better tool, and execute refuses the model's own call to it.
         reads: Whether it only reads something for the model to answer from, so its
             answer goes back to the model rather than being said - see read_tools.
+        private: Whether what it says is the user's alone, never to be in the model's
+            history - see private_tools.
         parameters: Each parameter's JSON schema, by name - the method's own
             keyword arguments, which it's called with.
 
@@ -218,7 +220,7 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
     """
     def declare(method: Callable) -> Callable:
         method.tool = {"description": description, "needs": needs, "required": list(required),
-                       "for_model": for_model, "reads": reads, "parameters": parameters}
+                       "for_model": for_model, "reads": reads, "private": private, "parameters": parameters}
         return method
     return declare
 
@@ -284,6 +286,15 @@ class ActionExecutor:
                                   "required": method.tool["required"]}}
                 for name, method in self.tools().items()
                 if method.tool["for_model"] and self._available(method)]
+
+    @classmethod
+    def private_tools(cls) -> List[str]:
+        """
+        The tools whose answers are the user's alone - where their phone is - which Claude's
+        history never has, and whose local rules are matched even when Nova is listening for
+        an answer (see Conversation.handle).
+        """
+        return [name for name, method in cls.tools().items() if method.tool["private"]]
 
     def read_tools(self) -> List[str]:
         """
@@ -1193,6 +1204,7 @@ class ActionExecutor:
         "phone', 'make my tablet ring'). What's found is said for you, so just reply 'Okay.'",
         needs="home",
         required=["device"],
+        private=True,
         device={
             "type": "string",
             "description": "Which device, as the user said it, e.g. 'phone', 'tablet', 'mac' or 's25 ultra'.",
@@ -1237,6 +1249,10 @@ class ActionExecutor:
         call = ring_call(device)
         try:
             self.home.notify(device.notify, call["message"], data=call["data"])
+        except requests.Timeout as e:
+            # Sent, but unanswered - so it may well be ringing.
+            logger.warning(f"Home Assistant didn't answer in time ringing the {device.name}: {e}")
+            return False, f"{NO_ANSWER}, so I can't tell whether your {word} rang."
         except (requests.RequestException, NotAllowed) as e:
             logger.warning(f"Couldn't ring the {device.name}: {e}")
             return False, f"I couldn't ring your {word}."

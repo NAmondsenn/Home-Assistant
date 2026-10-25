@@ -235,8 +235,8 @@ PEOPLE_TEMPLATE = """
 # where its tracker says it is and the place its geocoded location sensor names, e.g.
 # [{"device": "abc123", "own_name": "s25-ultra", "name_by_user": null, "maker": "samsung",
 # "model": "SM-S938B", "tracker": {"state": "not_home", "reported": 1761200000.0}, "place":
-# {"state": "1 High Street, Leeds, ...", "attributes": [["thoroughfare", "High Street"],
-# ["locality", "Leeds"]]}}]. Only the place's street and town are rendered, as pairs under
+# {"state": "1 Example Road, Sometown, ...", "attributes": [["thoroughfare", "Example Road"],
+# ["locality", "Sometown"]]}}]. Only the place's street and town are rendered, as pairs under
 # whichever case the app gives them - the Mac's are "Thoroughfare" and "Locality" - never
 # its coordinates, which the sensor has as well. A device with no tracker, or no sensor,
 # has null for it.
@@ -1237,7 +1237,8 @@ class HomeAssistant:
         Raises:
             NotAllowed: If SERVICES doesn't have the service, or it's given anything
                 outside its own domain, or nothing to act on - or, for one in UNTARGETED,
-                anything at all - or returns doesn't match whether RETURNS has it.
+                any target at all, notify's own "target" included, at the top or in its
+                data - or returns doesn't match whether RETURNS has it.
             requests.RequestException: If Home Assistant couldn't be asked.
         """
         entities = data.get("entity_id")
@@ -1246,7 +1247,13 @@ class HomeAssistant:
         allowed_targets = {"entity_id", "area_id"} if domain in BY_AREA else {"entity_id"}
         allowed = SERVICES.get(domain, ())
         named = bool(allowed.fullmatch(service)) if isinstance(allowed, re.Pattern) else service in allowed
-        if (not named or (bool(targets) if domain in UNTARGETED else not targets) or targets - allowed_targets
+        if domain in UNTARGETED:
+            # Notify's own "target" too, at the top or inside its data, which could send it elsewhere.
+            inner = data.get("data")
+            wrongly_aimed = bool(targets) or "target" in data or (isinstance(inner, dict) and "target" in inner)
+        else:
+            wrongly_aimed = not targets
+        if (not named or wrongly_aimed or targets - allowed_targets
                 or returns != ((domain, service) in RETURNS)
                 or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
                            for entity in entities)):
