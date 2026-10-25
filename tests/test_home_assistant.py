@@ -919,17 +919,26 @@ def test_the_forecast_is_asked_for_its_answer_through_the_allowlist(make_home):
 @pytest.mark.parametrize("domain, service, data, returns", [
     # Only what's meant to answer may be asked for an answer...
     ("light", "turn_on", {"entity_id": "light.lamp"}, True),
-    # ...and RETURNS never lets through what SERVICES doesn't...
-    ("todo", "get_items", {"entity_id": "todo.shopping"}, True),
+    # ...and only with what it's given to act on...
     ("weather", "get_forecasts", {"entity_id": "light.lamp", "type": "daily"}, True),
     ("weather", "get_forecasts", {"type": "daily"}, True),
+    ("todo", "get_items", {"entity_id": "light.lamp"}, True),
     # ...nor is what answers called without asking for its answer.
     ("weather", "get_forecasts", {"entity_id": "weather.forecast_home", "type": "daily"}, False),
+    ("todo", "get_items", {"entity_id": "todo.shopping_list"}, False),
 ])
 def test_an_answer_is_only_asked_of_what_both_lists_allow(make_home, domain, service, data, returns):
     home = make_home({f"/api/services/{domain}/{service}" + ("?return_response" if returns else ""): {}})
     with pytest.raises(NotAllowed):
         home._call_service(domain, service, data, returns=returns)
+    assert home._session.requests == []
+
+
+def test_returns_never_lets_through_what_services_doesnt(make_home, monkeypatch):
+    monkeypatch.setattr(home_assistant, "RETURNS", home_assistant.RETURNS | {("lock", "get_codes")})
+    home = make_home({"/api/services/lock/get_codes?return_response": {}})
+    with pytest.raises(NotAllowed):
+        home._call_service("lock", "get_codes", {"entity_id": "lock.front_door"}, returns=True)
     assert home._session.requests == []
 
 
@@ -944,6 +953,59 @@ def test_the_weather_entities_are_read_with_when_each_was_last_reported(make_hom
         # Without last_reported, last_updated says when.
         {"id": "weather.other_place", "name": "weather.other_place", "state": "partlycloudy", "attributes": {},
          "reported": datetime.fromisoformat("2026-10-24T12:00:00+00:00").timestamp()}]
+
+
+# The to-do lists, as the live checks found them: each list's state is how many things are
+# still to do on it.
+SHOPPING_LIST = {"entity_id": "todo.shopping_list", "state": "3",
+                 "attributes": {"friendly_name": "Shopping list", "supported_features": 15}}
+GET_ITEMS = "/api/services/todo/get_items?return_response"
+
+
+def test_the_todo_lists_are_read_with_their_other_names(make_home):
+    notepad = {"entity_id": "todo.notepad", "state": "unavailable", "attributes": {"friendly_name": "notepad"}}
+    home = make_home({"/api/states": [_thing("light.lamp", "Lamp"), SHOPPING_LIST, notepad]})
+    home.registry.read = _registry(_entry("todo.shopping_list", aliases=("groceries",)))
+    assert home.todo_lists() == [
+        {"id": "todo.shopping_list", "name": "Shopping list", "count": 3, "aliases": ["groceries"]},
+        {"id": "todo.notepad", "name": "notepad", "count": None, "aliases": []}]
+
+
+def test_a_lists_things_still_to_do_are_asked_for_through_the_allowlist(make_home):
+    items = [{"status": "needs_action", "summary": "milk", "uid": "a1"},
+             {"status": "needs_action", "summary": "oat milk", "uid": "b2"}]
+    home = make_home({GET_ITEMS: {"changed_states": [],
+                                  "service_response": {"todo.shopping_list": {"items": items}}}})
+    assert home.list_items("todo.shopping_list") == [{"summary": "milk", "uid": "a1"},
+                                                     {"summary": "oat milk", "uid": "b2"}]
+    assert home._session.requests == [
+        ("POST", GET_ITEMS, {"json": {"entity_id": "todo.shopping_list", "status": ["needs_action"]}})]
+
+    home = make_home({GET_ITEMS: {"changed_states": [], "service_response": {}}})
+    with pytest.raises(ValueError):
+        home.list_items("todo.shopping_list")
+
+
+def test_a_thing_is_added_to_a_list_and_nothing_else(make_home):
+    home = make_home({"/api/services/todo/add_item": []})
+    home.add_item("todo.shopping_list", "milk")
+    assert home._session.requests == [
+        ("POST", "/api/services/todo/add_item", {"json": {"entity_id": "todo.shopping_list", "item": "milk"}})]
+    with pytest.raises(NotAllowed):
+        home.add_item("light.lamp", "milk")
+
+
+def test_a_thing_is_ticked_off_not_deleted(make_home):
+    home = make_home({"/api/services/todo/update_item": [], "/api/services/todo/remove_item": [],
+                      "/api/services/todo/remove_completed_items": []})
+    home.tick_off("todo.shopping_list", "a1")
+    assert home._session.requests == [
+        ("POST", "/api/services/todo/update_item",
+         {"json": {"entity_id": "todo.shopping_list", "item": "a1", "status": "completed"}})]
+    for service in ("remove_item", "remove_completed_items"):
+        with pytest.raises(NotAllowed):
+            home._call_service("todo", service, {"entity_id": "todo.shopping_list", "item": "a1"})
+    assert len(home._session.requests) == 1
 
 
 @pytest.mark.parametrize("failure, said", [

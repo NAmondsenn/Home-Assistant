@@ -33,6 +33,7 @@ from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock, spoken_clock_time
 from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
+from voice_assistant.lists import Lists
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
 from voice_assistant.ntfy import Ntfy
@@ -256,6 +257,10 @@ class Brain:
         # home with several - see weather.py.
         self.weather = (Weather(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "weather.json"), {"entity": None}))
                         if self.home else None)
+        # Home Assistant's to-do lists, and which is the main one, for "add milk to my list"
+        # - see lists.py.
+        self.lists = (Lists(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "lists.json"), {"main": None}))
+                      if self.home else None)
 
         # Every satellite's timers and alarms, rung on the satellite each was set from.
         # Started in run(), once what rings on no satellite has gone to the default.

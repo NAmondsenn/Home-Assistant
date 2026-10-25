@@ -1,7 +1,8 @@
 """
 Home Assistant Module.
 
-Works the lights, and reads the calendar and the weather, through Home Assistant.
+Works the lights and the to-do lists, and reads the calendar and the weather, through
+Home Assistant.
 
 Nova signs in as a Home Assistant user of its own, with a long-lived access token,
 and asks for things in plain words through Home Assistant's own Assist - "turn off
@@ -86,8 +87,11 @@ DEFAULT_AGENT = "conversation.home_assistant"
 # domain, and only the lights' an area as well, which light.turn_on and light.turn_off
 # take as just the lights in it. A cover service added here would need each cover
 # checked with ha_guard.guarded too, as a door's as much a cover as a blind is.
+# The lists' services never delete - a thing is ticked off with update_item, and stays in
+# Home Assistant, where it can be put back - so todo.remove_item and remove_completed_items
+# aren't here.
 SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",),
-            "weather": ("get_forecasts",)}
+            "weather": ("get_forecasts",), "todo": ("add_item", "update_item", "get_items")}
 BY_AREA = ("light",)
 # The services Nova asks for an answer from - only reads, which change nothing. Each is
 # still only called if SERVICES has it too, and always with its answer asked for.
@@ -1459,6 +1463,84 @@ class HomeAssistant:
         if not isinstance(forecast, list) or not all(isinstance(entry, dict) for entry in forecast):
             raise ValueError(f"{entity_id}'s forecast isn't a list of entries")
         return forecast
+
+    def todo_lists(self) -> List[Dict]:
+        """
+        Home Assistant's to-do lists, read afresh, so a list added a minute ago is found too.
+
+        Returns:
+            Each as {"id", "name", "count", "aliases"}, e.g. {"id": "todo.shopping_list",
+            "name": "Shopping list", "count": 3, "aliases": ["groceries"]} - with "count" the
+            things still to do on it, which is its state, or None if that isn't a number,
+            and "aliases" its other names in the registry, none without a read of it.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its states can't be read.
+        """
+        snapshot = self._snapshot()
+        lists = []
+        for state in self._states():
+            entity = str(state.get("entity_id", ""))
+            if not entity.startswith("todo."):
+                continue
+            count = str(state.get("state", ""))
+            lists.append({"id": entity, "name": (state.get("attributes") or {}).get("friendly_name") or entity,
+                          "count": int(count) if count.isdigit() else None,
+                          "aliases": list(snapshot.aliases(entity)) if snapshot else []})
+        return lists
+
+    def list_items(self, list_id: str) -> List[Dict]:
+        """
+        The things still to do on a list, from todo.get_items.
+
+        Args:
+            list_id: The list, e.g. "todo.shopping_list".
+
+        Returns:
+            Each as {"summary", "uid"}, e.g. {"summary": "milk", "uid": "a1"}, in the list's order.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its answer isn't the list's things.
+        """
+        answer = self._call_service("todo", "get_items", {"entity_id": list_id, "status": ["needs_action"]},
+                                    returns=True)
+        mine = answer.get(list_id) if isinstance(answer, dict) else None
+        items = mine.get("items") if isinstance(mine, dict) else None
+        if not isinstance(items, list) or not all(
+                isinstance(item, dict) and isinstance(item.get("summary"), str) and item.get("uid")
+                for item in items):
+            raise ValueError(f"{list_id}'s things aren't a list of them")
+        return [{"summary": item["summary"], "uid": item["uid"]} for item in items]
+
+    def add_item(self, list_id: str, item: str):
+        """
+        Adds a thing to a list, with todo.add_item.
+
+        Args:
+            list_id: The list, e.g. "todo.shopping_list".
+            item: The thing, e.g. "milk".
+
+        Raises:
+            NotAllowed: If list_id isn't a to-do list.
+            requests.RequestException: If Home Assistant couldn't be asked, or didn't add it.
+        """
+        self._call_service("todo", "add_item", {"entity_id": list_id, "item": item})
+
+    def tick_off(self, list_id: str, uid: str):
+        """
+        Marks a thing on a list done, with todo.update_item - never deleting it.
+
+        Args:
+            list_id: The list, e.g. "todo.shopping_list".
+            uid: The thing's uid, as list_items gives it.
+
+        Raises:
+            NotAllowed: If list_id isn't a to-do list.
+            requests.RequestException: If Home Assistant couldn't be asked, or didn't tick it off.
+        """
+        self._call_service("todo", "update_item", {"entity_id": list_id, "item": uid, "status": "completed"})
 
     def calendar_names(self) -> List[str]:
         """The calendars to read - those config.yaml names, or every one there is."""

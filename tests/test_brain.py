@@ -1039,6 +1039,19 @@ def test_the_brain_has_the_weather_only_with_home_assistant(make_brain, home_ass
     assert make_brain().weather is None
 
 
+def test_the_brain_has_the_lists_only_with_home_assistant(make_brain, home_assistant_token, monkeypatch,
+                                                           tmp_path):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    assert brain.lists.home is brain.home
+    # The main list, once one's chosen, is kept in the brain's own data folder.
+    assert brain.lists.choices.path == str(tmp_path / "lists.json")
+    assert brain.lists.choices.get("main") is None
+
+    monkeypatch.delenv("HA_TOKEN")
+    assert make_brain(home_assistant=HOME_ASSISTANT).lists is None
+    assert make_brain().lists is None
+
+
 def test_the_brain_reads_the_registry_when_home_assistant_is_set_up(make_brain, home_assistant_token, monkeypatch):
     brain = make_brain(home_assistant=HOME_ASSISTANT)
     assert isinstance(brain.registry, HomeRegistry)
