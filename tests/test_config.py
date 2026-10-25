@@ -125,6 +125,21 @@ def test_a_setting_nova_no_longer_has_is_let_through_with_where_its_set_now(conf
     assert "there's no 'weather' section" in str(caught.value)
 
 
+@pytest.mark.parametrize("own", ["weather:\n", "weather: null\n", "weather: {}\n"])
+def test_the_section_left_once_a_removed_setting_is_deleted_is_let_through_too(config_with, caplog, own):
+    # Deleting the line the warning names, and not the section above it, mustn't stop Nova starting.
+    with caplog.at_level(logging.WARNING):
+        config = config_with(own + "music:\n  player: navidrome\n")
+    (warning,) = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "'weather'" in warning and "Home Assistant" in warning and "deleted" in warning
+    assert config.section("weather") == {} and config.section("music") == {"player": "navidrome"}
+
+    # A section which never held a removed setting is still a mistake, empty or not.
+    with pytest.raises(ConfigError) as caught:
+        config_with("navidrom:\n")
+    assert "there's no 'navidrom' section" in str(caught.value)
+
+
 def test_a_setting_can_be_left_to_the_model_with_null(config_with, tmp_path):
     (tmp_path / "defaults.yaml").write_text(DEFAULTS + "llm:\n  temperature: 0.7\n")
     assert config_with("llm:\n  temperature: null\n").section("llm")["temperature"] is None

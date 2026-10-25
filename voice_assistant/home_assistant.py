@@ -89,7 +89,8 @@ DEFAULT_AGENT = "conversation.home_assistant"
 SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",),
             "weather": ("get_forecasts",)}
 BY_AREA = ("light",)
-# The services Nova asks for an answer from - only reads, which change nothing.
+# The services Nova asks for an answer from - only reads, which change nothing. Each is
+# still only called if SERVICES has it too, and always with its answer asked for.
 RETURNS = {("weather", "get_forecasts"), ("todo", "get_items")}
 
 # How far "dim" and "brighten" move a light, in points of brightness. 30 is steps that
@@ -1119,16 +1120,16 @@ class HomeAssistant:
             service: The service, e.g. "turn_on".
             data: What it's given: its targets, by entity_id - or area_id, for the
                 lights - and anything else it takes, e.g. {"brightness_pct": 30}.
-            returns: Whether to ask for the service's answer, which only those in
-                RETURNS may be.
+            returns: Whether to ask for the service's answer - which those in RETURNS,
+                and only those, must be.
 
         Returns:
             The service's answer, by entity id, with returns - else None.
 
         Raises:
             NotAllowed: If SERVICES doesn't have the service, or it's given anything
-                outside its own domain, or nothing to act on - or it's asked for an
-                answer RETURNS doesn't have.
+                outside its own domain, or nothing to act on - or returns doesn't
+                match whether RETURNS has it.
             requests.RequestException: If Home Assistant couldn't be asked.
         """
         entities = data.get("entity_id")
@@ -1136,7 +1137,7 @@ class HomeAssistant:
         targets = {key for key in data if key in ("entity_id", "area_id", "device_id", "floor_id", "label_id")}
         allowed_targets = {"entity_id", "area_id"} if domain in BY_AREA else {"entity_id"}
         if (service not in SERVICES.get(domain, ()) or not targets or targets - allowed_targets
-                or (returns and (domain, service) not in RETURNS)
+                or returns != ((domain, service) in RETURNS)
                 or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
                            for entity in entities)):
             logger.warning(f"Refused to call {domain}.{service} with {data}")

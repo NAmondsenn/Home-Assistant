@@ -914,10 +914,23 @@ def test_the_forecast_is_asked_for_its_answer_through_the_allowlist(make_home):
     assert home._session.requests == [
         ("POST", GET_FORECASTS, {"json": {"entity_id": "weather.forecast_home", "type": "hourly"}})]
 
-    # Only what's meant to answer may be asked for an answer.
+
+
+@pytest.mark.parametrize("domain, service, data, returns", [
+    # Only what's meant to answer may be asked for an answer...
+    ("light", "turn_on", {"entity_id": "light.lamp"}, True),
+    # ...and RETURNS never lets through what SERVICES doesn't...
+    ("todo", "get_items", {"entity_id": "todo.shopping"}, True),
+    ("weather", "get_forecasts", {"entity_id": "light.lamp", "type": "daily"}, True),
+    ("weather", "get_forecasts", {"type": "daily"}, True),
+    # ...nor is what answers called without asking for its answer.
+    ("weather", "get_forecasts", {"entity_id": "weather.forecast_home", "type": "daily"}, False),
+])
+def test_an_answer_is_only_asked_of_what_both_lists_allow(make_home, domain, service, data, returns):
+    home = make_home({f"/api/services/{domain}/{service}" + ("?return_response" if returns else ""): {}})
     with pytest.raises(NotAllowed):
-        home._call_service("light", "turn_on", {"entity_id": "light.lamp"}, returns=True)
-    assert len(home._session.requests) == 1
+        home._call_service(domain, service, data, returns=returns)
+    assert home._session.requests == []
 
 
 def test_the_weather_entities_are_read_with_when_each_was_last_reported(make_home):

@@ -18,7 +18,7 @@ import requests
 
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import format_duration, spoken_clock_time
-from voice_assistant.home_assistant import CANT_REACH, HomeAssistant
+from voice_assistant.home_assistant import HomeAssistant
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -80,13 +80,16 @@ class Weather:
             daily = _on(self.home.forecasts(entity["id"], "daily"), wanted)
             entry = daily[0] if daily else {}
             chance = entry.get("precipitation_probability")
+            if isinstance(chance, bool) or not isinstance(chance, (int, float)):
+                chance = None
             # Met gives no chance of rain for a day, so the hours say when it's likely.
             hours = [] if chance is not None else [
                 hour for hour in _on(self.home.forecasts(entity["id"], "hourly"), wanted)
                 if _when(hour) + timedelta(hours=1) > now]
         except (requests.RequestException, ValueError) as e:
             logger.warning(f"Could not get the weather from Home Assistant: {e}")
-            return {"success": False, "message": CANT_REACH}
+            # Said as every other Home Assistant failure is - CANT_REACH while it's down.
+            return {"success": False, "message": HomeAssistant._failure_message(e)}
 
         rain = _rain(chance, hours)
         if day == "tomorrow":
@@ -111,14 +114,17 @@ class Weather:
         return min(entities, key=lambda entity: entity["id"])
 
 
-def _when(entry: Dict) -> datetime:
-    """When a forecast entry is for, in local time."""
-    return datetime.fromisoformat(str(entry["datetime"])).astimezone()
+def _when(entry: Dict) -> Optional[datetime]:
+    """When a forecast entry is for, in local time, or None if it doesn't say."""
+    try:
+        return datetime.fromisoformat(str(entry["datetime"])).astimezone()
+    except (KeyError, ValueError):
+        return None
 
 
 def _on(entries: List[Dict], day: date) -> List[Dict]:
-    """The forecast entries which fall on a local day, in order."""
-    return sorted((entry for entry in entries if _when(entry).date() == day), key=_when)
+    """The forecast entries which fall on a local day, in order - leaving out any without a time."""
+    return sorted((entry for entry in entries if _when(entry) and _when(entry).date() == day), key=_when)
 
 
 def _temperatures(entry: Dict) -> List[str]:

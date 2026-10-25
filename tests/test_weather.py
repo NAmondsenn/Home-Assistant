@@ -4,10 +4,13 @@ Checks Home Assistant's forecast, from Met, is put into words, using a fake in p
 Home Assistant, so nothing goes online.
 
 Every time here is written in the machine's own zone and sent as Home Assistant does, in
-UTC, so the days and hours come out the same in London and in UTC.
+UTC, so the days and hours come out the same in London and in UTC. Met's daily entries
+are at noon UTC, the first of them today, and its hourly ones are 48 from the next hour.
 """
 
+import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -38,23 +41,49 @@ def _entity(entity_id="weather.forecast_home", state="partlycloudy", temperature
             "reported": NOW.timestamp() - hours_old * 3600}
 
 
-def _day(days, condition="cloudy", high=14.4, low=7.9, chance=None):
-    """A daily entry as Met gives it through Home Assistant - with no chance of rain, unless one's given."""
-    entry = {"condition": condition, "datetime": _at(days, 12), "humidity": 80, "precipitation": 1.2,
+def _day(days, condition="cloudy", high=14.4, low=7.9, chance=None, now=None):
+    """
+    A daily entry as Met gives it through Home Assistant, at noon UTC on the local day this
+    many days from now (NOW unless given) - with no chance of rain, unless one's given.
+    """
+    day = (now or NOW).date() + timedelta(days=days)
+    entry = {"condition": condition, "datetime": f"{day.isoformat()}T12:00:00+00:00", "humidity": 80,
+             "precipitation": 1.2,
              "temperature": high, "templow": low, "uv_index": 1.0, "wind_bearing": 200, "wind_speed": 20.5}
     if chance is not None:
         entry["precipitation_probability"] = chance
     return entry
 
 
-def _hour(days, hour, precipitation=0.0, condition="cloudy"):
-    """An hourly entry as Met gives it through Home Assistant."""
-    return {"condition": condition, "datetime": _at(days, hour), "humidity": 85, "precipitation": precipitation,
+def _hourly(when: str, precipitation=0.0, condition="cloudy"):
+    """An hourly entry as Met gives it through Home Assistant, for a time sent as it sends it."""
+    return {"condition": condition, "datetime": when, "humidity": 85, "precipitation": precipitation,
             "temperature": 12.0, "uv_index": 0.5, "wind_bearing": 210, "wind_speed": 18.0, "cloud_coverage": 90}
 
 
-def _dry_hours(days=0, first=13):
+def _hour(days, hour, precipitation=0.0, condition="cloudy"):
+    return _hourly(_at(days, hour), precipitation, condition)
+
+
+def _met_hours(now, rainy=lambda local: False):
+    """Met's 48 hourly entries from the hour after now, in UTC, raining in the local hours rainy() says."""
+    first = now.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    hours = [first + timedelta(hours=count) for count in range(48)]
+    return [_hourly(when.isoformat(), 0.6 if rainy(when.astimezone()) else 0.0) for when in hours]
+
+
+def _dry_hours(days=0, first=14):
     return [_hour(days, hour) for hour in range(first, 24)]
+
+
+@pytest.fixture(params=["Europe/London", "UTC"])
+def zone(request, monkeypatch):
+    """Runs a test on London time and on UTC, whatever the machine's own zone."""
+    monkeypatch.setenv("TZ", request.param)
+    time.tzset()
+    yield request.param
+    monkeypatch.undo()
+    time.tzset()
 
 
 DAYS = [_day(0, chance=40), _day(1), _day(2)]
@@ -175,3 +204,46 @@ def test_with_home_assistant_down_it_says_so(choices):
             raise requests.Timeout("timed out")
 
     assert Weather(GoesDown(), choices).forecast(now=NOW) == {"success": False, "message": CANT_REACH}
+
+
+def test_a_token_home_assistant_wont_take_is_said_as_everywhere_else(choices):
+    class Refuses(FakeHome):
+        def weather_entities(self):
+            raise requests.HTTPError("401", response=SimpleNamespace(status_code=401))
+
+    assert Weather(Refuses(), choices).forecast(now=NOW) == {
+        "success": False, "message": "Home Assistant didn't accept my token. HA_TOKEN in the .env file needs checking."}
+
+
+def test_an_entry_without_a_time_or_a_chance_that_isnt_a_number_is_passed_over(choices):
+    undated = _day(0, high=30)
+    del undated["datetime"]
+    home = FakeHome(daily=[undated, {**_day(0), "datetime": "soon"}, _day(0, chance="lots")],
+                    hourly=[{"condition": "rainy", "precipitation": 3.0}] + _dry_hours())
+    assert _said(home, choices).endswith("Today, a high of 14 and a low of 8, and no rain expected.")
+
+
+def test_late_at_night_today_is_still_today_and_tomorrow_is_the_next_day(choices, zone):
+    late = datetime(2026, 10, 14, 23, 30).astimezone()
+    hours = [_hour(0, 23, condition="rainy"), _hour(1, 0, 0.8)]
+    daily = [_day(0, now=late), _day(1, high=9.2, low=3.1, now=late)]
+    entities = [{**_entity(), "reported": late.timestamp()}]
+    # The 23:00 hour is still to come, and tomorrow's first isn't today's.
+    assert _said(FakeHome(entities, daily, hours), choices, now=late).endswith(
+        "a high of 14 and a low of 8, with rain likely around 11 PM.")
+
+    just_before_midnight = datetime(2026, 10, 14, 23, 59).astimezone()
+    assert _said(FakeHome(entities, daily, hours), choices, "tomorrow", now=just_before_midnight) == \
+        "Tomorrow, cloudy, a high of 9 and a low of 3, with rain likely around midnight."
+
+
+def test_the_hours_are_right_across_the_clocks_going_back(choices, zone):
+    # 25 October 2026: in London, 1 AM comes twice, and the day has 25 hours.
+    now = datetime(2026, 10, 25, 0, 30).astimezone()
+    home = FakeHome([{**_entity(), "reported": now.timestamp()}], [_day(0, now=now), _day(1, now=now)],
+                    _met_hours(now, lambda local: (
+        local.date() == now.date() and local.hour in (1, 3))))
+    assert _said(home, choices, now=now).endswith(
+        "Today, a high of 14 and a low of 8, with rain likely from about 1 AM until 3 AM.")
+    assert _said(home, choices, "tomorrow", now=now) == \
+        "Tomorrow, cloudy, a high of 14 and a low of 8, and no rain expected."

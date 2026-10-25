@@ -129,6 +129,23 @@ def removed(settings: Dict) -> List[Tuple[str, str]]:
             for name in values if (section, name) in REMOVED]
 
 
+def emptied(settings: Dict, defaults: Dict) -> List[str]:
+    """
+    The sections an install's file still has, empty, once their removed settings are
+    deleted - "weather:" on its own, after the warning said "weather.location" could go.
+
+    Args:
+        settings: The install's settings.
+        defaults: config.yaml's.
+
+    Returns:
+        Each section's name, e.g. ["weather"].
+    """
+    homes = {section for section, _ in REMOVED}
+    return [section for section, values in settings.items()
+            if section in homes and section not in defaults and values in (None, {})]
+
+
 def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
     """
     Checks an install's settings against config.yaml's.
@@ -140,14 +157,16 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
 
     Returns:
         The sections it has which are no longer used - see RETIRED - and so aren't
-        checked, and are to be left out. The settings in REMOVED aren't checked either.
+        checked, and are to be left out. The settings in REMOVED aren't checked either,
+        nor the sections emptied of them.
 
     Raises:
         ConfigError: Naming the first setting which is wrong, and how.
     """
     retired = [section for section in settings if section in RETIRED and section not in defaults]
+    empty = emptied(settings, defaults)
     for section, values in settings.items():
-        if section in retired:
+        if section in retired or section in empty:
             continue
         if section not in defaults:
             if isinstance(values, dict) and values and all((section, name) in REMOVED for name in values):
@@ -225,6 +244,9 @@ class Config:
                 for section, name in gone:
                     logger.warning(f"{self.path}: '{section}.{name}' is no longer used - "
                                    f"{REMOVED[(section, name)]} - so it can be deleted")
+                for section in emptied(settings, self.data):
+                    where = "; ".join(where for (home, _), where in REMOVED.items() if home == section)
+                    logger.warning(f"{self.path}: '{section}' is no longer used - {where} - so it can be deleted")
 
     def section(self, name):
         """

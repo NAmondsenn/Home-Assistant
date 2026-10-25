@@ -137,10 +137,10 @@ On the brain. The failure is said out loud: "took too long" (a slow connection),
 The weather is Home Assistant's own - Met's forecast, for its home location - so it needs Home Assistant set up on the brain (`home_assistant.url`, and `HA_TOKEN` in its `.env`). Without it, Nova says "The weather needs Home Assistant."
 
 - **"Home Assistant hasn't got a weather forecast."** It has no weather entity. Add the Met.no integration in Home Assistant (Settings > Devices & services), which forecasts for the home location set in Settings > System > General.
-- **"Home Assistant's forecast isn't available right now."** The weather entity is unavailable - Home Assistant's log says why.
-- **"That's Home Assistant's forecast from 5 hours ago."** Home Assistant couldn't reach Met for over three hours, so it's the last forecast it had. Check Home Assistant's internet.
+- **"Home Assistant's forecast isn't available right now."** The weather entity is unavailable - most often because Home Assistant can't reach Met, so check its internet. Home Assistant's log says why.
+- **"That's Home Assistant's forecast from 5 hours ago."** Home Assistant last heard from Met over three hours ago. Its log says why it hasn't since.
 - **The forecast is for somewhere else.** With more than one weather entity, Nova uses the first by entity id.
-- **The log warns `'weather.location' is no longer used`.** The weather no longer needs a place in Nova's settings: delete the `weather` section, and `location` under it, from the brain's `~/.config/nova/config.yaml`.
+- **The log warns `'weather.location' is no longer used`.** The weather no longer needs a place in Nova's settings: delete it from the brain's `~/.config/nova/config.yaml` - and the `weather:` line above it, though a `weather:` left on its own is only warned about too.
 
 ## Nova won't start after a settings change
 
