@@ -625,7 +625,8 @@ def test_a_restart_still_owed_from_an_earlier_save_is_still_said(files):
     page.save_settings({"music.player": "navidrome"}, LOGIN)
     result = page.save_settings({"ntfy.quiet_from": "22:00"}, LOGIN)
 
-    assert result["message"] == "Saved. It's used straight away."
+    # The page's save bar shows it beside Restart now, so it says why there's still one.
+    assert result["message"] == "Saved. It's used straight away. An earlier change is used once Nova restarts."
     assert result["restart_needed"]
 
 

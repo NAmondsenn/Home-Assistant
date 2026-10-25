@@ -112,8 +112,10 @@ let home = null;
 let batteries = null;
 
 // Whether the save bar offers to restart Nova rather than to save - once a save has
-// something which waits for a restart, while nothing else is waiting to be saved.
+// something which waits for a restart, while nothing else is waiting to be saved - and
+// what that save said, which names what waits.
 let offerRestart = false;
+let restartSaid = "";
 
 // Making things
 
@@ -1324,16 +1326,17 @@ function countChanges() {
     input.closest(".field").classList.toggle("changed", differs);
     return differs;
   });
-  // Anything more to save goes before the restart, which then uses it too.
-  if (changed.length) offerRestart = false;
+  // Anything more to save goes before the restart, which then uses it too - and once
+  // it's changed back, the restart is offered again.
+  const restarting = offerRestart && !changed.length;
   const unsaved = document.getElementById("unsaved");
   unsaved.classList.remove("bad");
   unsaved.textContent = changed.length ? `${counted(changed.length, "change", "changes")} not saved yet.`
-    : offerRestart ? "Saved. Some of it is used once Nova restarts." : "Nothing's changed yet.";
+    : restarting ? restartSaid : "Nothing's changed yet.";
   const save = document.getElementById("save-settings");
   save.disabled = !changed.length;
-  save.hidden = offerRestart;
-  document.getElementById("restart-now").hidden = !offerRestart;
+  save.hidden = restarting;
+  document.getElementById("restart-now").hidden = !restarting;
   return changed;
 }
 
@@ -1454,6 +1457,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (result.success) {
       for (const input of changed) input.dataset.saved = valueOf(input);
       offerRestart = Boolean(result.restart_needed);
+      restartSaid = result.message || "Saved. Some of it is used once Nova restarts.";
       countChanges();
     } else {
       // In the save bar too, where it's still in view once the toast has gone.

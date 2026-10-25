@@ -732,7 +732,10 @@ class SettingsPage:
         logger.info(f"Settings page: {who} changed {', '.join(changes)}")
 
         if not waiting:
-            message = "Saved. It's used straight away."
+            # A restart still owed - for a hand edit, or an earlier save - is said too, as
+            # the page offers it beside this message.
+            message = "Saved. It's used straight away." + (
+                " An earlier change is used once Nova restarts." if restart_needed else "")
         elif not used:
             message = "Saved. It's used once Nova restarts" + (
                 ", as it couldn't be used straight away." if unused else ".")
