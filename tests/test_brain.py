@@ -1193,6 +1193,16 @@ def test_a_night_changed_with_no_ntfy_reaches_the_battery_watcher(make_brain, ho
     assert brain.batteries._quiet()
 
 
+def test_a_topic_saved_with_no_ntfy_running_waits_for_the_restart(make_brain, home_assistant_token):
+    # Nothing is sent to it until Nova restarts with an ntfy server - but the night is
+    # still used, by the battery watcher.
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    assert brain.ntfy is None
+    assert brain.apply_settings({("ntfy", "phone"): "my-phone", ("ntfy", "restarts"): "homelab",
+                                 ("ntfy", "quiet_from"): "22:00"}) == [("ntfy", "phone"), ("ntfy", "restarts")]
+    assert brain._night.quiet_from == "22:00"
+
+
 def test_a_phone_topic_set_on_the_page_gets_battery_warnings_straight_away(make_brain, home_assistant_token,
                                                                          monkeypatch):
     brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"url": "http://ntfy.test", "phone": ""})

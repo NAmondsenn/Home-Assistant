@@ -605,6 +605,21 @@ def test_a_value_which_failed_and_is_passed_on_again_is_used(files):
     assert not result["restart_needed"] and not page.state()["restart_needed"]
 
 
+def test_a_topic_saved_before_ntfy_is_set_up_waits_for_the_restart(files):
+    # With no ntfy server when Nova started, there's nothing to send through until it
+    # restarts with one - so the topic isn't "used straight away", though the night is.
+    (files / "config.yaml").write_text("")
+    running = Config()
+    page = _page(running=running, config=running)
+    result = page.save_settings({"ntfy.url": "http://ntfy.test", "ntfy.phone": "my-phone",
+                                 "ntfy.quiet_from": "22:00"}, LOGIN)
+
+    assert result["message"] == ("Saved. Your ntfy server and Topic for sending things to your phone are used "
+                                 "once Nova restarts, and the rest straight away. Some of it couldn't be used "
+                                 "straight away.")
+    assert page.brain._night.quiet_from == "22:00"
+
+
 def test_a_restart_still_owed_from_an_earlier_save_is_still_said(files):
     page, _ = _running(files, "navidrome:\n  url: http://music.local:4533\n")
     page.save_settings({"music.player": "navidrome"}, LOGIN)

@@ -350,6 +350,12 @@ class Brain:
                 except Exception:
                     logger.exception("ntfy couldn't be told of the settings saved, so they're used once Nova restarts")
                     unused += [key for key in ntfy_changes if key not in unused]
+            if self.ntfy is None:
+                # Nothing is sent to a topic until Nova restarts with an ntfy server to send
+                # through - one saved with its address, say. The night is used now, by the
+                # battery watcher.
+                unused += [key for key in ntfy_changes
+                           if key[1] not in ("quiet_from", "quiet_until") and key not in unused]
         if ("logging", "log_transcripts") in changes:
             try:
                 logging_setup.log_transcripts(changes[("logging", "log_transcripts")])
