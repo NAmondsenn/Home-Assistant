@@ -155,7 +155,8 @@ def test_with_several_wake_buttons_the_chosen_one_is_pressed(tmp_path):
     snapshot = _snapshot(_pc(), wake=("button.wake_desk_pc", "button.wake_nas"))
     power, home = _power(tmp_path, snapshot, on=False)
     assert power.act("on") == {"success": False,
-                               "message": "I don't know which Wake-on-LAN button wakes your PC yet."}
+                               "message": "I don't know which Wake-on-LAN button wakes your PC yet. "
+                                          "Choose it on the settings page, under Calendars and lists."}
     assert home.pressed == []
 
     power.choices.change(lambda state: state["wake"].update(desk="button.wake_desk_pc"))

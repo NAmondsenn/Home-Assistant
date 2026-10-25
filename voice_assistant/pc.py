@@ -260,7 +260,8 @@ class PCPower:
             if pc.wake is None:
                 if not snapshot.wake_buttons():
                     return {"success": False, "message": "There's no Wake-on-LAN button for your PC in Home Assistant."}
-                return {"success": False, "message": "I don't know which Wake-on-LAN button wakes your PC yet."}
+                return {"success": False, "message": "I don't know which Wake-on-LAN button wakes your PC yet. "
+                                                     "Choose it on the settings page, under Calendars and lists."}
             return self._press(pc.wake, "Wake-on-LAN", "Turning your PC on.")
         if action in ASKED:
             if not pc.on:
