@@ -636,7 +636,8 @@ def test_a_yes_in_a_new_conversation_presses_nothing(tmp_path):
 
 
 @pytest.mark.parametrize("answer", ["yes", "Yes please.", "Nova, yeah.", "yep", "go ahead", "Go on.", "sure",
-                                    "Do it.", "Okay, do it.", "ok do it please"])
+                                    "Do it.", "Okay, do it.", "ok do it please", "Yes.", "'yes'",
+                                    "\u2018yes\u2019"])
 def test_only_a_plain_yes_shuts_the_pc_down(tmp_path, answer):
     conversation, home, llm = _pc_conversation(tmp_path)
     conversation.handle("Shut down the PC.")
@@ -652,6 +653,8 @@ def test_only_a_plain_yes_shuts_the_pc_down(tmp_path, answer):
     # Neither, so a fresh request, Claude's - nor a yes with more said after it.
     ("shut up", "Okay."), ("thanks", "Okay."), ("fine", "Okay."), ("okay thanks", "Okay."),
     ("yes, play music", "Okay."), ("yes in a minute", "Okay."), ("absolutely", "Okay."),
+    # Digits and other scripts are words too - "Yes, 10." most likely means in ten minutes.
+    ("Yes, 10.", "Okay."), ("Yes. 10:30", "Okay."), ("yes 10", "Okay."), ("yes \u4e0d\u8981", "Okay."),
 ])
 def test_no_or_anything_else_said_back_presses_nothing(tmp_path, answer, said):
     conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay."), _answer("Okay."))

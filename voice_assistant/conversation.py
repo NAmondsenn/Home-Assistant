@@ -395,10 +395,14 @@ def agreed(text: str) -> Optional[bool]:
 
     Returns:
         True for the whole of it a plain yes (AGREED), False for a plain no (DECLINED), else
-        None - after its punctuation, a "nova" at the start and a "please" at the end are
-        taken off.
+        None - after its punctuation and quote marks, a "nova" at the start and a "please" at
+        the end are taken off.
     """
-    words = re.sub(r"[^a-z' ]", " ", text.lower().replace("\u2019", "'")).split()
+    # Digits and other scripts stay words, so "Yes, 10." - most likely in ten minutes - isn't a
+    # plain yes. Only the quote marks around a word go, so "'yes'" is one and "don't" stays.
+    text = text.lower().replace("\u2018", "'").replace("\u2019", "'")
+    words = [word.strip("'") for word in re.sub(r"[^\w' ]", " ", text).split()]
+    words = [word for word in words if word]
     if words[:1] == ["nova"]:
         words = words[1:]
     if words[-1:] == ["please"]:
