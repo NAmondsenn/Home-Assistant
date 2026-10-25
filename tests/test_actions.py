@@ -637,3 +637,212 @@ def test_home_status_is_only_offered_with_home_assistant():
     assert ActionExecutor().execute(Action("home_status", {"about": "sunset"})).say == "Home Assistant isn't set up yet."
     # It's the one tool whose answer goes back to Claude rather than being said.
     assert ActionExecutor().read_tools() == ["home_status"]
+
+
+# Lists - Assist first, then Nova's own, through a real HomeAssistant and Lists with a fake
+# in place of Home Assistant's API, so the guard and the intents asked for are the real ones.
+
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+        self.status_code = 200
+
+    def json(self):
+        return self.body
+
+    def raise_for_status(self):
+        pass
+
+
+class FakeSession:
+    """Stands in for Home Assistant's REST API, answering by path, or raising, and noting what was asked."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.headers = {}
+        self.requests = []
+
+    def request(self, method, url, timeout=None, **kwargs):
+        path = url.split("8123", 1)[1]
+        self.requests.append((path, kwargs.get("json")))
+        answer = self.answers[path]
+        if isinstance(answer, Exception):
+            raise answer
+        return FakeResponse(answer)
+
+
+class FakeSocket:
+    """Stands in for the WebSocket, answering Assist's sentence debugging with one match, or none."""
+
+    def __init__(self, found):
+        self.found = found
+
+    def call(self, messages):
+        return [{"results": [self.found]}]
+
+
+SHOPPING = {"entity_id": "todo.shopping_list", "state": "1", "attributes": {"friendly_name": "Shopping list"}}
+
+
+def _debugged(intent, *targets):
+    """Assist's sentence debugging's match, e.g. _debugged("HassListAddItem", "todo.shopping_list")."""
+    return {"match": True, "intent": {"name": intent}, "targets": {target: {"matched": True} for target in targets},
+            "source": "builtin"}
+
+
+@pytest.fixture
+def make_lists_executor(tmp_path, monkeypatch):
+    from voice_assistant import network
+    from voice_assistant.choices import ChoiceStore
+    from voice_assistant.ha_registry import Entry, Snapshot
+    from voice_assistant.home_assistant import HomeAssistant
+    from voice_assistant.lists import Lists
+
+    monkeypatch.setattr(network, "online", lambda: True)
+
+    def factory(found, answers=None, items=("milk",)):
+        snapshot = Snapshot(entries={"todo.shopping_list": Entry("todo.shopping_list", "shopping_list", None, None,
+                                                                 "shopping_list", None, (), True)},
+                            devices={}, areas={}, read_at=0.0)
+        home = HomeAssistant("http://homeassistant.local:8123/", "token",
+                             registry=type("Registry", (), {"snapshot": lambda self: snapshot})())
+        home._session = FakeSession({
+            "/api/states": [SHOPPING],
+            "/api/conversation/process": {"response": {"response_type": "action_done",
+                                                       "speech": {"plain": {"speech": "Added milk"}}}},
+            "/api/services/todo/add_item": [],
+            "/api/services/todo/update_item": [],
+            "/api/services/todo/get_items?return_response": {"service_response": {"todo.shopping_list": {
+                "items": [{"summary": item, "uid": f"uid-{item}", "status": "needs_action"} for item in items]}}},
+            **(answers or {})})
+        home.socket = FakeSocket(found)
+        lists = Lists(home, ChoiceStore(str(tmp_path / "lists.json"), {"main": None}))
+        return ActionExecutor(home=home, lists=lists), home._session.requests
+    return factory
+
+
+def _sent(requests_made):
+    """The paths sent to, bar the reads before Assist is asked."""
+    return [path for path, _ in requests_made if path != "/api/states"]
+
+
+def test_assist_adds_it_first_then_nova_does(make_lists_executor):
+    executor, sent = make_lists_executor(_debugged("HassListAddItem", "todo.shopping_list"))
+    result = executor.execute(Action("add_to_list", {"item": "milk", "list": "my shopping list",
+                                                     "command": "add milk to my shopping list"}))
+    # Said, as adding to a list doesn't show itself the way a light does.
+    assert (result.ok, result.say, result.confirm) == (True, "Added milk", "speak")
+    assert _sent(sent) == ["/api/conversation/process"]
+
+    # "Add milk to notes": Assist would add it with no list, which isn't sent.
+    executor, sent = make_lists_executor(_debugged("HassListAddItem"))
+    result = executor.execute(Action("add_to_list", {"item": "milk", "list": "shopping",
+                                                     "command": "add milk to shopping"}))
+    assert (result.ok, result.say) == (True, "Added milk to your shopping list.")
+    assert _sent(sent) == ["/api/services/todo/add_item"]
+    assert sent[-1][1] == {"entity_id": "todo.shopping_list", "item": "milk"}
+
+    # The offline fallback gives no request for Assist, so Nova adds it straight away.
+    executor, sent = make_lists_executor(_debugged("HassListAddItem", "todo.shopping_list"))
+    result = executor.execute(Action("add_to_list", {"item": "eggs milk and bread", "list": "shopping"}))
+    assert (result.ok, result.say) == (True, "Added eggs milk and bread to your shopping list.")
+    assert _sent(sent) == ["/api/services/todo/add_item"]
+
+
+def test_a_list_sentence_the_guard_refuses_is_still_added_by_nova(make_lists_executor):
+    # Its words say it would lock something, but Nova's lists only call todo services.
+    executor, sent = make_lists_executor(_debugged("HassListAddItem", "todo.shopping_list"))
+    result = executor.execute(Action("add_to_list", {"item": "a door lock", "list": "my shopping list",
+                                                     "command": "add a door lock to my shopping list"}))
+    assert (result.ok, result.say) == (True, "Added a door lock to your shopping list.")
+    assert _sent(sent) == ["/api/services/todo/add_item"]
+
+
+def test_a_sentence_assist_would_read_as_removing_is_never_sent(make_lists_executor):
+    executor, sent = make_lists_executor(_debugged("HassListRemoveItem", "todo.shopping_list"))
+    result = executor.execute(Action("tick_off_list", {"item": "milk", "list": "my shopping list",
+                                                       "command": "take milk off my shopping list"}))
+    assert (result.ok, result.say) == (True, "Ticked off milk on your shopping list.")
+    assert "/api/conversation/process" not in _sent(sent)
+    assert sent[-1] == ("/api/services/todo/update_item",
+                        {"entity_id": "todo.shopping_list", "item": "uid-milk", "status": "completed"})
+
+
+def test_ticking_off_goes_to_assist_only_as_completing(make_lists_executor):
+    completed = {"response": {"response_type": "action_done", "speech": {"plain": {"speech": "Completed milk"}}}}
+    executor, sent = make_lists_executor(_debugged("HassListCompleteItem", "todo.shopping_list"),
+                                         {"/api/conversation/process": completed})
+    result = executor.execute(Action("tick_off_list", {"item": "milk", "list": "my shopping list",
+                                                       "command": "complete milk on my shopping list"}))
+    assert (result.ok, result.say) == (True, "Completed milk")
+    assert _sent(sent) == ["/api/conversation/process"]
+    # "Tick off milk on my shopping list" is HassTurnOn to Assist, with nothing to act on.
+    executor, sent = make_lists_executor(_debugged("HassTurnOn"))
+    result = executor.execute(Action("tick_off_list", {"item": "milk", "list": "my shopping list",
+                                                       "command": "tick off milk on my shopping list"}))
+    assert (result.ok, result.say) == (True, "Ticked off milk on your shopping list.")
+    assert "/api/conversation/process" not in _sent(sent)
+
+
+def test_a_list_is_read_by_nova_never_assist(make_lists_executor):
+    executor, sent = make_lists_executor(_debugged("HassListAddItem", "todo.shopping_list"), items=("milk", "eggs"))
+    result = executor.execute(Action("read_list", {"list": "my shopping list"}))
+    assert (result.ok, result.say) == (True, "Your shopping list has milk and eggs.")
+    assert "/api/conversation/process" not in _sent(sent)
+
+
+@pytest.mark.parametrize("failure", [requests.ConnectionError("refused"), requests.Timeout("no answer")])
+def test_what_names_no_list_goes_to_claude_with_home_assistant_down(make_lists_executor, failure):
+    # "I've got a headache" is ticking something off to the local rule - but a sentence
+    # about the world mustn't end at "I can't reach Home Assistant".
+    executor, sent = make_lists_executor(None, {"/api/states": failure})
+    result = executor.execute(Action("tick_off_list", {"item": "a headache", "list": None,
+                                                       "command": "i've got a headache"}))
+    assert (result.ok, result.understood) == (False, False)
+    assert "/api/conversation/process" not in _sent(sent)
+    # Nor does it with Home Assistant up and nothing on any list that fits.
+    executor, _ = make_lists_executor(None)
+    result = executor.execute(Action("tick_off_list", {"item": "a headache", "list": None,
+                                                       "command": "i've got a headache"}))
+    assert (result.ok, result.understood) == (False, False)
+    # A list named is said to be out of reach.
+    executor, _ = make_lists_executor(None, {"/api/states": failure})
+    result = executor.execute(Action("tick_off_list", {"item": "milk", "list": "my shopping list",
+                                                       "command": "tick off milk on my shopping list"}))
+    assert (result.ok, result.understood, result.say) == (False, True, "I can't reach Home Assistant right now.")
+
+
+def test_claude_adds_several_things_one_by_one(make_lists_executor):
+    executor, sent = make_lists_executor(None)
+    result = executor.execute(Action("manage_list", {"action": "add", "items": ["eggs", "milk", "bread"],
+                                                     "list": "shopping"}, from_model=True))
+    assert (result.ok, result.say) == (True, "Added eggs, milk and bread to your shopping list.")
+    assert [sent_json["item"] for path, sent_json in sent if path == "/api/services/todo/add_item"] == [
+        "eggs", "milk", "bread"]
+    assert "/api/conversation/process" not in _sent(sent)
+
+
+def test_claude_reads_and_ticks_off_one_thing(make_lists_executor):
+    executor, _ = make_lists_executor(None)
+    result = executor.execute(Action("manage_list", {"action": "read"}, from_model=True))
+    assert (result.ok, result.say) == (True, "Your shopping list has milk.")
+    result = executor.execute(Action("manage_list", {"action": "tick_off", "items": ["milk"]}, from_model=True))
+    assert (result.ok, result.say) == (True, "Ticked off milk on your shopping list.")
+    for wrong in ({"action": "tick_off"}, {"action": "delete", "items": ["milk"]}, {"action": "add", "items": "milk"}):
+        assert executor.execute(Action("manage_list", wrong, from_model=True)).ok is False
+
+
+def test_lists_are_only_offered_with_home_assistant():
+    def offered(executor):
+        return {schema["name"]: schema for schema in executor.tool_schemas()}
+
+    schema = offered(ActionExecutor(lists=object()))["manage_list"]
+    assert schema["description"].startswith("Add things to, read, or tick things off one of the user's to-do lists")
+    assert schema["input_schema"]["required"] == ["action"]
+    assert not {"add_to_list", "read_list", "tick_off_list"} & set(offered(ActionExecutor(lists=object())))
+    assert "manage_list" not in offered(ActionExecutor())
+    for tool_name in ("manage_list", "add_to_list", "read_list", "tick_off_list"):
+        assert ActionExecutor().execute(Action(tool_name, {"action": "read"})).say == "Lists need Home Assistant."
+    # Claude can't run the local ones, which pass free text to Assist.
+    result = ActionExecutor(lists=object()).execute(Action("add_to_list", {"item": "milk"}, from_model=True))
+    assert result.ok is False

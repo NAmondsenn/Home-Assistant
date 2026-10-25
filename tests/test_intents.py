@@ -352,3 +352,76 @@ def test_what_the_battery_rules_mustnt_catch_is_left_alone(text):
     # 0003: local rules stay strict. "What's on tonight" is the calendar's, and the rest isn't a battery question.
     actions = _actions(text)
     assert not actions or all(action.tool != "get_batteries" for action in actions)
+
+
+# Lists - see lists.py
+
+@pytest.mark.parametrize("text, item, said, command", [
+    ("Put milk on my shopping list.", "milk", "my shopping list", "put milk on my shopping list"),
+    # Assist matches this with no list, so it isn't sent, and Nova adds it - see add_to_list.
+    ("Add milk to notes.", "milk", "notes", "add milk to notes"),
+    ("Add milk to the todo list, please.", "milk", "the todo list", "add milk to the todo list"),
+])
+def test_one_thing_is_added_without_claude(text, item, said, command):
+    assert _actions(text) == [Action("add_to_list", {"item": item, "list": said, "command": command})]
+
+
+@pytest.mark.parametrize("text", [
+    "Add eggs, milk and bread to my shopping list.",
+    # The comma said is lost with the punctuation, but still counts.
+    "Add eggs, milk, bread to my list.",
+    # One thing or two? Claude keeps it whole, or splits it.
+    "Add salt and vinegar crisps to my list.",
+    "Put eggs,milk on my list.",
+])
+def test_several_things_go_to_claude(text):
+    assert _actions(text) is None
+
+
+@pytest.mark.parametrize("text, tool", [
+    ("Add ten minutes to the timer.", None), ("Add the dentist to my calendar.", None),
+    ("Put the kettle on.", None), ("Put it on my phone.", "send_to_phone"), ("What's on tomorrow?", "get_calendar"),
+    # Nova's own things and the devices, by any of their words.
+    ("Add an hour to my alarm.", None), ("Add this to my reminders.", None), ("Put lunch in my diary.", None),
+    ("Put the meeting on my schedule.", None), ("Put Drake on my iPad.", None), ("Put a film on the tablet.", None),
+    ("Add a note to my agenda.", None), ("What's on my phone?", None), ("What's on the laptop?", None),
+    ("What's on my Mac?", None),
+    # Only pointing back, to something the conversation so far says.
+    ("Add it to my shopping list.", None), ("Put that on my list.", None), ("Tick that off.", None),
+    ("Take it off my list.", None), ("I've got it.", None), ("I have got this.", None), ("Cross this off my list.", None),
+    # Not a list's name, nor a thing to add.
+    ("Read me a story.", None), ("Read me the news.", None), ("Take the bins out.", None),
+    # Two requests at once.
+    ("Add milk to my list and play Drake.", None), ("Tick off milk on my list then the eggs.", None),
+])
+def test_what_the_list_rules_mustnt_catch_is_left_alone(text, tool):
+    # 0003: local rules stay strict.
+    found = LocalIntents(home=HOME, ntfy=SimpleNamespace(just_said=lambda: False)).match(text)
+    assert (found and [action.tool for action in found["actions"]]) == ([tool] if tool else None)
+
+
+@pytest.mark.parametrize("text, action", [
+    ("What's on my shopping list?", Action("read_list", {"list": "my shopping list"})),
+    ("Read me my todo list.", Action("read_list", {"list": "my todo list"})),
+    ("Tick off milk.", Action("tick_off_list", {"item": "milk", "list": None, "command": "tick off milk"})),
+    ("Tick milk off.", Action("tick_off_list", {"item": "milk", "list": None, "command": "tick milk off"})),
+    ("Tick off milk on my shopping list.", Action("tick_off_list", {
+        "item": "milk", "list": "my shopping list", "command": "tick off milk on my shopping list"})),
+    ("Take milk off my shopping list.", Action("tick_off_list", {
+        "item": "milk", "list": "my shopping list", "command": "take milk off my shopping list"})),
+    ("Cross the eggs off the shopping list.", Action("tick_off_list", {
+        "item": "the eggs", "list": "the shopping list", "command": "cross the eggs off the shopping list"})),
+    ("I've got the milk.", Action("tick_off_list", {"item": "milk", "list": None, "command": "i've got the milk"})),
+])
+def test_a_list_is_read_and_things_ticked_off_without_claude(text, action):
+    assert _actions(text) == [action]
+
+
+@pytest.mark.parametrize("text", [
+    "I've got a headache.", "Add milk to my shopping list.", "What's on my shopping list?", "Tick off milk.",
+    "Take milk off my shopping list.",
+])
+def test_without_home_assistant_the_list_rules_leave_it_to_claude(text):
+    # "I've got a headache" is a sentence about the world, which a brain without Home
+    # Assistant would otherwise answer with "Lists need Home Assistant."
+    assert _actions(text, home=None) is None

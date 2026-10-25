@@ -462,3 +462,21 @@ def test_thinking_is_off_and_temperature_only_sent_when_set(llm):
     llm.temperature = 0.7
     llm.process_query("and Spain")
     assert llm.client.requests[-1]["temperature"] == 0.7
+
+
+@pytest.mark.parametrize("said, item, where", [
+    # Claude would split them; offline, they're kept as one thing rather than lost.
+    ("Add eggs, milk and bread to my shopping list.", "eggs milk and bread", "shopping"),
+    ("add milk to notes", "milk", "notes"),
+    ("Add salt and vinegar crisps to the todo list.", "salt and vinegar crisps", "todo"),
+])
+def test_offline_several_things_are_added_as_one(llm, said, item, where):
+    llm.client = FakeClient(_error(anthropic.APIConnectionError))
+    assert llm.process_query(said)["actions"] == [Action("add_to_list", {"item": item, "list": where})]
+
+
+@pytest.mark.parametrize("said", ["Add ten minutes to the timer.", "Add the dentist to my calendar.",
+                                  "Add it to my list.", "Add to my list.", "What should I add to my list?"])
+def test_offline_what_isnt_a_list_isnt_added_to_one(llm, said):
+    llm.client = FakeClient(_error(anthropic.APIConnectionError))
+    assert llm.process_query(said)["actions"] == []

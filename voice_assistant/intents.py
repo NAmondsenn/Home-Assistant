@@ -91,6 +91,18 @@ TIME_LEADS = {"in", "for", "at", "until", "after", "before", "by"}
 # Who for, rather than what: "run me a bath" isn't a script called "me a bath".
 NOT_A_THING = {"me", "us"}
 
+# A list, as it's said - "my shopping list", "notes", "the uni-work list". Which list it is
+# is up to lists.py, which finds it by the user's own words.
+LISTWORDS = r"(?:my |the )?[a-z0-9' -]+?"
+
+# The words for Nova's own things and the devices, which a list's words mustn't have -
+# "add ten minutes to the timer", "put it on my phone" - left to the rules after, or Claude.
+NOT_A_LIST = {"timer", "alarm", "reminder", "calendar", "schedule", "diary", "agenda", "phone", "tablet", "mac",
+              "laptop", "ipad"}
+# Only pointing back, so not a thing to add or tick off - "add that to my list" is Claude's,
+# which knows what "that" was.
+NOT_AN_ITEM = {"it", "that", "this"}
+
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
 DAY = r"(?P<day>today|tonight|tomorrow|this weekend|the weekend|" + "|".join(WEEKDAYS) + ")"
@@ -173,6 +185,10 @@ class LocalIntents:
         self.clock = clock
         self.ntfy = ntfy
         self.home = home
+        # The request as it was said, punctuation and all, while match looks at it - a
+        # session's requests are matched one at a time. "Eggs, milk, bread" has commas,
+        # which the rules never see.
+        self._said = ""
         # Each pattern has to match the whole request, after politeness is taken off.
         self._rules = [
             # "Set of one minute timer" is how Moonshine heard "set a one minute timer"
@@ -244,6 +260,18 @@ class LocalIntents:
              self._batteries),
             (r"(?:send|text) (?:that|it|this) to (?:my phone|me)|text me (?:that|it)"
              r"|(?:send|put) (?:that|it|this) on my phone", self._send_to_phone),
+            # The to-do lists - see lists.py. Assist is asked first for the adding and
+            # ticking off, but only with its own list intents (see ActionExecutor), so
+            # "take milk off my shopping list", which Assist reads as removing it, is only
+            # ever ticked off.
+            (rf"(?:add|put) (?P<item>.+?) (?:to|on|onto) (?P<list>{LISTWORDS})", self._add_to_list),
+            (rf"what(?:'s| is) on (?P<list>{LISTWORDS})", self._read_list),
+            (rf"read (?:me )?(?P<list>{LISTWORDS} list)", self._read_list),
+            (rf"tick (?:off )?(?P<item>.+?)(?: off)?(?: (?:on|from) (?P<list>{LISTWORDS}))?", self._tick_off_list),
+            (rf"(?:take|cross) (?P<item>.+?) off (?P<list>{LISTWORDS})", self._tick_off_list),
+            # "I've got the milk" - and "I've got a headache", which fits nothing on any
+            # list, so Lists leaves it to Claude.
+            (r"i(?:'ve| have) got (?:the |some )?(?P<item>.+)", self._tick_off_list),
             # Anything else of Home Assistant's - switches, media players, scripts and
             # scenes - goes to Assist, last, so that each of Nova's own commands is
             # matched first: "pause" is Nova's music, "pause the TV" Assist's. It's only
@@ -272,6 +300,7 @@ class LocalIntents:
         request = re.sub(r"[^a-z0-9' ]", " ", text.lower())
         request = re.sub(r"\s+", " ", request).strip()
         request = re.sub(POLITE_END, "", re.sub(POLITE_START, "", request)).strip()
+        self._said = text
 
         for pattern, handle in self._rules:
             found = re.fullmatch(pattern, request)
@@ -354,6 +383,37 @@ class LocalIntents:
         # Said to be a question, so that one the guard refuses - "is the garage door
         # open?" - goes to Claude, which can read it, rather than being refused.
         return self._assist(found, question=True)
+
+    def _listed(self, found, tool: str, item: Optional[str] = None) -> Optional[Dict]:
+        """
+        A list's action - None without Home Assistant, for a thing which only points back, or
+        for list words naming one of Nova's own things or a device, or joining two requests.
+        """
+        said = found.groupdict().get("list")
+        words = (said or "").split()
+        # Singular, so "my reminders" is a reminder too.
+        if (self.home is None or item in NOT_AN_ITEM or any(re.sub(r"s$", "", word) in NOT_A_LIST for word in words)
+                or {"and", "then", "plus"} & set(words)):
+            return None
+        params = {"list": said} if item is None else {"item": item, "list": said, "command": found.string}
+        return self._result("Okay.", [Action(tool, params)])
+
+    def _add_to_list(self, found) -> Optional[Dict]:
+        # Several things at once - "eggs, milk and bread" - are Claude's, which splits
+        # them, as is "salt and vinegar crisps", which it keeps whole.
+        words = found["item"].split()
+        # The thing as said, to see the commas between its words - but not one before
+        # "please", as in "add milk to my list, please".
+        as_said = re.search("[^a-z0-9']+".join(map(re.escape, words)), self._said.lower())
+        if "and" in words or as_said is None or "," in as_said.group():
+            return None
+        return self._listed(found, "add_to_list", found["item"])
+
+    def _read_list(self, found) -> Optional[Dict]:
+        return self._listed(found, "read_list")
+
+    def _tick_off_list(self, found) -> Optional[Dict]:
+        return self._listed(found, "tick_off_list", found["item"])
 
     def _calendar(self, found) -> Dict:
         first, days = calendar_days(found["day"], date.today())

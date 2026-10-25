@@ -176,7 +176,8 @@ class Session:
         # alarms ring on the satellite they were set from.
         self.actions = ActionExecutor(music=self.music_player, clock=brain.clock, volume=self.volume,
                                       weather=brain.weather, home=self.home, memory=brain.memory,
-                                      ntfy=brain.ntfy, satellite=satellite.name, batteries=brain.batteries)
+                                      ntfy=brain.ntfy, satellite=satellite.name, batteries=brain.batteries,
+                                      lists=brain.lists)
 
         # The everyday commands handled without Claude - see intents.py.
         self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home)

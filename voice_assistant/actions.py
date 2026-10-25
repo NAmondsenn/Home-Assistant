@@ -42,6 +42,7 @@ UNAVAILABLE = {
     "memory": "I can't remember things right now.",
     "ntfy": "Notifications aren't set up yet.",
     "batteries": "Battery levels need Home Assistant.",
+    "lists": "Lists need Home Assistant.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -214,11 +215,18 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
     return declare
 
 
+def _things(items: Any) -> List[str]:
+    """The things the model gave, if it gave a list of them, e.g. ["eggs", "milk"] - else none."""
+    if not isinstance(items, list):
+        return []
+    return [item.strip() for item in items if isinstance(item, str) and item.strip()]
+
+
 class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
     def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
-                 satellite: Optional[str] = None, batteries=None):
+                 satellite: Optional[str] = None, batteries=None, lists=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -234,6 +242,8 @@ class ActionExecutor:
                 ring where they were set - or None for none in particular.
             batteries: BatteryWatcher, for asking how full the batteries are, or None
                 if Home Assistant isn't set up.
+            lists: Lists, for Home Assistant's to-do lists, or None if Home Assistant
+                isn't set up.
         """
         self.music = music
         self.clock = clock
@@ -244,6 +254,7 @@ class ActionExecutor:
         self.ntfy = ntfy
         self.satellite = satellite
         self.batteries = batteries
+        self.lists = lists
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -960,6 +971,113 @@ class ActionExecutor:
         except (TypeError, ValueError):
             return {"success": False, "message": "I didn't catch which day you meant."}
         return read(first, max(1, min(int(days or 1), MOST_CALENDAR_DAYS)))
+
+    # Lists - see lists.py
+
+    def _assist_first(self, command: Optional[str], intent: str) -> Optional[Dict]:
+        """
+        Asks Assist to do a list sentence, but only with the one intent live check 1 found
+        for it - so "take milk off my shopping list", which Assist reads as removing it, is
+        never sent.
+
+        Args:
+            command: The request as the local rule had it, or None from the offline fallback.
+            intent: The intent Assist may act on it with, e.g. "HassListAddItem".
+
+        Returns:
+            What Assist said, or None for Nova to do it itself - when Assist wouldn't act
+            on it with that intent, on a list, or Home Assistant couldn't be reached before
+            anything was sent. Or when the guard refused it, as for "add a door lock to my
+            shopping list": Nova's own lists only ever call todo services.
+        """
+        if not command:
+            return None
+        reply = self.home.command(command, wider=True, only=(intent,))
+        if reply.get("not_understood") or reply.get("refused"):
+            return None
+        # Said, not chimed: a list changing isn't seen or heard, as a light's is.
+        return {key: value for key, value in reply.items() if key != "chime"}
+
+    @staticmethod
+    def _unreached(reply: Dict, said: Optional[str]) -> Dict:
+        """
+        A list's failure to reach Home Assistant, as Claude's when no list was named - "I've
+        got a headache" is ticking something off to the local rule, but a sentence about the
+        world mustn't end at "I can't reach Home Assistant".
+        """
+        if not reply.get("success") and reply.get("message") == CANT_REACH and not said:
+            return {**reply, "not_understood": True}
+        return reply
+
+    @tool(
+        "Add a thing to a list.",
+        needs="lists",
+        required=["item"],
+        for_model=False,
+        item={"type": "string", "description": "The thing, as the user said it."},
+        list={"type": "string", "description": "The list, as the user said it, or left out for the main one."},
+        command={"type": "string", "description": "The request, for Assist to be asked first."},
+    )
+    def add_to_list(self, item: Optional[str] = None, list: Optional[str] = None, command: Optional[str] = None):
+        if not item:
+            return {"success": False, "message": "I didn't catch what to add."}
+        return self._assist_first(command, "HassListAddItem") or self.lists.add([item], list)
+
+    @tool(
+        "Read a list.",
+        needs="lists",
+        for_model=False,
+        list={"type": "string", "description": "The list, as the user said it, or left out for the main one."},
+    )
+    def read_list(self, list: Optional[str] = None):
+        # Always Nova's own, which says what's on it in a way that can be listened to.
+        return self.lists.read(list)
+
+    @tool(
+        "Tick a thing off a list.",
+        needs="lists",
+        required=["item"],
+        for_model=False,
+        item={"type": "string", "description": "The thing, as the user said it."},
+        list={"type": "string", "description": "The list, as the user said it, or left out to look through all."},
+        command={"type": "string", "description": "The request, for Assist to be asked first."},
+    )
+    def tick_off_list(self, item: Optional[str] = None, list: Optional[str] = None, command: Optional[str] = None):
+        if not item:
+            return {"success": False, "message": "I didn't catch what to tick off."}
+        # Anything else Assist would read it as - HassTurnOn, for "tick off milk on my
+        # shopping list" - isn't sent, so Nova ticks it off. What Assist itself said is
+        # never Claude's, as once sent it may have ticked it off.
+        return self._assist_first(command, "HassListCompleteItem") or self._unreached(self.lists.tick_off(item, list),
+                                                                                       list)
+
+    @tool(
+        "Add things to, read, or tick things off one of the user's to-do lists in Home Assistant. Split several "
+        "things into separate items, but keep one thing whole ('salt and vinegar crisps'). Leave list out for their "
+        "main list. What happened is said for you, so just reply 'Okay.'",
+        needs="lists",
+        required=["action"],
+        action={"type": "string", "enum": ["add", "read", "tick_off"]},
+        items={
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The things to add or tick off, each as the user said it, e.g. ['eggs', 'milk', 'bread'].",
+        },
+        list={"type": "string", "description": "The list, as the user said it, e.g. 'shopping' or 'notes'."},
+    )
+    def manage_list(self, action: Optional[str] = None, items: Optional[List[str]] = None,
+                    list: Optional[str] = None):
+        if action == "read":
+            return self.lists.read(list or None)
+        things = _things(items)
+        if action not in ("add", "tick_off") or not things:
+            return {"success": False, "message": "I didn't catch what to do with the list."}
+        if action == "add":
+            return self.lists.add(things, list or None)
+        # One at a time, as each is found on the list by its own words.
+        replies = [self.lists.tick_off(thing, list or None) for thing in things]
+        return {"success": all(reply["success"] for reply in replies),
+                "message": " ".join(reply["message"] for reply in replies)}
 
     # Memory
 

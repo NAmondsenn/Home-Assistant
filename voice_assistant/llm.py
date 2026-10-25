@@ -23,6 +23,7 @@ import anthropic
 from anthropic import Anthropic
 from voice_assistant.actions import Action, bare_acknowledgement
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.intents import NOT_A_LIST, NOT_AN_ITEM
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant import network
 
@@ -649,6 +650,16 @@ class LLMHandler:
         if words & {"light", "lights", "lamp", "lamps"} and words & {"on", "off"}:
             joined = bool(words & {"and", "then", "plus"}) or "," in user_text
             return Action("control_home", {"command": user_text, "wider": joined})
+
+        # "Add X to my Y list", with X kept whole - "eggs, milk and bread" is one thing,
+        # which Claude would have split, rather than none. Nova's own things and the devices
+        # aren't lists, as with the local rule.
+        said = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' -]", " ", user_lower)).strip()
+        listed = re.fullmatch(r"(?:please |can you |could you )?add (?P<item>.+?) to (?:my |the )?"
+                              r"(?P<list>[a-z0-9' -]+?)(?: list)?(?: please)?", said)
+        if listed and listed["item"] not in NOT_AN_ITEM and not any(
+                re.sub(r"s$", "", word) in NOT_A_LIST for word in listed["list"].split()):
+            return Action("add_to_list", {"item": listed["item"], "list": listed["list"]})
 
         # If no specific action is detected, return None
         return None
