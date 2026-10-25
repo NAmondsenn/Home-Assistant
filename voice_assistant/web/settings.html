@@ -27,7 +27,8 @@
           <span class="core"></span>
         </div>
         <div>
-          <h1 class="name">Nova</h1>
+          <!-- With more than one satellite, which one the page looks after: "Nova · bedroom". -->
+          <h1 class="name">Nova<span class="whose" hidden></span></h1>
           <p class="doing" id="doing">Waiting for “Hey Nova”</p>
         </div>
       </div>
@@ -82,6 +83,8 @@
         </ul>
         <h3 class="subheading">Recent problems</h3>
         <ul class="list problems" id="problems"></ul>
+        <button type="button" class="button quiet" id="problems-all" aria-controls="problems" aria-expanded="false"
+                hidden>Show all</button>
       </section>
 
       <section aria-labelledby="music-title">
@@ -139,7 +142,7 @@
       </section>
 
       <section aria-labelledby="devices-title">
-        <h2 class="heading" id="devices-title"><svg class="icon" aria-hidden="true"><use href="#i-bulb"></use></svg>Devices</h2>
+        <h2 class="heading" id="devices-title"><svg class="icon" aria-hidden="true"><use href="#i-bulb"></use></svg><span class="title">Devices<span class="whose" hidden></span></span></h2>
         <ul class="list lights" id="lights"></ul>
       </section>
 
@@ -257,14 +260,14 @@
       </section>
 
       <section aria-labelledby="sound-title">
-        <h2 class="heading" id="sound-title"><svg class="icon" aria-hidden="true"><use href="#i-sound"></use></svg>Sound</h2>
+        <h2 class="heading" id="sound-title"><svg class="icon" aria-hidden="true"><use href="#i-sound"></use></svg><span class="title">Sound<span class="whose" hidden></span></span></h2>
         <div class="tiles single" id="volumes"></div>
         <p class="panel note" id="volumes-missing" hidden>This satellite isn't connected, so its volumes can't be changed.</p>
         <p class="hint">As you drag, Nova beeps at the new level, so you can hear how loud it is.</p>
       </section>
 
       <section aria-labelledby="clock-title">
-        <h2 class="heading" id="clock-title"><svg class="icon" aria-hidden="true"><use href="#i-alarm"></use></svg>Timers and alarms</h2>
+        <h2 class="heading" id="clock-title"><svg class="icon" aria-hidden="true"><use href="#i-alarm"></use></svg><span class="title">Timers and alarms<span class="whose" hidden></span></span></h2>
         <ul class="list" id="clock"></ul>
         <form class="panel add" id="add-alarm">
           <label class="field"><span>New alarm at</span>

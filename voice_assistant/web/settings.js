@@ -61,6 +61,10 @@ const COOL_WHITE = [214, 230, 255];
 // How many playlists are offered before the rest are tucked behind a button.
 const MOST_PLAYLISTS = 12;
 
+// How many of the recent problems are shown, each cut to two lines, before "Show all" -
+// enough to see whether anything's wrong without scrolling past eight on a phone.
+const FEWEST_PROBLEMS = 3;
+
 // Said in the Music section when there's no player and Nova doesn't say why.
 const NO_PLAYER = "Nova has no music player set up. Choose one in Settings, under Music.";
 
@@ -119,6 +123,11 @@ const lights = {};
 let music = null;
 let musicAt = 0;
 let allPlaylists = false;
+
+// The recent problems, newest first, as /api/state last said - and whether all of them are
+// shown, whole.
+let recentProblems = [];
+let allProblems = false;
 
 // What /api/home last said.
 let home = null;
@@ -469,7 +478,15 @@ function showStatus(status) {
     notifications(status.ntfy),
   ].map(tile));
 
-  const problems = status.problems.map((problem) => {
+  recentProblems = status.problems;
+  showProblems();
+}
+
+// The latest few problems, each cut to two lines, or all of them whole. "Show all" is
+// offered while any are left out or cut short - so one long problem can still be read.
+function showProblems() {
+  const shown = allProblems ? recentProblems : recentProblems.slice(0, FEWEST_PROBLEMS);
+  const problems = shown.map((problem) => {
     const serious = problem.level !== "warning";
     const row = element("li");
     const what = element("span", undefined, "what");
@@ -479,7 +496,14 @@ function showStatus(status) {
     row.append(dot(serious ? "bad" : "warning"), what, when);
     return row;
   });
-  document.getElementById("problems").replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
+  const list = document.getElementById("problems");
+  list.classList.toggle("clamped", !allProblems);
+  list.replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
+  const cut = [...list.querySelectorAll(".what")].some((what) => what.scrollHeight > what.clientHeight);
+  const all = document.getElementById("problems-all");
+  all.hidden = !allProblems && recentProblems.length <= FEWEST_PROBLEMS && !cut;
+  all.textContent = allProblems ? "Show fewer" : "Show all";
+  all.setAttribute("aria-expanded", String(allProblems));
 }
 
 // Each satellite, which is the default, and whether it's connected - with a way to
@@ -521,6 +545,15 @@ function showSatellites(state) {
     : "No satellites have been added.";
   drawIfChanged("satellites", [satellites, none], () => document.getElementById("satellites").replaceChildren(
     ...(rows.length ? rows : [emptyRow(none)])));
+
+  // With more than one, the one looked after is named at the top, and over the sections
+  // which are its own: "Nova · bedroom", "Sound · bedroom". The dot's held to the name, so
+  // a line too narrow for both breaks before it, not after.
+  const whose = satellites.length > 1 && state.satellite ? ` ·\u00a0${state.satellite}` : "";
+  for (const shown of document.querySelectorAll(".whose")) {
+    shown.textContent = whose;
+    shown.hidden = !whose;
+  }
 
   const choice = document.getElementById("satellite-choice");
   choice.hidden = satellites.length < 2;
@@ -1945,6 +1978,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.getElementById("password-close").addEventListener("click", closePassword);
+
+  document.getElementById("problems-all").addEventListener("click", () => {
+    allProblems = !allProblems;
+    showProblems();
+  });
 
   document.getElementById("add-alarm").addEventListener("submit", async (event) => {
     event.preventDefault();
