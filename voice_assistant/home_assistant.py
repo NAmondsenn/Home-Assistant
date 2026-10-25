@@ -260,11 +260,13 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 
 # Addresses, looked for anywhere in a state: an IPv4 one, with or without a port or a
 # prefix - "10.0.0.2:8080", "10.0.0.0/24" - and a hardware (MAC) one, as "aa:bb:cc:dd:ee:ff",
-# "AA-BB-CC-DD-EE-FF" or 12 hex digits run together. Four numbers alone make an IPv4
+# "AA-BB-CC-DD-EE-FF" or 12 hex digits run together with a letter among them - twelve
+# digits alone are more likely a count, e.g. bytes used. Four numbers alone make an IPv4
 # address here, whether or not each is under 256.
 IPV4_ADDRESS = re.compile(r"(?<![\d.])\d{1,3}(\.\d{1,3}){3}(?!\d)")
-HARDWARE_ADDRESS = re.compile(r"(?<![0-9a-f])([0-9a-f]{2}([:-][0-9a-f]{2}){5}|[0-9a-f]{12})(?![0-9a-f])",
-                              re.IGNORECASE)
+HARDWARE_ADDRESS = re.compile(
+    r"(?<![0-9a-f])([0-9a-f]{2}([:-][0-9a-f]{2}){5}|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])",
+    re.IGNORECASE)
 # A run of hex digits and colons, each tried as an IPv6 address - "fe80::1" in "[fe80::1]".
 # A time, "12:30:45", isn't one.
 MAYBE_IPV6 = re.compile(r"[0-9a-f:]*:[0-9a-f:]*", re.IGNORECASE)
