@@ -765,7 +765,43 @@ def test_a_device_with_no_notify_service_says_so():
     assert executor.execute(Action("send_to_phone", {"device": "kettle"})).say == "I haven't got a device called that."
     lonely = ActionExecutor(ntfy=FakeNtfy())
     lonely.last_answer = ("asked", "said")
-    assert lonely.execute(Action("send_to_phone", {"device": "mac"})).say == "Sending to your Mac needs Home Assistant."
+    assert lonely.execute(Action("send_to_phone", {"device": "mac"})).say == "Sending to your mac needs Home Assistant."
+
+
+@pytest.mark.parametrize("word", ["phone", "my phone", "Mobile"])
+def test_the_phone_is_ntfy_without_asking_home_assistant(word):
+    class Down(FakeAppHome):
+        def app_devices(self):
+            raise requests.ConnectionError("down")
+
+    # An ntfy-only brain, Home Assistant down, and a phone Home Assistant doesn't know.
+    for home in (None, Down([]), FakeAppHome([_mac()])):
+        ntfy = FakeNtfy()
+        executor = ActionExecutor(home=home, ntfy=ntfy)
+        executor.last_answer = ("asked", "said")
+        assert executor.execute(Action("send_to_phone", {"device": word})).say == "Sent."
+        assert len(ntfy.sent) == 1
+
+
+def test_the_phones_among_those_found_go_by_ntfy_and_the_rest_by_notify():
+    home = FakeAppHome([_app_device(), _mac()])
+    ntfy = FakeNtfy()
+    executor = ActionExecutor(home=home, ntfy=ntfy)
+    executor.last_answer = ("asked", "said")
+    # "s25" is the phone, "macbook" the Mac, and "pro" only the Mac.
+    assert executor.execute(Action("send_to_phone", {"device": "s25"})).say == "Sent."
+    assert (len(ntfy.sent), home.sent) == (1, [])
+    assert executor.execute(Action("send_to_phone", {"device": "pro"})).say == "Sent."
+    assert (len(ntfy.sent), len(home.sent)) == (1, 1)
+
+
+def test_a_partial_send_says_which_device_got_it():
+    air = _app_device("macbook-air", "Apple", "Mac15,2", notify=None, tracker="home")
+    executor = ActionExecutor(home=FakeAppHome([_mac(), air]))
+    executor.last_answer = ("asked", "said")
+    result = executor.execute(Action("send_to_phone", {"device": "mac"}))
+    assert (result.ok, result.confirm, result.say) == (
+        False, "speak", "Sent to your MacBook Pro. Your MacBook Air hasn't got the Home Assistant app's notifications.")
 
 
 def test_send_to_phone_is_offered_with_ntfy_or_home_assistant():

@@ -27,7 +27,7 @@ import requests
 from voice_assistant import network
 from voice_assistant.batteries import HOME_FAILURES, find, said
 from voice_assistant.devices import AppDevice, ring_call, said_as, where
-from voice_assistant.home_assistant import CANT_REACH, NotAllowed
+from voice_assistant.home_assistant import CANT_REACH, HomeAssistant, NotAllowed
 from voice_assistant.lists import NO_ANSWER, names_list
 
 # Logger setup
@@ -195,8 +195,9 @@ def bare_acknowledgement(text: str) -> bool:
     return _words(text) in BARE_ACKNOWLEDGEMENTS
 
 
-def tool(description: str, needs: Union[str, Tuple[str, ...], None] = None, required: Sequence[str] = (), for_model: bool = True,
-         reads: bool = False, private: bool = False, **parameters: Dict[str, Any]) -> Callable:
+def tool(description: str, needs: Union[str, Tuple[str, ...], None] = None, required: Sequence[str] = (),
+         for_model: bool = True, reads: bool = False, private: bool = False,
+         **parameters: Dict[str, Any]) -> Callable:
     """
     Declares an ActionExecutor method as a tool the model can call.
 
@@ -1249,20 +1250,52 @@ class ActionExecutor:
             Whether Home Assistant took it, and what to say: "Ringing your phone.", or why not.
         """
         word = said_as(device)
-        if device.notify is None:
-            return False, f"Your {word} can't be rung - it hasn't got the Home Assistant app's notifications."
         call = ring_call(device)
-        try:
-            self.home.notify(device.notify, call["message"], data=call["data"])
-        except requests.Timeout as e:
+        outcome, error = self._notify(device, "ring", call["message"], data=call["data"])
+        if outcome == "taken":
+            return True, f"Ringing your {word}."
+        if outcome == "no service":
+            return False, f"Your {word} can't be rung - it hasn't got the Home Assistant app's notifications."
+        if outcome == "unanswered":
             # Sent, but unanswered - so it may well be ringing.
-            logger.warning(f"Home Assistant didn't answer in time ringing the {device.name}: {e}")
             return False, f"{NO_ANSWER}, so I can't tell whether your {word} rang."
+        if outcome == "token":
+            return False, HomeAssistant._failure_message(error)
+        return False, f"I couldn't ring your {word}."
+
+    def _notify(self, device: AppDevice, doing: str, message: str, title: Optional[str] = None,
+                data: Optional[Dict] = None) -> Tuple[str, Optional[Exception]]:
+        """
+        Sends a device a notification through its notify service - one place for ringing
+        and sending, so what each says of a failure can't drift apart.
+
+        Args:
+            device: The device.
+            doing: What for, for the log only, e.g. "ring".
+            message: The message.
+            title: Its title, or None.
+            data: What else the app is given, or None.
+
+        Returns:
+            "taken" once Home Assistant took it, "no service" if the device hasn't got a notify
+            service, "unanswered" if Home Assistant didn't answer in time, "token" if it
+            refused Nova's token, else "failed" - with the error, if there was one.
+        """
+        if device.notify is None:
+            return "no service", None
+        try:
+            self.home.notify(device.notify, message, title=title, data=data)
+        except requests.Timeout as e:
+            logger.warning(f"Home Assistant didn't answer in time to {doing} the {device.name}: {e}")
+            return "unanswered", e
         except (requests.RequestException, NotAllowed) as e:
-            logger.warning(f"Couldn't ring the {device.name}: {e}")
-            return False, f"I couldn't ring your {word}."
-        logger.info(f"Rang the {device.name}")
-        return True, f"Ringing your {word}."
+            logger.warning(f"Couldn't {doing} the {device.name}: {e}")
+            if getattr(getattr(e, "response", None), "status_code", None) == 401:
+                return "token", e
+            return "failed", e
+        # Never the words, which may be the user's alone.
+        logger.info(f"Notified the {device.name} to {doing}")
+        return "taken", None
 
     # Notifications
 
@@ -1277,20 +1310,25 @@ class ActionExecutor:
         title={"type": "string", "description": "A few words saying what it is, e.g. 'Pancake recipe'."},
         device={"type": "string", "description": "Which device, if not their phone, e.g. 'mac' or 'tablet'."},
     )
-    def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None, device: Optional[str] = None):
+    def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None,
+                      device: Optional[str] = None):
+        asked = (device or "").strip().lower()
+        # The phone is ntfy whatever Home Assistant is doing, so it's never looked up.
+        phone_only = asked in ("", "phone", "my phone", "mobile")
         found = []
-        if device:
+        if not phone_only:
             if self.home is None:
-                return {"success": False, "message": "Sending to your Mac needs Home Assistant."}
+                return {"success": False, "message": f"Sending to your {asked} needs Home Assistant."}
             try:
-                found = find([AppDevice.from_home(app) for app in self.home.app_devices()], device)
+                found = find([AppDevice.from_home(app) for app in self.home.app_devices()], asked)
             except HOME_FAILURES as e:
                 logger.warning(f"Couldn't read the Home Assistant app's devices: {e}")
                 return {"success": False, "message": CANT_REACH}
             if not found:
                 return {"success": False, "message": "I haven't got a device called that."}
-        # Only the phone itself goes by ntfy, as it always has.
-        by_ntfy = not found or all(app_device.phone for app_device in found)
+        # Any phones among them go by ntfy, as the phone always has; the rest by notify.
+        by_ntfy = phone_only or any(app_device.phone for app_device in found)
+        others = [app_device for app_device in found if not app_device.phone]
         if by_ntfy and self.ntfy is None:
             return {"success": False, "message": UNAVAILABLE["ntfy"]}
         if by_ntfy and not self.ntfy.phone:
@@ -1298,19 +1336,27 @@ class ActionExecutor:
         if not text:
             if self.last_answer is None:
                 return {"success": False, "message": "There's nothing to send yet."}
-            asked, text = self.last_answer
-            title = title or asked
+            asked_for, text = self.last_answer
+            title = title or asked_for
         title = (title or "From Nova")[:100]
+
+        sent, failed = [], []
         if by_ntfy:
             if self.ntfy.send(self.ntfy.phone, text, title=title):
-                return {"success": True, "message": "Sent.", "chime": True}
-            return {"success": False, "message": "I couldn't reach your notifications."}
-
-        failed = [message for message in (self._send_to(app_device, text, title) for app_device in found)
-                  if message]
-        if failed:
-            return {"success": False, "message": " ".join(failed)}
-        return {"success": True, "message": "Sent.", "chime": True}
+                sent.append("phone")
+            else:
+                failed.append("I couldn't reach your notifications.")
+        for app_device in others:
+            failure = self._send_to(app_device, text, title)
+            if failure:
+                failed.append(failure)
+            else:
+                sent.append(app_device.name)
+        if not failed:
+            return {"success": True, "message": "Sent.", "chime": True}
+        # Which got it matters when only some did, so it isn't sent again to those.
+        got = f"Sent to your {' and your '.join(sent)}. " if sent else ""
+        return {"success": False, "message": got + " ".join(failed)}
 
     def _send_to(self, device: AppDevice, text: str, title: str) -> Optional[str]:
         """
@@ -1324,20 +1370,16 @@ class ActionExecutor:
         Returns:
             None once Home Assistant took it, else what to say of why not.
         """
-        if device.notify is None:
+        outcome, error = self._notify(device, "send to", text, title=title)
+        if outcome == "taken":
+            return None
+        if outcome == "no service":
             return f"Your {device.name} hasn't got the Home Assistant app's notifications."
-        try:
-            self.home.notify(device.notify, text, title=title)
-        except requests.Timeout as e:
-            # Sent, but unanswered - so it may well have arrived.
-            logger.warning(f"Home Assistant didn't answer in time sending to the {device.name}: {e}")
+        if outcome == "unanswered":
             return f"{NO_ANSWER}, so I can't tell whether that was sent to your {device.name}."
-        except (requests.RequestException, NotAllowed) as e:
-            logger.warning(f"Couldn't send to the {device.name}: {e}")
-            return f"I couldn't send that to your {device.name}."
-        # Never the words, which may be the user's alone.
-        logger.info(f"Sent a notification to the {device.name}")
-        return None
+        if outcome == "token":
+            return HomeAssistant._failure_message(error)
+        return f"I couldn't send that to your {device.name}."
 
     @tool(
         "Read out the notifications which came in without being said - at night, or while "

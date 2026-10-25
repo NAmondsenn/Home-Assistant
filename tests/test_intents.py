@@ -397,6 +397,13 @@ def test_sending_to_the_mac_and_tablet_is_done_without_claude(text, device):
     assert _actions(text, home=None) is None
 
 
+def test_the_send_to_device_rule_comes_before_assists_shapes():
+    rules = LocalIntents(home=HOME)._rules
+    sending = [n for n, (pattern, _) in enumerate(rules) if "(?P<device>mac|macbook|laptop|tablet|ipad)" in pattern]
+    assisting = [n for n, (_, handle) in enumerate(rules) if getattr(handle, "__name__", "") in ("_assist", "_ask")]
+    assert len(sending) == 1 and assisting and sending[0] < min(assisting)
+
+
 @pytest.mark.parametrize("text", [
     "Send that to my Mac mini in the loft",
     "Put it on my iPad's list",

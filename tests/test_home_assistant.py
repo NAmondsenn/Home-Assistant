@@ -2518,6 +2518,38 @@ def test_ringing_is_only_said_once_home_assistant_answered_it(make_home):
     assert "Ringing" not in result.say
 
 
+MAC_SERVICES = [{"domain": "notify", "services": {"mobile_app_macbook_pro": {}}}]
+
+
+def _sends(make_home, answer, action="send_to_phone", **params):
+    """What an action says, going through the real notify and _call_service to the Mac, which answer so."""
+    mac = _rendered_app_device("devmac", "MacBook Pro", maker="Apple", model="Mac16,8")
+    home = make_home({"/api/template": FakeResponse(json.dumps([mac])), "/api/services": MAC_SERVICES,
+                      "/api/services/notify/mobile_app_macbook_pro": answer})
+    executor = ActionExecutor(home=home)
+    executor.last_answer = ("asked", "said")
+    result = executor.execute(Action(action, {"device": "mac", **params}))
+    assert home._session.requests[-1][1] == "/api/services/notify/mobile_app_macbook_pro"
+    return result
+
+
+def test_sending_is_only_said_once_home_assistant_answered_it(make_home):
+    result = _sends(make_home, [])
+    assert (result.ok, result.say, result.confirm) == (True, "Sent.", "chime")
+    result = _sends(make_home, FakeResponse("", status=500))
+    assert (result.ok, result.say, result.confirm) == (False, "I couldn't send that to your MacBook Pro.", "speak")
+    result = _sends(make_home, requests.Timeout("slow"))
+    assert (result.ok, result.say, result.confirm) == (
+        False, "Home Assistant didn't answer in time, so I can't tell whether that was sent to your MacBook Pro.",
+        "speak")
+
+
+def test_a_refused_token_is_said_for_sending_and_ringing(make_home):
+    token = "Home Assistant didn't accept my token. HA_TOKEN in the .env file needs checking."
+    assert _sends(make_home, FakeResponse("", status=401)).say == token
+    assert _sends(make_home, FakeResponse("", status=401), "find_device", ring=True).say.endswith(token)
+
+
 @pytest.mark.parametrize("ask", ["batteries", "people", "app_devices"])
 @pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("", status=403),
                                     FakeResponse("<html>not JSON</html>")])
