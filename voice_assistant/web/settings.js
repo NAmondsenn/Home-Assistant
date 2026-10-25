@@ -1209,7 +1209,8 @@ function settingField(setting) {
   input.dataset.saved = valueOf(input);
   input.setAttribute("aria-describedby", used.id);
   field.append(about, setting.choices ? selectBox(input) : input.type === "range" ? speedControl(input) : input);
-  if (NIGHT.includes(setting.key)) {
+  // Under the second of the night's two, so it's said once.
+  if (setting.key === NIGHT[1]) {
     const none = element("span", "No quiet hours", "detail night");
     none.id = `${id}-night`;
     none.hidden = true;
@@ -1295,16 +1296,15 @@ function speedControl(slider) {
   return made;
 }
 
-// Says beside the night's two settings when there are no quiet hours, as they're the
-// same - and only then reads it out with them, as a description is read even hidden.
+// Says under the night's second setting when there are no quiet hours, as the two are
+// the same - and only then reads it out with it, as a description is read even hidden.
+// The first has no note of its own, so keeps just when it's used.
 function showNight() {
   const [from, until] = NIGHT.map((key) => document.getElementById(`setting-${key}`));
   if (!from || !until) return;
   const none = from.value === until.value;
-  for (const input of [from, until]) {
-    document.getElementById(`${input.id}-night`).hidden = !none;
-    input.setAttribute("aria-describedby", none ? `${input.id}-used ${input.id}-night` : `${input.id}-used`);
-  }
+  document.getElementById(`${until.id}-night`).hidden = !none;
+  until.setAttribute("aria-describedby", none ? `${until.id}-used ${until.id}-night` : `${until.id}-used`);
 }
 
 // A select with the page's own arrow, the browser's being hidden so it matches the fields.
