@@ -1080,6 +1080,9 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 
 .sign-in .button { min-height: 44px; }
 
+/* Google's, in Calendars and lists, comes straight under the heading. */
+.sign-in.first { margin-top: 0; }
+
 .chips {
   display: flex;
   flex-wrap: wrap;

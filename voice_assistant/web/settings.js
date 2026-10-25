@@ -23,6 +23,10 @@ const HOME_EVERY = 15000;
 // The batteries change slowly, and every look asks Home Assistant, so once a minute.
 const BATTERIES_EVERY = 60000;
 
+// The calendars' sign-in changes only when it's done here or removed in Google, so
+// once a minute too.
+const CALENDARS_EVERY = 60000;
+
 // The least time between volume changes sent while a slider's dragged, in
 // milliseconds - often enough for the beep to keep up with the finger, without
 // asking for every step - and between a light's, which take Home Assistant longer.
@@ -117,6 +121,9 @@ let home = null;
 
 // What /api/batteries last said.
 let batteries = null;
+
+// What /api/calendars said last.
+let calendars = null;
 
 // Whether the save bar offers to restart Nova rather than to save - once a save has
 // something which waits for a restart, while nothing else is waiting to be saved - and
@@ -374,6 +381,7 @@ async function live() {
     loadMusic();
     loadHome();
     loadBatteries();
+    loadCalendars();
   }
   activity = now;
   showActivity();
@@ -811,23 +819,28 @@ function showPlaylists(playlists) {
 // Whether Nova's signed in to Spotify - shown with every satellite away too, as the
 // sign-in is the brain's, for them all.
 function showSpotify() {
-  document.getElementById("spotify").hidden = !music.spotify;
-  if (!music.spotify) return;
-  const signedIn = music.spotify.signed_in;
-  document.getElementById("spotify-said").hidden = !signedIn;
-  document.getElementById("spotify-start").textContent = signedIn ? "Sign in again" : "Sign in to Spotify";
+  showSignIn("spotify", "Spotify", music.spotify);
 }
 
-// Opens Spotify's page in a tab of its own. The tab's made in the click itself, as a
-// phone's Safari blocks one opened once anything's been waited for, and sent to Spotify
-// once Nova says where - or, if the browser refused it, the address is a link to tap.
-async function startSpotify() {
+// A sign-in's panel - "spotify" or "google" - shown only when Nova can sign in there,
+// with whether it is.
+function showSignIn(service, name, state) {
+  document.getElementById(service).hidden = !state;
+  if (!state) return;
+  document.getElementById(`${service}-said`).hidden = !state.signed_in;
+  document.getElementById(`${service}-start`).textContent = state.signed_in ? "Sign in again" : `Sign in to ${name}`;
+}
+
+// Opens the service's page in a tab of its own. The tab's made in the click itself, as a
+// phone's Safari blocks one opened once anything's been waited for, and sent there once
+// Nova says where - or, if the browser refused it, the address is a link to tap.
+async function startSignIn(service) {
   const tab = window.open("", "_blank");
-  // So Spotify's page can't reach back and send this one somewhere else.
+  // So the service's page can't reach back and send this one somewhere else.
   if (tab) tab.opener = null;
   let result;
   try {
-    result = await send("/api/spotify/start", {});
+    result = await send(`/api/${service}/start`, {});
   } catch (error) {
     result = { success: false, message: "Couldn't reach Nova." };
   }
@@ -838,10 +851,42 @@ async function startSpotify() {
   }
   // The tab could have been closed while Nova was asked.
   const opened = Boolean(tab && !tab.closed);
-  document.getElementById("spotify-link").href = result.url;
-  document.getElementById("spotify-link-note").hidden = opened;
+  document.getElementById(`${service}-link`).href = result.url;
+  document.getElementById(`${service}-link-note`).hidden = opened;
   if (opened) tab.location = result.url;
-  document.getElementById("spotify-finish").hidden = false;
+  document.getElementById(`${service}-finish`).hidden = false;
+}
+
+// Finishes a sign-in with the address pasted, then shows the part of the page it's in.
+async function finishSignIn(service, reload) {
+  const address = document.getElementById(`${service}-address`);
+  if (!address.value.trim()) return;
+  await change(`/api/${service}/finish`, { address: address.value }, reload);
+  // Used up whatever the answer, so another try starts afresh.
+  address.value = "";
+  document.getElementById(`${service}-finish`).hidden = true;
+  document.getElementById(`${service}-link-note`).hidden = true;
+}
+
+// Calendars and lists
+
+async function loadCalendars() {
+  try {
+    const response = await fetch("/api/calendars");
+    if (!response.ok) return;
+    calendars = await response.json();
+  } catch (error) {
+    return;
+  }
+  showCalendars();
+}
+
+// Until Google's keys are set, the section says so, and offers no sign-in.
+function showCalendars() {
+  const missing = document.getElementById("calendars-missing");
+  missing.hidden = calendars.available;
+  missing.textContent = calendars.available ? "" : calendars.message;
+  showSignIn("google", "Google", calendars.available ? calendars : null);
 }
 
 // Asks the music to do something, then shows what it's doing now - saying how it went
@@ -1732,16 +1777,15 @@ document.addEventListener("DOMContentLoaded", () => {
     playMusic({ action: music && music.now && music.now.playing ? "pause" : "play" }));
   document.getElementById("previous").addEventListener("click", () => playMusic({ action: "previous" }));
   document.getElementById("next").addEventListener("click", () => playMusic({ action: "skip" }));
-  document.getElementById("spotify-start").addEventListener("click", startSpotify);
-  document.getElementById("spotify-finish").addEventListener("submit", async (event) => {
+  document.getElementById("spotify-start").addEventListener("click", () => startSignIn("spotify"));
+  document.getElementById("spotify-finish").addEventListener("submit", (event) => {
     event.preventDefault();
-    const address = document.getElementById("spotify-address");
-    if (!address.value.trim()) return;
-    await change("/api/spotify/finish", { address: address.value }, loadMusic);
-    // Used up whatever the answer, so another try starts afresh.
-    address.value = "";
-    document.getElementById("spotify-finish").hidden = true;
-    document.getElementById("spotify-link-note").hidden = true;
+    finishSignIn("spotify", loadMusic);
+  });
+  document.getElementById("google-start").addEventListener("click", () => startSignIn("google"));
+  document.getElementById("google-finish").addEventListener("submit", (event) => {
+    event.preventDefault();
+    finishSignIn("google", loadCalendars);
   });
   document.getElementById("play-something").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1781,6 +1825,7 @@ document.addEventListener("DOMContentLoaded", () => {
   every(MUSIC_EVERY, loadMusic);
   every(HOME_EVERY, loadHome);
   every(BATTERIES_EVERY, loadBatteries);
+  every(CALENDARS_EVERY, loadCalendars);
   document.getElementById("also-send-box").addEventListener("change", (event) =>
     changeBattery("/api/batteries/also", { on: event.target.checked }));
 });

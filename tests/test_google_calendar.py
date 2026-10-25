@@ -15,6 +15,9 @@ import logging
 import os
 import re
 import stat
+import subprocess
+import sys
+import threading
 import time
 from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
@@ -26,8 +29,9 @@ import urllib3
 
 from voice_assistant import google_calendar, storage
 from voice_assistant.choices import ChoiceStore
-from voice_assistant.google_calendar import (CANT_REACH_GOOGLE, NEEDS_SIGN_IN, GoogleCalendar, GoogleSignIn,
-                                             SignInNeeded, describe_agenda, describe_found)
+from voice_assistant.google_calendar import (CANT_REACH_GOOGLE, NEEDS_SIGN_IN, ClientRefused, GoogleCalendar,
+                                             GoogleSignIn, GoogleSignInError, SignInNeeded, describe_agenda,
+                                             describe_found)
 from voice_assistant.intents import LocalIntents
 
 CLIENT_ID = "made-up-client.apps.example.com"
@@ -272,81 +276,100 @@ def test_without_a_sign_in_it_needs_doing(token_file):
     assert google.asked == []
 
 
-# The command
+# Signing in, when it goes wrong
 
-def _command(token_file, monkeypatch, capsys, answer):
-    """
-    Sets the sign-in command up to run with Google answering the code with this, and the
-    user pasting back the address for the state it printed.
-
-    Returns:
-        Everything printed before each paste, as it's pasted.
-    """
-    monkeypatch.setattr(google_calendar.paths, "load_secrets", lambda: None)
-    monkeypatch.setattr(google_calendar.paths, "GOOGLE_TOKEN_FILE", token_file)
-    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
-    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", CLIENT_SECRET)
-    google = FakeGoogle(**{google_calendar.TOKEN: [answer]})
-    monkeypatch.setattr(google_calendar.requests, "Session", lambda: google)
-    printed = []
-
-    def paste(prompt=""):
-        # What the user sees before pasting - the address to open, with its state.
-        before = capsys.readouterr().out + prompt
-        printed.append(before)
-        address = next(word for word in before.split() if word.startswith(google_calendar.AUTHORISE))
-        return _pasted(_query(address)["state"])
-
-    monkeypatch.setattr("builtins.input", paste)
-    return printed
-
-
-def test_the_sign_in_command_never_prints_a_secret(token_file, monkeypatch, capsys):
-    printed = _command(token_file, monkeypatch, capsys, _token_answer())
-
-    google_calendar.main([])
-
-    printed.append(capsys.readouterr().out)
-    shown = "".join(printed)
-    assert "The page won't load - that's expected. Copy its address from the address bar and paste it here:" in shown
-    assert "Signed in to Google." in shown
-    for secret in (CLIENT_SECRET, REFRESH_TOKEN, ACCESS_TOKEN, "made-up-code"):
-        assert secret not in shown
-    assert GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=FakeGoogle()).signed_in()
-
-    # Already signed in, it says so and asks nothing, unless told to sign in again.
-    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("Nothing should be asked"))
-    google_calendar.main([])
-    assert "Already signed in to Google" in capsys.readouterr().out
-
-
-def test_a_sign_in_without_every_permission_isnt_kept(token_file, monkeypatch, capsys):
+def test_a_sign_in_without_every_permission_isnt_kept(token_file):
     # Google lets each box on its page be unticked. Kept, the sign-in said "Signed in to
     # Google." - and adding an event would only have failed later, by voice.
     answer = _token_answer()
     answer.body["scope"] = " ".join(google_calendar.SCOPES[:2])
-    _command(token_file, monkeypatch, capsys, answer)
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=FakeGoogle(**{google_calendar.TOKEN: [answer]}))
+    state = _query(sign_in.start())["state"]
 
-    with pytest.raises(SystemExit) as stopped:
-        google_calendar.main([])
+    with pytest.raises(GoogleSignInError) as refused:
+        sign_in.finish(_pasted(state))
 
-    said = str(stopped.value)
+    said = str(refused.value)
     assert "add events to your own calendars" in said and "read your calendars' events" not in said
     assert "sign in again, with every box ticked" in said
     assert not os.path.exists(token_file)
 
 
-def test_a_client_google_doesnt_know_at_the_sign_in_says_to_check_its_keys(token_file, monkeypatch, capsys):
-    # A mistyped GOOGLE_CLIENT_SECRET at first setup said "try again", which never helps.
-    _command(token_file, monkeypatch, capsys, FakeResponse(401, {"error": "invalid_client",
-                                                                 "error_description": "Unauthorized"}))
+def test_a_client_google_doesnt_know_at_the_sign_in_is_told_apart(token_file):
+    # A mistyped GOOGLE_CLIENT_SECRET at first setup, which trying again never helps.
+    google = FakeGoogle(**{google_calendar.TOKEN: [FakeResponse(401, {"error": "invalid_client",
+                                                                      "error_description": "Unauthorized"})]})
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+    state = _query(sign_in.start())["state"]
 
-    with pytest.raises(SystemExit) as stopped:
-        google_calendar.main([])
+    with pytest.raises(ClientRefused):
+        sign_in.finish(_pasted(state))
 
-    said = str(stopped.value)
-    assert "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET" in said and "try again" not in said
-    assert CLIENT_SECRET not in said and not os.path.exists(token_file)
+    assert not os.path.exists(token_file)
+
+
+def test_a_google_sign_in_that_couldnt_be_saved_isnt_said_to_have_worked(token_file, monkeypatch, caplog):
+    def full(path, data, indent=None):
+        raise OSError(28, "No space left on device", path)
+
+    monkeypatch.setattr(google_calendar.storage, "save_json", full)
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file,
+                           session=FakeGoogle(**{google_calendar.TOKEN: [_token_answer()]}))
+    state = _query(sign_in.start())["state"]
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(GoogleSignInError, match="Couldn't save the sign-in - check Nova's data folder."):
+        sign_in.finish(_pasted(state))
+
+    assert not sign_in.signed_in()
+    # Not kept in memory either, as if it had worked until a restart.
+    assert sign_in._access is None
+    for secret in (REFRESH_TOKEN, ACCESS_TOKEN, "made-up-code", CLIENT_SECRET):
+        assert secret not in caplog.text
+
+
+def test_two_google_finishes_at_once_use_the_state_once(token_file):
+    google = FakeGoogle(**{google_calendar.TOKEN: [_token_answer() for _ in range(8)]})
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+    address = _pasted(_query(sign_in.start())["state"])
+    finished = []
+    ready = threading.Barrier(8)
+
+    def finish():
+        ready.wait()
+        try:
+            sign_in.finish(address)
+            finished.append(True)
+        except ValueError:
+            pass
+
+    threads = [threading.Thread(target=finish) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert finished == [True] and len(google.asked) == 1
+
+
+def test_urllib3_never_logs_googles_addresses_whatever_novas_level():
+    # Its debug lines have each address asked for - an events address has a calendar's
+    # id in it, and the user's own is their email address. Run alone, so nothing else
+    # Nova imports has quietened it first.
+    checked = subprocess.run(
+        [sys.executable, "-c", "import logging, voice_assistant.google_calendar; "
+                               "assert not logging.getLogger('urllib3.connectionpool').isEnabledFor(logging.INFO)"],
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), capture_output=True, text=True)
+    assert checked.returncode == 0, checked.stderr
+
+
+def test_nova_says_google_is_signed_in_to_on_the_settings_page():
+    assert NEEDS_SIGN_IN == "I need signing in to Google again. That's done on the settings page."
+
+
+def test_the_command_on_the_brain_is_gone():
+    # The settings page signs in now, so there's no second way in to keep safe.
+    assert not hasattr(google_calendar, "main")
+    assert "__main__" not in inspect.getsource(google_calendar)
 
 
 # Reading the calendars
@@ -661,7 +684,6 @@ def test_a_sign_in_that_needs_doing_again_says_so(make_calendar, token_file):
     calendar.sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=FakeGoogle())
 
     assert calendar.agenda(date(2026, 10, 22), 1) == {"success": False, "message": NEEDS_SIGN_IN}
-    assert NEEDS_SIGN_IN == "I need signing in to Google again. That's done with a command on the brain."
     assert calendar._session.asked == []
 
 

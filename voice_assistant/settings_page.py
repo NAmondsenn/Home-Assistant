@@ -45,6 +45,7 @@ from voice_assistant import paths, storage, timeline
 from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
+from voice_assistant.google_calendar import ClientRefused, GoogleSignInError, SignInNeeded
 from voice_assistant.music import why_no_player
 from voice_assistant.ntfy import RETOPIC
 from voice_assistant.spotify_controller import SpotifySignIn, SpotifySignInError, spotify_oauth
@@ -110,6 +111,10 @@ KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant (an admini
         ("SPOTIFY_CLIENT_ID", "Spotify client ID"), ("SPOTIFY_CLIENT_SECRET", "Spotify client secret"),
         ("GOOGLE_CLIENT_ID", "Google client ID"), ("GOOGLE_CLIENT_SECRET", "Google client secret")]
 OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}
+
+# Said in Calendars and lists, and to a sign-in, until Nova has Google's keys - read as it
+# starts, as the calendar is made then.
+NO_GOOGLE = "Google's client ID and secret go under Keys, then restart Nova."
 
 # The most a request may send, in bytes.
 MOST_BODY = 64 * 1024
@@ -561,6 +566,19 @@ class SettingsPage:
                 devices[-1]["person"] = deciding[battery.id]
         return {"available": True, "also_send_when_said": choices.also_send_when_said, "devices": devices}
 
+    def calendars_state(self) -> Dict:
+        """
+        The Calendars and lists section's calendars: whether Nova is signed in to Google.
+
+        Returns:
+            {"available": True, "signed_in": ...}, or {"available": False, "message": ...}
+            until Google's keys are set and Nova restarted.
+        """
+        calendar = self.brain.calendar
+        if calendar is None:
+            return {"available": False, "message": NO_GOOGLE}
+        return {"available": True, "signed_in": calendar.sign_in.signed_in()}
+
     def _restart_needed(self, saved: Optional[Config]) -> bool:
         """
         Whether anything saved waits for a restart: a key, a setting which differs from
@@ -1004,6 +1022,62 @@ class SettingsPage:
         logger.info(f"Settings page: {who} signed in to Spotify")
         return {"success": True, "message": "Signed in to Spotify."}
 
+    def start_google_sign_in(self, who: str) -> Dict:
+        """
+        Starts signing in to Google, for the calendar.
+
+        Returns:
+            Dict with 'success', and the 'url' of Google's page to sign in on.
+        """
+        calendar = self.brain.calendar
+        if calendar is None:
+            return {"success": False, "message": NO_GOOGLE}
+        url = calendar.sign_in.start()
+        logger.info(f"Settings page: {who} started signing in to Google")
+        return {"success": True, "url": url}
+
+    def finish_google_sign_in(self, address: str, who: str) -> Dict:
+        """
+        Finishes signing in to Google, from the address Google sent the browser to -
+        which isn't logged, as it has the code in it. The calendar uses the sign-in from
+        its next request.
+
+        Args:
+            address: The address, as pasted.
+            who: Whose login it is, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        calendar = self.brain.calendar
+        if calendar is None:
+            return {"success": False, "message": NO_GOOGLE}
+        try:
+            calendar.sign_in.finish(address)
+        except GoogleSignInError as e:
+            logger.info(f"Settings page: {who} couldn't sign in to Google")
+            return {"success": False, "message": str(e)}
+        # As for Spotify, anything else's own words aren't for the page, or the log.
+        except ValueError as e:
+            logger.warning(f"Settings page: {who} couldn't sign in to Google: {type(e).__name__}")
+            return {"success": False, "message": "Google didn't accept that sign-in - start again."}
+        except ClientRefused:
+            # Mistyped at first setup, or the client deleted or its secret made anew - trying again won't help.
+            logger.warning(f"Settings page: Google didn't accept the client ID or secret for {who}'s sign-in")
+            return {"success": False,
+                    "message": "Google didn't accept the client ID or secret - check both under Keys."}
+        except SignInNeeded:
+            logger.info(f"Settings page: Google didn't accept {who}'s sign-in")
+            return {"success": False, "message": "Google didn't accept that sign-in - start again."}
+        except requests.RequestException as e:
+            # Not the error itself, which could quote what Google answered.
+            logger.warning(f"Settings page: couldn't reach Google to sign in: {type(e).__name__}")
+            return {"success": False, "message": "Couldn't reach Google - try again."}
+        # The calendars of the account before are no use if this is another's.
+        calendar.read_list_again()
+        logger.info(f"Settings page: {who} signed in to Google")
+        return {"success": True, "message": "Signed in to Google."}
+
     def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
                   hue=None, saturation=None, kelvin=None, satellite: Optional[str] = None) -> Dict:
         """
@@ -1309,6 +1383,8 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
         body["action"], who, body.get("query", ""), body.get("playlist", ""), body.get("satellite")),
     "/api/spotify/start": lambda page, body, who: page.start_spotify_sign_in(who),
     "/api/spotify/finish": lambda page, body, who: page.finish_spotify_sign_in(body["address"], who),
+    "/api/google/start": lambda page, body, who: page.start_google_sign_in(who),
+    "/api/google/finish": lambda page, body, who: page.finish_google_sign_in(body["address"], who),
     "/api/light": lambda page, body, who: page.set_light(
         body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
         body.get("kelvin"), body.get("satellite")),
@@ -1359,6 +1435,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(page.home_state(satellite))
         elif path == "/api/batteries":
             self._send_json(page.batteries_state())
+        elif path == "/api/calendars":
+            self._send_json(page.calendars_state())
         elif path == "/api/cover":
             # Whatever's playing now - the page adds its id only so a new one is fetched.
             cover = page.cover(satellite)

@@ -7,10 +7,9 @@ sign-in to Google. See docs/decisions/0008.
 The calendar comes straight from Google, not through Home Assistant - the user's
 answer 2 - so Nova signs in to Google itself (decision 10). It asks only for what it
 uses: the list of calendars, and reading and adding events. The sign-in is kept on
-the brain, readable by Nova's user only, never on a satellite. Until the settings
-page can do it, it's done once with a command on the brain, the way Spotify's is:
-
-    runuser -u nova -- venv/bin/python -m voice_assistant.google_calendar
+the brain, readable by Nova's user only, never on a satellite. It's done on the
+settings page, under Calendars and lists - see settings_page.py - in place of 0008's
+command on the brain, so there's only the one way in to keep safe (0009's decision 8).
 
 It's plain HTTPS with requests - an authorisation code with PKCE, from a "Desktop
 app" client of the user's own - rather than a Google library, which would be one more
@@ -25,7 +24,6 @@ a Gym calendar. A calendar named by an email address - the user's own, as Google
 or a person's own shared with them - is never said by it, or told to Claude.
 """
 
-import argparse
 import base64
 import hashlib
 import logging
@@ -46,6 +44,11 @@ from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import spoken_clock_time
 
 logger = logging.getLogger(__name__)
+
+# urllib3's debug lines have each address asked for - an events address has a calendar's
+# id in it, and the user's own is their email address - so they're kept to warnings,
+# whatever Nova's own level.
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # The least that list the calendars, read every calendar's events, and add to the
 # user's own. events.owned could change an event too - Google has no scope that only
@@ -107,7 +110,7 @@ CANT_REACH_GOOGLE = "I can't reach Google's calendar right now."
 NO_ANSWER = "Google didn't answer in time"
 LOST = "I lost Google partway through"
 TROUBLE = "Google had trouble"
-NEEDS_SIGN_IN = "I need signing in to Google again. That's done with a command on the brain."
+NEEDS_SIGN_IN = "I need signing in to Google again. That's done on the settings page."
 
 # Most events said for one day before the rest are only counted.
 MOST_EVENTS_SAID = 5
@@ -153,6 +156,10 @@ class ClientRefused(SignInNeeded):
     """Google doesn't know Nova's OAuth client, or not with that secret."""
 
 
+class GoogleSignInError(ValueError):
+    """A sign-in to Google which didn't work, said as the page says it."""
+
+
 def _challenge(verifier: str) -> str:
     """The S256 code challenge for a PKCE verifier, as RFC 7636 has it."""
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -184,6 +191,10 @@ class GoogleSignIn:
         # The sign-in under way, kept in memory only and used once.
         self._state: Optional[str] = None
         self._verifier: Optional[str] = None
+        # Each request to the page has a thread of its own, so two finishes at once, or a
+        # start between a finish's read and its clear, could otherwise share a state. Not
+        # the access token's lock, which is held while Google's asked for one.
+        self._signing = threading.Lock()
         self._access: Optional[str] = None
         self._access_until = 0.0
         # Several requests at once refresh the access token only once between them.
@@ -196,8 +207,9 @@ class GoogleSignIn:
         Returns:
             The address to open in a browser, to sign in to Google there.
         """
-        self._state = secrets.token_urlsafe()
-        self._verifier = secrets.token_urlsafe(64)
+        state, verifier = secrets.token_urlsafe(), secrets.token_urlsafe(64)
+        with self._signing:
+            self._state, self._verifier = state, verifier
         fields = {
             "client_id": self.client_id,
             "redirect_uri": REDIRECT,
@@ -207,8 +219,8 @@ class GoogleSignIn:
             # when this account has signed Nova in before.
             "access_type": "offline",
             "prompt": "consent",
-            "state": self._state,
-            "code_challenge": _challenge(self._verifier),
+            "state": state,
+            "code_challenge": _challenge(verifier),
             "code_challenge_method": "S256",
         }
         return f"{AUTHORISE}?{urlencode(fields)}"
@@ -224,38 +236,47 @@ class GoogleSignIn:
             pasted: The address, pasted from the browser's address bar.
 
         Raises:
-            ValueError: If the address isn't from the sign-in started, or none was,
-                or it hasn't got Google's code in it - nothing is asked or saved - or
-                if Google wasn't given everything Nova asks for, or gave no sign-in to
-                keep - nothing is saved.
-            SignInNeeded: If Google turned the code or the client down.
+            GoogleSignInError: If the address isn't from the sign-in started, or none
+                was, or it hasn't got Google's code in it - nothing is asked or saved -
+                or if Google wasn't given everything Nova asks for, or gave no sign-in
+                to keep - nothing is saved - or the sign-in couldn't be saved.
+            ValueError: If the address couldn't be read at all, such as "http://[x".
+            SignInNeeded: If Google turned the code down, or ClientRefused, if it
+                doesn't know the client.
             requests.RequestException: If Google couldn't be reached, or refused the code.
         """
-        state, verifier = self._state, self._verifier
-        self._state = self._verifier = None
-        fields = {name: values[0] for name, values in parse_qs(urlsplit(pasted.strip()).query).items()}
+        with self._signing:
+            state, verifier = self._state, self._verifier
+            self._state = self._verifier = None
+        fields = {name: values[0] for name, values in parse_qs(urlsplit(str(pasted).strip()).query).items()}
         # Compared in constant time, so how much of it matched can't be timed - as bytes,
         # since compare_digest won't take a string with "é" in it, and a pasted address
         # could have anything.
         if state is None or not secrets.compare_digest(fields.get("state", "").encode("utf-8"),
                                                        state.encode("ascii")):
-            raise ValueError("That address isn't from this sign-in.")
+            raise GoogleSignInError("That address isn't from this sign-in.")
         if not fields.get("code"):
-            raise ValueError("That address hasn't got Google's code in it.")
+            raise GoogleSignInError("That address hasn't got Google's code in it.")
 
         answer = self._ask_for_token({"grant_type": "authorization_code", "code": fields["code"],
                                       "code_verifier": verifier, "redirect_uri": REDIRECT})
-        if not answer.get("refresh_token"):
-            raise ValueError("Google didn't give Nova a sign-in to keep - try again.")
+        # One that isn't text would be saved, but never read back as a sign-in.
+        if not isinstance(answer.get("refresh_token"), str) or not answer["refresh_token"]:
+            raise GoogleSignInError("Google didn't give Nova a sign-in to keep - try again.")
         # Google lets each box on its page be unticked. A sign-in without adding would only
         # have failed later, by voice.
         granted = answer.get("scope", " ".join(SCOPES)).split()
         missing = [SCOPES_SAID[scope] for scope in SCOPES if scope not in granted]
         if missing:
-            raise ValueError(f"Google didn't let Nova {' or '.join(missing)} - sign in again, "
-                             f"with every box ticked.")
-        storage.save_json(self.path, {"refresh_token": answer["refresh_token"],
-                                      "scope": answer.get("scope", " ".join(SCOPES))})
+            raise GoogleSignInError(f"Google didn't let Nova {' or '.join(missing)} - sign in again, "
+                                    f"with every box ticked.")
+        try:
+            storage.save_json(self.path, {"refresh_token": answer["refresh_token"],
+                                          "scope": answer.get("scope", " ".join(SCOPES))})
+        except OSError as e:
+            # Its words name the file, and why - never the token.
+            logger.error(f"Couldn't save the sign-in to Google: {e}")
+            raise GoogleSignInError("Couldn't save the sign-in - check Nova's data folder.") from None
         with self._lock:
             self._keep(answer)
         logger.info("Signed in to Google")
@@ -486,6 +507,14 @@ class GoogleCalendar:
                            "primary": entry.get("primary") is True, "writable": entry.get("accessRole") == "owner"})
         self._known, self._known_at = listed, time.monotonic()
         return list(listed)
+
+    def read_list_again(self):
+        """
+        Has Google's list of the calendars read afresh when it's next wanted - after a
+        sign-in, which may be another account's. Until then, the activities heard are
+        the last list's.
+        """
+        self._known_at = None
 
     def known(self) -> List[Dict]:
         """The calendars Google listed last, without asking it - none until it's been asked."""
@@ -1333,58 +1362,3 @@ def describe_found(wanted: str, events: List[Dict], today: date) -> str:
     listed = said[0] if len(said) == 1 else "; ".join(said[:-1]) + "; and " + said[-1]
     more = f" And {len(events) - MOST_FOUND} more after that." if len(events) > MOST_FOUND else ""
     return f"You've got {listed}.{more}"
-
-
-def main(argv: Optional[List[str]] = None):
-    """
-    Signs Nova in to Google, once, on the brain, as Nova's user:
-    venv/bin/python -m voice_assistant.google_calendar
-
-    It never prints a token, a code or a calendar's id.
-
-    Args:
-        argv: The command's arguments - sys.argv's, if None.
-
-    Raises:
-        SystemExit: With what went wrong, if the sign-in couldn't be done.
-    """
-    parser = argparse.ArgumentParser(prog="python -m voice_assistant.google_calendar",
-                                     description="Signs Nova in to Google, for the calendar.")
-    parser.add_argument("--again", action="store_true", help="sign in again, even if Nova already is")
-    arguments = parser.parse_args(argv)
-
-    paths.load_secrets()
-    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
-    if not client_id or not client_secret:
-        raise SystemExit("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are needed first - in "
-                         f"{paths.SECRETS_FILE}, or under Keys on the settings page.")
-
-    sign_in = GoogleSignIn(client_id, client_secret, paths.GOOGLE_TOKEN_FILE)
-    if sign_in.signed_in() and not arguments.again:
-        print("Already signed in to Google - nothing to do. Give --again to sign in again.")
-        return
-
-    print("\nOpen this address in a browser, and sign in to Google there:")
-    print(f"{sign_in.start()}\n")
-    pasted = input("The page won't load - that's expected. Copy its address from the address bar "
-                   "and paste it here: ")
-    try:
-        sign_in.finish(pasted)
-    except ValueError as e:
-        raise SystemExit(str(e))
-    except ClientRefused:
-        # Mistyped at first setup, or the client deleted or its secret made anew - trying again won't help.
-        raise SystemExit("Google didn't accept GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET - check both in "
-                         f"{paths.SECRETS_FILE}, or under Keys on the settings page.")
-    except SignInNeeded:
-        raise SystemExit("Google didn't accept that sign-in - try again.")
-    except requests.RequestException:
-        # Not the error itself, which could quote what Google answered.
-        raise SystemExit("Couldn't reach Google, or it refused the sign-in - try again.")
-    print("Signed in to Google.")
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    main()

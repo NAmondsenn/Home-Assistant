@@ -189,15 +189,11 @@ Nova reads your calendars straight from Google, not through Home Assistant, with
    GOOGLE_CLIENT_ID=the-client-id
    GOOGLE_CLIENT_SECRET=the-client-secret
    ```
-4. Sign in once, on the brain, as Nova's user - it prints an address to open in a browser. Google's page then sends the browser to one which won't load; that's expected, and you paste its address back:
 
-   ```bash
-   runuser -u nova -- venv/bin/python -m voice_assistant.google_calendar
-   ```
+   Then restart the brain, which makes the calendar as it starts - the settings page can.
+4. Sign in on the settings page, under Calendars and lists: "Sign in to Google" opens Google's page in a new tab. Google then sends that tab to an address which won't load; that's expected, and you paste that address back on the settings page. It's used from the next question, with no restart. "Sign in again" there signs in as a different account, or after the sign-in was removed in your Google account. Every box on Google's page needs ticking - a sign-in without one of them isn't kept, and says which.
 
-   Already signed in, it says so; `--again` signs in again, as a different account or after the sign-in was removed in your Google account. Every box on Google's page needs ticking - a sign-in without one of them isn't kept, and says which.
-
-Then restart the brain. Every calendar in your Google account's own list is read - one added there later turns up by itself, within five minutes - with each repeating event on each of its days. Nothing of it is kept on the brain: with Google out of reach, Nova says "I can't reach Google's calendar right now", and once the sign-in needs doing again, it says so. `home_assistant.calendars` isn't used any more, and can be deleted from the brain's `config.yaml`.
+Every calendar in your Google account's own list is read - one added there later turns up by itself, within five minutes - with each repeating event on each of its days. Nothing of it is kept on the brain: with Google out of reach, Nova says "I can't reach Google's calendar right now", and once the sign-in needs doing again, it says so. `home_assistant.calendars` isn't used any more, and can be deleted from the brain's `config.yaml`.
 
 Each calendar but your own - Google's primary one - Google's own (holidays, your contacts' birthdays) and one named by an email address, as a person's own shared with you is, is an activity, by its name: with a Work calendar, "what time do I have work tomorrow?" reads that calendar alone, and every event on it is work, whatever it's called - bar an all-day one, which "what's on" says by its own name. A Gym calendar is "when's gym tomorrow?" once Nova has read Google's list with it in - at start, and when the calendar's asked about once the list is five minutes old. "Working" and "shifts" mean Work, and "lectures" and "classes" Uni; a name of two words is heard by its first too - "uni" for "Uni timetable" - unless another starts with it, and in "when's uni?" or "am I at uni?" only with a day after it. A calendar named like one of Nova's own things, such as Timer or Music, is left to Claude, so it never takes over Nova's own command. Which are activities can be changed by calendar id in the brain's `calendars.json`, in Nova's data folder - `"activities": {"the-calendar-id": true}` makes one an activity, `false` takes one away - then restart the brain, which reads it as it starts. A calendar named by an email address is never said by it, or told to Claude: your own, which Google names by yours, is "your calendar", and any other "a shared calendar" - switched on as an activity, it's said that way too, but can't be asked about by name. `home_assistant.activities` isn't used any more either, and can be deleted.
 

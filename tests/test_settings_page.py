@@ -26,8 +26,9 @@ from voice_assistant import logging_setup, paths
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant import clock as clock_module
 from voice_assistant import settings_page as page_module
-from voice_assistant import spotify_controller
+from voice_assistant import google_calendar, spotify_controller
 from voice_assistant.brain import Brain
+from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
 from voice_assistant.ntfy import Ntfy
@@ -215,7 +216,7 @@ class FakeBrain:
         self.sessions = sessions
         self.known = list(sessions) if known is None else known
         self.clock, self.memory = FakeClock(), FakeMemory()
-        self.ntfy = self.stt = self.routines = self.batteries = self.config = None
+        self.ntfy = self.stt = self.routines = self.batteries = self.config = self.calendar = None
         self._night = Ntfy("")
         self.ran = []
         for name, part in parts.items():
@@ -563,6 +564,156 @@ def test_the_page_signs_in_to_spotify(spotify, monkeypatch, caplog):
         assert "signed in to Spotify" in caplog.text
     finally:
         page.stop()
+
+
+class FakeTokenAnswer:
+    """An answer from Google's token address, as its OAuth reference gives it."""
+
+    def __init__(self, status, body):
+        self.status_code = status
+        self.body = body
+
+    def json(self):
+        return self.body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} error", response=self)
+
+
+class FakeGoogle:
+    """Stands in for Google's token address - all a sign-in asks it - so nothing reaches Google."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.asked = []
+
+    def post(self, url, data=None, timeout=None, **kwargs):
+        assert url == google_calendar.TOKEN
+        self.asked.append(dict(data or {}))
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+GOOGLE_TOKENS = {"access_token": "the-google-access-token", "refresh_token": "the-google-refresh-token",
+                 "expires_in": 3600, "token_type": "Bearer", "scope": " ".join(google_calendar.SCOPES)}
+
+
+@pytest.fixture
+def calendar(files):
+    """Nova's calendar, its keys set as Nova started - with Google's token address a fake."""
+    google = FakeGoogle(FakeTokenAnswer(200, GOOGLE_TOKENS))
+    sign_in = google_calendar.GoogleSignIn("the-google-client-id", "the-google-client-secret",
+                                           str(files / "google_token.json"), session=google)
+    return google_calendar.GoogleCalendar(sign_in, ChoiceStore(str(files / "calendars.json"), {"activities": {}}),
+                                          session=google)
+
+
+def _google_address(started, code="the-google-code"):
+    """The address Google sends the browser to, for the sign-in the page started."""
+    state = parse_qs(urlsplit(started["url"]).query)["state"][0]
+    return f"{google_calendar.REDIRECT}?state={state}&code={code}&scope=" + "+".join(google_calendar.SCOPES)
+
+
+def test_the_calendars_section_says_what_google_needs_first(files):
+    page = _page()
+    needs = "Google's client ID and secret go under Keys, then restart Nova."
+    assert page.calendars_state() == {"available": False, "message": needs}
+    assert page.start_google_sign_in(LOGIN) == {"success": False, "message": needs}
+    assert page.finish_google_sign_in("http://127.0.0.1:8085/?code=the-google-code", LOGIN) == {
+        "success": False, "message": needs}
+
+
+def test_the_page_signs_in_to_google(calendar, monkeypatch, caplog):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _page(sessions={}, calendar=calendar)
+    page.start()
+    try:
+        def change(path, body):
+            return json.loads(_ask(page, path, body, X_Nova="page")[2])
+
+        def shown():
+            return json.loads(_ask(page, "/api/calendars")[2])
+
+        caplog.set_level(logging.DEBUG)
+        assert shown() == {"available": True, "signed_in": False}
+        # Only from the page itself, like every change.
+        assert _ask(page, "/api/google/start", {})[0] == 403
+        started = change("/api/google/start", {})
+        assert started["success"] and started["url"].startswith(google_calendar.AUTHORISE + "?")
+        address = _google_address(started)
+        # A list of calendars from before - another account's, maybe - is read again.
+        calendar._known_at = time.monotonic()
+        finished = change("/api/google/finish", {"address": address})
+        assert finished == {"success": True, "message": "Signed in to Google."}
+        assert shown() == {"available": True, "signed_in": True}
+        assert calendar._known_at is None
+        [asked] = calendar.sign_in._session.asked
+        assert asked["code"] == "the-google-code"
+
+        # Used once.
+        assert change("/api/google/finish", {"address": address}) == {
+            "success": False, "message": "That address isn't from this sign-in."}
+
+        state = parse_qs(urlsplit(started["url"]).query)["state"][0]
+        said = json.dumps([finished, shown()])
+        for secret in (address, state, "the-google-code", asked["code_verifier"], "the-google-access-token",
+                       "the-google-refresh-token", "the-google-client-secret"):
+            assert secret not in caplog.text and secret not in said
+        assert "signed in to Google" in caplog.text
+    finally:
+        page.stop()
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_a_google_address_from_another_sign_in_is_refused(calendar, started):
+    page = _page(calendar=calendar)
+    if started:
+        page.start_google_sign_in(LOGIN)
+    address = f"{google_calendar.REDIRECT}?state=another-sign-ins-state&code=the-google-code"
+    assert page.finish_google_sign_in(address, LOGIN) == {"success": False,
+                                                          "message": "That address isn't from this sign-in."}
+    assert calendar.sign_in._session.asked == []
+    assert page.calendars_state() == {"available": True, "signed_in": False}
+
+
+@pytest.mark.parametrize("answer, said", [
+    (FakeTokenAnswer(401, {"error": "invalid_client", "error_description": "Unauthorized"}),
+     "Google didn't accept the client ID or secret - check both under Keys."),
+    (FakeTokenAnswer(400, {"error": "invalid_grant", "error_description": "Bad Request"}),
+     "Google didn't accept that sign-in - start again."),
+    (requests.ConnectionError("oauth2.googleapis.com unreachable"), "Couldn't reach Google - try again."),
+])
+def test_each_google_failure_is_said_plainly(calendar, caplog, answer, said):
+    calendar.sign_in._session.answers = [answer]
+    page = _page(calendar=calendar)
+    started = page.start_google_sign_in(LOGIN)
+    caplog.set_level(logging.DEBUG)
+    assert page.finish_google_sign_in(_google_address(started), LOGIN) == {"success": False, "message": said}
+    assert page.calendars_state() == {"available": True, "signed_in": False}
+    assert "the-google-code" not in caplog.text and "unreachable" not in caplog.text
+
+
+def test_a_google_sign_in_that_goes_wrong_otherwise_is_answered_plainly(calendar, caplog):
+    # A pasted "http://[x" gives urllib's "Invalid IPv6 URL" - not words for the page.
+    page = _page(calendar=calendar)
+    page.start_google_sign_in(LOGIN)
+    assert page.finish_google_sign_in("http://[x?code=the-google-code", LOGIN) == {
+        "success": False, "message": "Google didn't accept that sign-in - start again."}
+    assert "the-google-code" not in caplog.text and calendar.sign_in._session.asked == []
+
+
+def test_a_google_sign_in_that_couldnt_be_saved_says_so(calendar, monkeypatch):
+    def full(path, data, indent=None):
+        raise OSError(28, "No space left on device", path)
+
+    monkeypatch.setattr(google_calendar.storage, "save_json", full)
+    page = _page(calendar=calendar)
+    assert page.finish_google_sign_in(_google_address(page.start_google_sign_in(LOGIN)), LOGIN) == {
+        "success": False, "message": "Couldn't save the sign-in - check Nova's data folder."}
+    assert page.calendars_state() == {"available": True, "signed_in": False}
 
 
 def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files):
@@ -999,9 +1150,13 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b'getElementById("password-text").textContent = password' in body and b"innerHTML" not in body
         # Where each removal's Undo is stacked.
         assert b'id="undos"' in _ask(served, "/")[2]
-        # Spotify's tab is opened in the click itself, before anything's waited for.
-        assert b'"/api/spotify/start"' in body and b'"/api/spotify/finish"' in body
-        assert b'const tab = window.open("", "_blank");\n  // So' in body and b'id="spotify-address"' in _ask(served, "/")[2]
+        # Spotify's and Google's tabs are opened in the click itself, before anything's waited for.
+        assert b"send(`/api/${service}/start`, {})" in body and b"`/api/${service}/finish`" in body
+        assert b'startSignIn("spotify")' in body and b'startSignIn("google")' in body
+        assert b'const tab = window.open("", "_blank");\n  // So' in body
+        html = _ask(served, "/")[2]
+        assert b'id="spotify-address"' in html and b'id="google-address"' in html
+        assert b'fetch("/api/calendars")' in body
         # A tab closed while Nova was asked gets the link instead.
         assert b"const opened = Boolean(tab && !tab.closed);" in body
 
