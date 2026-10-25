@@ -2695,7 +2695,11 @@ def test_status_leaves_out_network_and_app_sensors_by_their_id(make_home):
     "192.168.0.10", "fe80::1", "aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "10.0.0.2, 10.0.0.3", "10.0.0.2:8080",
     "http://10.0.0.2/", "[fe80::1]", "Loopback on ::1 only", "fe80::1%eth0", "(aa:bb:cc:dd:ee:ff)", "10.0.0.0/24",
     "Connected to 10.0.0.2.", "aabbccddeeff", "0011223344ab", "Link AABBCCDDEEFF up", "::ffff:10.0.0.2",
-    "IP:fe80::1", "LAN:2001:db8::1", "addr:fe80::1", "host.10.0.0.2", "...10.0.0.2"])
+    "IP:fe80::1", "LAN:2001:db8::1", "addr:fe80::1", "host.10.0.0.2", "...10.0.0.2",
+    # Dotted, as Cisco writes one, and without each byte's leading 0 - and an IPv6 address
+    # with a tail of hex after it which, joined on, isn't one.
+    "aabb.ccdd.eeff", "Port AABB.CCDD.EEFF up", "0:1b:63:84:45:e6", "0-1b-63-84-45-e6", "fe80::1:c0ffee",
+    "fe80::1:c0ffee:beef1"])
 def test_status_leaves_out_any_address_whatever_its_called(make_home, address):
     # Searched for anywhere in the state, as an address is still one inside other words.
     home = _status_home(make_home, [_status("sensor.example_router_wan", "Example router WAN", address),

@@ -260,17 +260,20 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 
 # Addresses, looked for anywhere in a state: an IPv4 one, with or without a port or a
 # prefix - "10.0.0.2:8080", "10.0.0.0/24" - and a hardware (MAC) one, as "aa:bb:cc:dd:ee:ff",
-# "AA-BB-CC-DD-EE-FF" or 12 hex digits run together with a letter among them - twelve
-# digits alone are more likely a count, e.g. bytes used. Four numbers alone make an IPv4
-# address here, whether or not each is under 256 and whatever's before them, as in
+# "AA-BB-CC-DD-EE-FF", without each byte's leading 0 ("0:1b:63:84:45:e6"), dotted as Cisco
+# writes one ("aabb.ccdd.eeff") or 12 hex digits run together with a letter among them -
+# twelve digits alone are more likely a count, e.g. bytes used. Four numbers alone make an
+# IPv4 address here, whether or not each is under 256 and whatever's before them, as in
 # "host.10.0.0.2".
 IPV4_ADDRESS = re.compile(r"(?<!\d)\d{1,3}(\.\d{1,3}){3}(?!\d)")
 HARDWARE_ADDRESS = re.compile(
-    r"(?<![0-9a-f])([0-9a-f]{2}([:-][0-9a-f]{2}){5}|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])",
+    r"(?<![0-9a-f])([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
+    r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])",
     re.IGNORECASE)
 # A run of hex digits and colons, each tried as an IPv6 address - "fe80::1" in "[fe80::1]".
 # A time, "12:30:45", isn't one.
 MAYBE_IPV6 = re.compile(r"[0-9a-f:]*:[0-9a-f:]*", re.IGNORECASE)
+IPV6_MOST_PIECES = 10
 
 # The integration of the Home Assistant app on a phone, tablet or Mac. Its sensors, and
 # HASS.Agent's on a PC, are given only as numbers or times, as their free text is where
@@ -1557,18 +1560,21 @@ def _holds_address(state: str) -> bool:
     if IPV4_ADDRESS.search(state) or HARDWARE_ADDRESS.search(state):
         return True
     for run in MAYBE_IPV6.findall(state):
-        # Its leading groups dropped one at a time, so a label in front - "LAN:2001:db8::1",
-        # where "a" is a hex digit - can't hide one, and "fe80::1:" at the end of a
-        # sentence still holds "fe80::1".
+        # Every run of its groups is tried, so a label in front - "LAN:2001:db8::1", where
+        # "a" is a hex digit - or hex after it - "fe80::1:c0ffee" - can't hide one, and
+        # "fe80::1:" at the end of a sentence still holds "fe80::1". No address split at its
+        # colons is more than nine pieces - "::1:2:3:4:5:6:7" - or ten with a colon after
+        # it, so no longer run is tried, which keeps a long state quick.
         groups = run.split(":")
         for start in range(len(groups)):
-            rest = ":".join(groups[start:])
-            for maybe in {rest, rest.strip(":"), rest.rstrip(":")}:
-                try:
-                    ipaddress.IPv6Address(maybe)
-                    return True
-                except ValueError:
-                    pass
+            for end in range(start + 1, min(start + IPV6_MOST_PIECES, len(groups)) + 1):
+                rest = ":".join(groups[start:end])
+                for maybe in {rest, rest.strip(":"), rest.rstrip(":")}:
+                    try:
+                        ipaddress.IPv6Address(maybe)
+                        return True
+                    except ValueError:
+                        pass
     return False
 
 
