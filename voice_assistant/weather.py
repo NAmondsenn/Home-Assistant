@@ -6,8 +6,7 @@ its home location - through weather.get_forecasts. See docs/decisions/0008.
 
 It came from Open-Meteo, for a town or city in weather.location, which was one more
 setting and one more service on the internet. Home Assistant already has the forecast,
-and keeps its last one with the internet down, so Nova says how old it is instead of
-saying nothing.
+so Nova says how old it is when Home Assistant last heard from Met over three hours ago.
 """
 
 import logging
@@ -40,7 +39,7 @@ RAINY = ("rainy", "pouring", "snowy-rainy", "lightning-rainy")
 RAIN_MM = 0.1
 
 # How old Home Assistant's forecast can be, in seconds, before Nova says how old it
-# is - it's Met's last one when Home Assistant can't reach the internet.
+# is - Home Assistant may not have heard from Met since, with its internet down.
 OLD_FORECAST = 3 * 3600
 
 
