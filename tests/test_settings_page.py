@@ -773,6 +773,17 @@ def test_the_page_comes_with_its_safety_headers(served):
     assert headers["Cache-Control"] == "no-store" and headers["X-Content-Type-Options"] == "nosniff"
 
 
+@pytest.mark.parametrize("path", ["/settings.js", "/settings.css"])
+def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, path):
+    # There's no JavaScript engine to check the script with, so this is what stands in.
+    status, headers, body = _ask(served, path)
+    assert status == 200 and headers["Content-Type"] == page_module.FILES[path][1]
+    for name, value in page_module.SAFETY_HEADERS.items():
+        assert headers[name] == value
+    if path == "/settings.js":
+        assert b'"/api/voice/hear"' in body and b'"restart-now"' in body
+
+
 def test_a_change_has_to_come_from_the_page_itself(served):
     change = {"category": "music", "percent": 20}
     # As another website open in the user's browser would send it.
