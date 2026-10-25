@@ -11,6 +11,7 @@ scheduled against the wall clock and can repeat, so it's kept separately (see
 _alarms) and rings to its own, more insistent pattern.
 """
 
+import copy
 import os
 import re
 import logging
@@ -1554,22 +1555,9 @@ class Clock:
             return {"success": False, "message": "What would you like to name this reminder?"}
 
         with self._changing():
-            # Two plain timers due in the same minute would be indistinguishable
-            # once they're both running, so this is caught up front rather than
-            # leaving the user with two timers they can't tell apart. A reminder is
-            # told apart by its name instead, so it only clashes with another of
-            # the same name - "remind me to take the pizza out in 10 minutes" isn't
-            # refused just because a 10 minute timer was set a moment earlier.
-            due_local = time.localtime(due_at)
-            for existing in self._timers.values():
-                if (label or "").strip().lower() != (existing["label"] or "").strip().lower():
-                    continue
-                existing_local = time.localtime(existing["due_at"])
-                if (due_local.tm_year, due_local.tm_yday, due_local.tm_hour, due_local.tm_min) == \
-                   (existing_local.tm_year, existing_local.tm_yday, existing_local.tm_hour, existing_local.tm_min):
-                    return {"success": False,
-                            "message": f"You already have a {self._describe(existing)} "
-                                       f"for {self._spoken_due(existing['due_at'])}."}
+            clash = self._timer_clash(label, due_at)
+            if clash:
+                return {"success": False, "message": clash}
 
             timer_id = self._next_id
             self._next_id += 1
@@ -1589,6 +1577,32 @@ class Clock:
         if label:
             return {"success": True, "message": f"I'll remind you in {spoken_duration}."}
         return {"success": True, "message": f"Timer set for {spoken_duration}."}
+
+    def _timer_clash(self, label: Optional[str], due_at: float) -> Optional[str]:
+        """
+        What to say if a timer would clash with one already set, else None. The caller
+        is expected to already hold the lock.
+
+        Two plain timers due in the same minute would be indistinguishable once
+        they're both running, so this is caught up front rather than leaving the user
+        with two timers they can't tell apart. A reminder is told apart by its name
+        instead, so it only clashes with another of the same name - "remind me to
+        take the pizza out in 10 minutes" isn't refused just because a 10 minute timer
+        was set a moment earlier.
+
+        Args:
+            label: The timer's label, or None for a plain timer.
+            due_at: When it's due, as an epoch time.
+        """
+        due_local = time.localtime(due_at)
+        for existing in self._timers.values():
+            if (label or "").strip().lower() != (existing["label"] or "").strip().lower():
+                continue
+            existing_local = time.localtime(existing["due_at"])
+            if (due_local.tm_year, due_local.tm_yday, due_local.tm_hour, due_local.tm_min) == \
+               (existing_local.tm_year, existing_local.tm_yday, existing_local.tm_hour, existing_local.tm_min):
+                return f"You already have a {self._describe(existing)} for {self._spoken_due(existing['due_at'])}."
+        return None
 
     def name_pending_reminder(self, label: Optional[str] = None) -> Dict:
         """
@@ -1939,15 +1953,9 @@ class Clock:
         due_at = self._next_occurrence(hour, minute, repeat)
 
         with self._changing():
-            # Same idea as a timer set for the same clock minute as another - two
-            # alarms due at once would be indistinguishable once they're ringing.
-            # Only alarms which would actually ring on the same day clash, though:
-            # a one-off 7am on Saturday is fine alongside a weekday 7am.
-            for existing in self._alarms.values():
-                if (existing["hour"] == hour and existing["minute"] == minute
-                        and self._alarm_days_overlap(repeat, due_at, existing)):
-                    return {"success": False,
-                            "message": f"You already have a {self._describe_alarm(existing)}."}
+            clash = self._alarm_clash(hour, minute, repeat, due_at)
+            if clash:
+                return {"success": False, "message": clash}
 
             alarm_id = self._next_alarm_id
             self._next_alarm_id += 1
@@ -1958,6 +1966,27 @@ class Clock:
 
         logger.info(f"Alarm set: {self._describe_alarm(alarm)}")
         return {"success": True, "message": f"{self._describe_alarm(alarm)}."}
+
+    def _alarm_clash(self, hour: int, minute: int, repeat, due_at: float) -> Optional[str]:
+        """
+        What to say if an alarm would clash with one already set, else None. The
+        caller is expected to already hold the lock.
+
+        Same idea as a timer set for the same clock minute as another - two alarms
+        due at once would be indistinguishable once they're ringing. Only alarms which
+        would actually ring on the same day clash, though: a one-off 7am on Saturday
+        is fine alongside a weekday 7am.
+
+        Args:
+            hour, minute: The time of day it's for.
+            repeat: Its repeat pattern, as from parse_repeat.
+            due_at: Its next occurrence.
+        """
+        for existing in self._alarms.values():
+            if (existing["hour"] == hour and existing["minute"] == minute
+                    and self._alarm_days_overlap(repeat, due_at, existing)):
+                return f"You already have a {self._describe_alarm(existing)}."
+        return None
 
     def list_alarms(self) -> Dict:
         """
@@ -2009,7 +2038,9 @@ class Clock:
             item_id: Its id, from overview().
 
         Returns:
-            Dict with 'success' and a 'message'.
+            Dict with 'success' and a 'message' - and once removed, 'removed', a copy
+            of it as it was, for the page to keep so it can be put back (see put_back).
+            The page keeps it to itself, never sending it on.
         """
         with self._changing():
             store = self._alarms if kind == "alarm" else self._timers
@@ -2022,7 +2053,60 @@ class Clock:
                 self._save()
         name = self._describe_alarm(item) if kind == "alarm" else self._describe(item)
         logger.info(f"Removed on the settings page: {name}", extra=TRANSCRIPT)
-        return {"success": True, "message": f"Removed the {name}."}
+        return {"success": True, "message": f"Removed the {name}.", "removed": copy.deepcopy(item)}
+
+    def put_back(self, kind: str, item: Dict, now: Optional[float] = None) -> Dict:
+        """
+        Puts back a timer, reminder or alarm just removed on the settings page, as it
+        was - with its time, repeat, label and satellite, which is sent its copy again
+        - unless that would ring straight away, or can't be told apart from one set
+        since.
+
+        Args:
+            kind: "alarm", or "timer" for a timer or reminder.
+            item: It, as remove() gave it.
+            now: The time, as an epoch timestamp - the current time if None.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        item = copy.deepcopy(item)
+        with self._changing():
+            now = time.time() if now is None else now
+            if item["due_at"] <= now:
+                if kind != "alarm" or not item["repeat"]:
+                    # A timer's done with, and so is a one-off alarm's only occurrence -
+                    # put back, either would ring the moment the clock next ticked.
+                    return {"success": False, "message": "Its time has passed, so it isn't put back."}
+                # A repeating one carries on from its next occurrence, as one missed
+                # while the brain was off does - see _load_alarms.
+                item["due_at"] = self._next_occurrence(item["hour"], item["minute"], item["repeat"],
+                                                       after=max(item["due_at"] + 60, now))
+
+            if kind == "alarm":
+                clash = self._alarm_clash(item["hour"], item["minute"], item["repeat"], item["due_at"])
+                store = self._alarms
+            else:
+                clash = self._timer_clash(item["label"], item["due_at"])
+                store = self._timers
+            if clash:
+                return {"success": False, "message": clash}
+
+            # Ids are never given twice, so its own is free - the check is so nothing
+            # is ever put over something else.
+            if item["id"] in store:
+                if kind == "alarm":
+                    item["id"], self._next_alarm_id = self._next_alarm_id, self._next_alarm_id + 1
+                else:
+                    item["id"], self._next_id = self._next_id, self._next_id + 1
+            store[item["id"]] = item
+            if kind == "alarm":
+                self._save_alarms()
+            else:
+                self._save()
+        name = self._describe_alarm(item) if kind == "alarm" else self._describe(item)
+        logger.info(f"Put back on the settings page: {name}", extra=TRANSCRIPT)
+        return {"success": True, "message": f"Put back the {name}."}
 
     def assign_unowned(self, satellite: str) -> int:
         """

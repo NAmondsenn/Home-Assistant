@@ -45,6 +45,7 @@ from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
 from voice_assistant.ntfy import RETOPIC
+from voice_assistant.undo import UndoShelf
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -281,6 +282,8 @@ class SettingsPage:
         # as each request has a thread of its own - two saves at once, from two tabs or
         # two keys pasted quickly, could otherwise each write over the other.
         self._saving = threading.Lock()
+        # What was just removed, for a while, so the toast's Undo can put it back.
+        self._undo = UndoShelf()
         self._server: Optional[ThreadingHTTPServer] = None
 
     @classmethod
@@ -617,8 +620,45 @@ class SettingsPage:
         return self.brain.clock.set_alarm(int(found[1]), int(found[2]), repeat or None, satellite=name)
 
     def remove(self, kind: str, item_id: int, who: str) -> Dict:
+        """
+        Removes a timer, reminder or alarm, keeping it a minute so it can be put back -
+        see undo.
+
+        Args:
+            kind: "alarm", or "timer" for a timer or reminder.
+            item_id: Its id, from the clock's overview.
+            who: The Tailscale login removing it, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message' - and once removed, 'undo', the token
+            which puts it back. Never what was removed, which stays on the brain.
+        """
+        kind = "alarm" if kind == "alarm" else "timer"
         logger.info(f"Settings page: {who} removed {kind} {item_id}")
-        return self.brain.clock.remove(kind, item_id)
+        result = self.brain.clock.remove(kind, item_id)
+        answer = {"success": result["success"], "message": result["message"]}
+        if result.get("removed") is not None:
+            answer["undo"] = self._undo.put(kind, result["removed"])
+        return answer
+
+    def undo(self, token, who: str) -> Dict:
+        """
+        Puts back what was just removed, as the toast's Undo asks - once, and only for
+        UNDO_KEPT seconds after.
+
+        Args:
+            token: The token remove answered with, as the page sent it.
+            who: The Tailscale login asking, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        taken = self._undo.take(token)
+        if taken is None:
+            return {"success": False, "message": "That can't be undone now."}
+        kind, item = taken
+        logger.info(f"Settings page: {who} undid removing {kind} {item['id']}")
+        return self.brain.clock.put_back(kind, item)
 
     def forget(self, fact: str, who: str) -> Dict:
         logger.info(f"Settings page: {who} had something forgotten")
@@ -959,6 +999,7 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/volume": lambda page, body, who: page.set_volume(body["category"], body["percent"], who, body.get("satellite")),
     "/api/alarms": lambda page, body, who: page.add_alarm(body["time"], body.get("repeat"), who, body.get("satellite")),
     "/api/remove": lambda page, body, who: page.remove(body["kind"], int(body["id"]), who),
+    "/api/undo": lambda page, body, who: page.undo(body["token"], who),
     "/api/forget": lambda page, body, who: page.forget(body["fact"], who),
     "/api/keys": lambda page, body, who: page.set_key(body["name"], body["value"], who),
     "/api/settings": lambda page, body, who: page.save_settings(body["changes"], who),

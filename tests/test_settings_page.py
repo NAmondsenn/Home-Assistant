@@ -22,8 +22,10 @@ import yaml
 
 from voice_assistant import logging_setup, paths
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
+from voice_assistant import clock as clock_module
 from voice_assistant import settings_page as page_module
 from voice_assistant.brain import Brain
+from voice_assistant.clock import Clock
 from voice_assistant.config import Config
 from voice_assistant.ntfy import Ntfy
 from voice_assistant.routines import Routines
@@ -802,6 +804,7 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert headers[name] == value
     if path == "/settings.js":
         assert b'"/api/voice/hear"' in body and b'"restart-now"' in body and b'"/api/stop"' in body
+        assert b'"/api/undo"' in body
 
 
 def test_a_change_has_to_come_from_the_page_itself(served):
@@ -828,6 +831,40 @@ def test_each_change_reaches_the_right_part_of_nova(served):
     assert served.brain.clock.removed == [("timer", 1)]
     assert served.brain.memory.known == []
     assert change("/api/restart", {})["message"] == "Restarting."
+
+
+def test_removing_on_the_page_offers_an_undo(files, monkeypatch, caplog):
+    monkeypatch.setattr(clock_module, "TIMERS_FILE", str(files / "timers.json"))
+    monkeypatch.setattr(clock_module, "ALARMS_FILE", str(files / "alarms.json"))
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    clock = Clock(start=False)
+    clock.set_alarm(7, 0, repeat="weekdays", satellite="bedroom")
+    before = dict(clock._alarms[1])
+    page = _page(clock=clock)
+    page.start()
+    try:
+        def change(path, body):
+            return json.loads(_ask(page, path, body, X_Nova="page")[2])
+
+        with caplog.at_level(logging.INFO):
+            removed = change("/api/remove", {"kind": "alarm", "id": 1})
+        # Only what's said and the token - never the alarm itself, nor in the log.
+        assert set(removed) == {"success", "message", "undo"} and len(removed["undo"]) >= 20
+        assert removed["undo"] not in caplog.text and clock._alarms == {}
+
+        # As every change, only from the page itself.
+        assert _ask(page, "/api/undo", {"token": removed["undo"]})[0] == 403
+        assert change("/api/undo", {"token": removed["undo"]}) == {
+            "success": True, "message": "Put back the 7:00 AM alarm, every weekday."}
+        assert clock._alarms[1] == before
+        cant = {"success": False, "message": "That can't be undone now."}
+        assert change("/api/undo", {"token": removed["undo"]}) == cant
+        assert change("/api/undo", {"token": "made-up"}) == cant
+        assert change("/api/undo", {"token": 12}) == cant
+        # What's already gone has nothing to undo.
+        assert change("/api/remove", {"kind": "timer", "id": 9}) == {"success": False, "message": "That's already gone."}
+    finally:
+        page.stop()
 
 
 def test_its_typeface_icon_and_what_nova_is_doing_are_served(served):

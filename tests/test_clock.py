@@ -843,6 +843,102 @@ def test_one_can_be_removed_by_its_id(make_clock):
     assert clock.remove("alarm", overview["alarms"][0]["id"])["success"] is False
 
 
+def test_undo_puts_back_the_same_alarm(make_clock):
+    told = []
+    clock = make_clock(on_change=lambda: told.append(len(clock.copy_for("bedroom"))))
+    clock.set_alarm(7, 0, repeat="weekdays", satellite="bedroom")
+    alarm_id = clock.overview()["alarms"][0]["id"]
+    before = dict(clock._alarms[alarm_id])
+
+    removed = clock.remove("alarm", alarm_id)["removed"]
+    assert removed == before and clock.overview()["alarms"] == []
+    # A copy, which nothing the clock does afterwards can change.
+    assert removed is not before
+
+    told.clear()
+    result = clock.put_back("alarm", removed)
+    assert result == {"success": True, "message": "Put back the 7:00 AM alarm, every weekday."}
+    assert clock._alarms[alarm_id] == before
+    # The satellite is sent its copy again, with the alarm in it.
+    assert len(told) == 1 and told[0] > 0
+    # Saved, so it's there after a restart too.
+    assert make_clock()._alarms[alarm_id] == before
+
+
+def test_undo_puts_back_the_same_timer_or_reminder(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="take the pizza out", satellite="kitchen")
+    clock.set_timer(300, satellite="bedroom")
+    for timer in clock.overview()["timers"]:
+        before = dict(clock._timers[timer["id"]])
+        removed = clock.remove("timer", timer["id"])["removed"]
+        assert clock.put_back("timer", removed)["success"]
+        assert clock._timers[timer["id"]] == before
+    assert clock.put_back("timer", removed)["success"] is False
+
+
+def test_a_timer_whose_time_has_passed_isnt_put_back(make_clock):
+    passed = {"success": False, "message": "Its time has passed, so it isn't put back."}
+    clock = make_clock()
+    clock.set_timer(60, label="take the pizza out")
+    removed = clock.remove("timer", clock.overview()["timers"][0]["id"])["removed"]
+    assert clock.put_back("timer", removed, now=removed["due_at"] + 1) == passed
+
+    # A one-off alarm likewise, which would otherwise ring straight away.
+    clock.set_alarm(7, 0)
+    removed = clock.remove("alarm", clock.overview()["alarms"][0]["id"])["removed"]
+    assert clock.put_back("alarm", removed, now=removed["due_at"]) == passed
+    assert clock.overview() == {"timers": [], "alarms": []}
+    clock._tick(removed["due_at"] + 1)
+    assert clock.announced == []
+
+
+def test_a_repeating_alarm_comes_back_at_its_next_time(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, repeat="daily", satellite="bedroom")
+    removed = clock.remove("alarm", clock.overview()["alarms"][0]["id"])["removed"]
+    # Undone half a minute after it would have rung.
+    now = removed["due_at"] + 30
+    assert clock.put_back("alarm", removed, now=now)["success"]
+
+    due = datetime.fromtimestamp(clock._alarms[removed["id"]]["due_at"])
+    was = datetime.fromtimestamp(removed["due_at"])
+    assert (due.date(), due.hour, due.minute) == (was.date() + timedelta(days=1), 7, 0)
+    # So it doesn't ring now.
+    clock._tick(now)
+    assert clock.announced == []
+
+
+def test_an_alarm_clashing_with_one_set_since_isnt_put_back(make_clock, monkeypatch):
+    clock = make_clock()
+    clock.set_alarm(7, 0, repeat="weekdays")
+    removed = clock.remove("alarm", clock.overview()["alarms"][0]["id"])["removed"]
+    clock.set_alarm(7, 0, repeat="daily")
+    assert clock.put_back("alarm", removed) == {"success": False,
+                                                "message": "You already have a 7:00 AM alarm, every day."}
+    assert len(clock._alarms) == 1
+
+    # A timer likewise - set at the start of a minute, as in the test for two set at once.
+    start_of_minute = time.time() // 60 * 60
+    monkeypatch.setattr(clock_module.time, "time", lambda: start_of_minute)
+    clock.set_timer(600)
+    removed = clock.remove("timer", clock.overview()["timers"][0]["id"])["removed"]
+    clock.set_timer(601)
+    result = clock.put_back("timer", removed)
+    assert not result["success"] and result["message"].startswith("You already have a 10 minute and 1 second timer for ")
+    assert len(clock._timers) == 1
+
+
+def test_one_put_back_under_an_id_taken_since_gets_a_new_one(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="feed the cat")
+    removed = clock.remove("timer", 1)["removed"]
+    # As it never is but by hand, as ids are never given twice.
+    clock._timers[1] = {**removed, "label": "something else"}
+    assert clock.put_back("timer", removed)["success"]
+    assert clock._timers[2] == {**removed, "id": 2} and clock._next_id == 3
+
+
 # Satellites
 
 def test_a_timer_rings_on_the_satellite_it_was_set_from(make_clock):

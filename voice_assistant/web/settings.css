@@ -1297,6 +1297,18 @@ input[type="range"].warmth::-moz-range-progress { background: transparent; }
 
 .toast.bad::before { background: var(--ember); }
 
+/* Undo, while what was just removed can still be put back - the only time the toast
+   takes a tap, as otherwise it would catch those meant for what's under it. */
+.toast.undoable {
+  padding-top: 6px;
+  padding-right: 6px;
+  padding-bottom: 6px;
+}
+
+.toast.show.undoable { pointer-events: auto; }
+
+.toast .button { min-height: 44px; }
+
 .toast.show {
   opacity: 1;
   visibility: visible;
