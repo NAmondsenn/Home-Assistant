@@ -81,8 +81,14 @@ if _module_missing("spotipy"):
         def __init__(self, *args, **kwargs):
             self.kwargs = kwargs
 
+    class SpotifyOauthError(Exception):
+        def __init__(self, message, error=None, error_description=None, *args, **kwargs):
+            super().__init__(message)
+            self.error = error
+
     spotipy.Spotify = Spotify
     oauth2.SpotifyOAuth = SpotifyOAuth
+    oauth2.SpotifyOauthError = SpotifyOauthError
     spotipy.oauth2 = oauth2
     sys.modules["spotipy"] = spotipy
     sys.modules["spotipy.oauth2"] = oauth2

@@ -53,6 +53,9 @@ const COOL_WHITE = [214, 230, 255];
 // How many playlists are offered before the rest are tucked behind a button.
 const MOST_PLAYLISTS = 12;
 
+// Said in the Music section when there's no player and Nova doesn't say why.
+const NO_PLAYER = "Nova has no music player set up. Choose one in Settings, under Music.";
+
 // What Nova's doing, in words. While it waits, it's waiting for its wake word, which
 // /api/state says.
 const DOING = { listening: "Listening", thinking: "Thinking", speaking: "Speaking", offline: "Can't reach Nova" };
@@ -733,8 +736,11 @@ async function loadMusic() {
 }
 
 function showMusic() {
+  showSpotify();
   document.getElementById("music").hidden = !music.available;
-  document.getElementById("music-missing").hidden = music.available;
+  const missing = document.getElementById("music-missing");
+  missing.hidden = music.available;
+  missing.textContent = music.why || NO_PLAYER;
   if (!music.available) return;
   const now = music.now;
   document.getElementById("track").textContent = now ? now.track : "Nothing playing";
@@ -798,6 +804,42 @@ function showPlaylists(playlists) {
     chips.push(more);
   }
   document.getElementById("playlists").replaceChildren(...chips);
+}
+
+// Signing in to Spotify
+
+// Whether Nova's signed in to Spotify - shown with every satellite away too, as the
+// sign-in is the brain's, for them all.
+function showSpotify() {
+  document.getElementById("spotify").hidden = !music.spotify;
+  if (!music.spotify) return;
+  const signedIn = music.spotify.signed_in;
+  document.getElementById("spotify-said").hidden = !signedIn;
+  document.getElementById("spotify-start").textContent = signedIn ? "Sign in again" : "Sign in to Spotify";
+}
+
+// Opens Spotify's page in a tab of its own. The tab's made in the click itself, as a
+// phone's Safari blocks one opened once anything's been waited for, and sent to Spotify
+// once Nova says where - or, if the browser refused it, the address is a link to tap.
+async function startSpotify() {
+  const tab = window.open("", "_blank");
+  // So Spotify's page can't reach back and send this one somewhere else.
+  if (tab) tab.opener = null;
+  let result;
+  try {
+    result = await send("/api/spotify/start", {});
+  } catch (error) {
+    result = { success: false, message: "Couldn't reach Nova." };
+  }
+  if (!result.success || !String(result.url).startsWith("https://")) {
+    if (tab) tab.close();
+    toast(result.message || "That didn't work.", false);
+    return;
+  }
+  document.getElementById("spotify-link").href = result.url;
+  document.getElementById("spotify-link-note").hidden = Boolean(tab);
+  if (tab) tab.location = result.url;
+  document.getElementById("spotify-finish").hidden = false;
 }
 
 // Asks the music to do something, then shows what it's doing now - saying how it went
@@ -1688,6 +1730,17 @@ document.addEventListener("DOMContentLoaded", () => {
     playMusic({ action: music && music.now && music.now.playing ? "pause" : "play" }));
   document.getElementById("previous").addEventListener("click", () => playMusic({ action: "previous" }));
   document.getElementById("next").addEventListener("click", () => playMusic({ action: "skip" }));
+  document.getElementById("spotify-start").addEventListener("click", startSpotify);
+  document.getElementById("spotify-finish").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const address = document.getElementById("spotify-address");
+    if (!address.value.trim()) return;
+    await change("/api/spotify/finish", { address: address.value }, loadMusic);
+    // Used up whatever the answer, so another try starts afresh.
+    address.value = "";
+    document.getElementById("spotify-finish").hidden = true;
+    document.getElementById("spotify-link-note").hidden = true;
+  });
   document.getElementById("play-something").addEventListener("submit", async (event) => {
     event.preventDefault();
     const query = event.target.query;

@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
+from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 import pytest
 import yaml
@@ -24,6 +25,7 @@ from voice_assistant import logging_setup, paths
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant import clock as clock_module
 from voice_assistant import settings_page as page_module
+from voice_assistant import spotify_controller
 from voice_assistant.brain import Brain
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
@@ -402,6 +404,91 @@ def test_the_page_is_told_whats_playing_and_the_playlists_are_kept_a_while(files
     page.music_state()
     assert player.asked_for_playlists == 1
     assert _page().music_state() == {"available": False}
+
+
+class FakeSpotifyOAuth:
+    """Stands in for spotipy's SpotifyOAuth through a sign-in, writing the cache as it does."""
+
+    def __init__(self, **kwargs):
+        self.cache_handler = SimpleNamespace(cache_path=kwargs["cache_path"], get_cached_token=self._cached)
+
+    def _cached(self):
+        try:
+            with open(self.cache_handler.cache_path) as file:
+                return json.load(file)
+        except FileNotFoundError:
+            return None
+
+    def get_authorize_url(self, state=None):
+        return f"https://accounts.spotify.com/authorize?client_id=client-id&state={state}"
+
+    @staticmethod
+    def parse_auth_response_url(url):
+        form = dict(parse_qsl(urlsplit(url).query))
+        if "error" in form:
+            raise spotify_controller.SpotifyOauthError("Received error from auth server", error=form["error"])
+        return form.get("state"), form.get("code")
+
+    def get_access_token(self, code=None, as_dict=True, check_cache=True):
+        with open(self.cache_handler.cache_path, "w") as file:
+            json.dump({"access_token": "the-access-token", "refresh_token": "the-refresh-token"}, file)
+        return "the-access-token"
+
+
+@pytest.fixture
+def spotify(files, monkeypatch, make_config):
+    """Spotify as the player, with its keys set as Nova starts - and a fake sign-in to it."""
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
+    monkeypatch.setattr(spotify_controller.paths, "SPOTIFY_TOKEN_FILE", str(files / "spotify_token.json"))
+    monkeypatch.setattr(spotify_controller, "SpotifyOAuth", FakeSpotifyOAuth)
+    return make_config(music={"player": "spotify"})
+
+
+def test_the_spotify_sign_in_is_offered_with_no_satellite_connected(spotify, make_config):
+    page = _page(running=spotify, sessions={})
+    assert page.music_state() == {"available": False, "why": "No satellite is connected just now.",
+                                  "spotify": {"signed_in": False}}
+    # Connected, with Spotify not signed in to.
+    assert _page(running=spotify).music_state()["spotify"] == {"signed_in": False}
+    # Navidrome has no sign-in.
+    assert "spotify" not in _page(running=make_config(music={"player": "navidrome"}), sessions={}).music_state()
+
+
+def test_the_page_signs_in_to_spotify(spotify, monkeypatch, caplog):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _page(running=spotify, sessions={})
+    page.start()
+    try:
+        def change(path, body):
+            return json.loads(_ask(page, path, body, X_Nova="page")[2])
+
+        caplog.set_level(logging.DEBUG)
+        # Only from the page itself, like every change.
+        assert _ask(page, "/api/spotify/start", {})[0] == 403
+        started = change("/api/spotify/start", {})
+        assert started["success"] and started["url"].startswith("https://accounts.spotify.com/authorize?")
+        state = parse_qs(urlsplit(started["url"]).query)["state"][0]
+        address = f"http://127.0.0.1:8888/callback?code=the-code&state={state}"
+        assert change("/api/spotify/finish", {"address": address}) == {"success": True,
+                                                                       "message": "Signed in to Spotify."}
+        assert page.music_state()["spotify"] == {"signed_in": True}
+
+        # Used once, and a cancelled one answered.
+        assert change("/api/spotify/finish", {"address": address}) == {
+            "success": False, "message": "That address isn't from the sign-in this page started - start again."}
+        state = parse_qs(urlsplit(change("/api/spotify/start", {})["url"]).query)["state"][0]
+        assert change("/api/spotify/finish", {"address": f"http://127.0.0.1:8888/callback?error=access_denied"
+                                                         f"&state={state}"}) == {
+            "success": False, "message": "Spotify didn't accept that sign-in - start again."}
+
+        shown = json.dumps(page.music_state())
+        for secret in ("the-code", "the-access-token", "the-refresh-token", "client-secret"):
+            assert secret not in caplog.text and secret not in shown
+        assert "signed in to Spotify" in caplog.text
+    finally:
+        page.stop()
 
 
 def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files):
@@ -838,6 +925,9 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b'getElementById("password-text").textContent = password' in body and b"innerHTML" not in body
         # Where each removal's Undo is stacked.
         assert b'id="undos"' in _ask(served, "/")[2]
+        # Spotify's tab is opened in the click itself, before anything's waited for.
+        assert b'"/api/spotify/start"' in body and b'"/api/spotify/finish"' in body
+        assert b'const tab = window.open("", "_blank");\n  // So' in body and b'id="spotify-address"' in _ask(served, "/")[2]
 
 
 def test_a_change_has_to_come_from_the_page_itself(served):
@@ -1228,7 +1318,8 @@ def test_a_satellite_which_isnt_connected_is_said_so(files):
     # The default is named in the same way when it's the one which isn't connected.
     away = _page(sessions={}, known=["bedroom"])
     assert away.set_volume("general", 20, LOGIN) == {"success": False, "message": "bedroom isn't connected."}
-    assert away.music_state() == {"available": False} and away.home_state() == {"available": False}
+    assert away.music_state() == {"available": False, "why": "No satellite is connected just now."}
+    assert away.home_state() == {"available": False}
     assert away.cover() is None and away.state()["volumes"] == {}
 
 
@@ -1339,7 +1430,8 @@ def test_a_satellite_which_doesnt_exist_is_handled_everywhere(served):
     assert _ask(served, "/api/state?satellite=ghost")[0] == 200
     assert json.loads(_ask(served, "/api/state?satellite=ghost")[2])["volumes"] == {}
     assert _ask(served, "/api/cover?satellite=ghost")[0] == 404
-    assert json.loads(_ask(served, "/api/music?satellite=ghost")[2]) == {"available": False}
+    assert json.loads(_ask(served, "/api/music?satellite=ghost")[2]) == {"available": False,
+                                                                       "why": "No satellite is connected just now."}
     assert json.loads(_ask(served, "/api/home?satellite=ghost")[2]) == {"available": False}
     assert json.loads(_ask(served, "/api/live?satellite=ghost")[2]) == {"activity": "idle", "stoppable": False}
     assert served.brain.clock.alarms == []

@@ -118,6 +118,24 @@
           <div class="chips" id="playlists"></div>
         </div>
         <p class="panel note" id="music-missing" hidden>Nova has no music player set up. Choose one in Settings, under Music.</p>
+        <!-- Signing Nova in to Spotify, for every satellite: Spotify's page opens in a tab of
+             its own, and the address it ends on is pasted back here. -->
+        <div class="panel sign-in" id="spotify" hidden>
+          <div class="entry">
+            <p class="about" id="spotify-said" hidden>Signed in to Spotify</p>
+            <button type="button" class="button quiet" id="spotify-start">Sign in to Spotify</button>
+          </div>
+          <p class="how" id="spotify-link-note" hidden>Your browser didn't open Spotify's page.
+            <a id="spotify-link" target="_blank" rel="noopener noreferrer">Open it here</a>.</p>
+          <form class="finish" id="spotify-finish" hidden>
+            <label class="how" for="spotify-address">Spotify sends you to an address that doesn't load. Paste that address here.</label>
+            <div class="entry">
+              <input type="text" inputmode="url" id="spotify-address" name="address" autocomplete="off"
+                     autocapitalize="none" spellcheck="false">
+              <button type="submit" class="button">Sign in</button>
+            </div>
+          </form>
+        </div>
       </section>
 
       <section aria-labelledby="devices-title">

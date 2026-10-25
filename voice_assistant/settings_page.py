@@ -45,6 +45,7 @@ from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
 from voice_assistant.ntfy import RETOPIC
+from voice_assistant.spotify_controller import SpotifySignIn, spotify_oauth
 from voice_assistant.undo import UndoShelf
 
 # Logger setup
@@ -291,7 +292,24 @@ class SettingsPage:
         self._satellites_unreadable = False
         # What was just removed, for a while, so the toast's Undo can put it back.
         self._undo = UndoShelf()
+        self._spotify = self._spotify_sign_in(running)
         self._server: Optional[ThreadingHTTPServer] = None
+
+    @staticmethod
+    def _spotify_sign_in(running) -> Optional[SpotifySignIn]:
+        """
+        The sign-in to Spotify the page offers - when it's the player, and its keys
+        were set as Nova started, as the satellites' Spotify is made from those too.
+
+        Args:
+            running: The Config Nova started with, or None.
+        """
+        if running is None or (running.section("music").get("player") or "spotify").strip().lower() != "spotify":
+            return None
+        try:
+            return SpotifySignIn(spotify_oauth())
+        except ValueError:
+            return None
 
     @classmethod
     def from_config(cls, config, brain, **parts) -> Optional["SettingsPage"]:
@@ -449,10 +467,17 @@ class SettingsPage:
         """
         session, name = self._session(satellite)
         music = session.music_player if session is not None else None
-        if music is None:
-            return {"available": False}
-        return {"available": True, "player": getattr(music, "name", "Music"), "now": music.now_playing(),
-                "playlists": self._user_playlists(name, music)}
+        if session is None:
+            shown = {"available": False, "why": "No satellite is connected just now."}
+        elif music is None:
+            shown = {"available": False}
+        else:
+            shown = {"available": True, "player": getattr(music, "name", "Music"), "now": music.now_playing(),
+                     "playlists": self._user_playlists(name, music)}
+        # Offered whatever the satellites are doing, as it's the brain's, for them all.
+        if self._spotify is not None:
+            shown["spotify"] = {"signed_in": self._spotify.signed_in()}
+        return shown
 
     def _user_playlists(self, name: str, music) -> List[str]:
         kept = self._playlists.get(name)
@@ -917,6 +942,42 @@ class SettingsPage:
         logger.info(f"Settings page: {who} asked the music to {action}")
         return {"success": bool(result.get("success")), "message": result.get("message") or ""}
 
+    def start_spotify_sign_in(self, who: str) -> Dict:
+        """
+        Starts signing in to Spotify, for every satellite.
+
+        Returns:
+            Dict with 'success', and the 'url' of Spotify's page to sign in on.
+        """
+        if self._spotify is None:
+            return {"success": False, "message": "Nova isn't set up to sign in to Spotify."}
+        url = self._spotify.start()
+        logger.info(f"Settings page: {who} started signing in to Spotify")
+        return {"success": True, "url": url}
+
+    def finish_spotify_sign_in(self, address: str, who: str) -> Dict:
+        """
+        Finishes signing in to Spotify, from the address Spotify sent the browser to -
+        which isn't logged, as it has the code in it. Each satellite's Spotify uses the
+        sign-in from its next command.
+
+        Args:
+            address: The address, as pasted.
+            who: Whose login it is, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        if self._spotify is None:
+            return {"success": False, "message": "Nova isn't set up to sign in to Spotify."}
+        try:
+            self._spotify.finish(address)
+        except ValueError as e:
+            logger.info(f"Settings page: {who} couldn't sign in to Spotify")
+            return {"success": False, "message": str(e)}
+        logger.info(f"Settings page: {who} signed in to Spotify")
+        return {"success": True, "message": "Signed in to Spotify."}
+
     def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
                   hue=None, saturation=None, kelvin=None, satellite: Optional[str] = None) -> Dict:
         """
@@ -1220,6 +1281,8 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/voice/hear": lambda page, body, who: page.hear_voice(body["speed"], who, body.get("satellite")),
     "/api/music": lambda page, body, who: page.play(
         body["action"], who, body.get("query", ""), body.get("playlist", ""), body.get("satellite")),
+    "/api/spotify/start": lambda page, body, who: page.start_spotify_sign_in(who),
+    "/api/spotify/finish": lambda page, body, who: page.finish_spotify_sign_in(body["address"], who),
     "/api/light": lambda page, body, who: page.set_light(
         body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
         body.get("kelvin"), body.get("satellite")),

@@ -4,7 +4,11 @@ Tests how the controller signs in and keeps its token fresh, using fakes in plac
 of spotipy's client and OAuth classes so nothing goes to Spotify.
 """
 
+import json
+import os
+import stat
 import time
+from urllib.parse import parse_qs, parse_qsl, urlsplit
 
 import pytest
 
@@ -109,7 +113,7 @@ def test_starting_up_doesnt_go_over_the_network(make_controller):
 
 def test_a_lost_login_fails_clearly_instead_of_waiting_for_a_browser(make_controller):
     controller = make_controller(cached=SAVED, refreshed=None)
-    with pytest.raises(RuntimeError, match="authorising again"):
+    with pytest.raises(RuntimeError, match="settings page"):
         controller.sp.kwargs["auth_manager"].get_access_token(as_dict=False)
 
 
@@ -141,6 +145,133 @@ def test_only_music_on_this_speaker_is_paused_for_speech(make_controller, device
     controller.sp = FakePlayback(device)
     controller.pause_for_speech()
     assert controller.sp.paused is paused and controller.was_playing() is paused
+
+
+# Signing in
+
+class FakeCacheFile:
+    """Stands in for spotipy's cache file handler, reading the file itself."""
+
+    def __init__(self, cache_path):
+        self.cache_path = str(cache_path)
+
+    def get_cached_token(self):
+        try:
+            with open(self.cache_path) as file:
+                return json.load(file)
+        except FileNotFoundError:
+            return None
+
+
+class FakeSignInOAuth:
+    """
+    Stands in for SpotifyOAuth through a sign-in, as spotipy 2.26.0 on the brain has
+    it: no show_dialog, and the token written with the default permissions.
+    """
+
+    def __init__(self, cache_path):
+        self.cache_handler = FakeCacheFile(cache_path)
+        self.asked = []
+        self.refuse = False
+
+    def get_authorize_url(self, state=None):
+        return f"https://accounts.spotify.com/authorize?client_id=client-id&state={state}"
+
+    @staticmethod
+    def parse_auth_response_url(url):
+        form = dict(parse_qsl(urlsplit(url).query))
+        if "error" in form:
+            raise spotify_controller.SpotifyOauthError(f"Received error from auth server: {form['error']}",
+                                                       error=form["error"])
+        return tuple(form.get(param) for param in ["state", "code"])
+
+    def get_access_token(self, code=None, as_dict=True, check_cache=True):
+        self.asked.append((code, as_dict, check_cache))
+        if self.refuse:
+            raise spotify_controller.SpotifyOauthError("error: invalid_grant", error="invalid_grant")
+        with open(self.cache_handler.cache_path, "w") as file:
+            json.dump({"access_token": "the-access-token", "refresh_token": "the-refresh-token"}, file)
+        os.chmod(self.cache_handler.cache_path, 0o644)
+        return "the-access-token"
+
+
+CALLBACK = "http://127.0.0.1:8888/callback"
+
+
+def _state(url):
+    return parse_qs(urlsplit(url).query)["state"][0]
+
+
+def test_a_sign_in_gets_and_keeps_the_token_privately(tmp_path):
+    oauth = FakeSignInOAuth(tmp_path / "spotify_token.json")
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+    assert not sign_in.signed_in()
+    state = _state(sign_in.start())
+    sign_in.finish(f" {CALLBACK}?code=the-code&state={state} ")
+    assert oauth.asked == [("the-code", False, False)]
+    # The cache holds the refresh token, as good as a password to the account.
+    assert stat.S_IMODE(os.stat(oauth.cache_handler.cache_path).st_mode) == 0o600
+    assert sign_in.signed_in()
+
+
+def test_an_address_from_another_sign_in_is_refused(tmp_path):
+    oauth = FakeSignInOAuth(tmp_path / "spotify_token.json")
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+    refused = "That address isn't from the sign-in this page started - start again."
+    sign_in.start()
+    with pytest.raises(ValueError, match=refused):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state=someone-elses")
+    sign_in.start()
+    with pytest.raises(ValueError, match=refused):
+        sign_in.finish(f"{CALLBACK}?code=the-code")
+    # Nothing started at all.
+    with pytest.raises(ValueError, match=refused):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state=")
+    assert oauth.asked == []
+
+    state = _state(sign_in.start())
+    with pytest.raises(ValueError, match="hasn't got Spotify's code in it - copy all of it"):
+        sign_in.finish(f"{CALLBACK}?state={state}")
+    state = _state(sign_in.start())
+    sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+    with pytest.raises(ValueError, match=refused):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+    assert len(oauth.asked) == 1
+
+
+def test_a_cancelled_spotify_sign_in_is_answered(tmp_path):
+    oauth = FakeSignInOAuth(tmp_path / "spotify_token.json")
+    sign_in = spotify_controller.SpotifySignIn(oauth)
+    state = _state(sign_in.start())
+    with pytest.raises(ValueError, match="Spotify didn't accept that sign-in - start again."):
+        sign_in.finish(f"{CALLBACK}?error=access_denied&state={state}")
+    # Used up, so the address can't be tried again with a code put in.
+    with pytest.raises(ValueError, match="isn't from the sign-in this page started"):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+    assert oauth.asked == []
+
+    # Spotify turning the code down is answered the same way.
+    oauth.refuse = True
+    state = _state(sign_in.start())
+    with pytest.raises(ValueError, match="Spotify didn't accept that sign-in - start again."):
+        sign_in.finish(f"{CALLBACK}?code=the-code&state={state}")
+    assert not sign_in.signed_in()
+
+
+def test_a_session_uses_a_sign_in_made_after_it_started(make_controller, monkeypatch):
+    controller = make_controller(cached=None)
+    assert controller.play("Halo") == {"success": False, "message": spotify_controller.NOT_SIGNED_IN}
+    # Signed in on the page since, which writes the cache this reads.
+    controller.oauth.cache_handler.token = SAVED
+    monkeypatch.setattr(spotify_controller.spotipy, "Spotify", lambda **kwargs: FakeSpotifyAPI())
+    assert controller.play("Halo")["success"]
+
+
+def test_nova_says_spotify_is_signed_in_to_on_the_settings_page(make_controller):
+    assert spotify_controller.NOT_SIGNED_IN == "Spotify needs signing in again on the settings page."
+    controller = make_controller(cached=SAVED, refreshed=None)
+    with pytest.raises(RuntimeError, match=spotify_controller.NOT_SIGNED_IN):
+        controller.sp.kwargs["auth_manager"].get_access_token(as_dict=False)
 
 
 # Holding the music while there's something to say

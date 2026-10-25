@@ -1042,6 +1042,44 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   padding: 10px;
 }
 
+/* Signing in to Spotify, under the music. */
+.sign-in {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 14px 16px;
+}
+
+.sign-in p { margin: 0; }
+
+.sign-in .entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sign-in .about { flex: 1; }
+
+.sign-in .finish {
+  display: grid;
+  gap: 8px;
+}
+
+.sign-in .finish input {
+  flex: 1;
+  min-width: 0;
+}
+
+.sign-in .how {
+  color: var(--dusk);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.sign-in a { color: var(--starlight); }
+
+.sign-in .button { min-height: 44px; }
+
 .chips {
   display: flex;
   flex-wrap: wrap;

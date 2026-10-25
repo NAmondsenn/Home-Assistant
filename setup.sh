@@ -686,7 +686,7 @@ main() {
     fi
     if [ "$ROLE" = "brain" ]; then
         echo "Let a satellite in:         cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python backend.py add-satellite NAME"
-        echo "For Spotify, sign in once:  cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python -m voice_assistant.spotify_controller"
+        echo "For Spotify, sign in on the settings page, under Music."
         echo "Watch it working:           journalctl -u ${BRAIN_SERVICE_NAME} -f"
     else
         echo "Watch it working:           journalctl --user-unit ${SERVICE_NAME} -f"

@@ -148,7 +148,7 @@ navidrome:
 
 Songs are fetched as MP3 - Navidrome converts anything else as it sends it - and decoded with ffmpeg on the brain, which `setup.sh --brain` installs. Your liked songs are the ones starred in Navidrome. Nova never sends the password itself, only a salted hash of it, as Navidrome's API has it.
 
-**Spotify.** Spotify Premium is needed. Its client ID and secret (`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, from Spotify's developer dashboard) go under Keys on the settings page, or in the brain's `~/.config/nova/.env` yourself. Then sign in once, on the brain, as its user - it prints a link to open in a browser:
+**Spotify.** Spotify Premium is needed. Its client ID and secret (`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, from Spotify's developer dashboard) go under Keys on the settings page, or in the brain's `~/.config/nova/.env` yourself, and your Spotify app has to list the brain's `SPOTIFY_REDIRECT_URI` as a redirect URI - setup.sh sets it to `http://127.0.0.1:8888/callback`. Once Nova has restarted with them, sign in on the settings page, under Music. Spotify's page opens in a new tab, and once you've agreed it sends you to an address that doesn't load: paste that address back on the settings page. Every satellite's Spotify uses the sign-in from its next command, with no restart. Without the page, sign in on the brain instead, as its user - it prints a link to open in a browser:
 
 ```bash
 runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller

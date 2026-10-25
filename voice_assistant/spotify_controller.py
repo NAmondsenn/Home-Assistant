@@ -9,6 +9,7 @@ than remote-controlling whichever phone or laptop Spotify happened to list first
 
 import os
 import re
+import secrets
 import time
 import random
 import difflib
@@ -17,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, List, Tuple
 import requests
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 
 from voice_assistant import paths
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -38,13 +39,130 @@ REQUEST_RETRIES = 1
 CACHE_SECONDS = 600
 
 # Said when there's no Spotify login to use, rather than a bare "not authenticated" -
-# signing in again is done by hand, by running this module on the brain, which drives
-# Spotify for every satellite (see the bottom).
-NOT_SIGNED_IN = "Spotify needs signing in again on the server."
+# signing in is done on the settings page, which the brain serves (see SpotifySignIn),
+# or by running this module on the brain (see the bottom).
+NOT_SIGNED_IN = "Spotify needs signing in again on the settings page."
+
+# What's asked of the Spotify account. playlist-read is needed to look up the user's own
+# playlists by name, and recently-played and library-read so a bare "play" can fall back
+# to the last thing listened to, and then to the user's liked songs.
+SCOPE = ("user-read-playback-state,user-modify-playback-state,"
+         "user-read-currently-playing,playlist-read-private,"
+         "playlist-read-collaborative,user-read-recently-played,"
+         "user-library-read")
 
 # About how big a cover the settings page is given, in pixels a side - Spotify has
 # each in a few sizes.
 COVER_SIZE = 300
+
+
+def spotify_oauth() -> SpotifyOAuth:
+    """
+    Nova's OAuth client for Spotify, from the keys in .env.
+
+    Every call refreshes an expired token through it, with spotipy's own request, which
+    otherwise waits for ever - the client's time limit doesn't cover it.
+
+    Returns:
+        The client, keeping its token in paths.SPOTIFY_TOKEN_FILE.
+
+    Raises:
+        ValueError: If SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET or SPOTIFY_REDIRECT_URI
+            isn't set.
+    """
+    client_id = os.getenv("SPOTIFY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+    redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI")
+    if not all([client_id, client_secret, redirect_uri]):
+        raise ValueError("Spotify credentials not found in .env")
+    return SpotifyOAuth(client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri,
+                        scope=SCOPE, cache_path=paths.SPOTIFY_TOKEN_FILE, requests_timeout=REQUEST_TIMEOUT)
+
+
+def _keep_private(path: str):
+    """
+    Makes the token cache readable by Nova's user only.
+
+    It holds the refresh token - as good as a password to the Spotify account - but
+    spotipy writes it with the default permissions, which let anyone on the machine
+    read it. Kept to this user only, like .env (see setup.sh).
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError as e:
+        logger.warning(f"Could not make the Spotify token cache private: {e}")
+
+
+class SpotifySignIn:
+    """
+    Signs Nova in to Spotify from the settings page: the page opens Spotify's own page,
+    and the user pastes back the address Spotify sends the browser to, which doesn't
+    load - the redirect address only has to be one the user's Spotify app lists.
+
+    Shaped like GoogleSignIn: the state is made here, kept in memory only and used
+    once, so only the address from the sign-in this page started is taken.
+    """
+
+    def __init__(self, oauth: SpotifyOAuth):
+        """
+        Args:
+            oauth: Nova's OAuth client for Spotify - see spotify_oauth.
+        """
+        self.oauth = oauth
+        self._state: Optional[str] = None
+
+    def start(self) -> str:
+        """
+        Starts a sign-in, in place of any started before.
+
+        Returns:
+            The address to open in a browser, to sign in to Spotify there.
+        """
+        self._state = secrets.token_urlsafe()
+        return self.oauth.get_authorize_url(state=self._state)
+
+    def finish(self, pasted: str):
+        """
+        Finishes the sign-in started, from the address Spotify sent the browser to,
+        and keeps the token for every satellite's Spotify to use from its next command.
+
+        The state is used once, whether it works or not, so an address can't be tried
+        again.
+
+        Args:
+            pasted: The address, pasted from the browser's address bar.
+
+        Raises:
+            ValueError: If the address isn't from the sign-in started, or none was, or
+                it hasn't got Spotify's code in it - nothing is sent to Spotify - or if
+                Spotify turned the sign-in down, as it does once Cancel's pressed.
+        """
+        state, self._state = self._state, None
+        try:
+            given, code = self.oauth.parse_auth_response_url(str(pasted).strip())
+        except SpotifyOauthError:
+            # The address had error= in it - Cancel, on Spotify's page.
+            raise ValueError("Spotify didn't accept that sign-in - start again.") from None
+        # Compared in constant time, as GoogleSignIn does, and as bytes, since
+        # compare_digest won't take a string with "é" in it.
+        if state is None or not secrets.compare_digest((given or "").encode("utf-8"), state.encode("ascii")):
+            raise ValueError("That address isn't from the sign-in this page started - start again.")
+        if not code:
+            raise ValueError("That address hasn't got Spotify's code in it - copy all of it.")
+        try:
+            # Not from the cache, which would hand back the sign-in being replaced.
+            self.oauth.get_access_token(code, as_dict=False, check_cache=False)
+        except SpotifyOauthError:
+            raise ValueError("Spotify didn't accept that sign-in - start again.") from None
+        _keep_private(self.oauth.cache_handler.cache_path)
+        logger.info("Signed in to Spotify")
+
+    def signed_in(self) -> bool:
+        """
+        Returns:
+            Whether there's a token in the cache.
+        """
+        return bool(self.oauth.cache_handler.get_cached_token())
 
 
 class _RefreshingAuth:
@@ -66,7 +184,7 @@ class _RefreshingAuth:
         # Reads the cache and refreshes the token if it's run out.
         token_info = self.oauth.get_cached_token()
         if not token_info:
-            raise RuntimeError("Spotify needs authorising again - run python -m voice_assistant.spotify_controller")
+            raise RuntimeError(NOT_SIGNED_IN)
         return token_info if as_dict else token_info["access_token"]
 
 
@@ -91,34 +209,8 @@ class SpotifyController:
         # Kept to read pause_while_speaking at each use - see the property below.
         self.config = config
 
-        self.client_id = os.getenv("SPOTIFY_CLIENT_ID")
-        self.client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
-        self.redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI")
-
-        if not all([self.client_id, self.client_secret, self.redirect_uri]):
-            raise ValueError("Spotify credentials not found in .env")
-
-        # Scopes needed for playback control.
-        # playlist-read scopes are needed to look up the user's own playlists by name.
-        # recently-played and library-read are needed so a bare "play" can fall back
-        # to the last thing listened to, and then to the user's liked songs.
-        scope = ("user-read-playback-state,user-modify-playback-state,"
-                 "user-read-currently-playing,playlist-read-private,"
-                 "playlist-read-collaborative,user-read-recently-played,"
-                 "user-library-read")
-
+        self.sp_oauth = spotify_oauth()
         self.cache_path = paths.SPOTIFY_TOKEN_FILE
-        # Every call refreshes an expired token through this, with spotipy's own
-        # request, which otherwise waits for ever - the client's time limit below
-        # doesn't cover it.
-        self.sp_oauth = SpotifyOAuth(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            redirect_uri=self.redirect_uri,
-            scope=scope,
-            cache_path=self.cache_path,
-            requests_timeout=REQUEST_TIMEOUT
-        )
 
         self.sp = None
         # Tracks whether the assistant paused the music itself,
@@ -132,11 +224,12 @@ class SpotifyController:
         # last one fetched with its address - see cover.
         self._cover_url = None
         self._cover: Optional[Tuple[str, Tuple[bytes, str]]] = None
-        self._authenticate()
+        if not self._authenticate():
+            logger.warning("Spotify isn't signed in to - sign in on the settings page, under Music.")
 
         logger.info(f"Spotify controller initialised (target device: '{self.device_name}')")
 
-    def _authenticate(self):
+    def _authenticate(self) -> bool:
         """
         Authenticate with Spotify (uses cached token if available).
 
@@ -144,18 +237,14 @@ class SpotifyController:
         The token has always expired after a reboot (they last an hour), and
         refreshing it here meant a Pi which started before its Wi-Fi was up lost
         Spotify for the whole session. It's refreshed on the first command instead.
+
+        Returns:
+            Whether there was a token, so the client is made.
         """
         if not self.sp_oauth.cache_handler.get_cached_token():
-            logger.warning("No cached token found. Run authenticate_first_time() to get one.")
-            return
+            return False
 
-        # The cache holds the refresh token - as good as a password to the Spotify
-        # account - but spotipy writes it with the default permissions, which let
-        # anyone on the machine read it. Kept to this user only, like .env (see setup.sh).
-        try:
-            os.chmod(self.cache_path, 0o600)
-        except OSError as e:
-            logger.warning(f"Could not make the Spotify token cache private: {e}")
+        _keep_private(self.cache_path)
 
         # Given something which fetches a fresh token for every request, rather than
         # the access token itself. A fixed token only lasts an hour, which is what made
@@ -164,29 +253,38 @@ class SpotifyController:
                                   requests_timeout=REQUEST_TIMEOUT,
                                   retries=REQUEST_RETRIES, status_retries=REQUEST_RETRIES)
         logger.info("Authenticated with Spotify using cached token")
+        return True
+
+    def _signed_in(self) -> bool:
+        """
+        Whether there's a Spotify login to use - looking for one again without one, so
+        a sign-in made on the settings page since this started is used from the next
+        command, with no restart. That only reads the cache.
+        """
+        return bool(self.sp) or self._authenticate()
 
     def authenticate_first_time(self):
         """
-        First-time authentication - prints a URL for the user to visit.
-        Run this once to get the first token. After that the cached refresh token
-        keeps Nova signed in (see _RefreshingAuth), as long as the client is built
-        with auth_manager rather than a fixed access token.
+        First-time authentication on the brain itself, for when the settings page
+        can't be used - prints a URL for the user to visit, and takes back the address
+        it sends the browser to. After that the cached refresh token keeps Nova signed
+        in (see _RefreshingAuth), as long as the client is built with auth_manager
+        rather than a fixed access token.
 
         The redirect page is expected to fail to load; only the URL it redirects
         to matters, since that carries the authorisation code.
         """
-        auth_url = self.sp_oauth.get_authorize_url()
+        sign_in = SpotifySignIn(self.sp_oauth)
         print("\nVisit this URL to authorise the assistant with Spotify:")
-        print(f"{auth_url}\n")
-        print(f"After authorising, you'll be redirected to {self.redirect_uri}")
+        print(f"{sign_in.start()}\n")
         print("The page will likely say 'This site can't be reached' - that's expected.")
         print("Copy the FULL URL from your browser's address bar and paste it here:\n")
 
-        redirect_response = input("Paste the full redirect URL here: ").strip()
-
-        # Extract the authorisation code and get the token
-        code = self.sp_oauth.parse_response_code(redirect_response)
-        self.sp_oauth.get_access_token(code, as_dict=False)
+        try:
+            sign_in.finish(input("Paste the full redirect URL here: "))
+        except ValueError as e:
+            print(e)
+            return
 
         self._authenticate()
         print("Authentication successful! The token is cached for future runs.")
@@ -271,7 +369,7 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -800,7 +898,7 @@ class SpotifyController:
 
     def pause(self) -> Dict:
         """Pause playback"""
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -816,7 +914,7 @@ class SpotifyController:
 
     def skip(self) -> Dict:
         """Skip to the next track"""
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -830,7 +928,7 @@ class SpotifyController:
 
     def previous(self) -> Dict:
         """Go back to the previous track."""
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -856,7 +954,7 @@ class SpotifyController:
         Returns:
             The volume, or None if the device isn't available.
         """
-        if not self.sp:
+        if not self._signed_in():
             return None
 
         try:
@@ -884,7 +982,7 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a 'message'.
         """
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         percent = max(0, min(100, int(percent)))
@@ -905,7 +1003,7 @@ class SpotifyController:
 
     def restart(self) -> Dict:
         """Start the current track again from the beginning."""
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -928,7 +1026,7 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         # Spotify calls repeating the whole playlist / album "context".
@@ -956,7 +1054,7 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -1063,7 +1161,7 @@ class SpotifyController:
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -1100,7 +1198,7 @@ class SpotifyController:
 
     def current_track(self) -> Dict:
         """Retrieves current track information."""
-        if not self.sp:
+        if not self._signed_in():
             return {"success": False, "message": NOT_SIGNED_IN}
 
         try:
@@ -1128,7 +1226,7 @@ class SpotifyController:
             Dict of its "track", "artist" and "album"; whether it's "playing"; its
             "position" and "duration" in seconds; and its "cover" id, if any.
         """
-        if not self.sp:
+        if not self._signed_in():
             return None
         try:
             current = self.sp.current_playback()
@@ -1175,7 +1273,7 @@ class SpotifyController:
 
     def playlists(self) -> List[str]:
         """The names of the user's playlists, for the settings page to offer - none without a login."""
-        if not self.sp:
+        if not self._signed_in():
             return []
         try:
             return sorted({playlist["name"] for playlist in self._all_playlists() if playlist.get("name")},
@@ -1200,7 +1298,7 @@ class SpotifyController:
         is active on the account, so this used to pause music on a phone in
         another room just because someone talked to the assistant in this one.
         """
-        if not self.sp or not self.pause_while_speaking:
+        if not self.pause_while_speaking or not self._signed_in():
             return
 
         try:
@@ -1234,7 +1332,7 @@ class SpotifyController:
 
     def resume_after_speech(self):
         """Resumes playback, but only if pause_for_speech() was what paused it."""
-        if not self.sp or not self._paused_for_speech:
+        if not self._paused_for_speech or not self._signed_in():
             return
 
         try:
@@ -1248,8 +1346,7 @@ class SpotifyController:
 
 
 # Runs a first-time authentication, as "python -m voice_assistant.spotify_controller"
-# from the project folder. This is the one-off step needed before the assistant can
-# control Spotify.
+# from the project folder - the way to sign in when the settings page can't be used.
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
@@ -1261,7 +1358,7 @@ if __name__ == "__main__":
     controller = SpotifyController(config=Config())
 
     # If there's no cached token yet, walk the user through authorising.
-    if not controller.sp:
+    if not controller._signed_in():
         controller.authenticate_first_time()
     else:
         print("\nAlready authenticated - nothing to do.")
