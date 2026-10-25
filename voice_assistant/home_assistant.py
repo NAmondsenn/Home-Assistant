@@ -258,8 +258,16 @@ NOT_STATUS_IDS = ("ip_address", "bssid", "ssid", "wi_fi", "wifi", "network", "la
                   "active_camera", "active_audio", "display", "clipboard", "geocoded", "battery", "charg")
 NOT_STATUS_CLASSES = ("battery", "battery_charging")
 
-# A hardware (MAC) address, e.g. "aa:bb:cc:dd:ee:ff" - an IP address is told by ipaddress.
-HARDWARE_ADDRESS = re.compile(r"[0-9a-f]{2}([:-][0-9a-f]{2}){5}", re.IGNORECASE)
+# Addresses, looked for anywhere in a state: an IPv4 one, with or without a port or a
+# prefix - "10.0.0.2:8080", "10.0.0.0/24" - and a hardware (MAC) one, as "aa:bb:cc:dd:ee:ff",
+# "AA-BB-CC-DD-EE-FF" or 12 hex digits run together. Four numbers alone make an IPv4
+# address here, whether or not each is under 256.
+IPV4_ADDRESS = re.compile(r"(?<![\d.])\d{1,3}(\.\d{1,3}){3}(?!\d)")
+HARDWARE_ADDRESS = re.compile(r"(?<![0-9a-f])([0-9a-f]{2}([:-][0-9a-f]{2}){5}|[0-9a-f]{12})(?![0-9a-f])",
+                              re.IGNORECASE)
+# A run of hex digits and colons, each tried as an IPv6 address - "fe80::1" in "[fe80::1]".
+# A time, "12:30:45", isn't one.
+MAYBE_IPV6 = re.compile(r"[0-9a-f:]*:[0-9a-f:]*", re.IGNORECASE)
 
 # The integration of the Home Assistant app on a phone, tablet or Mac. Its sensors, and
 # HASS.Agent's on a PC, are given only as numbers or times, as their free text is where
@@ -1125,10 +1133,11 @@ class HomeAssistant:
         coordinates. What's private is left out - see _private.
 
         Each entity scores how many of the words asked, bar little ones such as "the"
-        (STATUS_STOP_WORDS), begin a word of its name, its entity id or its area's name,
-        so "navidrome" finds "Navidrome status" and "update.navidrome_update" alike. A
-        tie goes to the one more of the words are whole words of, so "pc" puts the PC's
-        own sensors before "PCIe fan".
+        (STATUS_STOP_WORDS), begin a word of its name, its entity id or its area's name -
+        with or without an "s" on the end - so "navidrome" finds "Navidrome status" and
+        "update.navidrome_update" alike, and "updates" finds update.*. A tie goes to the
+        one more of the words are whole words of, so "pc" puts the PC's own sensors
+        before "PCIe fan".
 
         Args:
             about: The words asked about, e.g. "navidrome".
@@ -1158,8 +1167,8 @@ class HomeAssistant:
             name = str(attributes.get("friendly_name") or entity)
             area = snapshot.area_name(entity) if snapshot else None
             words = split_words(f"{name} {entity} {area or ''}")
-            score = sum(1 for word in asked if any(its.startswith(word) for its in words))
-            whole = sum(1 for word in asked if word in words)
+            score = sum(1 for word in asked if any(its.startswith(said) for said in _forms(word) for its in words))
+            whole = sum(1 for word in asked if any(said in words for said in _forms(word)))
             if score:
                 found.append((-score, -whole, name.lower(), entity, name, area, state))
         if not found:
@@ -1452,8 +1461,8 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
     """
     Whether status leaves an entity out, as private or another tool's: by its domain
     (NOT_STATUS_DOMAINS), by its id (NOT_STATUS_IDS), its device class, a state which
-    is an address of any kind, or - on a personal device, or without the registry to
-    tell - a sensor whose state isn't a number or a time.
+    holds an address of any kind, or a state which isn't a number or a time for a text
+    entity, or for a sensor on a personal device or without the registry to tell.
 
     Args:
         entity: e.g. "sensor.example_phone_steps".
@@ -1469,19 +1478,36 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
         return True
     if attributes.get("device_class") in NOT_STATUS_CLASSES:
         return True
-    # Whatever it's called - "10.0.0.2, 10.0.0.3" as well as one alone.
-    for part in re.split(r"[\s,;]+", state.strip()):
-        if HARDWARE_ADDRESS.fullmatch(part):
-            return True
-        try:
-            ipaddress.ip_address(part)
-            return True
-        except ValueError:
-            pass
-    # Only a sensor's state can be free text - a light's is on or off, whatever the device.
-    if domain != "sensor" or (snapshot is not None and not _personal(entity, snapshot)):
-        return False
-    return not (_number(state) or _moment(state))
+    if _holds_address(state):
+        return True
+    # Only a sensor's or a text entity's state can be free text - a light's is on or off,
+    # whatever the device. A text entity holds whatever was typed into it, on any device.
+    if domain == "text" or (domain == "sensor" and (snapshot is None or _personal(entity, snapshot))):
+        return not (_number(state) or _moment(state))
+    return False
+
+
+def _holds_address(state: str) -> bool:
+    """
+    Whether a state has an IP or hardware address anywhere in it, whatever it's called -
+    "Connected to 10.0.0.2." or "[fe80::1]" as well as one alone.
+    """
+    if IPV4_ADDRESS.search(state) or HARDWARE_ADDRESS.search(state):
+        return True
+    for run in MAYBE_IPV6.findall(state):
+        # "fe80::1:" at the end of a sentence still holds "fe80::1".
+        for maybe in {run, run.rstrip(":")}:
+            try:
+                ipaddress.IPv6Address(maybe)
+                return True
+            except ValueError:
+                pass
+    return False
+
+
+def _forms(word: str) -> Tuple[str, ...]:
+    """A word asked about, and without its "s" if it has one - "updates" is about update.*."""
+    return (word, word[:-1]) if len(word) > 2 and word.endswith("s") else (word,)
 
 
 def _personal(entity: str, snapshot: Snapshot) -> bool:

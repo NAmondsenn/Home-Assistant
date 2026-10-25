@@ -2454,16 +2454,39 @@ def test_status_leaves_out_network_and_app_sensors_by_their_id(make_home):
     assert home.status("example", now=STATUS_NOW)["message"] == "Example PC CPU (sensor.example_pc_cpu): 31 %"
 
 
-def test_status_leaves_out_any_address_whatever_its_called(make_home):
-    things = [_status("sensor.example_router_wan", "Example router WAN", "192.168.0.10"),
-              _status("sensor.example_router_lan", "Example router LAN", "fe80::1"),
-              _status("sensor.example_router_link", "Example router link", "aa:bb:cc:dd:ee:ff"),
-              _status("sensor.example_router_port", "Example router port", "AA-BB-CC-DD-EE-FF"),
-              _status("sensor.example_router_both", "Example router both", "10.0.0.2, 10.0.0.3"),
-              _status("sensor.example_router_uptime", "Example router uptime", "12.5", "d")]
-    home = _status_home(make_home, things)
+@pytest.mark.parametrize("address", [
+    "192.168.0.10", "fe80::1", "aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "10.0.0.2, 10.0.0.3", "10.0.0.2:8080",
+    "http://10.0.0.2/", "[fe80::1]", "Loopback on ::1 only", "fe80::1%eth0", "(aa:bb:cc:dd:ee:ff)", "10.0.0.0/24",
+    "Connected to 10.0.0.2.", "aabbccddeeff", "Link AABBCCDDEEFF up", "::ffff:10.0.0.2"])
+def test_status_leaves_out_any_address_whatever_its_called(make_home, address):
+    # Searched for anywhere in the state, as an address is still one inside other words.
+    home = _status_home(make_home, [_status("sensor.example_router_wan", "Example router WAN", address),
+                                    _status("sensor.example_router_uptime", "Example router uptime", "12.5", "d")])
     assert home.status("example router", now=STATUS_NOW)["message"] == \
         "Example router uptime (sensor.example_router_uptime): 12.5 d"
+
+
+@pytest.mark.parametrize("state", ["on", "21.5", "2026-10-25T10:00:00+00:00", "2026-10-25T10:00:00.123456+00:00",
+                                   "1.2.3", "12:30", "12:30:45", "Version 2026.10.1", "heat"])
+def test_status_doesnt_take_an_ordinary_state_for_an_address(make_home, state):
+    home = _status_home(make_home, [_status("sensor.example_router_wan", "Example router WAN", state)])
+    assert "sensor.example_router_wan" in home.status("example router", now=STATUS_NOW)["message"]
+
+
+def test_status_gives_text_entities_only_as_numbers_and_times(make_home):
+    # A text entity holds free text, whatever it's on.
+    things = [_status("text.example_note", "Example note", "Meet at Example Hall"),
+              _status("text.example_count", "Example count", "3")]
+    home = _status_home(make_home, things)
+    assert home.status("example", now=STATUS_NOW)["message"] == "Example count (text.example_count): 3"
+
+
+def test_status_finds_a_plural_by_its_singular(make_home):
+    home = _status_home(make_home, [_status("update.example_nas_firmware", "Example NAS firmware", "off"),
+                                    _status("light.desk_lamp", "Desk lamp", "off")])
+    assert home.status("any updates?", now=STATUS_NOW)["message"] == \
+        "Example NAS firmware (update.example_nas_firmware): off"
+    assert home.status("lamps", now=STATUS_NOW)["message"] == "Desk lamp (light.desk_lamp): off"
 
 
 def test_status_gives_a_personal_devices_sensors_only_as_numbers_and_times(make_home):
