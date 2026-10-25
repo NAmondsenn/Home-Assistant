@@ -31,9 +31,13 @@ from voice_assistant.brain import Brain
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
+from voice_assistant.ha_registry import Entry, Snapshot
+from voice_assistant.lists import Lists
 from voice_assistant.ntfy import Ntfy
+from voice_assistant.pc import PCPower
 from voice_assistant.routines import Routines
 from voice_assistant.settings_page import LATER, NOW, SettingsPage
+from voice_assistant.weather import Weather
 
 LOGIN = "you@example.com"
 
@@ -217,6 +221,7 @@ class FakeBrain:
         self.known = list(sessions) if known is None else known
         self.clock, self.memory = FakeClock(), FakeMemory()
         self.ntfy = self.stt = self.routines = self.batteries = self.config = self.calendar = None
+        self.home = self.lists = self.weather = self.pc = None
         self._night = Ntfy("")
         self.ran = []
         for name, part in parts.items():
@@ -2129,3 +2134,193 @@ def test_a_battery_change_needs_the_pages_own_header(files, tmp_path):
         assert json.loads(_ask(page, "/api/batteries", {"enabled": False}, X_Nova="page")[2])["success"] is False
     finally:
         page.stop()
+
+
+# The lists, sending, the weather and the PCs
+
+class FakeChoicesHome:
+    """Stands in for Home Assistant's lists, weather, devices, PCs and Wake-on-LAN buttons. The ids are made up."""
+
+    def __init__(self):
+        self.fails = None
+        self.pressed = []
+        self.lists = [
+            {"id": "todo.shopping_list", "name": "Shopping list", "count": 3, "aliases": ["groceries"]},
+            {"id": "todo.todo", "name": "todo", "count": 0, "aliases": []}]
+        self.weather = [{"id": "weather.forecast_home", "name": "Forecast Home", "state": "sunny", "attributes": {},
+                         "reported": None},
+                        {"id": "weather.cabin", "name": "Cabin", "state": "sunny", "attributes": {}, "reported": None}]
+        self.devices = [
+            {"device": "d1", "name": "s25-ultra", "maker": "samsung", "model": "SM-S938B", "notify": "mobile_app_s25",
+             "tracker": None, "place": None},
+            {"device": "d2", "name": "macbook", "maker": "Apple", "model": "Mac16,8", "notify": "mobile_app_macbook",
+             "tracker": None, "place": None},
+            {"device": "d3", "name": "old-tablet", "maker": "Amazon", "model": "Fire", "notify": None,
+             "tracker": None, "place": None}]
+        entries = [Entry("button.desk_off", "mqtt", "desk", None, "desk_shutdown", "Shutdown", (), False),
+                   Entry("sensor.desk_cpu", "mqtt", "desk", None, "desk_cpu", "CPU Load", (), False),
+                   Entry("button.wake_desk_pc", "wake_on_lan", None, None, "wake_desk_pc", None, (), False),
+                   Entry("button.wake_nas", "wake_on_lan", None, None, "wake_nas", None, (), False)]
+        self.snapshot = Snapshot(entries={entry.entity_id: entry for entry in entries},
+                                 devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}}, areas={},
+                                 read_at=0.0)
+        self.names = {"button.wake_desk_pc": "Wake Desk PC", "button.wake_nas": "Wake NAS"}
+
+    def _fail(self):
+        if self.fails:
+            raise self.fails
+
+    def todo_lists(self):
+        self._fail()
+        return [dict(found) for found in self.lists]
+
+    def weather_entities(self):
+        self._fail()
+        return [dict(found) for found in self.weather]
+
+    def app_devices(self):
+        self._fail()
+        return [dict(found) for found in self.devices]
+
+    def _snapshot(self):
+        return self.snapshot
+
+    def _states(self):
+        self._fail()
+        # The PC is off, so every one of HASS.Agent's entities on it is unavailable.
+        return [{"entity_id": entity, "state": "unavailable" if entry.platform == "mqtt" else "unknown",
+                 "attributes": {"friendly_name": self.names[entity]} if entity in self.names else {}}
+                for entity, entry in self.snapshot.entries.items()]
+
+    def press(self, entity_id):
+        self.pressed.append(entity_id)
+
+
+def _home_page(files, phone="", **home_changes):
+    """A page over Nova with Home Assistant set up, and its real lists, weather and PC choices."""
+    home = FakeChoicesHome()
+    for name, value in home_changes.items():
+        setattr(home, name, value)
+
+    def store(name, defaults):
+        return ChoiceStore(str(files / name), defaults)
+
+    page = _page(home=home, ntfy=Ntfy("http://ntfy.local", phone=phone),
+                 lists=Lists(home, store("lists.json", {"main": None})),
+                 weather=Weather(home, store("weather.json", {"entity": None})),
+                 pc=PCPower(home, store("pcs.json", {"wake": {}})))
+    return page, home
+
+
+def test_sending_says_how_each_device_is_reached(files):
+    page, home = _home_page(files, phone="my-phone")
+    # The phone through ntfy, a Mac through Home Assistant - and a tablet with no notify service
+    # isn't one Nova can send to.
+    assert page.home_choices_state()["sending"] == [
+        {"name": "MacBook", "how": "Through Home Assistant"},
+        {"name": "S25 Ultra", "how": "Through ntfy, to the topic under Notifications"}]
+    page, home = _home_page(files)
+    assert page.home_choices_state()["sending"][1] == {
+        "name": "S25 Ultra", "how": "Through ntfy, once a topic for your phone is set under Notifications"}
+
+
+def test_the_lists_weather_and_pcs_are_shown_and_chosen_from_the_page(files, monkeypatch, caplog):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page, home = _home_page(files)
+    page.start()
+    try:
+        def change(path, body):
+            return json.loads(_ask(page, path, body, X_Nova="page")[2])
+
+        def shown():
+            status, headers, body = _ask(page, "/api/home-choices")
+            assert status == 200 and headers["Cache-Control"] == "no-store"
+            return json.loads(body)
+
+        caplog.set_level(logging.DEBUG)
+        state = shown()
+        assert state["lists"] == [
+            {"id": "todo.shopping_list", "name": "Shopping list", "count": 3, "aliases": ["groceries"], "main": False},
+            {"id": "todo.todo", "name": "todo", "count": 0, "aliases": [], "main": True}]
+        # The first by entity id is the one used until another is chosen.
+        assert [(entity["id"], entity["chosen"]) for entity in state["weather"]] == [
+            ("weather.forecast_home", False), ("weather.cabin", True)]
+        assert state["pcs"] == {"pcs": [{"device": "desk", "name": "Desk PC", "wake": None}],
+                                "buttons": [{"id": "button.wake_desk_pc", "name": "Wake Desk PC"},
+                                            {"id": "button.wake_nas", "name": "Wake NAS"}]}
+
+        saved = {"success": True, "message": "Saved. It's used straight away."}
+        assert change("/api/lists/main", {"id": "todo.shopping_list"}) == saved
+        assert change("/api/weather", {"id": "weather.forecast_home"}) == saved
+        assert change("/api/pcs/wake", {"device": "desk", "button": "button.wake_desk_pc"}) == saved
+        state = shown()
+        assert [found["main"] for found in state["lists"]] == [True, False]
+        assert [entity["chosen"] for entity in state["weather"]] == [True, False]
+        assert state["pcs"]["pcs"][0]["wake"] == "button.wake_desk_pc"
+        # Used straight away.
+        assert page.brain.pc.act("on")["message"] == "Turning your PC on."
+        assert home.pressed == ["button.wake_desk_pc"]
+        assert _ask(page, "/api/lists/main", {"id": "todo.todo"})[0] == 403
+
+        # Only what Home Assistant has just now, never what the page says.
+        gone = "Home Assistant isn't showing that"
+        assert change("/api/lists/main", {"id": "todo.made_up"})["message"].startswith(gone)
+        assert change("/api/weather", {"id": "light.kitchen"})["message"].startswith(gone)
+        assert change("/api/pcs/wake", {"device": "desk", "button": "button.desk_off"})["message"].startswith(gone)
+        assert change("/api/pcs/wake", {"device": "nobody", "button": "button.wake_nas"})["message"].startswith(gone)
+        for path, body in (("/api/lists/main", {"id": 7}), ("/api/weather", {"id": ["weather.cabin"]}),
+                           ("/api/pcs/wake", {"device": "desk", "button": None})):
+            assert change(path, body) == {"success": False, "message": "That didn't make sense."}
+        assert page.brain.lists.choices.get("main") == "todo.shopping_list"
+
+        # A hardware address never reaches the journal: nothing is logged of an entity id.
+        kept = " ".join(record.getMessage() for record in caplog.records if record.levelno >= logging.INFO)
+        assert "chose which button wakes a PC" in kept
+        for private in ("button.", "wake_desk_pc", "todo.", "weather."):
+            assert private not in kept, private
+    finally:
+        page.stop()
+
+
+def test_a_choice_which_cant_be_saved_or_read_says_so(files, monkeypatch):
+    page, home = _home_page(files)
+
+    def full(*args):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(page.brain.lists.choices, "change", full)
+    assert page.choose_main_list("todo.todo", LOGIN) == {"success": False, "message": "Couldn't save that."}
+    home.fails = requests.ConnectionError("down")
+    gone = {"success": False, "message": "Nova can't reach Home Assistant just now."}
+    assert page.choose_main_list("todo.todo", LOGIN) == gone
+    assert page.choose_weather("weather.cabin", LOGIN) == gone
+    assert page.choose_wake("desk", "button.wake_nas", LOGIN) == gone
+
+
+def test_home_choices_without_home_assistant_say_so(files):
+    page = _page()
+    said = "Nova isn't connected to Home Assistant. Add its address in Settings, and its token in Keys."
+    assert page.home_choices_state() == {"available": False, "message": said}
+    assert page.choose_main_list("todo.todo", LOGIN) == {"success": False, "message": "Nova isn't connected to Home Assistant."}
+    assert page.choose_weather("weather.cabin", LOGIN)["success"] is False
+    assert page.choose_wake("desk", "button.wake_nas", LOGIN)["success"] is False
+
+    # Unreachable is said as the batteries say it.
+    page, home = _home_page(files)
+    home.fails = requests.ConnectionError("down")
+    assert page.home_choices_state() == {"available": False, "message": "Nova can't reach Home Assistant just now."}
+
+
+def test_the_weather_and_pcs_are_left_out_without_a_choice(files):
+    lonely = FakeChoicesHome().snapshot
+    page, home = _home_page(files, weather=[], snapshot=Snapshot(
+        entries={entity: entry for entity, entry in lonely.entries.items() if entity != "button.wake_nas"},
+        devices=lonely.devices, areas={}, read_at=0.0))
+    state = page.home_choices_state()
+    # One entity, or none, is no choice - and neither is one PC with one button, or none.
+    assert state["weather"] is None and state["pcs"] is None
+    home.weather = [FakeChoicesHome().weather[0]]
+    assert page.home_choices_state()["weather"] is None
+    # Two buttons for the one PC are a choice.
+    home.snapshot = FakeChoicesHome().snapshot
+    assert page.home_choices_state()["pcs"] is not None

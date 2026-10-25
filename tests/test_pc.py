@@ -6,6 +6,7 @@ ever pressed on a real machine. The Wake-on-LAN buttons' ids are made up: a real
 the PC's hardware address.
 """
 
+import pytest
 import requests
 
 from voice_assistant.choices import ChoiceStore
@@ -216,3 +217,46 @@ def test_a_press_that_never_reached_home_assistant_says_so(tmp_path):
     home.fails = requests.ReadTimeout("read timed out")
     assert power.act("lock") == {"success": False, "message": (
         "Home Assistant didn't answer in time, so I can't tell whether your PC heard.")}
+
+
+def test_the_pcs_choice_is_only_offered_with_more_than_one_of_either(tmp_path):
+    # Named by their friendly names - the entity ids hold hardware addresses.
+    def named(home):
+        for state in home.states:
+            if state["entity_id"].startswith("button.wake_"):
+                state["attributes"] = {"friendly_name": state["entity_id"][len("button.wake_"):].replace("_", " ").title()}
+
+    power, home = _power(tmp_path, _snapshot(_pc()))
+    named(home)
+    assert power.overview() == {"pcs": [{"device": "desk", "name": "Desk PC", "wake": "button.wake_desk_pc"}],
+                                "buttons": [{"id": "button.wake_desk_pc", "name": "Desk Pc"}]}
+
+    snapshot = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"}, "sensor.study_cpu"),
+                         wake=("button.wake_desk_pc", "button.wake_nas"))
+    power, home = _power(tmp_path, snapshot, on=False)
+    named(home)
+    shown = power.overview()
+    assert [(pc["device"], pc["wake"]) for pc in shown["pcs"]] == [("desk", None), ("study", None)]
+    assert [button["name"] for button in shown["buttons"]] == ["Desk Pc", "Nas"]
+
+    assert power.act("on", "desk")["success"] is False
+    power.choose_wake("desk", "button.wake_desk_pc")
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+    # It is used at the next "turn on the desk PC".
+    assert power.act("on", "desk") == {"success": True, "message": "Turning your PC on."}
+    assert home.pressed == ["button.wake_desk_pc"]
+    assert [pc["wake"] for pc in power.overview()["pcs"]] == ["button.wake_desk_pc", None]
+
+    # Only a HASS.Agent PC, and a Wake-on-LAN button, which Home Assistant has.
+    for device, button in (("made_up", "button.wake_nas"), ("desk", "button.made_up"),
+                           ("desk", "button.desk_off"), ("", "")):
+        with pytest.raises(ValueError, match="Home Assistant isn't showing that PC or button just now."):
+            power.choose_wake(device, button)
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+
+
+def test_without_a_snapshot_the_pcs_choice_offers_nothing_and_takes_nothing(tmp_path):
+    power, _ = _power(tmp_path, None)
+    assert power.overview() == {"pcs": [], "buttons": []}
+    with pytest.raises(ValueError):
+        power.choose_wake("desk", "button.wake_desk_pc")

@@ -45,6 +45,7 @@ from voice_assistant import paths, storage, timeline
 from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
+from voice_assistant.devices import AppDevice
 from voice_assistant.google_calendar import READ_FAILURES, ClientRefused, GoogleSignInError, SignInNeeded
 from voice_assistant.music import why_no_player
 from voice_assistant.ntfy import RETOPIC
@@ -115,6 +116,9 @@ OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}
 # Said in Calendars and lists, and to a sign-in, until Nova has Google's keys - read as it
 # starts, as the calendar is made then.
 NO_GOOGLE = "Google's client ID and secret go under Keys, then restart Nova."
+# What the page says of the parts which need Home Assistant, before it is set up.
+NO_HOME = "Nova isn't connected to Home Assistant. Add its address in Settings, and its token in Keys."
+CANT_REACH_HOME = "Nova can't reach Home Assistant just now."
 # What the page says when Google no longer takes Nova's sign-in, or its client.
 SIGN_IN_AGAIN = "Nova needs signing in to Google again."
 CHECK_GOOGLES_KEYS = "Google didn't accept the client ID or secret - check both under Keys."
@@ -543,13 +547,12 @@ class SettingsPage:
         """
         watcher = self.brain.batteries
         if watcher is None:
-            return {"available": False, "message": "Nova isn't connected to Home Assistant. "
-                    "Add its address in Settings, and its token in Keys."}
+            return {"available": False, "message": NO_HOME}
         try:
             found = watcher.read()
         except HOME_FAILURES as e:
             logger.warning(f"Settings page: couldn't read the batteries: {e}")
-            return {"available": False, "message": "Nova can't reach Home Assistant just now."}
+            return {"available": False, "message": CANT_REACH_HOME}
         choices = watcher.choices
         now = time.time()
         deciding = watcher.deciding_people(found)
@@ -601,6 +604,46 @@ class SettingsPage:
         return {"available": True, "signed_in": True, "new_events": new_events["id"] if new_events else None,
                 "calendars": [{**each, "whats_on": each["id"] not in left_out, "activity": calendar.is_activity(each)}
                               for each in listed]}
+
+    def home_choices_state(self) -> Dict:
+        """
+        The Calendars and lists section's other parts, read afresh from Home Assistant:
+        the lists, how each device is sent to, and the weather and the PCs when there is a
+        choice to make.
+
+        Returns:
+            {"available": True, "lists": [{"id", "name", "count", "aliases", "main"}],
+            "sending": [{"name", "how"}], "weather": [{"id", "name", "chosen"}] or None,
+            "pcs": {"pcs": [{"device", "name", "wake"}], "buttons": [{"id", "name"}]} or
+            None} - the weather only with more than one entity, the PCs only with a PC and
+            more than one PC or more than one button. Else {"available": False, "message": ...}.
+        """
+        brain = self.brain
+        if brain.home is None or brain.lists is None:
+            return {"available": False, "message": NO_HOME}
+        try:
+            lists = brain.lists.overview()
+            devices = [AppDevice.from_home(found) for found in brain.home.app_devices()]
+            weather = brain.weather.entities()
+            pcs = brain.pc.overview()
+        except HOME_FAILURES as e:
+            logger.warning(f"Settings page: couldn't read the lists, devices, weather and PCs: {e}")
+            return {"available": False, "message": CANT_REACH_HOME}
+        ntfy = brain.ntfy
+        sending = []
+        for device in sorted(devices, key=lambda each: (each.name.lower(), each.id)):
+            if device.phone:
+                how = ("Through ntfy, to the topic under Notifications" if ntfy and ntfy.phone
+                       else "Through ntfy, once a topic for your phone is set under Notifications")
+            elif device.notify:
+                how = "Through Home Assistant"
+            else:
+                # Home Assistant has no service to send to it with.
+                continue
+            sending.append({"name": device.name, "how": how})
+        choose_pc = bool(pcs["pcs"]) and (len(pcs["pcs"]) > 1 or len(pcs["buttons"]) > 1)
+        return {"available": True, "lists": lists, "sending": sending,
+                "weather": weather if len(weather) > 1 else None, "pcs": pcs if choose_pc else None}
 
     def _restart_needed(self, saved: Optional[Config]) -> bool:
         """
@@ -1183,6 +1226,72 @@ class SettingsPage:
             logger.warning(f"Settings page: couldn't read the calendars from Google: {type(e).__name__}")
             return GOOGLE_OUT_OF_REACH
 
+    def choose_main_list(self, list_id, who: str) -> Dict:
+        """
+        Chooses the to-do list meant when none is named, from the next request.
+
+        Args:
+            list_id: The list's entity id, which Home Assistant has to be showing.
+            who: The login making the change.
+
+        Returns:
+            {"success": ..., "message": ...}
+        """
+        return self._home_choice(
+            lambda home: home.lists.overview(), lambda home, seen: home.lists.choose_main(list_id, seen),
+            (list_id,), f"Settings page: {who} chose the main list")
+
+    def choose_weather(self, entity_id, who: str) -> Dict:
+        """Chooses the weather entity the forecast uses, from the next request - see choose_main_list."""
+        return self._home_choice(
+            lambda home: home.weather.entities(), lambda home, seen: home.weather.choose(entity_id, seen),
+            (entity_id,), f"Settings page: {who} chose the weather")
+
+    def choose_wake(self, device, button, who: str) -> Dict:
+        """
+        Chooses the Wake-on-LAN button which wakes a PC, from the next "turn on the PC".
+
+        Args:
+            device: The PC's Home Assistant device id.
+            button: The button's entity id - never logged, as it holds the PC's hardware address.
+            who: The login making the change.
+
+        Returns:
+            {"success": ..., "message": ...}
+        """
+        return self._home_choice(
+            lambda home: home.pc.overview(), lambda home, seen: home.pc.choose_wake(device, button, seen),
+            (device, button), f"Settings page: {who} chose which button wakes a PC")
+
+    def _home_choice(self, read: Callable[[Any], Any], apply: Callable[[Any, Any], None], given: Tuple,
+                     logged: str) -> Dict:
+        """
+        Makes a choice among what Home Assistant has, saying how it went. Home Assistant is
+        read first, and before _saving is held, so a slow one never holds up every other
+        save - and a choice is checked against what it shows now, never trusted. The types
+        are checked here, as a list or a number isn't an id.
+        """
+        brain = self.brain
+        if not all(isinstance(each, str) for each in given):
+            return {"success": False, "message": "That didn't make sense."}
+        if brain.home is None or brain.lists is None:
+            return {"success": False, "message": "Nova isn't connected to Home Assistant."}
+        try:
+            seen = read(brain)
+        except HOME_FAILURES as e:
+            logger.warning(f"Settings page: couldn't read what Home Assistant has to choose from: {e}")
+            return {"success": False, "message": CANT_REACH_HOME}
+        with self._saving:
+            try:
+                apply(brain, seen)
+            except ValueError as e:
+                return {"success": False, "message": str(e)}
+            except OSError as e:
+                logger.error(f"Settings page: couldn't save a choice: {e}")
+                return {"success": False, "message": "Couldn't save that."}
+        logger.info(logged)
+        return {"success": True, "message": "Saved. It's used straight away."}
+
     def set_light(self, entity_id: str, who: str, on: Optional[bool] = None, brightness=None,
                   hue=None, saturation=None, kelvin=None, satellite: Optional[str] = None) -> Dict:
         """
@@ -1493,6 +1602,9 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/calendars": lambda page, body, who: page.choose_calendar(
         body["id"], who, body.get("whats_on"), body.get("activity")),
     "/api/calendars/new-events": lambda page, body, who: page.set_new_events(body["id"], who),
+    "/api/lists/main": lambda page, body, who: page.choose_main_list(body["id"], who),
+    "/api/weather": lambda page, body, who: page.choose_weather(body["id"], who),
+    "/api/pcs/wake": lambda page, body, who: page.choose_wake(body["device"], body["button"], who),
     "/api/light": lambda page, body, who: page.set_light(
         body["id"], who, body.get("on"), body.get("brightness"), body.get("hue"), body.get("saturation"),
         body.get("kelvin"), body.get("satellite")),
@@ -1545,6 +1657,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(page.batteries_state())
         elif path == "/api/calendars":
             self._send_json(page.calendars_state())
+        elif path == "/api/home-choices":
+            self._send_json(page.home_choices_state())
         elif path == "/api/cover":
             # Whatever's playing now - the page adds its id only so a new one is fetched.
             cover = page.cover(satellite)

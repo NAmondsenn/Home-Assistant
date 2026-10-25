@@ -27,6 +27,10 @@ const BATTERIES_EVERY = 60000;
 // Nova reads Google's list of them every five minutes at most, so once a minute too.
 const CALENDARS_EVERY = 60000;
 
+// What Home Assistant has to choose from changes when something is added to it, and every
+// look asks it, so once a minute too.
+const HOME_CHOICES_EVERY = 60000;
+
 // The least time between volume changes sent while a slider's dragged, in
 // milliseconds - often enough for the beep to keep up with the finger, without
 // asking for every step - and between a light's, which take Home Assistant longer.
@@ -124,6 +128,9 @@ let batteries = null;
 
 // What /api/calendars said last.
 let calendars = null;
+
+// What /api/home-choices said last.
+let homeChoices = null;
 
 // Whether the save bar offers to restart Nova rather than to save - once a save has
 // something which waits for a restart, while nothing else is waiting to be saved - and
@@ -382,6 +389,7 @@ async function live() {
     loadHome();
     loadBatteries();
     loadCalendars();
+    loadHomeChoices();
   }
   activity = now;
   showActivity();
@@ -963,6 +971,126 @@ function calendarRow(calendar, index) {
   row.append(choose("In what's on", "whats_on", calendar.whats_on));
   row.append(choose("An activity", "activity", calendar.activity));
   return row;
+}
+
+// Asks the page's other choices of Home Assistant: the main list, the weather and the PCs.
+async function loadHomeChoices() {
+  try {
+    const response = await fetch("/api/home-choices");
+    if (!response.ok) return;
+    homeChoices = await response.json();
+  } catch (error) {
+    return;
+  }
+  showHomeChoices();
+}
+
+// The lists and how each device is sent to, as rows; the weather and the PCs as choices,
+// only when Nova's told there is one. Without Home Assistant, only why not.
+function showHomeChoices() {
+  const missing = document.getElementById("home-choices-missing");
+  missing.hidden = homeChoices.available;
+  missing.textContent = homeChoices.available ? "" : homeChoices.message;
+  const lists = document.getElementById("lists");
+  const sending = document.getElementById("sending");
+  document.getElementById("lists-title").hidden = lists.hidden = !homeChoices.available;
+  document.getElementById("sending-title").hidden = sending.hidden = !homeChoices.available || !homeChoices.sending.length;
+  document.getElementById("weather-choice").hidden = !homeChoices.available || !homeChoices.weather;
+  document.getElementById("pcs-choice").hidden = !homeChoices.available || !homeChoices.pcs;
+  if (!homeChoices.available) return;
+
+  drawIfChanged("lists", homeChoices.lists, () => {
+    lists.replaceChildren(...(homeChoices.lists.length ? homeChoices.lists.map(listRow) : [emptyRow("Home Assistant has no to-do lists.")]));
+  });
+  drawIfChanged("sending", homeChoices.sending, () => {
+    sending.replaceChildren(...homeChoices.sending.map(sendingRow));
+  });
+  drawIfChanged("weather", homeChoices.weather, () => {
+    if (!homeChoices.weather) return;
+    const select = document.getElementById("weather-entity");
+    select.replaceChildren(...homeChoices.weather.map((each) => {
+      const option = element("option", each.name);
+      option.value = each.id;
+      return option;
+    }));
+    const chosen = homeChoices.weather.find((each) => each.chosen);
+    select.value = chosen ? chosen.id : "";
+  });
+  drawIfChanged("pcs", homeChoices.pcs, () => {
+    if (!homeChoices.pcs) return;
+    document.getElementById("pcs-choice").replaceChildren(...homeChoices.pcs.pcs.map(pcWakeChoice));
+  });
+}
+
+// Sends a choice. As for the calendars, what's shown is drawn again whatever the data says,
+// as a choice which failed to save is still showing what wasn't saved.
+function changeHomeChoice(path, body) {
+  return change(path, body, () => {
+    for (const part of ["lists", "weather", "pcs"]) delete drawn[part];
+    return loadHomeChoices();
+  });
+}
+
+// A to-do list: its name, how many things are still to do on it, its other names, and
+// either a mark that it's the main one or a way to make it so.
+function listRow(found) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", found.name, "name"));
+  const parts = [];
+  if (found.count !== null) parts.push(`${found.count} ${found.count === 1 ? "thing" : "things"} to do`);
+  if (found.aliases.length) parts.push(`Also: ${found.aliases.join(", ")}`);
+  if (parts.length) what.append(element("span", parts.join(" - "), "sub"));
+  top.append(icon("i-routine"), what);
+  row.append(top);
+  if (found.main) {
+    what.append(element("span", "Main list", "sub"));
+  } else {
+    const make = element("button", "Make main", "button quiet");
+    make.type = "button";
+    make.addEventListener("click", () => changeHomeChoice("/api/lists/main", { id: found.id }));
+    row.append(make);
+  }
+  return row;
+}
+
+// A device Nova can send to, and how: nothing to choose.
+function sendingRow(device) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", device.name, "name"), element("span", device.how, "sub"));
+  top.append(icon("i-bell"), what);
+  row.append(top);
+  return row;
+}
+
+// Which Wake-on-LAN button wakes one PC, from all Home Assistant has.
+function pcWakeChoice(pc, index) {
+  const field = element("div", undefined, "field");
+  const id = `pc-wake-${index}`;
+  const label = element("label", `Wake ${pc.name} with`);
+  label.htmlFor = id;
+  const wrap = element("span", undefined, "select");
+  const select = element("select");
+  select.id = id;
+  if (!pc.wake) {
+    const none = element("option", "Choose a button");
+    none.value = "";
+    none.disabled = true;
+    select.append(none);
+  }
+  for (const button of homeChoices.pcs.buttons) {
+    const option = element("option", button.name);
+    option.value = button.id;
+    select.append(option);
+  }
+  select.value = pc.wake || "";
+  select.addEventListener("change", () => changeHomeChoice("/api/pcs/wake", { device: pc.device, button: select.value }));
+  wrap.append(select, icon("i-chevron"));
+  field.append(label, wrap);
+  return field;
 }
 
 // Asks the music to do something, then shows what it's doing now - saying how it went
@@ -1865,6 +1993,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("new-events-calendar").addEventListener("change", (event) =>
     changeCalendar("/api/calendars/new-events", { id: event.target.value }));
+  document.getElementById("weather-entity").addEventListener("change", (event) =>
+    changeHomeChoice("/api/weather", { id: event.target.value }));
   document.getElementById("play-something").addEventListener("submit", async (event) => {
     event.preventDefault();
     const query = event.target.query;
@@ -1904,6 +2034,7 @@ document.addEventListener("DOMContentLoaded", () => {
   every(HOME_EVERY, loadHome);
   every(BATTERIES_EVERY, loadBatteries);
   every(CALENDARS_EVERY, loadCalendars);
+  every(HOME_CHOICES_EVERY, loadHomeChoices);
   document.getElementById("also-send-box").addEventListener("change", (event) =>
     changeBattery("/api/batteries/also", { on: event.target.checked }));
 });

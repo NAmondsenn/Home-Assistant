@@ -1089,6 +1089,14 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 
 .new-events { padding: 14px 16px; }
 
+/* The lists, how each device is sent to, and the weather and PCs, under the calendars. */
+.lists,
+.home-choice { margin-top: 10px; }
+
+.home-choice { padding: 14px 16px; }
+
+.pcs { display: grid; gap: 14px; }
+
 .chips {
   display: flex;
   flex-wrap: wrap;

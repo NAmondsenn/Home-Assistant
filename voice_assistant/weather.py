@@ -104,6 +104,42 @@ class Weather:
             message += f" That's Home Assistant's forecast from {format_duration(now.timestamp() - reported)} ago."
         return {"success": True, "message": message}
 
+    def entities(self) -> List[Dict]:
+        """
+        Every weather entity Home Assistant has, for the settings page.
+
+        Returns:
+            Each as {"id", "name", "chosen"}, with "chosen" true for the one the forecast
+            uses - the one chosen, else the first by entity id.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its states can't be read.
+        """
+        found = self.home.weather_entities()
+        used = self._entity(found)["id"] if found else None
+        return [{"id": each["id"], "name": each["name"], "chosen": each["id"] == used} for each in found]
+
+    def choose(self, entity_id: str, seen: Optional[List[Dict]] = None):
+        """
+        Chooses the weather entity the forecast uses, from the next request.
+
+        Args:
+            entity_id: The weather entity, which Home Assistant has to be showing.
+            seen: What entities gave just before, if the caller read it already - so it can
+                read without holding a lock the save needs.
+
+        Raises:
+            ValueError: If Home Assistant isn't showing that weather.
+            OSError: If the choice can't be saved.
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
+        if seen is None:
+            seen = self.entities()
+        if not any(each["id"] == entity_id for each in seen):
+            raise ValueError("Home Assistant isn't showing that weather just now.")
+        self.choices.change(lambda state: state.update(entity=entity_id))
+
     def _entity(self, entities: List[Dict]) -> Dict:
         """The one weather entity, or with several, the one chosen - else the first by entity id."""
         chosen = self.choices.get("entity")

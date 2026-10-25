@@ -140,6 +140,52 @@ class PCPower:
         self.home = home
         self.choices = choices
 
+    def overview(self) -> Dict:
+        """
+        Every PC and Wake-on-LAN button Home Assistant has, for the settings page.
+
+        Returns:
+            {"pcs": [{"device", "name", "wake"}], "buttons": [{"id", "name"}]} - each button
+            by its friendly name, as the user knows it, and "wake" the button which wakes
+            the PC, or None. Both are empty while the registry can't be read.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its states can't be read.
+        """
+        snapshot = self.home._snapshot()
+        if snapshot is None:
+            return {"pcs": [], "buttons": []}
+        states = self.home._states()
+        names = {state.get("entity_id"): (state.get("attributes") or {}).get("friendly_name") for state in states}
+        return {"pcs": [{"device": pc.device, "name": pc.name, "wake": pc.wake}
+                        for pc in find_pcs(states, snapshot, self.choices.get("wake"))],
+                # Never the entity id as a name - it holds the PC's hardware address.
+                "buttons": [{"id": button, "name": names.get(button) or "Wake-on-LAN button"}
+                            for button in snapshot.wake_buttons()]}
+
+    def choose_wake(self, device: str, button: str, seen: Optional[Dict] = None):
+        """
+        Chooses the Wake-on-LAN button which wakes a PC, from the next "turn on the PC".
+
+        Args:
+            device: The PC's Home Assistant device id, a HASS.Agent device.
+            button: The button's entity id, a Wake-on-LAN button.
+            seen: What overview gave just before, if the caller read it already - so it can
+                read without holding a lock the save needs.
+
+        Raises:
+            ValueError: If Home Assistant isn't showing that PC and button.
+            OSError: If the choice can't be saved.
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
+        if seen is None:
+            seen = self.overview()
+        if (not any(pc["device"] == device for pc in seen["pcs"])
+                or not any(each["id"] == button for each in seen["buttons"])):
+            raise ValueError("Home Assistant isn't showing that PC or button just now.")
+        self.choices.change(lambda state: state["wake"].update({device: button}))
+
     def _find(self, name: Optional[str]):
         """
         The PC meant, read afresh.

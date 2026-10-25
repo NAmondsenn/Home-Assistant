@@ -249,3 +249,26 @@ def test_the_hours_are_right_across_the_clocks_going_back(choices, zone):
         "Today, a high of 14 and a low of 8, with rain likely from about 1 AM until 3 AM.")
     assert _said(home, choices, "tomorrow", now=now) == \
         "Tomorrow, cloudy, a high of 14 and a low of 8, and no rain expected."
+
+
+def test_the_weather_choice_is_only_offered_with_more_than_one(choices):
+    home = FakeHome(entities=[_entity("weather.home")])
+    weather = Weather(home, choices)
+    assert weather.entities() == [{"id": "weather.home", "name": "Forecast Home", "chosen": True}]
+
+    home.entities = [_entity("weather.other_place"), _entity("weather.home")]
+    # The one the forecast would use - the first by entity id - until one is chosen.
+    assert [(entity["id"], entity["chosen"]) for entity in weather.entities()] == [
+        ("weather.other_place", False), ("weather.home", True)]
+    weather.choose("weather.other_place")
+    assert choices.get("entity") == "weather.other_place"
+    assert [entity["chosen"] for entity in weather.entities()] == [True, False]
+    # And it is used at the next forecast.
+    weather.forecast(now=NOW)
+    assert home.asked[0][0] == "weather.other_place"
+
+    # Only a weather entity Home Assistant has.
+    for made_up in ("weather.made_up", "light.kitchen", ""):
+        with pytest.raises(ValueError, match="Home Assistant isn't showing that weather just now."):
+            weather.choose(made_up)
+    assert choices.get("entity") == "weather.other_place"

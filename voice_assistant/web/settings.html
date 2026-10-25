@@ -183,6 +183,22 @@
             <svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg>
           </span>
         </div>
+        <!-- What Home Assistant has, read when the page is drawn: its to-do lists, with the
+             main one marked, how each device is sent to, and a choice of weather or of which
+             button wakes which PC only when there is one to make. -->
+        <p class="panel note" id="home-choices-missing" hidden></p>
+        <h3 class="subheading" id="lists-title" hidden>To-do lists</h3>
+        <ul class="list batteries lists" id="lists" hidden></ul>
+        <h3 class="subheading" id="sending-title" hidden>Sending to</h3>
+        <ul class="list batteries" id="sending" hidden></ul>
+        <div class="panel field home-choice" id="weather-choice" hidden>
+          <label for="weather-entity">Weather from</label>
+          <span class="select">
+            <select id="weather-entity"></select>
+            <svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </span>
+        </div>
+        <div class="panel home-choice pcs" id="pcs-choice" hidden></div>
       </section>
 
       <section aria-labelledby="routines-title">
