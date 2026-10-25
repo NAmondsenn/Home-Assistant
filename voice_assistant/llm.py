@@ -23,7 +23,7 @@ import anthropic
 from anthropic import Anthropic
 from voice_assistant.actions import Action, bare_acknowledgement
 from voice_assistant.clock import spoken_clock_time
-from voice_assistant.intents import PRONOUNS, not_a_list
+from voice_assistant.intents import not_a_list, points_back
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant import network
 
@@ -658,7 +658,7 @@ class LLMHandler:
         said = re.sub(r"\bto-do\b", "to do", said)
         listed = re.fullmatch(r"(?:please |can you |could you )?add (?P<item>.+) to (?!do\b)(?:my |the )?"
                               r"(?P<list>[a-z0-9' -]+?)(?: list)?(?: please)?", said)
-        if listed and not PRONOUNS & set(listed["item"].split()) and not not_a_list(listed["list"]):
+        if listed and not points_back(listed["item"]) and not not_a_list(listed["list"]):
             return Action("add_to_list", {"item": listed["item"], "list": listed["list"]})
 
         # If no specific action is detected, return None

@@ -468,3 +468,14 @@ def test_ive_got_only_ticks_off_an_exact_fit_and_never_asks_assist():
     # "I've got the flu" is a sentence about the world - only "flu" itself on a list is
     # ticked off, and Assist, which has no such sentence, is never sent it.
     assert _actions("I've got the flu.") == [Action("tick_off_list", {"item": "flu", "list": None, "exact": True})]
+
+
+@pytest.mark.parametrize("text, item", [
+    ("Add one egg to my list.", "one egg"), ("Add the last of the bread to my list.", "the last of the bread"),
+    ("Add that cake to my list.", None), ("Add the other one to my list.", None),
+])
+def test_a_thing_is_only_left_to_claude_when_it_points_back(text, item):
+    # "That" always points back; "one" or "last" only when they're all the thing is.
+    expected = None if item is None else [Action("add_to_list", {
+        "item": item, "list": "my list", "command": text.lower().rstrip(".")})]
+    assert _actions(text) == expected

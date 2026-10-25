@@ -104,6 +104,24 @@ NOT_A_LIST = {"timer", "alarm", "reminder", "calendar", "schedule", "diary", "ag
 LIST_LEAD = r"(?:to|on|onto) (?!do\b)"
 
 
+# The point-back words that never name a thing, wherever they are - "add that cake to my
+# list" is the cake just talked about. The rest of PRONOUNS are only when they're all the
+# thing is, so "one egg" and "the last of the bread" are things, but "the other one" isn't.
+ALWAYS_POINTS_BACK = {"it", "this", "that", "them", "these", "those"}
+
+
+def points_back(item: str) -> bool:
+    """
+    Whether a thing said for a list only points back, to what the conversation so far says.
+
+    Args:
+        item: The thing as it was said, e.g. "the other one".
+    """
+    words = item.split()
+    rest = [word for word in words if word not in ("the", "my", "some")]
+    return bool(ALWAYS_POINTS_BACK & set(words)) or (bool(rest) and all(word in PRONOUNS for word in rest))
+
+
 def not_a_list(said: Optional[str]) -> bool:
     """
     Whether a list's words name one of Nova's own things or a device, e.g. "my phone's notes".
@@ -405,7 +423,7 @@ class LocalIntents:
         said = found.groupdict().get("list")
         words = (said or "").split()
         if (self.home is None or not_a_list(said) or {"and", "then", "plus"} & set(words)
-                or (item is not None and PRONOUNS & set(item.split()))):
+                or (item is not None and points_back(item))):
             return None
         if item is None:
             params = {"list": said}
