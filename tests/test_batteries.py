@@ -497,7 +497,7 @@ class Rig:
         self.home = FakeHome([_as_found(battery)], people)
         self.choices = _choices(tmp_path)
         self.watcher = BatteryWatcher(
-            self.home, self.choices, self._say, self._send if ntfy else None,
+            self.home, self.choices, self._say, self._send if ntfy else self._no_ntfy,
             lambda: self.quiet, check_every=0.01, stale_after=HOUR,
         )
 
@@ -505,6 +505,10 @@ class Rig:
         if self.can_say:
             self.said.append(message)
         return self.can_say
+
+    @staticmethod
+    def _no_ntfy(message, title):
+        return False
 
     def _send(self, message, title):
         if self.sends:

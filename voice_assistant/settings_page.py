@@ -44,6 +44,7 @@ from voice_assistant import paths, storage, timeline
 from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
+from voice_assistant.ntfy import RETOPIC
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -146,7 +147,12 @@ def _from_page(given: Any, default: Any) -> Any:
             raise ValueError("not yes or no")
         return given
     if isinstance(default, (int, float)):
-        number = float(given)
+        try:
+            number = float(given)
+        except OverflowError:
+            # A whole number too big for a float, which the page's JSON can send - out of
+            # any range, as limit_problem says of it.
+            return given
         return int(number) if isinstance(default, int) and number.is_integer() else number
     if isinstance(default, list):
         items = given if isinstance(given, list) else str(given).split(",")
@@ -364,11 +370,6 @@ class SettingsPage:
                 if limit.form == "number":
                     setting.update({"min": limit.low, "max": limit.high, "whole": limit.whole})
             settings.append(setting)
-        # One used straight away is in the running settings once it's saved, so only one
-        # which waits differs - or one the brain couldn't use, which is in them but unused.
-        changed = saved is not None and self.running is not None and any(
-            saved.section(section).get(name) != self.running.section(section).get(name)
-            for section, name, _, _ in EDITABLE)
         secrets = _secrets_set(paths.SECRETS_FILE)
         keys = [{"name": name, "label": label,
                  "set": any(secrets.get(spelling) for spelling in [name] + OLDER_NAMES.get(name, []))}
@@ -386,7 +387,7 @@ class SettingsPage:
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,
-                "restart_needed": changed or self._keys_changed or bool(self._unused)}
+                "restart_needed": self._restart_needed(saved)}
 
     def live(self, satellite: Optional[str] = None) -> Dict:
         """What a satellite's Nova is doing right now - asked for every second or two while the page is open."""
@@ -476,6 +477,21 @@ class SettingsPage:
             if battery.id in deciding:
                 devices[-1]["person"] = deciding[battery.id]
         return {"available": True, "also_send_when_said": choices.also_send_when_said, "devices": devices}
+
+    def _restart_needed(self, saved: Optional[Config]) -> bool:
+        """
+        Whether anything saved waits for a restart: a key, a setting which differs from
+        the one running, or one the brain couldn't use straight away.
+
+        Args:
+            saved: The settings as saved now, or None if they can't be read.
+        """
+        # One used straight away is in the running settings once it's saved, so only one
+        # which waits differs - or one the brain couldn't use, which is in them but unused.
+        changed = saved is not None and self.running is not None and any(
+            saved.section(section).get(name) != self.running.section(section).get(name)
+            for section, name, _, _ in EDITABLE)
+        return changed or self._keys_changed or bool(self._unused)
 
     def _saved(self):
         """The settings as saved now, and any problem reading them."""
@@ -672,19 +688,24 @@ class SettingsPage:
                 else:
                     waiting.append(label)
             unused = self._apply(now) if now else []
+            # What the brain couldn't use waits too, so "straight away" is only ever said of what was.
+            waiting += [label for section, name, label, _ in EDITABLE if (section, name) in unused]
+            used = len(now) - len(unused)
+            restart_needed = self._restart_needed(self._saved()[0])
         logger.info(f"Settings page: {who} changed {', '.join(changes)}")
 
         if not waiting:
             message = "Saved. It's used straight away."
-        elif not now:
-            message = "Saved. It's used once Nova restarts."
+        elif not used:
+            message = "Saved. It's used once Nova restarts" + (
+                ", as it couldn't be used straight away." if unused else ".")
         else:
             labels = waiting[0] if len(waiting) == 1 else f"{', '.join(waiting[:-1])} and {waiting[-1]}"
             message = (f"Saved. {labels} {'is' if len(waiting) == 1 else 'are'} used once Nova restarts, "
                        f"and the rest straight away.")
-        if unused:
-            message += " Some of it couldn't be used straight away, so it's used once Nova restarts."
-        return {"success": True, "message": message, "restart_needed": bool(waiting or unused)}
+            if unused:
+                message += " Some of it couldn't be used straight away."
+        return {"success": True, "message": message, "restart_needed": restart_needed}
 
     def _apply(self, changes: Dict[Tuple[str, str], Any]) -> List[Tuple[str, str]]:
         """
@@ -702,7 +723,12 @@ class SettingsPage:
         except Exception:
             logger.exception("Settings saved on the page couldn't be used straight away, so wait for a restart")
             unused = list(changes)
-        self._unused = (self._unused - set(changes)) | set(unused)
+        told = set(changes)
+        # ntfy is told all of its settings together, so one which failed before and is
+        # passed on again with another is used now too.
+        if any(section == "ntfy" for section, _ in told) and not any(section == "ntfy" for section, _ in unused):
+            told |= {("ntfy", name) for name in RETOPIC}
+        self._unused = (self._unused - told) | set(unused)
         return unused
 
     def restart(self, who: str) -> Dict:

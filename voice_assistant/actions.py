@@ -1403,7 +1403,9 @@ class ActionExecutor:
         others = [app_device for app_device in found if not app_device.phone]
         if by_ntfy and self.ntfy is None:
             return {"success": False, "message": UNAVAILABLE["ntfy"]}
-        if by_ntfy and not self.ntfy.phone:
+        # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
+        phone = self.ntfy.phone if by_ntfy else ""
+        if by_ntfy and not phone:
             return {"success": False, "message": "There's nowhere set up to send things to your phone."}
         if not text:
             if self.last_answer is None:
@@ -1414,7 +1416,7 @@ class ActionExecutor:
 
         sent, failed = [], []
         if by_ntfy:
-            if self.ntfy.send(self.ntfy.phone, text, title=title):
+            if self.ntfy.send(phone, text, title=title):
                 sent.append("phone")
             else:
                 failed.append("I couldn't reach your notifications.")

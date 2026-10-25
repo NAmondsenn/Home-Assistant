@@ -15,6 +15,7 @@ import re
 import socket
 import threading
 import time
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -912,6 +913,21 @@ def test_only_a_reminder_nobody_answered_goes_to_the_phone(brain):
     assert brain.ntfy.sent == [("reminders", "Reminder nobody answered", "Take the bins out")]
 
 
+def test_each_topic_is_read_once_for_each_send(brain):
+    # So one cleared on the settings page between checking it and sending to it is never sent to as "".
+    class Cleared(FakeNtfy):
+        def __getattribute__(self, name):
+            topic = object.__getattribute__(self, name)
+            if name in ("reminders", "restarts"):
+                setattr(self, name, "")
+            return topic
+
+    brain.ntfy = Cleared()
+    brain._unanswered({"label": "take the bins out"}, "clock", satellite="bedroom")
+    brain._tell_restarted("bedroom")
+    assert [topic for topic, _, _ in brain.ntfy.sent] == ["reminders", "homelab"]
+
+
 def test_a_routine_runs_by_itself_when_its_due(brain, monkeypatch):
     monkeypatch.setattr(brain_module, "ROUTINE_CHECK", 0.01)
     due, ran = [[{"name": "Good morning"}]], []
@@ -1158,6 +1174,15 @@ def test_without_ntfy_warnings_are_only_said_and_quiet_hours_are_still_ntfys(mak
     # And with ntfy but nowhere to send to, the same.
     brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"url": "http://ntfy.test", "phone": ""})
     assert brain.batteries._send("It's low.", "Battery low") is False
+
+
+def test_a_night_changed_with_no_ntfy_reaches_the_battery_watcher(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    brain._night._now = lambda: datetime(2026, 10, 20, 22, 30)
+    assert brain.ntfy is None and not brain.batteries._quiet()
+
+    assert brain.apply_settings({("ntfy", "quiet_from"): "22:00"}) == []
+    assert brain.batteries._quiet()
 
 
 def test_a_phone_topic_set_on_the_page_gets_battery_warnings_straight_away(make_brain, home_assistant_token,

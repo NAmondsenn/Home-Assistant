@@ -542,23 +542,73 @@ def test_a_mixed_save_uses_some_now_and_says_the_rest_waits(files):
     assert page.state()["restart_needed"]
 
 
+def _unreachable(*args):
+    raise RuntimeError("ntfy has gone")
+
+
 def test_a_change_that_cant_be_used_now_is_kept_for_the_restart(files):
     page, _ = _running(files)
-
-    def unreachable(*args):
-        raise RuntimeError("ntfy has gone")
-
-    page.brain.ntfy.retopic = unreachable
+    page.brain.ntfy.retopic = _unreachable
     result = page.save_settings({"ntfy.quiet_from": "22:00"}, LOGIN)
 
     assert yaml.safe_load((files / "config.yaml").read_text())["ntfy"]["quiet_from"] == "22:00"
-    assert result["message"] == ("Saved. It's used straight away. Some of it couldn't be used straight away, "
-                                 "so it's used once Nova restarts.")
+    # Never "used straight away" for what wasn't.
+    assert result["message"] == "Saved. It's used once Nova restarts, as it couldn't be used straight away."
     assert result["restart_needed"] and page.state()["restart_needed"]
 
 
-def test_an_error_names_the_setting_as_the_page_does(files):
-    result = _page().save_settings({"thresholds.silence_duration": 5}, LOGIN)
+def test_a_mixed_save_whose_straight_away_part_fails_says_it_waits(files):
+    page, _ = _running(files)
+    page.brain.ntfy.retopic = _unreachable
+    result = page.save_settings({"ntfy.quiet_from": "22:00", "thresholds.silence_duration": 1.2}, LOGIN)
+
+    assert result["message"] == ("Saved. Night starts at, as 23:00 is used once Nova restarts, and the rest "
+                                 "straight away. Some of it couldn't be used straight away.")
+    assert result["restart_needed"]
+
+
+def test_the_brain_failing_to_use_a_save_at_all_keeps_it_for_the_restart(files):
+    page, _ = _running(files)
+
+    def broken(changes):
+        raise RuntimeError("the brain is in trouble")
+
+    page.brain.apply_settings = broken
+    result = page.save_settings({"thresholds.silence_duration": 1.2}, LOGIN)
+
+    assert yaml.safe_load((files / "config.yaml").read_text())["thresholds"]["silence_duration"] == 1.2
+    assert result == {"success": True, "restart_needed": True,
+                      "message": "Saved. It's used once Nova restarts, as it couldn't be used straight away."}
+    assert page.state()["restart_needed"]
+
+
+def test_a_value_which_failed_and_is_passed_on_again_is_used(files):
+    # ntfy is always told all five of its settings, so a later save of another passes
+    # the one which failed on again - and once it's used, no restart is owed for it.
+    page, _ = _running(files)
+    retopic = page.brain.ntfy.retopic
+    page.brain.ntfy.retopic = _unreachable
+    page.save_settings({"ntfy.quiet_from": "22:00"}, LOGIN)
+    page.brain.ntfy.retopic = retopic
+    result = page.save_settings({"ntfy.quiet_until": "06:30"}, LOGIN)
+
+    assert (page.brain.ntfy.quiet_from, page.brain.ntfy.quiet_until) == ("22:00", "06:30")
+    assert not result["restart_needed"] and not page.state()["restart_needed"]
+
+
+def test_a_restart_still_owed_from_an_earlier_save_is_still_said(files):
+    page, _ = _running(files, "navidrome:\n  url: http://music.local:4533\n")
+    page.save_settings({"music.player": "navidrome"}, LOGIN)
+    result = page.save_settings({"ntfy.quiet_from": "22:00"}, LOGIN)
+
+    assert result["message"] == "Saved. It's used straight away."
+    assert result["restart_needed"]
+
+
+@pytest.mark.parametrize("given", [5, 10 ** 400], ids=["five", "too big for a float"])
+def test_an_error_names_the_setting_as_the_page_does(files, given):
+    # 10 ** 400 is a whole number too big for a float, which the page's JSON can send.
+    result = _page().save_settings({"thresholds.silence_duration": given}, LOGIN)
     assert result == {"success": False,
                       "message": "Seconds of quiet which end what you're saying should be from 0.2 to 3."}
     assert not (files / "config.yaml").exists()
@@ -970,7 +1020,7 @@ def _watched(tmp_path):
     """A page over a real battery watcher, which a test can find fault in Home Assistant with."""
     home = FakeBatteryHome()
     choices = BatteryChoices(str(tmp_path / "batteries.json"), mobile_marks=[5], other_marks=[15, 5])
-    watcher = BatteryWatcher(home, choices, lambda message: True, None, lambda: False,
+    watcher = BatteryWatcher(home, choices, lambda message: True, lambda message, title: False, lambda: False,
                              check_every=60, stale_after=3600)
     return _page(batteries=watcher), home, choices
 

@@ -37,7 +37,7 @@ from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.lists import Lists
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
-from voice_assistant.ntfy import Ntfy
+from voice_assistant.ntfy import RETOPIC, Ntfy
 from voice_assistant.pc import PCPower
 from voice_assistant.protocol import ProtocolError, Refused, admit
 from voice_assistant.remote import RemoteSatellite
@@ -55,10 +55,6 @@ logger = logging.getLogger(__name__)
 # starting means the last run didn't: it crashed, the watchdog restarted it, or the
 # power went. See _note_start.
 RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
-
-# The ntfy settings it keeps a copy of, which are used straight away - in the order
-# Ntfy.retopic takes them.
-NTFY_TOLD = ("phone", "reminders", "restarts", "quiet_from", "quiet_until")
 
 # What the brain exits with once the settings page has asked it to restart. systemd
 # restarts it for this status whatever else it was told - see RestartForceExitStatus in
@@ -338,11 +334,11 @@ class Brain:
         """
         self.config.apply(changes)
         unused = []
-        ntfy_changes = [key for key in changes if key[0] == "ntfy" and key[1] in NTFY_TOLD]
+        ntfy_changes = [key for key in changes if key[0] == "ntfy" and key[1] in RETOPIC]
         if ntfy_changes:
             settings = self.config.section("ntfy")
             # All five, as they are now - retopic falls back to ntfy's own night for a time which is missing.
-            told = [settings.get(name) or "" for name in NTFY_TOLD]
+            told = [settings.get(name) or "" for name in RETOPIC]
             for part in (self.ntfy, self._night):
                 if part is None:
                     continue
@@ -797,9 +793,11 @@ class Brain:
             kind: "clock" for a timer or reminder, "alarm" for an alarm.
             satellite: Where it rang - the phone is the same for every satellite.
         """
-        if self.ntfy and self.ntfy.reminders and kind == "clock" and timer.get("label"):
+        # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
+        topic = self.ntfy.reminders if self.ntfy else ""
+        if topic and kind == "clock" and timer.get("label"):
             label = timer["label"]
-            self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")
+            self.ntfy.send_soon(topic, label[:1].upper() + label[1:], title="Reminder nobody answered")
 
     def run_routine(self, routine) -> bool:
         """
@@ -884,14 +882,15 @@ class Brain:
 
     def _tell_restarted(self, satellite: str):
         """Tells the user's phone a satellite didn't stop properly last time - once in a while, at most."""
-        if not (self.ntfy and self.ntfy.restarts):
+        topic = self.ntfy.restarts if self.ntfy else ""
+        if not topic:
             return
         with self._lock:
             if time.time() - self._restarts_told.get(satellite, 0) < RESTART_NOTICE_GAP:
                 return
             self._restarts_told[satellite] = time.time()
         logger.warning(f"The {satellite} satellite didn't stop properly, so telling the user's phone")
-        self.ntfy.send_soon(self.ntfy.restarts,
+        self.ntfy.send_soon(topic,
                             f"{self.name}'s {satellite} satellite stopped unexpectedly, and has started again.",
                             title=f"{self.name}'s {satellite} satellite restarted")
 
@@ -906,10 +905,10 @@ class Brain:
             # Half written as the power went, most likely - which is a restart too.
             last = {}
         told_at = (last or {}).get("told_at", 0)
-        if (last is not None and self.ntfy and self.ntfy.restarts
-                and time.time() - told_at >= RESTART_NOTICE_GAP):
+        topic = self.ntfy.restarts if self.ntfy else ""
+        if last is not None and topic and time.time() - told_at >= RESTART_NOTICE_GAP:
             logger.warning("The last run didn't stop properly, so telling the user's phone")
-            self.ntfy.send_soon(self.ntfy.restarts, f"{self.name} stopped unexpectedly, and has started again.",
+            self.ntfy.send_soon(topic, f"{self.name} stopped unexpectedly, and has started again.",
                                 title=f"{self.name} restarted")
             told_at = time.time()
         try:

@@ -609,6 +609,26 @@ def test_send_that_to_my_phone_sends_what_was_last_said_under_what_was_asked():
                           "message": "Mix flour, eggs and milk, then fry them."}]
 
 
+class ClearedNtfy(FakeNtfy):
+    """An ntfy whose phone topic is cleared on the settings page just after it's first read."""
+
+    @property
+    def phone(self):
+        topics, self._topics = self._topics, [""]
+        return topics[0]
+
+    @phone.setter
+    def phone(self, topic):
+        self._topics = [topic]
+
+
+def test_the_phone_topic_is_read_once_for_each_send():
+    # So a topic cleared between checking it and sending to it is never sent to as "".
+    ntfy = ClearedNtfy()
+    ActionExecutor(ntfy=ntfy).execute(Action("send_to_phone", {"text": "Milk", "title": "Shopping"}))
+    assert [sent["topic"] for sent in ntfy.sent] == ["clipboard"]
+
+
 def test_claude_can_send_more_than_it_said():
     ntfy = FakeNtfy()
     ActionExecutor(ntfy=ntfy).execute(Action("send_to_phone", {"text": "100g flour, 2 eggs, 300ml milk...",

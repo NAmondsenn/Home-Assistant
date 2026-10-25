@@ -65,6 +65,10 @@ OWN_TAG = "nova"
 KEPT = 20
 ALERTS_FILE = os.path.join(paths.DATA_DIR, "alerts.json")
 
+# What retopic changes as Nova runs, in the order it takes them - every ntfy setting
+# the settings page uses straight away.
+RETOPIC = ("phone", "reminders", "restarts", "quiet_from", "quiet_until")
+
 # The longest an alert's headline may be when it's said out loud, in characters.
 HEADLINE_CHARS = 120
 

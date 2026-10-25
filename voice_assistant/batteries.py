@@ -507,7 +507,7 @@ class BatteryWatcher:
         home: HomeAssistant,
         choices: BatteryChoices,
         say: Callable[[str], bool],
-        send: Optional[Callable[[str, str], bool]],
+        send: Callable[[str, str], bool],
         quiet: Callable[[], bool],
         check_every: float,
         stale_after: float,
@@ -519,7 +519,7 @@ class BatteryWatcher:
             say: Says a message on the default satellite, returning whether it
                 was said - it isn't when no satellite is connected.
             send: Sends a message and its title to the phone, returning whether ntfy
-                took it, or None when there is no ntfy.
+                took it - never, with no ntfy or no phone topic.
             quiet: Whether it is quiet hours now.
             check_every: Seconds between checks.
             stale_after: Seconds old a reading may be and still count as current.
@@ -672,8 +672,7 @@ class BatteryWatcher:
         battery = warning.battery
         message = self._message(battery, now)
         title = "Battery low"
-        # With no ntfy there is nothing to send to, however the owner chose.
-        sending = self._choices.send_to_phone(battery) and self._send is not None
+        sending = self._choices.send_to_phone(battery)
         quiet = self._quiet()
 
         # 2. Out loud only when the user is there to hear it and isn't asleep.
