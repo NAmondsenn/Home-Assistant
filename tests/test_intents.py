@@ -152,9 +152,7 @@ def test_the_lights_with_something_else_are_left_to_claude():
 
 @pytest.mark.parametrize("text", [
     "Pause the TV.", "Turn off AdGuard protection.", "Switch the fan on.", "Next track on the TV.",
-    "Set the TV volume to 40.", "Is the fan on?", "Run goodnight.", "Activate movie night.", "Close the blinds.",
-    # The light rule doesn't take "is" for part of a light's name.
-    "Is the lamp on?",
+    "Set the TV volume to 40.", "Run goodnight.", "Activate movie night.", "Close the blinds.",
     # "In" and a number are only a delay together - "in five minutes", "at six".
     "Turn off the TV in the kitchen.", "Turn on fan 2.",
 ])
@@ -162,6 +160,18 @@ def test_assists_own_sentences_go_to_assist(text):
     # Sent whole, on the wider rule - see HomeAssistant.command.
     request = text.lower().rstrip(".?")
     assert _actions(text) == [Action("control_home", {"command": request, "wider": True})]
+
+
+@pytest.mark.parametrize("text", [
+    "Is the fan on?", "Is the garage door open?", "Is the patio closed?",
+    # The light rule doesn't take "is" for part of a light's name.
+    "Is the lamp on?",
+])
+def test_a_question_for_assist_says_its_a_question(text):
+    # So a refused one goes to Claude, which can read it with home_status, rather than
+    # being refused - see ActionExecutor.control_home.
+    request = text.lower().rstrip(".?")
+    assert _actions(text) == [Action("control_home", {"command": request, "wider": True, "question": True})]
 
 
 @pytest.mark.parametrize("text", [

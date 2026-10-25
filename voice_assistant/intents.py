@@ -253,7 +253,7 @@ class LocalIntents:
             (rf"(?:pause|resume|unpause) {THING}", self._assist),
             (rf"(?:next|previous) (?:track|song) on {THING}", self._assist),
             (rf"set (?:the )?{THING} volume to \d{{1,3}}(?: percent)?", self._assist),
-            (rf"is {THING} (?:on|off|open|closed|playing|paused)", self._assist),
+            (rf"is {THING} (?:on|off|open|closed|playing|paused)", self._ask),
             (rf"(?:activate|run) {THING}", self._assist),
             (rf"(?:open|close) {THING}", self._assist),
         ]
@@ -340,14 +340,20 @@ class LocalIntents:
         direction = "down" if found["direction"] == "dim" else "up"
         return self._result("Okay.", [Action("dim_lights", {"direction": direction, "words": found["words"]})])
 
-    def _assist(self, found) -> Optional[Dict]:
+    def _assist(self, found, question: bool = False) -> Optional[Dict]:
         # A pronoun anywhere, not only alone, as in "pause it in five minutes" - which
         # isn't a thing called "it in five minutes".
         words = found["thing"].split()
         if self.home is None or _says_a_time(words) or any(word in NOVAS_OWN or word in PRONOUNS
                                                            or word in NOT_A_THING for word in words):
             return None
-        return self._result("Okay.", [Action("control_home", {"command": found.string, "wider": True})])
+        asked = {"command": found.string, "wider": True, **({"question": True} if question else {})}
+        return self._result("Okay.", [Action("control_home", asked)])
+
+    def _ask(self, found) -> Optional[Dict]:
+        # Said to be a question, so that one the guard refuses - "is the garage door
+        # open?" - goes to Claude, which can read it, rather than being refused.
+        return self._assist(found, question=True)
 
     def _calendar(self, found) -> Dict:
         first, days = calendar_days(found["day"], date.today())

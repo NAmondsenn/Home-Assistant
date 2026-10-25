@@ -365,6 +365,31 @@ def test_a_refused_light_sentence_goes_to_novas_own_lights_and_nothing_else_does
     assert (result.ok, result.say) == (False, "I don't lock, unlock or open anything by voice.")
 
 
+def test_a_refused_question_goes_to_claude_and_nothing_else_does():
+    # "Is the garage door open?" is refused for its words, but Claude can answer it with
+    # home_status, which only reads - never Assist, nor Nova's own lights.
+    class FakeHome:
+        switched = None
+        asked = 0
+
+        def command(self, request, wider=False):
+            self.asked += 1
+            return {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
+
+        def switch_lights(self, on, words, brightness=None):
+            self.switched = (on, words, brightness)
+            return {"success": True, "message": "Done.", "chime": True}
+
+    home = FakeHome()
+    result = ActionExecutor(home=home).execute(Action("control_home", {
+        "command": "is the garage door open", "wider": True, "question": True}))
+    assert (result.ok, result.understood) == (False, False)
+    assert home.asked == 1 and home.switched is None
+    # A refusal that isn't a question is still said.
+    result = ActionExecutor(home=home).execute(Action("control_home", {"command": "open the garage", "wider": True}))
+    assert (result.ok, result.understood, result.say) == (False, True, "I don't lock, unlock or open anything by voice.")
+
+
 def test_claude_cant_run_what_it_isnt_offered():
     # It can ask for any tool by name, offered or not - control_home passes free text to
     # Assist, so a made-up call to it mustn't run.
