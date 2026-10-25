@@ -202,6 +202,10 @@ class Brain:
         self._passwords_seen = self._passwords_file()
         try:
             self._names_seen: List[str] = self.passwords.names(missing_ok=False)
+        except FileNotFoundError:
+            # A fresh brain's - the file is made as the first satellite is added.
+            logger.info("No satellites have been added yet")
+            self._names_seen = []
         except Exception as e:
             logger.error(f"Couldn't read the satellites' passwords: {e}")
             self._names_seen = []
@@ -952,6 +956,16 @@ class Brain:
             try:
                 # A missing file is never every satellite removed - see _gone_from_file.
                 names = self.passwords.names(missing_ok=False)
+            except FileNotFoundError:
+                # Only as it starts, as no satellite can connect with no file. A
+                # fresh brain has none - but one with alarms on a satellite was
+                # likely given the wrong config folder.
+                if any(self.clock.satellites()):
+                    logger.warning(f"There's no {self.passwords.path}, but there are alarms or timers for "
+                                   f"satellites - is the config folder the right one?")
+                else:
+                    logger.info("No satellites have been added yet")
+                return
             except Exception as e:
                 logger.error(f"Couldn't read the satellites' passwords to see what belongs to none: {e}")
                 return

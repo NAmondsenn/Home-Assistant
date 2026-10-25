@@ -665,6 +665,29 @@ def test_a_removal_on_the_command_line_is_handled_the_same(brain, connect, passw
     _rings_on(brain, "bedroom", bedroom)
 
 
+def test_a_fresh_brain_with_no_satellites_file_logs_no_error(make_brain, passwords, caplog):
+    # No satellite has been added yet, so there's no file - nothing to be alarmed by.
+    os.remove(passwords.path)
+
+    with caplog.at_level(logging.INFO, logger="voice_assistant.brain"):
+        brain = make_brain()
+        brain.serve = lambda: None
+        brain.run()
+
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert "No satellites have been added yet" in caplog.text
+
+    # With alarms on a satellite, though, it was likely given the wrong config folder.
+    brain.clock.set_alarm(7, 0, satellite="kitchen")
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="voice_assistant.brain"):
+        again = make_brain()
+        again.serve = lambda: None
+        again.run()
+    assert "is the config folder the right one?" in caplog.text
+    assert again.clock.satellites() == {"kitchen"}
+
+
 def test_a_removal_while_the_brain_was_down_is_caught_at_start(make_brain, connect, passwords, tmp_path, caplog):
     # remove-satellite run with the brain stopped, or across an update.
     first = make_brain()
