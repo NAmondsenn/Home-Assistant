@@ -170,7 +170,7 @@ Whatever's exposed, Nova never locks, unlocks or opens anything by voice: it che
    home_assistant:
      url: "http://homeassistant.local:8123"
    ```
-5. In Settings > Voice assistants > Expose, choose what Assist may control. Exposing something now means Nova works it by voice, so check what's exposed already - a switch such as AdGuard's protection may well be, from before. Names and areas are what you'll call things. Scripts aren't exposed by default, so expose any you'll ask for, such as goodnight - a routine's "run goodnight" step goes through Assist too. Claude isn't limited to these for the lights - it can work any light.
+5. In Settings > Voice assistants > Expose, choose what Assist may control. Exposing something now means Nova works it by voice, so check what's exposed already - a switch such as AdGuard's protection may well be, from before. Names and areas are what you'll call things. Scripts aren't exposed by default, so expose any you'll ask for, such as goodnight - a routine's "run goodnight" step goes through Assist too. "Run goodnight" runs Home Assistant's script called goodnight; "goodnight routine" (or a routine's own words) is Nova's own routine. Claude isn't limited to these for the lights - it can work any light.
 6. For your calendar, add Google Calendar (or any other) to Home Assistant through its integration. Every calendar it has is read, unless you list the ones you want in `home_assistant.calendars`.
 
 Then restart the brain. Its log says `Home Assistant at ...` once it's on.

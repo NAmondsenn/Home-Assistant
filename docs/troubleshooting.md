@@ -102,11 +102,11 @@ On the brain, which talks to Home Assistant for every satellite:
 
 ### A switch, media player, script or scene doesn't work
 
-Nova's own commands come first, so a request using one of their words - timer, alarm, music, volume, notifications, microphone and the like - or only "it" or "that", goes to Claude, not to Assist. Otherwise, the brain's log says what happened to it:
+Nova's own commands come first, so a request using one of their words - timer, alarm, music, volume, notifications, microphone and the like - goes to Claude, not to Assist. So does one with a word that points back ("it", "that", "the other one"), a delay ("in five minutes", "at six"), or two things at once. Otherwise, the brain's log says what happened to it:
 
 - **`Not sent to Assist, which is only given light sentences just now`** - Home Assistant's registry or Assist's sentence debugging isn't answering, so only light sentences go to Assist until both do. The log said `The wider rule is off, as ...` with the reason, and says `The wider rule is back on` once it is.
 - **`Not sent to Assist, which reads it as ...`** - Assist matched nothing, or would act on something the check can't see, such as a script that isn't exposed. Check it's exposed (Settings > Voice assistants > Expose) - scripts aren't by default - and say it as it's called there.
-- **`Refused a Home Assistant request ...`** - it names, or would work, a lock, door, gate, window, valve, alarm panel, anything of Proxmox or one of the PC's HASS.Agent buttons, or a script or scene that does. That's on purpose.
+- **`Refused a Home Assistant request ...`** or **`Refused a sensitive Home Assistant request`** - its words are for locking, unlocking or opening something, or it names, or would work, a lock, door, gate, window, valve, alarm panel, anything of Proxmox or one of the PC's HASS.Agent buttons, or a script or scene that does. That's on purpose.
 - **`Can't see what ... does`** - Home Assistant can't show that script's contents, usually because it's written in YAML outside `scripts.yaml`, so it isn't run. Move it into `scripts.yaml`, or make it in the script editor.
 
 ## A battery warning didn't come

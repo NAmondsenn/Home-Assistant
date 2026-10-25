@@ -805,6 +805,15 @@ def test_a_failed_request_says_what_went_wrong(make_home, failure, said):
     assert result["success"] is False and said in result["message"]
 
 
+@pytest.mark.parametrize("failure", [requests.ConnectionError("refused"), requests.Timeout("slow")])
+def test_any_sentence_of_assists_goes_to_claude_when_home_assistant_cant_be_reached(make_home, failure):
+    # "Is the post office open?" is caught by Assist's shapes too - Claude still gets it,
+    # as it does with the wider rule off. A light sentence still says why.
+    home = make_home({"/api/states": failure})
+    assert home.command("is the post office open", wider=True) == DIDNT_UNDERSTAND
+    assert home.command("turn on the lamp") == {"success": False, "message": "I can't reach Home Assistant right now."}
+
+
 def test_with_no_network_it_isnt_asked_at_all(make_home, monkeypatch):
     # With the Pi's cable out, "turn on the lamp" waited 20 seconds for Home
     # Assistant's name to fail to be looked up.

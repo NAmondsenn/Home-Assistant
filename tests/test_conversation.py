@@ -436,7 +436,7 @@ def test_a_routine_runs_a_home_assistant_script_through_assist():
 
     actions = RecordingActions()
     goodnight = {"name": "Goodnight", "phrases": ["goodnight"], "steps": ["run goodnight"]}
-    _conversation(intents=LocalIntents(), actions=actions, routines=FakeRoutines(goodnight)).handle("goodnight")
+    _conversation(intents=LocalIntents(home=object()), actions=actions, routines=FakeRoutines(goodnight)).handle("goodnight")
     assert actions.run == [Action("control_home", {"command": "run goodnight", "wider": True})]
 
 

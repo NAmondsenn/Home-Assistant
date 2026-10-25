@@ -14,9 +14,13 @@ from voice_assistant.actions import Action
 from voice_assistant.intents import LocalIntents, calendar_days
 
 
-def _actions(text, clock=None):
+# Stands in for Home Assistant, which the Assist shapes need to be there at all.
+HOME = object()
+
+
+def _actions(text, clock=None, home=HOME):
     """The actions a request is handled with locally, or None if it's left to Claude."""
-    result = LocalIntents(clock=clock).match(text)
+    result = LocalIntents(clock=clock, home=home).match(text)
     return None if result is None else result["actions"]
 
 
@@ -149,6 +153,8 @@ def test_the_lights_with_something_else_are_left_to_claude():
 @pytest.mark.parametrize("text", [
     "Pause the TV.", "Turn off AdGuard protection.", "Switch the fan on.", "Next track on the TV.",
     "Set the TV volume to 40.", "Is the fan on?", "Run goodnight.", "Activate movie night.", "Close the blinds.",
+    # The light rule doesn't take "is" for part of a light's name.
+    "Is the lamp on?",
 ])
 def test_assists_own_sentences_go_to_assist(text):
     # Sent whole, on the wider rule - see HomeAssistant.command.
@@ -162,11 +168,37 @@ def test_assists_own_sentences_go_to_assist(text):
     "Turn off the TV and the lamp.", "Turn up the heating.",
     # "My" isn't a name, so this isn't "the volume" of something called "my".
     "Set my volume to 40.",
+    # Nova's own, by more of their words.
+    "Pause playback.", "Pause Navidrome.", "Turn off the chime.", "Turn off the wake word.", "Turn off quiet hours.",
+    "Turn on battery alerts.", "Turn off the warnings.",
+    # Words that only point back, to something the conversation so far says.
+    "Turn the other one off.", "Turn the same one on.", "Turn both off.", "Switch the rest off.", "Run again.",
+    "Run the last one.", "Open the first one.",
+    # Two things at once, however they're joined.
+    "Turn off the TV plus the fan.", "Turn off the TV then the fan.",
+    # When, rather than what - a delay is Claude's.
+    "Pause the TV in five minutes.", "Pause the TV for a bit.", "Turn off the TV in ten minutes.",
+    "Turn off the oven at six.", "Turn on the heating until ten.", "Turn off the light in five minutes.",
+    "Turn off the TV after the film.", "Run the dishwasher tonight.", "Turn on the heating by 7.",
+    # For the user, not a thing of Home Assistant's.
+    "Run me a bath.", "Open us a window.",
+    # The shapes with nothing above yet for what they mustn't catch.
+    "Previous track on Spotify.", "Run the timer.", "Activate it.", "Open it.", "Close that.",
 ])
 def test_what_the_assist_rule_mustnt_catch_is_left_alone(text):
-    # 0003: local rules stay strict. Nova's own things, a pronoun Assist can't know the
-    # meaning of, or two things at once, are Claude's.
+    # 0003: local rules stay strict. Nova's own things, words Assist can't know the
+    # meaning of, a delay, or two things at once, are Claude's.
     assert _actions(text) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Pause the TV.", "Is the post office open?", "Is Tesco open?", "Is the pharmacy closed?", "Is the football on?",
+    "Run through my day.", "Open YouTube.", "Open the settings.", "Turn on the news.",
+])
+def test_without_home_assistant_nothing_is_taken_for_assist(text):
+    # Otherwise "is the post office open?" would get "Home Assistant isn't set up yet",
+    # and never reach Claude.
+    assert _actions(text, home=None) is None
 
 
 @pytest.mark.parametrize("text, action", [

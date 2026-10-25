@@ -61,10 +61,11 @@ ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
 BATTERY_DEVICE = "mac|phone|tablet|laptop|computer"
 
 # A thing of Home Assistant's for Assist - "the TV", "AdGuard protection", "movie
-# night" - of one to four words, none of them "and", so "turn off the TV and the lamp"
-# is left to Claude rather than sent as one thing. "The" or "my" is never the name
-# itself, so "set my volume to 40" isn't the volume of something called "my".
-THING_WORD = r"(?!and\b)[a-z0-9']+"
+# night" - of one to four words, none of them "and", "then" or "plus", so "turn off
+# the TV and the lamp" is left to Claude rather than sent as one thing. "The" or "my"
+# is never the name itself, so "set my volume to 40" isn't the volume of something
+# called "my".
+THING_WORD = r"(?!(?:and|then|plus)\b)[a-z0-9']+"
 THING = rf"(?:all the |the |my )?(?P<thing>(?!(?:the|my)\b){THING_WORD}(?: {THING_WORD}){{0,3}})"
 
 # Words for Nova's own things, which Assist mustn't be given in their place - "turn
@@ -72,11 +73,20 @@ THING = rf"(?:all the |the |my )?(?P<thing>(?!(?:the|my)\b){THING_WORD}(?: {THIN
 # Claude, which knows Nova's tools.
 NOVAS_OWN = {"timer", "timers", "alarm", "alarms", "reminder", "reminders", "music", "song", "songs", "track",
              "tracks", "playlist", "volume", "notification", "notifications", "microphone", "mic", "mute",
-             "shuffle", "repeat", "spotify", "nova", "weather", "forecast", "calendar"}
+             "shuffle", "repeat", "spotify", "nova", "weather", "forecast", "calendar", "playback", "navidrome",
+             "chime", "wake", "quiet", "battery", "warnings"}
 
-# What only the conversation so far could say the meaning of - "turn it off" - which
-# Assist, with no idea what "it" was, can't be given.
-PRONOUNS = {"it", "this", "that", "them", "these", "those"}
+# What only the conversation so far could say the meaning of - "turn it off", "turn
+# the other one off", "open the first one" - which Assist, with no idea what was
+# meant, can't be given.
+PRONOUNS = {"it", "this", "that", "them", "these", "those", "one", "ones", "both", "other", "others", "rest",
+            "same", "again", "first", "last"}
+
+# When, rather than what - "pause the TV in five minutes" is a delay, which only Claude
+# can set - and who for: "run me a bath" isn't a script called "me a bath".
+NOT_A_THING = {"in", "for", "at", "until", "after", "before", "by", "second", "seconds", "minute", "minutes",
+               "hour", "hours", "bit", "while", "later", "tonight", "tomorrow", "o'clock", "me", "us"}
+NOT_A_THING |= set(NUMBER_WORDS) - {"a", "an"}
 
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
@@ -136,16 +146,20 @@ def _ordinal(day: int) -> str:
 class LocalIntents:
     """Recognises the everyday commands handled without Claude."""
 
-    def __init__(self, clock=None, ntfy=None):
+    def __init__(self, clock=None, ntfy=None, home=None):
         """
         Args:
             clock: The Clock, to check there's exactly one timer before cancelling
                 "the timer". Without it, that's left to Claude.
             ntfy: The user's notifications - see ntfy.py. Without it, "any
                 notifications?" and the like are left to Claude.
+            home: Home Assistant - see home_assistant.py. Without it, nothing is taken
+                for one of Assist's own sentences, so "is the post office open?" is
+                Claude's rather than "Home Assistant isn't set up yet".
         """
         self.clock = clock
         self.ntfy = ntfy
+        self.home = home
         # Each pattern has to match the whole request, after politeness is taken off.
         self._rules = [
             # "Set of one minute timer" is how Moonshine heard "set a one minute timer"
@@ -180,7 +194,9 @@ class LocalIntents:
             # comes before "lamp on", which would take "turn" for part of the name.
             (rf"(?:turn|switch) (?P<state>on|off) (?P<words>{LIGHT})", self._lights),
             (rf"(?:turn|switch) (?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
-            (rf"(?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
+            # Not "is the lamp on?", whose "is" isn't part of the name - Nova's own lights
+            # would switch the lamp on if the guard refused it. That's a question for Assist.
+            (rf"(?!is\b)(?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
             (rf"set (?P<words>{LIGHT}) to (?P<brightness>\d{{1,3}})(?: percent)?", self._lights),
             # The calendar, for a day asked about by name. One rule each, since a
             # pattern can only name the day once.
@@ -314,7 +330,8 @@ class LocalIntents:
         # A pronoun anywhere, not only alone, as in "pause it in five minutes" - which
         # isn't a thing called "it in five minutes".
         words = found["thing"].split()
-        if any(word in NOVAS_OWN or word in PRONOUNS for word in words):
+        if self.home is None or any(word in NOVAS_OWN or word in PRONOUNS or word in NOT_A_THING
+                                    or word.isdigit() for word in words):
             return None
         return self._result("Okay.", [Action("control_home", {"command": found.string, "wider": True})])
 

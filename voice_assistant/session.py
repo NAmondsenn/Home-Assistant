@@ -179,7 +179,7 @@ class Session:
                                       ntfy=brain.ntfy, satellite=satellite.name, batteries=brain.batteries)
 
         # The everyday commands handled without Claude - see intents.py.
-        self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy)
+        self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home)
 
         # The satellite as a device of its own in Home Assistant, over MQTT, or None
         # until mqtt.host is set - see ha_device.py. It's named after the satellite's
