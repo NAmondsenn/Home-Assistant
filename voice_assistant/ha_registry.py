@@ -196,6 +196,9 @@ class Entry:
     aliases: Tuple[str, ...]
     # Whether it's exposed to Assist.
     exposed: bool
+    # The registry's own id for it, e.g. "4b1e...", which a device action gives in place of
+    # its entity id - "" if it isn't known.
+    registry_id: str = ""
 
 
 def button_kind(entry: Entry) -> str:
@@ -246,6 +249,14 @@ class Snapshot:
         """The name of the area the entity is in, or None."""
         entry = self.entries.get(entity_id)
         return self.areas.get(entry.area_id) if entry and entry.area_id else None
+
+    def entity_for_registry_id(self, registry_id: str) -> Optional[str]:
+        """The entity id of the entity the registry gives this id, in any case, or None if it gives none."""
+        return self._by_registry_id.get(registry_id.lower())
+
+    @cached_property
+    def _by_registry_id(self) -> Dict[str, str]:
+        return {entry.registry_id.lower(): entry.entity_id for entry in self.entries.values() if entry.registry_id}
 
     def on_device(self, device_id: str) -> List[str]:
         """The entity ids of the device's entities."""
@@ -336,7 +347,8 @@ class HomeRegistry:
                 area_id=item.get("area_id") or device_areas.get(item.get("device_id")),
                 unique_id=str(item.get("unique_id") or ""), original_name=item.get("original_name"),
                 aliases=tuple(alias for alias in aliases if alias is not None),
-                exposed=bool((exposed.get(entity_id) or {}).get("conversation")))
+                exposed=bool((exposed.get(entity_id) or {}).get("conversation")),
+                registry_id=str(item.get("id") or ""))
         return Snapshot(entries=entries, devices=device_info,
                         areas={area["area_id"]: area["name"] for area in areas}, read_at=time.time())
 

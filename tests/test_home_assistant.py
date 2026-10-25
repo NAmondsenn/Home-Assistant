@@ -137,9 +137,10 @@ def _thing(entity, name, device_class=None):
 REFUSED = {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
 
 
-def _entry(entity, platform="demo", device=None, original_name=None, aliases=(), exposed=True):
+def _entry(entity, platform="demo", device=None, original_name=None, aliases=(), exposed=True, registry_id=""):
     """One entity as the registry has it, its unique id its object id."""
-    return Entry(entity, platform, device, None, entity.partition(".")[2], original_name, tuple(aliases), exposed)
+    return Entry(entity, platform, device, None, entity.partition(".")[2], original_name, tuple(aliases), exposed,
+                 registry_id)
 
 
 def _registry(*entries, devices=None):
@@ -1248,9 +1249,37 @@ def test_a_script_with_a_locks_device_action_is_refused(make_home):
         "Leaving", {"type": "turn_on", "device_id": "stranger", "entity_id": "9f2a", "domain": "light"})
     assert home.run_script("leaving") == {"success": False, "message": UNSEEN.format("Leaving")}
     # While a light's device action is fine.
+    home.registry.read = _registry(_entry("lock.front_door", device="door"),
+                                   _entry("light.lamp", device="lamp", registry_id="9f2a"),
+                                   _entry("sensor.hub_signal", device="hub"), _entry("script.leaving"), devices=devices)
     home._session.answers["/api/config/script/config/leaving"] = _config(
         "Leaving", {"type": "turn_on", "device_id": "lamp", "entity_id": "9f2a", "domain": "light"})
     assert not home.works_guarded("script.leaving", *_now(home))
+
+
+def test_a_device_actions_entity_is_checked_as_well_as_its_device(make_home):
+    # Home Assistant acts on the entity a device action gives by its registry id, without
+    # checking it's on the device given - so the lamp's device with the PC's shutdown
+    # button, as only hand-written YAML would pair them, presses the shutdown.
+    states = [LAMP, _thing("button.desk_pc_shutdown", "Desk PC Shutdown")]
+    entries = [_entry("light.lamp", device="lamp", registry_id="4b1e"),
+               _entry("button.desk_pc_shutdown", "mqtt", "desk", "Shutdown", registry_id="9f2a")]
+    devices = {"lamp": {"name": "Lamp"}, **DESK}
+    press = {"type": "press", "device_id": "lamp", "entity_id": "9F2A", "domain": "button"}
+    home = _scripted(make_home, {"script.away": ("Away", _config("Away", press))}, *states, entries=entries,
+                     devices=devices)
+    assert home.run_script("away") == {"success": False, "message": REFUSED["message"]}
+    # One the registry has no such id for, or whose entity isn't in the states, can't be checked.
+    for given in ("0123", ["4b1e", "0123"]):
+        home._session.answers["/api/config/script/config/away"] = _config("Away", {**press, "entity_id": given})
+        assert home.run_script("away") == {"success": False, "message": UNSEEN.format("Away")}, given
+    home._session.answers["/api/states"].remove(LAMP)
+    home._session.answers["/api/config/script/config/away"] = _config("Away", {**press, "entity_id": "4b1e"})
+    assert home.works_guarded("script.away", *_now(home))
+    # While the lamp's own, given by its id, is fine.
+    home._session.answers["/api/states"].append(LAMP)
+    assert not home.works_guarded("script.away", *_now(home))
+    assert _ran(home) == []
 
 
 def test_an_area_target_is_refused_only_for_services_that_could_reach_a_lock(make_home):

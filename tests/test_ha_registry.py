@@ -129,7 +129,7 @@ ENTITIES = [
     {"entity_id": "light.bedroom_light", "platform": "hue", "device_id": "dev_lamp", "area_id": None,
      "unique_id": "lamp-1", "original_name": "Bedroom light"},
     {"entity_id": "lock.front_door", "platform": "zwave_js", "device_id": None, "area_id": "hall",
-     "unique_id": "lock-1", "original_name": "Front door"},
+     "unique_id": "lock-1", "original_name": "Front door", "id": "4B1E0C7D"},
     {"entity_id": "button.desk_shutdown", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
      "unique_id": "abc_shutdown", "original_name": "Shutdown"},
     {"entity_id": "button.desk_restart", "platform": "mqtt", "device_id": "dev_pc", "area_id": None,
@@ -197,6 +197,9 @@ def test_the_registry_is_read_into_a_snapshot():
     assert snapshot.area_name("lock.front_door") == "Hall"
     assert snapshot.area_name("light.unknown") is None
     assert snapshot.platform("lock.front_door") == "zwave_js" and snapshot.platform("light.unknown") is None
+    # A device action gives an entity by the registry's own id for it.
+    assert snapshot.entity_for_registry_id("4b1e0c7d") == "lock.front_door"
+    assert snapshot.entity_for_registry_id("0123") is None
     assert snapshot.devices["dev_lamp"] == {"name": "Reading lamp", "maker": "Signify", "model": "Bulb",
                                             "area_id": "bedroom"}
     assert snapshot.devices["dev_pc"]["name"] == "Desk"

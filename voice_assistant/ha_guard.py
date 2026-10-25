@@ -351,6 +351,18 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
         # "entity_id": "4b1e...", "domain": "lock"}.
         if str(part.get("domain") or "").lower() in GUARDED:
             found.append(WORKS_GUARDED)
+        # Home Assistant acts on that entity without checking it's on the device given, so
+        # it's checked for itself: the lamp's device with the PC's shutdown button presses
+        # the shutdown. An entity id is walked as any other string is.
+        for piece in _pieces(part.get("entity_id")):
+            if piece in ("", "all", "none") or ENTITY.fullmatch(piece):
+                continue
+            entity = snapshot.entity_for_registry_id(piece) if snapshot is not None else None
+            state = by_id.get(entity) if entity is not None else None
+            if entity is not None and guarded(entity, (state or {}).get("attributes") or {}, snapshot) is not None:
+                found.append(WORKS_GUARDED)
+            elif entity is None or target_refused(entity, state, snapshot):
+                found.append(UNSEEN)
         for device in devices if isinstance(devices, list) else [devices]:
             if not isinstance(device, str) or "{{" in device:
                 continue
