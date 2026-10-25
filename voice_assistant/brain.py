@@ -23,11 +23,11 @@ import socketserver
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from voice_assistant import paths, protocol, storage, watchdog
+from voice_assistant import logging_setup, paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock, spoken_clock_time
@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 # starting means the last run didn't: it crashed, the watchdog restarted it, or the
 # power went. See _note_start.
 RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
+
+# The ntfy settings it keeps a copy of, which are used straight away - in the order
+# Ntfy.retopic takes them.
+NTFY_TOLD = ("phone", "reminders", "restarts", "quiet_from", "quiet_until")
 
 # What the brain exits with once the settings page has asked it to restart. systemd
 # restarts it for this status whatever else it was told - see RestartForceExitStatus in
@@ -242,6 +246,12 @@ class Brain:
         # The user's own ntfy server, both ways: alerts said out loud as they arrive,
         # and things sent to their phone. None if it isn't set up - see ntfy.py.
         self.ntfy = Ntfy.from_config(config, os.getenv("NTFY_TOKEN"), on_alert=self._alert)
+        # With no ntfy there's still a night for the battery watcher to keep quiet in, read
+        # from the same settings and kept by the same function - see _make_battery_watcher.
+        # Kept, so a night changed on the settings page reaches it - see apply_settings.
+        ntfy_settings = config.section("ntfy")
+        self._night = Ntfy("", quiet_from=ntfy_settings.get("quiet_from", "23:00"),
+                           quiet_until=ntfy_settings.get("quiet_until", "07:00"))
 
         # Home Assistant, the brain's own client - for watching the batteries, and what
         # the satellites' sessions ask of it besides is theirs - or None until it's set
@@ -295,22 +305,59 @@ class Brain:
 
         Returns:
             The watcher, set up from config.yaml's batteries section, and keeping ntfy's
-            quiet hours. With no ntfy there's still a night to keep quiet in, so its
-            hours are read from the same settings and kept by the same function.
+            quiet hours - or, with no ntfy, the brain's own night's.
         """
         settings = self.config.section("batteries")
         choices = BatteryChoices(os.path.join(paths.DATA_DIR, "batteries.json"),
                                  settings.get("mobile_marks", [5]), settings.get("other_marks", [15, 5]))
-        send = None
-        if self.ntfy and self.ntfy.phone:
-            def send(message: str, title: str) -> bool:
-                return self.ntfy.send(self.ntfy.phone, message, title=title)
-        ntfy_settings = self.config.section("ntfy")
-        quiet = (self.ntfy or Ntfy("", quiet_from=ntfy_settings.get("quiet_from", "23:00"),
-                                   quiet_until=ntfy_settings.get("quiet_until", "07:00"))).quiet
+
+        def send(message: str, title: str) -> bool:
+            # The phone's topic at each warning, so one set or cleared on the settings page
+            # is used from the next - with none, it's as if there were no ntfy.
+            phone = self.ntfy.phone if self.ntfy else ""
+            return bool(phone) and self.ntfy.send(phone, message, title=title)
+
+        quiet = (self.ntfy or self._night).quiet
         return BatteryWatcher(self.home, choices, say=self._say_battery, send=send, quiet=quiet,
                               check_every=settings.get("check_every", 60),
                               stale_after=settings.get("stale_after", 3600))
+
+    def apply_settings(self, changes: Dict[Tuple[str, str], Any]) -> List[Tuple[str, str]]:
+        """
+        Uses settings saved on the settings page straight away, with no restart. Each is
+        put in the running settings, which most parts read as they use them - a session's
+        silence, say. The parts which keep a copy of one are told.
+
+        Args:
+            changes: Each setting, as (section, name), to its new value - only those used
+                straight away, e.g. {("ntfy", "quiet_from"): "22:00"}.
+
+        Returns:
+            Those which a part couldn't be told of, so are only used once Nova restarts.
+            Each part's failure is logged.
+        """
+        self.config.apply(changes)
+        unused = []
+        ntfy_changes = [key for key in changes if key[0] == "ntfy" and key[1] in NTFY_TOLD]
+        if ntfy_changes:
+            settings = self.config.section("ntfy")
+            # All five, as they are now - retopic falls back to ntfy's own night for a time which is missing.
+            told = [settings.get(name) or "" for name in NTFY_TOLD]
+            for part in (self.ntfy, self._night):
+                if part is None:
+                    continue
+                try:
+                    part.retopic(*told)
+                except Exception:
+                    logger.exception("ntfy couldn't be told of the settings saved, so they're used once Nova restarts")
+                    unused += [key for key in ntfy_changes if key not in unused]
+        if ("logging", "log_transcripts") in changes:
+            try:
+                logging_setup.log_transcripts(changes[("logging", "log_transcripts")])
+            except Exception:
+                logger.exception("Keeping what's said in the logs couldn't be changed until Nova restarts")
+                unused.append(("logging", "log_transcripts"))
+        return unused
 
     # The satellites
 

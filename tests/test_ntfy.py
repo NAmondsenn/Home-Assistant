@@ -306,3 +306,15 @@ def test_its_only_set_up_once_config_names_a_server(make_config):
                                                                      "clipboard", "23:00")
     # What's not been heard is kept in the data folder.
     assert made.path == ntfy_module.ALERTS_FILE
+
+
+def test_topics_and_night_changed_straight_away_leave_the_alerts_alone():
+    # From the settings page, with no restart - while the alert topics, which ntfy is
+    # listening to, wait for one.
+    ntfy, _ = _ntfy(hour=22, minute=30)
+    assert not ntfy.quiet()
+    ntfy.retopic("my-phone", "", "restarts", "22:00", "06:30")
+
+    assert (ntfy.phone, ntfy.reminders, ntfy.restarts) == ("my-phone", "", "restarts")
+    assert (ntfy.quiet_from, ntfy.quiet_until) == ("22:00", "06:30") and ntfy.quiet()
+    assert ntfy.alerts == ["homelab"]

@@ -386,3 +386,16 @@ def test_a_huge_whole_number_is_just_out_of_range(tmp_path, setting):
     (tmp_path / "config.yaml").write_text(f"{section}:\n  {name}: {'9' * 401}\n")
     with pytest.raises(ConfigError, match=f"'{setting}' should be"):
         Config(path=str(tmp_path / "config.yaml"))
+
+
+def test_apply_changes_only_what_it_is_given(config_with):
+    # The settings page's saves go into the running settings, while every satellite's session
+    # reads them on its own thread - so a section is never changed under a reader.
+    config = config_with("navidrome:\n  url: http://music.local:4533\n")
+    before = config.section("thresholds")
+    config.apply({("thresholds", "silence_duration"): 1.2, ("music", "player"): "navidrome"})
+
+    assert before == {"silence_duration": 0.6, "vad_threshold": 0.5}
+    assert config.section("thresholds") == {"silence_duration": 1.2, "vad_threshold": 0.5}
+    assert config.section("music") == {"player": "navidrome"}
+    assert config.section("navidrome") == {"url": "http://music.local:4533", "username": "nova"}

@@ -20,10 +20,12 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from voice_assistant import paths
+from voice_assistant import logging_setup, paths
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant import settings_page as page_module
+from voice_assistant.brain import Brain
 from voice_assistant.config import Config
+from voice_assistant.ntfy import Ntfy
 from voice_assistant.routines import Routines
 from voice_assistant.settings_page import SettingsPage
 
@@ -179,7 +181,8 @@ class FakeBrain:
         self.sessions = sessions
         self.known = list(sessions) if known is None else known
         self.clock, self.memory = FakeClock(), FakeMemory()
-        self.ntfy = self.stt = self.routines = self.batteries = None
+        self.ntfy = self.stt = self.routines = self.batteries = self.config = None
+        self._night = Ntfy("")
         self.ran = []
         for name, part in parts.items():
             setattr(self, name, part)
@@ -195,6 +198,10 @@ class FakeBrain:
 
     def run_routine(self, routine):
         self.ran.append(routine)
+
+    def apply_settings(self, changes):
+        # The brain's own, so a change reaches ntfy and the logs as it does on the brain.
+        return Brain.apply_settings(self, changes)
 
 
 def _page(running=None, sessions=None, known=None, wake_word=None, **parts):
@@ -428,14 +435,16 @@ def test_the_page_takes_googles_keys(files, caplog):
 
 def test_settings_are_saved_as_only_whats_different_with_a_copy_of_the_old_file(files):
     (files / "config.yaml").write_text("# My own settings\nnavidrome:\n  url: http://old.local:4533\n")
-    result = _page().save_settings({"navidrome.url": "http://music.local:4533", "ntfy.alerts": "homelab, servers",
+    result = _page().save_settings({"navidrome.url": "http://music.local:4533", "ntfy.url": "http://ntfy.local",
+                                    "ntfy.alerts": "homelab, servers",
                                     "thresholds.silence_duration": "0.7", "logging.log_transcripts": False,
                                     # The same as config.yaml's, so left out of the file.
                                     "music.player": "spotify"}, LOGIN)
 
     assert result["success"]
     assert yaml.safe_load((files / "config.yaml").read_text()) == {
-        "navidrome": {"url": "http://music.local:4533"}, "ntfy": {"alerts": ["homelab", "servers"]},
+        "navidrome": {"url": "http://music.local:4533"}, "ntfy": {"url": "http://ntfy.local",
+                                                                  "alerts": ["homelab", "servers"]},
         "thresholds": {"silence_duration": 0.7}, "logging": {"log_transcripts": False}}
     assert (files / "config.yaml.bak").read_text().startswith("# My own settings")
 
@@ -500,6 +509,109 @@ def test_a_setting_nova_wouldnt_start_with_is_never_saved(files, changes, said):
     result = _page().save_settings(changes, LOGIN)
     assert not result["success"] and said in result["message"]
     assert not (files / "config.yaml").exists()
+
+
+def _running(files, text="", **parts):
+    """
+    A page over a brain running on the settings in the file, as Nova's does, with ntfy -
+    the brain's own apply_settings telling its parts of each change.
+    """
+    (files / "config.yaml").write_text("ntfy:\n  url: http://ntfy.test\n" + text)
+    running = Config()
+    parts.setdefault("ntfy", Ntfy("http://ntfy.test"))
+    return _page(running=running, config=running, **parts), running
+
+
+def test_a_straight_away_change_is_used_with_no_restart(files):
+    page, _ = _running(files)
+    result = page.save_settings({"ntfy.quiet_from": "22:00"}, LOGIN)
+
+    assert result == {"success": True, "message": "Saved. It's used straight away.", "restart_needed": False}
+    assert page.brain.ntfy.quiet_from == "22:00"
+    assert not page.state()["restart_needed"]
+
+
+def test_a_mixed_save_uses_some_now_and_says_the_rest_waits(files):
+    page, running = _running(files, "navidrome:\n  url: http://music.local:4533\n")
+    result = page.save_settings({"ntfy.quiet_from": "22:00", "music.player": "navidrome"}, LOGIN)
+
+    assert result["message"] == "Saved. What plays the music is used once Nova restarts, and the rest straight away."
+    assert running.section("ntfy")["quiet_from"] == "22:00" and page.brain.ntfy.quiet_from == "22:00"
+    # A player is a connection, swapped only at a restart.
+    assert running.section("music")["player"] == "spotify"
+    assert page.state()["restart_needed"]
+
+
+def test_a_change_that_cant_be_used_now_is_kept_for_the_restart(files):
+    page, _ = _running(files)
+
+    def unreachable(*args):
+        raise RuntimeError("ntfy has gone")
+
+    page.brain.ntfy.retopic = unreachable
+    result = page.save_settings({"ntfy.quiet_from": "22:00"}, LOGIN)
+
+    assert yaml.safe_load((files / "config.yaml").read_text())["ntfy"]["quiet_from"] == "22:00"
+    assert result["message"] == ("Saved. It's used straight away. Some of it couldn't be used straight away, "
+                                 "so it's used once Nova restarts.")
+    assert result["restart_needed"] and page.state()["restart_needed"]
+
+
+def test_an_error_names_the_setting_as_the_page_does(files):
+    result = _page().save_settings({"thresholds.silence_duration": 5}, LOGIN)
+    assert result == {"success": False,
+                      "message": "Seconds of quiet which end what you're saying should be from 0.2 to 3."}
+    assert not (files / "config.yaml").exists()
+
+
+def test_settings_that_need_each_other_are_refused_on_saving(files):
+    result = _page().save_settings({"music.player": "navidrome"}, LOGIN)
+    assert result == {"success": False, "message": "Navidrome as the player needs Navidrome's address."}
+    assert not (files / "config.yaml").exists()
+
+
+def test_each_setting_says_how_its_used_and_its_limits(files):
+    settings = {setting["key"]: setting for setting in _page().state()["settings"]}
+    silence, night = settings["thresholds.silence_duration"], settings["ntfy.quiet_from"]
+
+    assert silence["used"] == "Used straight away" and (silence["min"], silence["max"]) == (0.2, 3)
+    assert night["used"] == "Used straight away" and night["form"] == "time"
+    assert settings["music.player"]["used"] == "Used once Nova restarts"
+
+
+def test_the_transcripts_switch_is_used_straight_away(files):
+    page, _ = _running(files)
+    try:
+        assert page.save_settings({"logging.log_transcripts": False}, LOGIN)["success"]
+        assert not logging_setup.transcripts_logged()
+        assert page.save_settings({"logging.log_transcripts": True}, LOGIN)["success"]
+        assert logging_setup.transcripts_logged()
+    finally:
+        logging_setup.log_transcripts(True)
+
+
+def test_two_quick_saves_both_reach_the_running_settings(files, monkeypatch):
+    page, running = _running(files)
+    written = page_module.storage.save_text
+    others = []
+
+    def save_slowly(path, text):
+        if not others:
+            # The second save starts while the first is still writing.
+            others.append(threading.Thread(target=_save, args=(page, "save_settings",
+                                                               {"thresholds.silence_duration": 1.2})))
+            others[0].start()
+            others[0].join(0.3)
+        written(path, text)
+
+    monkeypatch.setattr(page_module.storage, "save_text", save_slowly)
+    _save(page, "save_settings", {"ntfy.quiet_from": "22:00"})
+    others[0].join(5)
+
+    saved = yaml.safe_load((files / "config.yaml").read_text())
+    assert (saved["ntfy"]["quiet_from"], saved["thresholds"]["silence_duration"]) == ("22:00", 1.2)
+    assert (running.section("ntfy")["quiet_from"], running.section("thresholds")["silence_duration"]) == (
+        "22:00", 1.2)
 
 
 def test_its_only_there_when_switched_on(make_config):

@@ -26,7 +26,9 @@ from voice_assistant import clock as clock_module
 from voice_assistant import ha_device, paths, protocol, satellite_link
 from voice_assistant import session as session_module
 from voice_assistant.actions import Action
+from voice_assistant.brain import Brain
 from voice_assistant.clock import Clock
+from voice_assistant.config import Config
 from voice_assistant.conversation import Reply
 from voice_assistant.navidrome import NavidromePlayer
 from voice_assistant.recording import RATE, AudioFeed
@@ -823,6 +825,26 @@ def test_what_nova_is_doing_is_kept_for_the_settings_page(brain, make_session, m
     session._handle_interaction(AudioFeed(), timeline=FakeTimeline())
 
     assert seen == {"recording": "listening", "working out the words": "thinking"}
+
+
+def test_a_session_started_before_the_save_uses_the_new_value(brain, connect, make_session, monkeypatch, tmp_path):
+    # The silence setting is tuned by trying, so a save on the settings page reaches every
+    # satellite already connected, at its next recording - not a copy kept from its start.
+    brain.config = Config(path=str(tmp_path / "config.yaml"))
+    sessions = [make_session(connect("bedroom")[0]), make_session(connect("kitchen", "kitchen-pi.local")[0])]
+    durations = []
+
+    def record_until_silence(source, detector, heard=None, **kwargs):
+        durations.append(kwargs["silence_duration"])
+        return np.zeros(480, np.float32)
+
+    monkeypatch.setattr(session_module, "record_until_silence", record_until_silence)
+    Brain.apply_settings(brain, {("thresholds", "silence_duration"): 1.2})
+    for session in sessions:
+        session.conversation = ScriptedConversation(Reply())
+        session._handle_interaction(AudioFeed(), timeline=FakeTimeline())
+
+    assert durations == [1.2, 1.2]
 
 
 # The satellite's device in Home Assistant

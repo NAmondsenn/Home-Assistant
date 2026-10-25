@@ -26,6 +26,7 @@ pytest.importorskip("soxr")
 from voice_assistant import brain as brain_module
 from voice_assistant import clock as clock_module
 from voice_assistant import memory as memory_module
+from voice_assistant import ntfy as ntfy_module
 from voice_assistant import paths, protocol
 from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
@@ -1151,12 +1152,29 @@ def test_warnings_go_to_the_phone_through_ntfy_and_wait_for_ntfys_quiet_hours(ma
 
 def test_without_ntfy_warnings_are_only_said_and_quiet_hours_are_still_ntfys(make_brain, home_assistant_token):
     brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"quiet_from": "22:00", "quiet_until": "06:30"})
-    assert brain.ntfy is None and brain.batteries._send is None
+    assert brain.ntfy is None and brain.batteries._send("It's low.", "Battery low") is False
     assert (brain.batteries._quiet.__self__.quiet_from, brain.batteries._quiet.__self__.quiet_until) == (
         "22:00", "06:30")
     # And with ntfy but nowhere to send to, the same.
     brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"url": "http://ntfy.test", "phone": ""})
-    assert brain.batteries._send is None
+    assert brain.batteries._send("It's low.", "Battery low") is False
+
+
+def test_a_phone_topic_set_on_the_page_gets_battery_warnings_straight_away(make_brain, home_assistant_token,
+                                                                         monkeypatch):
+    brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"url": "http://ntfy.test", "phone": ""})
+    posted = []
+    brain.ntfy._session = SimpleNamespace(post=lambda url, json=None, **kwargs: posted.append(json) or
+                                          SimpleNamespace(raise_for_status=lambda: None))
+    monkeypatch.setattr(ntfy_module.network, "online", lambda: True)
+
+    assert brain.apply_settings({("ntfy", "phone"): "my-phone"}) == []
+    assert brain.batteries._send("It's low.", "Battery low") is True
+    assert [(body["topic"], body["message"]) for body in posted] == [("my-phone", "It's low.")]
+
+    assert brain.apply_settings({("ntfy", "phone"): ""}) == []
+    assert brain.batteries._send("It's low.", "Battery low") is False
+    assert len(posted) == 1
 
 
 def test_the_battery_watcher_runs_while_the_brain_does_and_stops_with_it(brain, home_assistant_token, make_brain):

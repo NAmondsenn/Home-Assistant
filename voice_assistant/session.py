@@ -199,11 +199,18 @@ class Session:
 
         # How each thing the user says is answered - everything between hearing it and
         # saying the reply. See conversation.py.
-        self.thresholds = config.section("thresholds")
         self.conversation = Conversation(brain.clock, self.intents, self.llm, self.actions, self.music,
                                          chime_enabled=self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
                                          routines=brain.routines, satellite=satellite.name)
+
+    @property
+    def thresholds(self) -> Dict:
+        """
+        config.yaml's thresholds as they are now - read at each recording, so a silence
+        changed on the settings page is used from the next, on a session already started.
+        """
+        return self.brain.config.section("thresholds")
 
     # The satellite's mute and volumes
 
@@ -404,11 +411,13 @@ class Session:
         # A throwaway one when none is given, so the marks below never need checking for.
         timeline = timeline or Timeline()
 
-        speech_timeout = self.thresholds.get("speech_timeout", 3.0)
+        # Read once, so the whole of a recording is by the same settings.
+        thresholds = self.thresholds
+        speech_timeout = thresholds.get("speech_timeout", 3.0)
         if follow_up:
             # Answering a question takes a moment's thought, so there's more time to
             # start talking than when the user has just said the wake word.
-            speech_timeout = self.thresholds.get("follow_up_timeout", speech_timeout * 2)
+            speech_timeout = thresholds.get("follow_up_timeout", speech_timeout * 2)
 
         self.activity = "listening"
 
@@ -438,9 +447,9 @@ class Session:
         try:
             audio_data = record_until_silence(
                 feed, self.speech_detector, listen_from=before, keep_before=before / RATE,
-                silence_duration=self.thresholds.get("silence_duration", 0.6),
+                silence_duration=thresholds.get("silence_duration", 0.6),
                 speech_timeout=speech_timeout,
-                timeout=self.thresholds.get("recording_timeout", 10.0),
+                timeout=thresholds.get("recording_timeout", 10.0),
                 timeline=timeline, heard=listening.add)
         except BaseException:
             # Otherwise it would wait on for the rest of a recording which isn't coming.

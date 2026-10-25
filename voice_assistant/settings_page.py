@@ -18,9 +18,12 @@ also has to come from the page itself, with a header only it sends, so that anot
 website the user happens to visit can't make one in their name.
 
 Keys are only ever written, never shown back - the page just says whether each is
-set. Settings are saved to this install's own ~/.config/nova/config.yaml, the one
-before kept beside it as config.yaml.bak, and both take effect once Nova restarts,
-which the page can do.
+set, and a new one is used once Nova restarts, which the page can do. Settings are
+saved to this install's own ~/.config/nova/config.yaml, the one before kept beside it
+as config.yaml.bak, and most are used straight away, from the next moment they're
+needed, on every satellite - see Brain.apply_settings. Those which make a connection or
+a player, such as a server's address, wait for a restart, as one swapped half way is
+where things go wrong, and the page says which each setting is.
 """
 
 import json
@@ -32,7 +35,7 @@ import shutil
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 import yaml
@@ -40,7 +43,7 @@ import yaml
 from voice_assistant import paths, storage, timeline
 from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
-from voice_assistant.config import CHOICES, Config, ConfigError, check
+from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -64,22 +67,27 @@ SAFETY_HEADERS = {
     "Cache-Control": "no-store",
 }
 
-# The settings on the page - the ones most likely to change - and what each is for.
+# The settings on the page - the ones most likely to change - what each is for, and
+# whether it's used "now", straight away, or once Nova restarts - those which make a
+# connection or a player.
 EDITABLE = [
-    ("music", "player", "What plays the music"),
-    ("navidrome", "url", "Navidrome's address"),
-    ("navidrome", "username", "Navidrome's user for Nova"),
-    ("home_assistant", "url", "Home Assistant's address"),
-    ("ntfy", "url", "Your ntfy server"),
-    ("ntfy", "alerts", "Topics read out as they arrive, separated by commas"),
-    ("ntfy", "phone", "Topic for sending things to your phone"),
-    ("ntfy", "reminders", "Topic for reminders nobody answered"),
-    ("ntfy", "restarts", "Topic for Nova restarting after a problem"),
-    ("ntfy", "quiet_from", "Night starts at, as 23:00"),
-    ("ntfy", "quiet_until", "Night ends at, as 07:00"),
-    ("thresholds", "silence_duration", "Seconds of quiet which end what you're saying"),
-    ("logging", "log_transcripts", "Keep what's said in the logs"),
+    ("music", "player", "What plays the music", "restart"),
+    ("navidrome", "url", "Navidrome's address", "restart"),
+    ("navidrome", "username", "Navidrome's user for Nova", "restart"),
+    ("home_assistant", "url", "Home Assistant's address", "restart"),
+    ("ntfy", "url", "Your ntfy server", "restart"),
+    ("ntfy", "alerts", "Topics read out as they arrive, separated by commas", "restart"),
+    ("ntfy", "phone", "Topic for sending things to your phone", "now"),
+    ("ntfy", "reminders", "Topic for reminders nobody answered", "now"),
+    ("ntfy", "restarts", "Topic for Nova restarting after a problem", "now"),
+    ("ntfy", "quiet_from", "Night starts at, as 23:00", "now"),
+    ("ntfy", "quiet_until", "Night ends at, as 07:00", "now"),
+    ("thresholds", "silence_duration", "Seconds of quiet which end what you're saying", "now"),
+    ("logging", "log_transcripts", "Keep what's said in the logs", "now"),
 ]
+# How the page says which each is.
+NOW = "Used straight away"
+LATER = "Used once Nova restarts"
 
 # The keys, and what each is for. Claude's can be under an older name too.
 KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant (an administrator's token)"),
@@ -250,6 +258,9 @@ class SettingsPage:
         with open(paths.DEFAULTS_FILE) as file:
             self.defaults = yaml.safe_load(file)
         self._keys_changed = False
+        # The settings used straight away which the brain couldn't use when they were
+        # saved, as (section, name) - so they wait for a restart, and the page says so.
+        self._unused: Set[Tuple[str, str]] = set()
         # Held while the settings file or the keys are read, changed and written back,
         # as each request has a thread of its own - two saves at once, from two tabs or
         # two keys pasted quickly, could otherwise each write over the other.
@@ -338,17 +349,26 @@ class SettingsPage:
         session, chosen = self._session(satellite)
         saved, problem = self._saved()
         settings = []
-        for section, name, label in EDITABLE:
+        for section, name, label, used in EDITABLE:
             default = self.defaults[section][name]
             value = saved.section(section).get(name) if saved else default
-            setting = {"key": f"{section}.{name}", "label": label, "kind": _kind(default), "value": value}
+            setting = {"key": f"{section}.{name}", "label": label, "kind": _kind(default), "value": value,
+                       "used": NOW if used == "now" else LATER}
             # One of a few words, which the page offers as a list to pick from.
             if (section, name) in CHOICES:
                 setting["choices"] = list(CHOICES[(section, name)])
+            # What it may be, for the page to check as it's typed - the same as saving does.
+            limit = LIMITS.get((section, name))
+            if limit is not None:
+                setting["form"] = limit.form
+                if limit.form == "number":
+                    setting.update({"min": limit.low, "max": limit.high, "whole": limit.whole})
             settings.append(setting)
+        # One used straight away is in the running settings once it's saved, so only one
+        # which waits differs - or one the brain couldn't use, which is in them but unused.
         changed = saved is not None and self.running is not None and any(
             saved.section(section).get(name) != self.running.section(section).get(name)
-            for section, name, _ in EDITABLE)
+            for section, name, _, _ in EDITABLE)
         secrets = _secrets_set(paths.SECRETS_FILE)
         keys = [{"name": name, "label": label,
                  "set": any(secrets.get(spelling) for spelling in [name] + OLDER_NAMES.get(name, []))}
@@ -366,7 +386,7 @@ class SettingsPage:
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,
-                "restart_needed": changed or self._keys_changed}
+                "restart_needed": changed or self._keys_changed or bool(self._unused)}
 
     def live(self, satellite: Optional[str] = None) -> Dict:
         """What a satellite's Nova is doing right now - asked for every second or two while the page is open."""
@@ -458,7 +478,7 @@ class SettingsPage:
         return {"available": True, "also_send_when_said": choices.also_send_when_said, "devices": devices}
 
     def _saved(self):
-        """The settings as saved now - which take effect at the next restart - and any problem reading them."""
+        """The settings as saved now, and any problem reading them."""
         try:
             return Config(quiet=True), None
         except (ConfigError, OSError, ValueError) as e:
@@ -582,13 +602,24 @@ class SettingsPage:
         """
         Saves settings to this install's own settings file, keeping it to what's
         different from config.yaml's defaults - checked the same way as when Nova
-        starts, so a change it would refuse is never saved.
+        starts, and for the settings which need each other, so a change it would refuse
+        is never saved. Those used straight away then go into the running settings.
+
+        Args:
+            changes: Each setting, as "section.name", to what the page sent.
+            who: The Tailscale login saving them, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message' saying when each is used - and once
+            saved, 'restart_needed', for whether any of it waits for a restart.
         """
-        editable = {f"{section}.{name}": (section, name) for section, name, _ in EDITABLE}
+        editable = {f"{section}.{name}": (section, name, label, used) for section, name, label, used in EDITABLE}
         unknown = [key for key in changes if key not in editable]
         if unknown:
             return {"success": False, "message": f"The page can't change {', '.join(unknown)}."}
         path = paths.CONFIG_FILE
+        # The file read, written and the running settings changed under the one lock, so
+        # two saves at once can't each leave the other out of either.
         with self._saving:
             try:
                 with open(path) as file:
@@ -598,13 +629,18 @@ class SettingsPage:
             except (OSError, yaml.YAMLError) as e:
                 return {"success": False, "message": f"Couldn't read {path}: {e}"}
 
+            chosen = {}
             for key, given in changes.items():
-                section, name = editable[key]
+                section, name, label, _ = editable[key]
                 default = self.defaults[section][name]
                 try:
                     value = _from_page(given, default)
                 except (TypeError, ValueError):
                     return {"success": False, "message": f"{key} should be {_kind(default)}."}
+                problem = limit_problem(section, name, value)
+                if problem:
+                    return {"success": False, "message": f"{label} {problem}."}
+                chosen[key] = value
                 if value == default:
                     settings.get(section, {}).pop(name, None)
                 else:
@@ -614,13 +650,60 @@ class SettingsPage:
                 check(settings, self.defaults, path)
             except ConfigError as e:
                 return {"success": False, "message": str(e)}
+            # As Nova will run with them: config.yaml's, with the install's on top.
+            whole = {section: {**defaults, **(settings.get(section) or {})}
+                     for section, defaults in self.defaults.items() if isinstance(defaults, dict)}
+            missing = clashes(whole)
+            if missing:
+                return {"success": False, "message": " ".join(sentence for _, sentence in missing)}
 
             if os.path.exists(path):
                 shutil.copyfile(path, path + ".bak")
                 os.chmod(path + ".bak", 0o600)
             storage.save_text(path, SETTINGS_HEADER + yaml.safe_dump(settings, sort_keys=False, allow_unicode=True))
+
+            now, waiting = {}, []
+            for key, value in chosen.items():
+                section, name, label, used = editable[key]
+                if self.running is not None and value == self.running.section(section).get(name):
+                    continue
+                if used == "now" and self.running is not None:
+                    now[(section, name)] = value
+                else:
+                    waiting.append(label)
+            unused = self._apply(now) if now else []
         logger.info(f"Settings page: {who} changed {', '.join(changes)}")
-        return {"success": True, "message": "Saved. It takes effect once Nova restarts."}
+
+        if not waiting:
+            message = "Saved. It's used straight away."
+        elif not now:
+            message = "Saved. It's used once Nova restarts."
+        else:
+            labels = waiting[0] if len(waiting) == 1 else f"{', '.join(waiting[:-1])} and {waiting[-1]}"
+            message = (f"Saved. {labels} {'is' if len(waiting) == 1 else 'are'} used once Nova restarts, "
+                       f"and the rest straight away.")
+        if unused:
+            message += " Some of it couldn't be used straight away, so it's used once Nova restarts."
+        return {"success": True, "message": message, "restart_needed": bool(waiting or unused)}
+
+    def _apply(self, changes: Dict[Tuple[str, str], Any]) -> List[Tuple[str, str]]:
+        """
+        Has the brain use settings just saved, noting any it couldn't - they're in the
+        file, so they're used once Nova restarts. Called with _saving held.
+
+        Args:
+            changes: Each setting used straight away, as (section, name), to its value.
+
+        Returns:
+            Those the brain couldn't use.
+        """
+        try:
+            unused = list(self.brain.apply_settings(changes))
+        except Exception:
+            logger.exception("Settings saved on the page couldn't be used straight away, so wait for a restart")
+            unused = list(changes)
+        self._unused = (self._unused - set(changes)) | set(unused)
+        return unused
 
     def restart(self, who: str) -> Dict:
         logger.info(f"Settings page: {who} restarted Nova")

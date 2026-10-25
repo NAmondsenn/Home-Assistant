@@ -72,6 +72,11 @@ HEADLINE_CHARS = 120
 TELL_MORE_WITHIN = 120
 
 
+def _time_or(given: str, default: str) -> str:
+    """A time of day, as "23:00" - or the default, if what's given isn't one."""
+    return given if re.fullmatch(r"\d\d:\d\d", given or "") else default
+
+
 @dataclass
 class Alert:
     """One message from an alert topic."""
@@ -126,8 +131,7 @@ class Ntfy:
         self.url = url.rstrip("/")
         self.alerts = [topic for topic in alerts if topic]
         self.phone, self.reminders, self.restarts = phone, reminders, restarts
-        self.quiet_from = quiet_from if re.fullmatch(r"\d\d:\d\d", quiet_from or "") else "23:00"
-        self.quiet_until = quiet_until if re.fullmatch(r"\d\d:\d\d", quiet_until or "") else "07:00"
+        self.quiet_from, self.quiet_until = _time_or(quiet_from, "23:00"), _time_or(quiet_until, "07:00")
         self.on_alert = on_alert
         self._headers = {"Authorization": f"Bearer {token}"} if token else {}
         self._session = session or requests.Session()
@@ -255,12 +259,32 @@ class Ntfy:
         except OSError:
             pass
 
+    def retopic(self, phone: str, reminders: str, restarts: str, quiet_from: str, quiet_until: str):
+        """
+        Changes where things are sent, and the night, as Nova runs - from the settings
+        page. The alert topics it listens to don't change: they're a connection to the
+        server, which waits for a restart.
+
+        Args:
+            phone: Where "send that to my phone" goes, or nothing.
+            reminders: Where a reminder nobody answered goes, or nothing.
+            restarts: Where Nova having to restart itself goes, or nothing.
+            quiet_from: When night starts, as "23:00".
+            quiet_until: When it ends, as "07:00".
+        """
+        with self._lock:
+            self.phone, self.reminders, self.restarts = phone, reminders, restarts
+            self.quiet_from, self.quiet_until = _time_or(quiet_from, "23:00"), _time_or(quiet_until, "07:00")
+
     def quiet(self) -> bool:
         """Whether it's night, when only the most urgent alerts are said out loud."""
         now = self._now().strftime("%H:%M")
-        if self.quiet_from <= self.quiet_until:
-            return self.quiet_from <= now < self.quiet_until
-        return now >= self.quiet_from or now < self.quiet_until
+        # Both ends at once, so a night changed meanwhile is never half the old one.
+        with self._lock:
+            quiet_from, quiet_until = self.quiet_from, self.quiet_until
+        if quiet_from <= quiet_until:
+            return quiet_from <= now < quiet_until
+        return now >= quiet_from or now < quiet_until
 
     def _listen(self):
         """

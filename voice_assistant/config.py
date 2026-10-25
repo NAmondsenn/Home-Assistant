@@ -18,6 +18,7 @@ import logging
 import math
 import os
 import re
+import threading
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import yaml
@@ -312,7 +313,10 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
 
 
 class Config:
-    """The settings, read once at startup. section() gives one part of them."""
+    """
+    The settings, read once at startup and changed by the settings page as Nova runs.
+    section() gives one part of them.
+    """
 
     def __init__(self, path: str = None, defaults: str = None, quiet: bool = False):
         """
@@ -329,6 +333,8 @@ class Config:
         """
         self.defaults_path = defaults or paths.DEFAULTS_FILE
         self.path = os.path.expanduser(path or paths.CONFIG_FILE)
+        # Held while a change is made, so two at once can't each lose the other's - see apply.
+        self._applying = threading.Lock()
 
         if not os.path.exists(self.defaults_path):
             raise FileNotFoundError(f"Config file not found at {self.defaults_path}")
@@ -365,5 +371,26 @@ class Config:
         Returns a specific section of the config such as 'audio' or 'llm' as a dict.
         Returns an empty dict if the section doesn't exist, so callers can fall back
         to their own defaults via .get() rather than crashing on optional sections.
+        It's the settings as they are now - one read before a change keeps the old ones.
         """
         return self.data.get(name, {})
+
+    def apply(self, changes: Dict[Tuple[str, str], Any]):
+        """
+        Changes settings as Nova runs - the settings page's, once they're saved.
+
+        Every satellite's session reads the settings on its own thread while the page
+        changes them on another, so nothing already given out is changed: each section
+        changed is a new dict, in a copy of them all which is swapped in with one
+        assignment. A reader sees all of a change or none of it - never a silence of
+        1.2 seconds with the rest of the old thresholds half replaced.
+
+        Args:
+            changes: Each setting, as (section, name), to its new value, e.g.
+                {("thresholds", "silence_duration"): 1.2}.
+        """
+        with self._applying:
+            data = dict(self.data)
+            for (section, name), value in changes.items():
+                data[section] = {**data.get(section, {}), name: value}
+            self.data = data

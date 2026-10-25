@@ -159,6 +159,13 @@ class FakeConfig:
     def section(self, name):
         return self.data.get(name, {})
 
+    def apply(self, changes):
+        """As Config.apply: the changes, each (section, name) to its value, swapped in whole."""
+        data = dict(self.data)
+        for (section, name), value in changes.items():
+            data[section] = {**data.get(section, {}), name: value}
+        self.data = data
+
 
 @pytest.fixture
 def make_config():
