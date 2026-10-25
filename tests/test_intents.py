@@ -19,9 +19,15 @@ from voice_assistant.intents import LocalIntents, calendar_days
 HOME = object()
 
 
-def _actions(text, clock=None, home=HOME):
+# The activities' words, as GoogleCalendar.activity_words gives them for a Work and a Uni calendar.
+WORK_AND_UNI = {"work": "work", "works": "work", "working": "work", "shift": "work", "shifts": "work",
+                "uni": "uni", "unis": "uni", "university": "uni", "lecture": "uni", "lectures": "uni",
+                "class": "uni", "classes": "uni"}
+
+
+def _actions(text, clock=None, home=HOME, activities=lambda: WORK_AND_UNI):
     """The actions a request is handled with locally, or None if it's left to Claude."""
-    result = LocalIntents(clock=clock, home=home).match(text)
+    result = LocalIntents(clock=clock, home=home, activities=activities).match(text)
     return None if result is None else result["actions"]
 
 
@@ -290,6 +296,39 @@ def test_the_next_time_is_asked_for_without_claude(text, activity, count, monkey
 
     monkeypatch.setattr(intents_module, "date", Tuesday)
     assert _actions(text) == [Action("get_activity", {"activity": activity, "start": "2026-10-20", "count": count})]
+
+
+def test_without_the_calendar_work_and_uni_are_left_to_claude():
+    for text in ("What time do I have work tomorrow?", "When's my next shift?", "Am I working on Saturday?"):
+        assert _actions(text, activities=None) is None
+        assert _actions(text, activities=dict) is None
+
+
+# Calendars named like Nova's own things - Claude, which has both, is asked about them.
+NOVAS_WORDS = {"timer": "timer", "timers": "timer", "music": "music", "musics": "music", "shopping": "shopping",
+               "shoppings": "shopping", "notifications": "notifications", "phone": "phone", "phones": "phone"}
+
+
+@pytest.mark.parametrize("text, action", [
+    ("Set a timer for ten minutes.", Action("set_timer", {"duration_seconds": 600})),
+    ("Pause the music.", Action("control_playback", {"action": "pause"})),
+    ("Add milk to my shopping list.", Action("add_to_list", {"item": "milk", "list": "my shopping list",
+                                                             "command": "add milk to my shopping list"})),
+    ("What's on my shopping list?", Action("read_list", {"list": "my shopping list"})),
+    ("Have I got any notifications?", Action("read_notifications")),
+    ("Where's my phone?", Action("find_device", {"device": "phone", "ring": False})),
+])
+def test_a_calendar_named_like_novas_own_command_never_takes_it_over(text, action):
+    result = LocalIntents(home=HOME, ntfy=FakeNtfy(), activities=lambda: NOVAS_WORDS).match(text)
+    assert result["actions"] == [action]
+
+
+@pytest.mark.parametrize("text", ["When's my next timer?", "What time do I have music tomorrow?",
+                                  "Have I got notifications today?", "Am I at phone tomorrow?"])
+def test_a_calendar_named_as_one_of_novas_own_things_is_claudes(text):
+    assert _actions(text, activities=lambda: NOVAS_WORDS) is None
+    # Shopping isn't one of Nova's own things, only a list's name.
+    assert _actions("When's shopping tomorrow?", activities=lambda: NOVAS_WORDS)[0].params["activity"] == "shopping"
 
 
 # Notifications

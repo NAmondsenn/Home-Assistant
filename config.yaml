@@ -177,15 +177,10 @@ home_assistant:
   # only tells an administrator which room each device is in, which Nova's room and
   # Claude's lights need. An administrator's token can do anything in Home Assistant,
   # so it's Nova's own code which keeps it to the lights, and scripts and scenes run
-  # from the settings page, and never anything which locks, unlocks or opens. Assist, for the requests passed on in plain words, only reaches the devices
-  # exposed to it. See the README.
+  # from the settings page, and never anything which locks, unlocks or opens. Assist,
+  # for the requests passed on in plain words, only reaches the devices exposed to it.
+  # See the README.
   url: ""
-  # The regular things in your life, and what they're called on the calendar, for
-  # "what time do I have work tomorrow?" or "when do I finish uni today?". An event with
-  # a word in its name starting with one of them counts - e.g. work: ["Shift"], or
-  # uni: ["CSC"] for course codes like CSC203.
-  activities:
-    work: ["work"]
 
 batteries:
   # Nova finds every device Home Assistant has a battery level for, and warns you once as

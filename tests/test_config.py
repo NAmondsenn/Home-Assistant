@@ -137,6 +137,17 @@ def test_home_assistant_calendars_is_let_through_with_where_its_set_now(config_w
     assert config.section("home_assistant") == {"url": "http://ha:8123"}
 
 
+def test_home_assistant_activities_is_let_through_with_where_its_set_now(config_with, caplog):
+    # The brain's own file may still say what the activities are called on the calendar,
+    # from before each was a calendar of its own.
+    with caplog.at_level(logging.WARNING):
+        config = config_with('home_assistant:\n  url: "http://ha:8123"\n  activities:\n    work: ["Shift"]\n')
+    (warning,) = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "'home_assistant.activities'" in warning and "your calendars in Google" in warning
+    assert "deleted" in warning
+    assert config.section("home_assistant") == {"url": "http://ha:8123"}
+
+
 @pytest.mark.parametrize("own", ["weather:\n", "weather: null\n", "weather: {}\n"])
 def test_the_section_left_once_a_removed_setting_is_deleted_is_let_through_too(config_with, caplog, own):
     # Deleting the line the warning names, and not the section above it, mustn't stop Nova starting.

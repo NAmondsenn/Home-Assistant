@@ -179,8 +179,10 @@ class Session:
                                       ntfy=brain.ntfy, satellite=satellite.name, batteries=brain.batteries,
                                       lists=brain.lists, pc=brain.pc, calendar=brain.calendar)
 
-        # The everyday commands handled without Claude - see intents.py.
-        self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home)
+        # The everyday commands handled without Claude - see intents.py. The activities are
+        # the calendars' names, so "when's gym tomorrow?" is heard once there's a Gym calendar.
+        self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home,
+                                    activities=brain.calendar.activity_words if brain.calendar else None)
 
         # The satellite as a device of its own in Home Assistant, over MQTT, or None
         # until mqtt.host is set - see ha_device.py. It's named after the satellite's

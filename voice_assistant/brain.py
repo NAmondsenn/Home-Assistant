@@ -31,7 +31,7 @@ from voice_assistant import paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock, spoken_clock_time
-from voice_assistant.google_calendar import GoogleCalendar
+from voice_assistant.google_calendar import READ_FAILURES, GoogleCalendar
 from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.lists import Lists
@@ -892,6 +892,8 @@ class Brain:
             self.batteries.start()
         if self.registry:
             self.registry.start()
+        if self.calendar:
+            threading.Thread(target=self._read_calendars, daemon=True, name="calendars").start()
         logger.info(f"{self.name}'s brain is ready")
 
         # However listening ends - a stop signal, stop() or something unexpected -
@@ -900,6 +902,18 @@ class Brain:
             self.serve()
         finally:
             self._clean_up()
+
+    def _read_calendars(self):
+        """
+        Reads Google's list of the calendars once, as the brain starts, so the activities -
+        their names - are heard before anything's asked. A failure is only logged: the
+        list is read again when the calendar is next asked about.
+        """
+        try:
+            self.calendar.calendars()
+        except READ_FAILURES as e:
+            # Only the kind of failure - a requests error names the address, with a calendar's id in it.
+            logger.warning(f"Couldn't read the calendars from Google yet: {type(e).__name__}")
 
     def restart(self) -> str:
         """

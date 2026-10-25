@@ -335,6 +335,11 @@ class Conversation:
         # room's. Left out if Home Assistant isn't there, or is too slow to wait for.
         home = self.actions.home
         lights = (home.describe_lights(timeout=LIGHTS_TIMEOUT) if home else "") or None
+        # The tools afresh, so a calendar added in Google is named to Claude from the next
+        # request - the API's cache only changes when they do. The tools only read from are
+        # the same executor's, at the same time, so none is ever run as an action.
+        self.llm.tools = self.actions.tool_schemas()
+        self.llm.read_tools = set(self.actions.read_tools())
         # What Claude reads, such as home_status, goes back to it to answer from.
         return self.llm.process_query(text, context=timers, lights=lights,
                                       read=lambda action: self.actions.execute(action).say)

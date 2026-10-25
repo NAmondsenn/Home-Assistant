@@ -1023,9 +1023,12 @@ def test_a_sessions_actions_read_batteries_from_the_brains_watcher(brain, make_s
 
 
 def test_a_sessions_actions_read_the_brains_calendar(brain, make_session):
-    # One Google calendar for the brain, rather than one for each satellite.
-    brain.calendar = object()
-    assert make_session().actions.calendar is brain.calendar
+    # One Google calendar for the brain, rather than one for each satellite - and its
+    # activities are what the local rules hear.
+    words = {"gym": "gym", "gyms": "gym"}
+    brain.calendar = SimpleNamespace(activity_words=lambda: words, activity_calendars=dict)
+    session = make_session()
+    assert session.actions.calendar is brain.calendar and session.intents.activities() is words
 
 
 def _the_brain_says(session, message):

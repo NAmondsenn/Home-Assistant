@@ -18,6 +18,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 np = pytest.importorskip("numpy")
 pytest.importorskip("soxr")
@@ -1080,6 +1081,33 @@ def test_the_brain_reads_the_calendar_from_google_once_its_keys_are_set(make_bra
 
     monkeypatch.delenv("GOOGLE_CLIENT_SECRET")
     assert make_brain(home_assistant=HOME_ASSISTANT).calendar is None
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_the_calendars_are_read_once_as_the_brain_starts(make_brain, monkeypatch, caplog, fails):
+    # So their names - the activities, "when's gym tomorrow?" - are known before anything's asked.
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "made-up-client.apps.example.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "made-up-client-secret")
+    brain = make_brain()
+    read = threading.Event()
+
+    def calendars():
+        read.set()
+        if fails:
+            raise requests.ConnectionError("Max retries exceeded with url: .../calendars/calendar-personal/events")
+        return []
+
+    brain.calendar.calendars = calendars
+    # Serves until the read, in its own thread, is done.
+    brain.serve = lambda: [thread.join(5) for thread in threading.enumerate() if thread.name == "calendars"]
+    with caplog.at_level(logging.INFO):
+        brain.run()
+    assert read.is_set()
+    if fails:
+        # Only logged - with no calendar's id - and the brain runs on.
+        assert any("calendar" in record.getMessage() and record.levelno == logging.WARNING
+                   for record in caplog.records)
+        assert "calendar-personal" not in caplog.text
 
 
 def test_a_battery_warning_is_said_on_the_default_satellite(brain, connect):

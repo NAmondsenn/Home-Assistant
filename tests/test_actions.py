@@ -285,8 +285,14 @@ def test_the_calendar_is_only_offered_once_google_is_set_up():
         result = executor.execute(action)
         assert (result.ok, result.say) == (False, "The calendar isn't set up yet."), action.tool
 
-    offered = [schema["name"] for schema in ActionExecutor(calendar=object()).tool_schemas()]
+    class FakeCalendar:
+        def activity_calendars(self):
+            return {}
+
+    offered = {schema["name"]: schema for schema in ActionExecutor(calendar=FakeCalendar()).tool_schemas()}
     assert "get_calendar" in offered and "get_activity" in offered
+    # With no activities yet, none are named.
+    assert "The user's activities" not in offered["get_activity"]["description"]
 
 
 def test_without_home_assistant_the_lights_say_so():

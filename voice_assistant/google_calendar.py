@@ -17,7 +17,9 @@ app" client of the user's own - rather than a Google library, which would be one
 dependency for three requests.
 
 Every calendar in Google's own list of the user's is read, so one added later turns up
-by itself. With Google out of reach there's no calendar - no copy is kept.
+by itself. With Google out of reach there's no calendar - no copy is kept. Each but the
+user's own is an activity, by its name - "when's gym tomorrow?" works as soon as there's
+a Gym calendar.
 """
 
 import argparse
@@ -30,12 +32,13 @@ import secrets
 import threading
 import time
 from datetime import date, datetime, time as day_time, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 import requests
 
 from voice_assistant import network, paths, storage
+from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import spoken_clock_time
 
 logger = logging.getLogger(__name__)
@@ -80,6 +83,15 @@ CALENDAR_LIST = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
 # The most events Google gives on each page - its own most.
 EVENTS_PAGE = 250
 
+# What Google answers for a calendar it won't give the events of - deleted since its list
+# was read, or no longer shared with the user. That one is left out, not the whole read.
+CALENDAR_GONE = (403, 404)
+
+# The few English words for the same things as an activity's name - so "am I working on
+# Saturday?" is the Work calendar, and "when's my next lecture?" the Uni one. They're
+# words, not calendars: one called Uni gets uni's.
+SAME_AS = {"work": ("working", "shift", "shifts"), "uni": ("university", "lecture", "lectures", "class", "classes")}
+
 CANT_REACH_GOOGLE = "I can't reach Google's calendar right now."
 NEEDS_SIGN_IN = "I need signing in to Google again. That's done with a command on the brain."
 
@@ -105,6 +117,10 @@ MOST_FOUND = 3
 
 class SignInNeeded(Exception):
     """There's no sign-in to Google, or Google no longer accepts it."""
+
+
+class ClientRefused(SignInNeeded):
+    """Google doesn't know Nova's OAuth client, or not with that secret."""
 
 
 def _challenge(verifier: str) -> str:
@@ -262,13 +278,16 @@ class GoogleSignIn:
 
         Raises:
             SignInNeeded: If Google says the grant is no good - revoked, or run out - or
-                doesn't know the client.
+                ClientRefused, if it doesn't know the client.
             requests.RequestException: If Google couldn't be reached, or refused.
         """
         response = self._session.post(TOKEN, data={"client_id": self.client_id,
                                                    "client_secret": self.client_secret, **fields},
                                       timeout=REQUEST_TIMEOUT)
-        if response.status_code in (400, 401) and self._error(response) in SIGN_IN_ERRORS:
+        error = self._error(response) if response.status_code in (400, 401) else None
+        if error == "invalid_client":
+            raise ClientRefused("Google doesn't know Nova's OAuth client.")
+        if error in SIGN_IN_ERRORS:
             raise SignInNeeded("Google no longer accepts Nova's sign-in.")
         response.raise_for_status()
         try:
@@ -319,20 +338,16 @@ class GoogleSignIn:
 class GoogleCalendar:
     """The user's calendars, read from Google itself with Nova's own sign-in."""
 
-    def __init__(self, sign_in: GoogleSignIn, activities: Optional[Dict[str, List[str]]] = None,
-                 session: Optional[requests.Session] = None):
+    def __init__(self, sign_in: GoogleSignIn, choices: ChoiceStore, session: Optional[requests.Session] = None):
         """
         Args:
             sign_in: Nova's sign-in to Google, which gives each request its access token.
-            activities: The regular things in the user's life and what they're called
-                on the calendar - {"work": ["Shift"], "uni": ["CSC"]} - for "what time
-                do I have work?". An event with a word in its name starting with one of
-                them is that activity. Just work, called "work", if not given.
+            choices: calendars.json - "activities", which calendars are activities by id,
+                for one that isn't by itself, or is but shouldn't be.
             session: What requests go through - a fake, in the tests.
         """
         self.sign_in = sign_in
-        self.activities = {name.lower(): [called.lower() for called in calls]
-                           for name, calls in (activities or {"work": ["work"]}).items()}
+        self.choices = choices
         self._session = session or requests.Session()
         # Google's list of the user's calendars, and when it was read, by time.monotonic().
         self._known: List[Dict] = []
@@ -345,8 +360,7 @@ class GoogleCalendar:
         in .env, or under Keys on the settings page.
 
         Args:
-            config: Configs loaded from config.yaml - home_assistant.activities, until
-                the activities are the calendars themselves.
+            config: Configs loaded from config.yaml - none of which the calendar needs.
 
         Returns:
             A GoogleCalendar, or None without both keys.
@@ -357,10 +371,9 @@ class GoogleCalendar:
             logger.info("The calendar is off until GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set - see the "
                         "README's Google Calendar")
             return None
-        settings = config.section("home_assistant") if config else {}
-        # The path's looked up now, not when this module was imported, as paths.DATA_DIR can be moved first.
+        # The paths are looked up now, not when this module was imported, as paths.DATA_DIR can be moved first.
         return cls(GoogleSignIn(client_id, client_secret, paths.GOOGLE_TOKEN_FILE),
-                   activities=settings.get("activities"))
+                   ChoiceStore(os.path.join(paths.DATA_DIR, "calendars.json"), {"activities": {}, "new_events": None}))
 
     def _get(self, url: str, params: Dict) -> Dict:
         """
@@ -448,6 +461,51 @@ class GoogleCalendar:
         """The calendars Google listed last, without asking it - none until it's been asked."""
         return list(self._known)
 
+    def activity_calendars(self) -> Dict[str, Dict]:
+        """
+        The activities, from the calendars Google listed last, without asking it: every
+        calendar but the user's own, unless calendars.json says otherwise for it.
+
+        Returns:
+            Each activity's word - its calendar's name, in lower case - to its calendar.
+        """
+        chosen = self.choices.get("activities")
+        chosen = chosen if isinstance(chosen, dict) else {}
+        found: Dict[str, Dict] = {}
+        for calendar in self.known():
+            choice = chosen.get(calendar["id"])
+            word = calendar["name"].strip().lower()
+            if word and (choice if isinstance(choice, bool) else not calendar["primary"]):
+                # Of two calendars with one name, the first in Google's list is the one heard.
+                found.setdefault(word, calendar)
+        return found
+
+    def activity_words(self) -> Dict[str, str]:
+        """
+        Every word an activity is heard by locally, to the activity: its name, its plural,
+        and SAME_AS's words for it. A name of two or more words is heard by its first word
+        too - "uni" for "Uni timetable" - unless another activity's name starts with it.
+        Each is as the request is, once intents.py has tidied it - "Work (Tesco)" is
+        "work tesco".
+
+        Returns:
+            e.g. {"work": "work", "works": "work", "shift": "work", ...}.
+        """
+        names = {_as_said(word): word for word in self.activity_calendars()}
+        names.pop("", None)
+        firsts: Dict[str, List[str]] = {}
+        for said in names:
+            firsts.setdefault(said.split()[0], []).append(said)
+        heard: List[Tuple[str, str]] = [(said, word) for said, word in names.items()]
+        heard += [(said if said.endswith("s") else said + "s", word) for said, word in names.items()]
+        heard += [(first, names[saids[0]]) for first, saids in firsts.items() if len(saids) == 1 and first != saids[0]]
+        heard += [(same, word) for said, word in list(heard) for same in SAME_AS.get(said, ())]
+        words: Dict[str, str] = {}
+        # A name is heard as that activity before it's another's plural, first word or SAME_AS.
+        for said, word in heard:
+            words.setdefault(said, word)
+        return words
+
     def events(self, first: date, days: int, calendar_ids: Optional[List[str]] = None) -> List[Dict]:
         """
         Everything on the calendars over some days.
@@ -466,6 +524,9 @@ class GoogleCalendar:
             SignInNeeded: If there's no sign-in, or Google no longer accepts it.
             requests.RequestException: If Google couldn't be reached, or refused.
             ValueError, KeyError, TypeError: If its answer wasn't the shape of events.
+
+        A calendar Google won't give the events of - deleted, or no longer shared - is left
+        out, with a warning, and the rest are read.
         """
         names = {calendar["id"]: calendar["name"] for calendar in self.calendars()}
         # Each end made from its own day, not the start plus so many hours, so a day the
@@ -476,7 +537,18 @@ class GoogleCalendar:
                   "singleEvents": "true", "orderBy": "startTime", "maxResults": EVENTS_PAGE}
         found = []
         for calendar_id in (list(names) if calendar_ids is None else calendar_ids):
-            for event in self._pages(f"{CALENDARS}/{quote(calendar_id, safe='')}/events", window):
+            try:
+                events = self._pages(f"{CALENDARS}/{quote(calendar_id, safe='')}/events", window)
+            except requests.HTTPError as e:
+                status = getattr(e.response, "status_code", None)
+                if status not in CALENDAR_GONE:
+                    raise
+                # Not its id, or the error, which has the address with the id in it.
+                logger.warning(f"Left a calendar out, as Google wouldn't give its events: {status}")
+                # Its list is read afresh next time, so a calendar since deleted is gone from it.
+                self._known_at = None
+                continue
+            for event in events:
                 if event.get("status") == "cancelled":
                     continue
                 # A calendar not in Google's list has no name to give - and its id, which
@@ -500,7 +572,7 @@ class GoogleCalendar:
             events = self.events(first, days)
         except READ_FAILURES as e:
             return _failed(e)
-        events = _as_activities(events, {name: _called(words) for name, words in self.activities.items()}, first)
+        events = _as_activities(events, self.activity_calendars(), first)
         return {"success": True, "message": describe_agenda(events, first, days, today or date.today())}
 
     def find(self, wanted: str, first: date, today: Optional[date] = None) -> Dict:
@@ -530,10 +602,11 @@ class GoogleCalendar:
     def activity(self, name: str, first: date, days: int = 1, today: Optional[date] = None,
                  count: Optional[int] = None, now: Optional[datetime] = None) -> Dict:
         """
-        When the user has one of their activities - work, uni - from the events named as it.
+        When the user has one of their activities - work, uni, the gym - from its calendar
+        alone. Every event on it counts, whatever it's called.
 
         Args:
-            name: The activity, e.g. "work".
+            name: The activity, or a word it's heard by, e.g. "work" or "shifts".
             first: The first day asked about.
             days: How many days.
             today: Today's date - only given by the tests.
@@ -543,22 +616,23 @@ class GoogleCalendar:
         Returns:
             Dict with 'success' and the times as the 'message'.
         """
-        called = self.activities.get((name or "").strip().lower())
-        if called is None:
-            return {"success": False,
-                    "message": f"I don't know what {name} is called on your calendar. It can be added to "
-                               f"home_assistant.activities in my settings."}
+        said = (name or "").strip()
+        if not said:
+            return {"success": False, "message": "I didn't catch which of your calendars you meant."}
         try:
-            events = self.events(first, days)
+            # Google's list is read, if it's old, before it's looked in.
+            self.calendars()
+            activities = self.activity_calendars()
+            word = said.lower() if said.lower() in activities else self.activity_words().get(_as_said(said))
+            if word is None:
+                return {"success": False, "message": f"I haven't got a calendar called {said}."}
+            events = self.events(first, days, calendar_ids=[activities[word]["id"]])
         except READ_FAILURES as e:
             return _failed(e)
-        pattern = _called(called)
-        found = [event for event in events if pattern.search(event["summary"])]
-        name = name.strip().lower()
         if count:
-            return {"success": True, "message": describe_next(name, found, count, first,
+            return {"success": True, "message": describe_next(word, events, count, first,
                                                               now or datetime.now().astimezone())}
-        return {"success": True, "message": describe_activity(name, found, first, days, today or date.today())}
+        return {"success": True, "message": describe_activity(word, events, first, days, today or date.today())}
 
 
 # What reading the calendar can fail with: no sign-in, Google out of reach or refusing,
@@ -579,6 +653,11 @@ def _failed(error: Exception) -> Dict:
     return {"success": False, "message": CANT_REACH_GOOGLE}
 
 
+def _as_said(words: str) -> str:
+    """Words as a request is matched by intents.py: lower case, letters, digits and apostrophes only."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]", " ", words.lower())).strip()
+
+
 def _called(words: List[str]) -> re.Pattern:
     """
     Finds an event's name with a word in it starting with one of these - so "CSC"
@@ -588,7 +667,7 @@ def _called(words: List[str]) -> re.Pattern:
     return re.compile(r"\b(?:" + "|".join(re.escape(word) for word in words) + ")", re.IGNORECASE)
 
 
-def _as_activities(events: List[Dict], activities: Dict[str, re.Pattern], first: date) -> List[Dict]:
+def _as_activities(events: List[Dict], activities: Dict[str, Dict], first: date) -> List[Dict]:
     """
     The user's activities - work, uni - as one stretch of time each, named after the
     activity. A day of uni was read out session by session, by each one's own name -
@@ -596,8 +675,9 @@ def _as_activities(events: List[Dict], activities: Dict[str, re.Pattern], first:
     Now it's "uni from 9 AM until 1 PM". Everything else is left as it is.
 
     Args:
-        events: From HomeAssistant.events, earliest first.
-        activities: Each activity's name, and what finds its events - see _called.
+        events: From GoogleCalendar.events, earliest first - each with its "calendar".
+        activities: The activity calendars, by each activity's word - see
+            GoogleCalendar.activity_calendars. Every event on one is that activity.
         first: The first day asked about.
 
     Returns:
@@ -607,8 +687,8 @@ def _as_activities(events: List[Dict], activities: Dict[str, re.Pattern], first:
     """
     kept, theirs = [], {name: [] for name in activities}
     for event in events:
-        name = next((name for name, called in activities.items() if called.search(event["summary"])), None)
-        (theirs[name] if name else kept).append(event)
+        name = event["calendar"].strip().lower()
+        (theirs[name] if name in theirs else kept).append(event)
     for name, its_events in theirs.items():
         for day, on_day in _by_day(its_events, first).items():
             if any(event["all_day"] for event in on_day):
@@ -657,7 +737,7 @@ def describe_activity(name: str, events: List[Dict], first: date, days: int, tod
 
     Args:
         name: The activity, e.g. "work".
-        events: Its events, from HomeAssistant.events, earliest first.
+        events: Its events, from GoogleCalendar.events, earliest first.
         first: The first day asked about.
         days: How many days.
         today: Today's date.
@@ -722,15 +802,16 @@ def describe_next(name: str, events: List[Dict], count: int, first: date, now: d
 
 
 def _read_event(event: Dict) -> Dict:
-    """One event from Home Assistant, with its start and end read into dates or local times."""
+    """One event from Google, with its start and end read into dates or local times."""
     start, end = event.get("start") or {}, event.get("end") or {}
     if "dateTime" in start:
         when, all_day = datetime.fromisoformat(start["dateTime"]).astimezone(), False
         until = datetime.fromisoformat(end["dateTime"]).astimezone() if "dateTime" in end else None
     else:
         when, all_day, until = date.fromisoformat(start["date"]), True, None
-    return {"summary": (event.get("summary") or "something").strip(), "start": when, "end": until,
-            "all_day": all_day}
+    # Google's is always a string, but one that isn't mustn't raise out of the agenda.
+    summary = event.get("summary") if isinstance(event.get("summary"), str) else None
+    return {"summary": (summary or "something").strip(), "start": when, "end": until, "all_day": all_day}
 
 
 def _sort_key(when) -> datetime:
@@ -764,7 +845,7 @@ def describe_agenda(events: List[Dict], first: date, days: int, today: date) -> 
     Says what's on - a day at a time for a day or two, or as an overview for more.
 
     Args:
-        events: From HomeAssistant.events, earliest first - with the activities
+        events: From GoogleCalendar.events, earliest first - with the activities
             joined up, see _as_activities.
         first: The first day asked about.
         days: How many days.
@@ -937,6 +1018,10 @@ def main(argv: Optional[List[str]] = None):
         sign_in.finish(pasted)
     except ValueError as e:
         raise SystemExit(str(e))
+    except ClientRefused:
+        # Mistyped at first setup, or the client deleted or its secret made anew - trying again won't help.
+        raise SystemExit("Google didn't accept GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET - check both in "
+                         f"{paths.SECRETS_FILE}, or under Keys on the settings page.")
     except SignInNeeded:
         raise SystemExit("Google didn't accept that sign-in - try again.")
     except requests.RequestException:

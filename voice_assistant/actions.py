@@ -294,11 +294,21 @@ class ActionExecutor:
         those which are only for the local commands and the offline fallback.
         """
         return [{"name": name,
-                 "description": method.tool["description"],
+                 "description": method.tool["description"] + (self._activities_told() if name == "get_activity" else ""),
                  "input_schema": {"type": "object", "properties": method.tool["parameters"],
                                   "required": method.tool["required"]}}
                 for name, method in self.tools().items()
                 if method.tool["for_model"] and self._available(method)]
+
+    def _activities_told(self) -> str:
+        """
+        The user's activities, named as Google has them, to end get_activity's description -
+        " The user's activities: Uni and Work." - or nothing while there are none.
+        """
+        names = [calendar["name"].strip() for calendar in self.calendar.activity_calendars().values()]
+        if not names:
+            return ""
+        return f" The user's activities: {names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]}."
 
     @classmethod
     def private_tools(cls) -> List[str]:
@@ -968,18 +978,19 @@ class ActionExecutor:
         return self._calendar_days(start, days, self.calendar.agenda)
 
     @tool(
-        "When the user has something regular on their calendar - work, uni and the like - "
-        "for 'what time do I have work tomorrow?', 'am I working on Saturday?', 'when do I "
-        "finish uni today?', 'what shifts have I got this week?' - or when they next have "
-        "it, for 'when's my next shift?' or 'what are my next three lectures?'. Give the "
-        "activity, the first day, worked out from today's date (today, for 'next'), and "
-        "how many days, or for 'next', how many times. The times are read out to the user, "
-        "so just reply 'Okay.'",
+        "When the user has one of their activities - each of their calendars but their own "
+        "is one, by its name - for 'what time do I have work tomorrow?', 'am I working on "
+        "Saturday?', 'when do I finish uni today?', 'what shifts have I got this week?' - "
+        "or when they next have it, for 'when's my next shift?' or 'what are my next three "
+        "lectures?'. Give the activity, the first day, worked out from today's date (today, "
+        "for 'next'), and how many days, or for 'next', how many times. The times are read "
+        "out to the user, so just reply 'Okay.'",
         needs="calendar",
         required=["activity", "start"],
         activity={
             "type": "string",
-            "description": "One word for it, as the user said it: 'work' (also for shifts or working), 'uni'.",
+            "description": ("Which of the user's activities - named at the end of this tool's description - "
+                            "as they said it."),
         },
         start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
         days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day, or for 'next'."},
@@ -994,9 +1005,9 @@ class ActionExecutor:
         if count:
             # Looked for across the next fortnight, and only the first few said.
             return self._calendar_days(start, MOST_CALENDAR_DAYS, lambda first, days: self.calendar.activity(
-                activity or "work", first, days, count=max(1, min(int(count), MOST_NEXT))))
+                activity or "", first, days, count=max(1, min(int(count), MOST_NEXT))))
         return self._calendar_days(start, days,
-                                   lambda first, days: self.calendar.activity(activity or "work", first, days))
+                                   lambda first, days: self.calendar.activity(activity or "", first, days))
 
     @staticmethod
     def _calendar_days(start: Optional[str], days: Optional[int], read) -> Dict:
