@@ -8,6 +8,7 @@ actions, so each rule can be checked on its own.
 from voice_assistant.actions import Action, ActionResult
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation
+from voice_assistant.intents import LocalIntents
 
 
 class FakeClock:
@@ -425,6 +426,18 @@ def test_a_routines_steps_are_each_done_as_if_said_and_their_answers_said_togeth
     assert actions.run == ["control_playback", "home_command"]
     # Two chimes would only be one sound twice.
     assert reply.say == "It's sunny." and reply.sounds == [("success_chime.wav", "general")]
+
+
+def test_a_routine_runs_a_home_assistant_script_through_assist():
+    class RecordingActions(FakeActions):
+        def execute(self, action):
+            self.run.append(action)
+            return ActionResult(True, "Done.", confirm="chime")
+
+    actions = RecordingActions()
+    goodnight = {"name": "Goodnight", "phrases": ["goodnight"], "steps": ["run goodnight"]}
+    _conversation(intents=LocalIntents(), actions=actions, routines=FakeRoutines(goodnight)).handle("goodnight")
+    assert actions.run == [Action("control_home", {"command": "run goodnight", "wider": True})]
 
 
 def test_a_step_which_is_a_routines_own_words_doesnt_start_it_again():

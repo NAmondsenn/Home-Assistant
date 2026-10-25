@@ -19,9 +19,9 @@ A request naming one of those is refused whole, even when a harmless thing's nam
 holds the guarded one's, as Assist reads a room before a name: "turn off the bedroom
 front door" can be a lock called "front door" in the bedroom. So a light sentence can
 be refused for its light's name - "turn on the front door light", with a lock called
-"front door". That's then done by Nova's own lights instead (see
-home_assistant.HomeAssistant.switch_lights), which only ever work lights, rather than
-refused for a lock nobody asked about.
+"front door" - or for SENSITIVE's words, as "turn on the garage light" is. That's then
+done by Nova's own lights instead (see home_assistant.HomeAssistant.switch_lights),
+which only ever work lights, rather than refused for a lock nobody asked about.
 
 Nor is anything passed on before Assist's own sentence debugging has said what it would
 act on (see home_assistant.HomeAssistant._assist_targets). A request is refused if

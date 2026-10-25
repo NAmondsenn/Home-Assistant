@@ -10,6 +10,10 @@ the cloud, and when the internet dropped, timers and the music controls stopped
 working altogether. The patterns here are deliberately strict: only a whole request
 which is exactly one of these is handled locally. Anything else - "set a timer for
 ten minutes and play Drake", "pause it in a bit" - still goes to Claude as before.
+
+After all of those, a plain request for something of Home Assistant's - "pause the
+TV", "run goodnight" - goes straight to its Assist, so Nova's own commands always
+come first.
 """
 
 import logging
@@ -55,6 +59,24 @@ ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
 # The devices a battery is asked about by - the kind words batteries.find knows. A
 # device with a name of its own ("the S25 Ultra") is left to Claude.
 BATTERY_DEVICE = "mac|phone|tablet|laptop|computer"
+
+# A thing of Home Assistant's for Assist - "the TV", "AdGuard protection", "movie
+# night" - of one to four words, none of them "and", so "turn off the TV and the lamp"
+# is left to Claude rather than sent as one thing. "The" or "my" is never the name
+# itself, so "set my volume to 40" isn't the volume of something called "my".
+THING_WORD = r"(?!and\b)[a-z0-9']+"
+THING = rf"(?:all the |the |my )?(?P<thing>(?!(?:the|my)\b){THING_WORD}(?: {THING_WORD}){{0,3}})"
+
+# Words for Nova's own things, which Assist mustn't be given in their place - "turn
+# off the timer" is Nova's timer, not a Home Assistant helper of that name. Left to
+# Claude, which knows Nova's tools.
+NOVAS_OWN = {"timer", "timers", "alarm", "alarms", "reminder", "reminders", "music", "song", "songs", "track",
+             "tracks", "playlist", "volume", "notification", "notifications", "microphone", "mic", "mute",
+             "shuffle", "repeat", "spotify", "nova", "weather", "forecast", "calendar"}
+
+# What only the conversation so far could say the meaning of - "turn it off" - which
+# Assist, with no idea what "it" was, can't be given.
+PRONOUNS = {"it", "this", "that", "them", "these", "those"}
 
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
@@ -192,6 +214,18 @@ class LocalIntents:
              self._batteries),
             (r"(?:send|text) (?:that|it|this) to (?:my phone|me)|text me (?:that|it)"
              r"|(?:send|put) (?:that|it|this) on my phone", self._send_to_phone),
+            # Anything else of Home Assistant's - switches, media players, scripts and
+            # scenes - goes to Assist, last, so that each of Nova's own commands is
+            # matched first: "pause" is Nova's music, "pause the TV" Assist's. It's only
+            # sent on the wider rule (see HomeAssistant.command), after the guard.
+            (rf"(?:turn|switch) (?:on|off) {THING}", self._assist),
+            (rf"(?:turn|switch) {THING} (?:on|off)", self._assist),
+            (rf"(?:pause|resume|unpause) {THING}", self._assist),
+            (rf"(?:next|previous) (?:track|song) on {THING}", self._assist),
+            (rf"set (?:the )?{THING} volume to \d{{1,3}}(?: percent)?", self._assist),
+            (rf"is {THING} (?:on|off|open|closed|playing|paused)", self._assist),
+            (rf"(?:activate|run) {THING}", self._assist),
+            (rf"(?:open|close) {THING}", self._assist),
         ]
 
     def match(self, text: str) -> Optional[Dict]:
@@ -275,6 +309,14 @@ class LocalIntents:
     def _dim(self, found) -> Dict:
         direction = "down" if found["direction"] == "dim" else "up"
         return self._result("Okay.", [Action("dim_lights", {"direction": direction, "words": found["words"]})])
+
+    def _assist(self, found) -> Optional[Dict]:
+        # A pronoun anywhere, not only alone, as in "pause it in five minutes" - which
+        # isn't a thing called "it in five minutes".
+        words = found["thing"].split()
+        if any(word in NOVAS_OWN or word in PRONOUNS for word in words):
+            return None
+        return self._result("Okay.", [Action("control_home", {"command": found.string, "wider": True})])
 
     def _calendar(self, found) -> Dict:
         first, days = calendar_days(found["day"], date.today())

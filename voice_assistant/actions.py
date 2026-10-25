@@ -790,8 +790,9 @@ class ActionExecutor:
             return self.home.switch_lights(on, words, brightness)
         return reply
 
-    # Only the local "dim the lights" produces this: Claude steps a brightness itself
-    # with set_lights, from the brightness in the list of lights it is given.
+    # Only the local "dim the lights" produces this: Nova steps each light's brightness
+    # itself (see HomeAssistant.dim), as Assist has no sentence for it. Claude is only
+    # asked when Nova doesn't know the lights by that name.
     @tool(
         "Make lights dimmer or brighter by a step.",
         needs="home",

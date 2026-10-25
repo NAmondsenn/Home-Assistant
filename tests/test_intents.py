@@ -146,6 +146,38 @@ def test_the_lights_with_something_else_are_left_to_claude():
     assert _actions("Turn off the timer and the lights.") is None
 
 
+@pytest.mark.parametrize("text", [
+    "Pause the TV.", "Turn off AdGuard protection.", "Switch the fan on.", "Next track on the TV.",
+    "Set the TV volume to 40.", "Is the fan on?", "Run goodnight.", "Activate movie night.", "Close the blinds.",
+])
+def test_assists_own_sentences_go_to_assist(text):
+    # Sent whole, on the wider rule - see HomeAssistant.command.
+    request = text.lower().rstrip(".?")
+    assert _actions(text) == [Action("control_home", {"command": request, "wider": True})]
+
+
+@pytest.mark.parametrize("text", [
+    "Turn off the microphone.", "Turn off my alarm.", "Turn off the timer.", "Turn on shuffle.", "Turn on repeat.",
+    "Turn it off.", "Pause it.", "Is it on?", "Turn off the music.", "Turn off notifications.",
+    "Turn off the TV and the lamp.", "Turn up the heating.",
+    # "My" isn't a name, so this isn't "the volume" of something called "my".
+    "Set my volume to 40.",
+])
+def test_what_the_assist_rule_mustnt_catch_is_left_alone(text):
+    # 0003: local rules stay strict. Nova's own things, a pronoun Assist can't know the
+    # meaning of, or two things at once, are Claude's.
+    assert _actions(text) is None
+
+
+@pytest.mark.parametrize("text, action", [
+    ("Pause.", Action("control_playback", {"action": "pause"})),
+    ("Next track.", Action("control_playback", {"action": "skip"})),
+    ("Set the volume to 40.", Action("set_volume", {"level": 40})),
+])
+def test_novas_own_commands_still_come_before_assist(text, action):
+    assert _actions(text) == [action]
+
+
 @pytest.mark.parametrize("text", ["What have I got on Thursday?", "What's on my calendar for Thursday?",
                                   "Am I busy on Thursday?", "What do I have planned for Thursday?",
                                   "Do I have anything on Thursday?"])

@@ -5,7 +5,9 @@ The user's own routines: several things done at once, from a few words - "good
 morning" - or at a time of their choosing. Each step is something the user could
 say to Nova - "what's the weather", "turn on the kitchen lights", "play my morning
 playlist" - and is done just as if they had said it (see Conversation.run_routine),
-so a routine can do anything Nova can, with nothing of its own to learn.
+so a routine can do anything Nova can, with nothing of its own to learn. A step like
+"run goodnight" reaches Home Assistant's scripts through Assist, as the user would by
+voice - so only those exposed to Assist, and checked by the guard (see ha_guard.py).
 
 Kept in routines.json in the data folder (see paths.py), readable by this user only,
 and made and changed from the settings page. Beside it, routines-missed.json keeps

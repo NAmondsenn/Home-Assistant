@@ -153,7 +153,9 @@ runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller
 
 ### Home Assistant, for the lights and the calendar
 
-This is set up on the brain, which is what talks to Home Assistant - a satellite holds no token. Nova asks Home Assistant for things in plain words, through its own Assist, which can only reach the devices you've exposed to it. What Assist doesn't understand - "dim the lights" - goes to Claude, which can switch and set any light, exposed or not, but nothing else. Whatever's exposed, Nova never locks, unlocks or opens anything by voice: it checks what Home Assistant says each thing is - a lock, a valve, an alarm panel, or a door, garage door, gate or window - not only the words.
+This is set up on the brain, which is what talks to Home Assistant - a satellite holds no token. Nova asks Home Assistant for things in plain words, through its own Assist, which can only reach the devices you've exposed to it. Besides the lights, that's switches, media players, scripts and scenes - "turn off AdGuard protection", "pause the TV", "is the fan on?", "run goodnight", "activate movie night" - after Nova's own commands, so "pause" is still Nova's music and "turn off the timer" Nova's timer. Dimming is Nova's own: it steps each light's brightness itself. What Assist doesn't understand - "make the lamp warmer" - goes to Claude, which can switch and set any light, exposed or not, but nothing else.
+
+Whatever's exposed, Nova never locks, unlocks or opens anything by voice: it checks what Home Assistant says each thing is - a lock, a valve, an alarm panel, or a door, garage door, gate or window - not only the words. Nor does it give Assist anything of the Proxmox integration, nor the PC's HASS.Agent buttons, bar sleep, monitor sleep and lock - through Assist, a shutdown or restart would be done with no yes. A script or scene is only run once Nova has checked what it does, and a script Home Assistant can't show the contents of - one written in YAML outside `scripts.yaml` - isn't run by voice or offered on the settings page.
 
 1. In Home Assistant, make a user for Nova - Settings > People > Add person, allowed to log in. Knowing Nova's room, and Claude working the lights, need it to be an administrator, as Home Assistant only lets administrators ask what's in which room. As an ordinary user, Nova still works through Assist, without rooms and without batteries (it needs the same to read them). An administrator's token can do anything in Home Assistant, so keep it as private as a password: what Nova does with it is kept to the lights, the calendar, and the scripts and scenes you run from the settings page by Nova's own code, not by the token.
 2. Log in as that user, and under its profile > Security, make a long-lived access token.
@@ -168,7 +170,7 @@ This is set up on the brain, which is what talks to Home Assistant - a satellite
    home_assistant:
      url: "http://homeassistant.local:8123"
    ```
-5. In Settings > Voice assistants > Expose, choose which lights Assist may control. Their names and areas are what you'll call them. Claude isn't limited to these - it can work any light.
+5. In Settings > Voice assistants > Expose, choose what Assist may control. Exposing something now means Nova works it by voice, so check what's exposed already - a switch such as AdGuard's protection may well be, from before. Names and areas are what you'll call things. Scripts aren't exposed by default, so expose any you'll ask for, such as goodnight - a routine's "run goodnight" step goes through Assist too. Claude isn't limited to these for the lights - it can work any light.
 6. For your calendar, add Google Calendar (or any other) to Home Assistant through its integration. Every calendar it has is read, unless you list the ones you want in `home_assistant.calendars`.
 
 Then restart the brain. Its log says `Home Assistant at ...` once it's on.

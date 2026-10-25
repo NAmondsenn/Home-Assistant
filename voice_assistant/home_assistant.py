@@ -13,11 +13,12 @@ told.
 What's never passed on to Assist, and the check of what a script or scene does before
 it's run, are ha_guard.py's.
 
-What Assist doesn't understand - "dim the lights" - goes to Claude, which works the
-lights through Home Assistant's own services instead, by light or by room, with a
-brightness, colour or warmth. Those services are only ever given lights, by entity
-id or by area - but any light, exposed to Assist or not, as exposing only limits
-what Assist does.
+Dimming is Nova's own (see HomeAssistant.dim), as Assist has no sentence for it: it
+steps each light's brightness itself. What Assist doesn't understand - "make the
+lamp warmer" - goes to Claude, which works the lights through Home Assistant's own
+services instead, by light or by room, with a brightness, colour or warmth. Those
+services are only ever given lights, by entity id or by area - but any light,
+exposed to Assist or not, as exposing only limits what Assist does.
 
 The settings page names devices itself, as there's nothing to mishear: it lists the
 lights, to switch and dim, and the scripts and scenes, to run - but nothing else,
