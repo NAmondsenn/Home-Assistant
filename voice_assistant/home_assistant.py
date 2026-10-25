@@ -411,7 +411,7 @@ class HomeAssistant:
             something done, since the lights changing speaks for itself. 'not_understood'
             is set too when Assist matched nothing, as opposed to failing at something
             it did understand - and when it isn't asked to act, as what it would act on
-            can't be told, or when a wider request can't be asked at all. 'refused' is set when Nova wouldn't ask Assist at all, by the
+            can't be told, or when a wider request can't reach Home Assistant. 'refused' is set when Nova wouldn't ask Assist at all, by the
             words, by what they name or by what Assist would act on - which includes a
             script or scene, named or acted on, that works_guarded refuses.
         """
@@ -480,9 +480,10 @@ class HomeAssistant:
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             # Any sentence of Assist's could as well be Claude's - "is the post office
-            # open?" - so it's Claude's when Home Assistant can't be asked, as it is with
-            # the wider rule off. A light sentence still says why it wasn't done.
-            if wider and isinstance(e, requests.RequestException):
+            # open?" - so it's Claude's when Home Assistant can't be reached, as it is with
+            # the wider rule off. A light sentence still says why it wasn't done, and so
+            # does any sentence Home Assistant answered with an error, such as a bad token.
+            if wider and isinstance(e, (requests.ConnectionError, requests.Timeout)):
                 return not_understood
             return {"success": False, "message": self._failure_message(e)}
 

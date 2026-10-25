@@ -83,10 +83,13 @@ PRONOUNS = {"it", "this", "that", "them", "these", "those", "one", "ones", "both
             "same", "again", "first", "last"}
 
 # When, rather than what - "pause the TV in five minutes" is a delay, which only Claude
-# can set - and who for: "run me a bath" isn't a script called "me a bath".
-NOT_A_THING = {"in", "for", "at", "until", "after", "before", "by", "second", "seconds", "minute", "minutes",
-               "hour", "hours", "bit", "while", "later", "tonight", "tomorrow", "o'clock", "me", "us"}
-NOT_A_THING |= set(NUMBER_WORDS) - {"a", "an"}
+# can set. A time is a unit anywhere, or one of TIME_LEADS straight before a number, a
+# unit, "a", "an" or "half" - so "the TV in the kitchen" and "fan 2" are still things.
+TIME_UNITS = {"second", "seconds", "minute", "minutes", "hour", "hours", "bit", "while", "later", "tonight",
+              "tomorrow", "o'clock"}
+TIME_LEADS = {"in", "for", "at", "until", "after", "before", "by"}
+# Who for, rather than what: "run me a bath" isn't a script called "me a bath".
+NOT_A_THING = {"me", "us"}
 
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
@@ -110,6 +113,16 @@ def _number(words: str) -> Optional[int]:
             and NUMBER_WORDS.get(parts[1], 10) < 10:
         return NUMBER_WORDS[parts[0]] + NUMBER_WORDS[parts[1]]
     return None
+
+
+def _says_a_time(words: List[str]) -> bool:
+    """Whether a thing's words hold a time - "the TV in five minutes", "the oven at six"."""
+    for word, after in zip(words, words[1:] + [""]):
+        if word in TIME_UNITS:
+            return True
+        if word in TIME_LEADS and (after.isdigit() or after in NUMBER_WORDS or after in TIME_UNITS or after == "half"):
+            return True
+    return False
 
 
 def calendar_days(day: Optional[str], today: date) -> Tuple[date, int]:
@@ -194,9 +207,10 @@ class LocalIntents:
             # comes before "lamp on", which would take "turn" for part of the name.
             (rf"(?:turn|switch) (?P<state>on|off) (?P<words>{LIGHT})", self._lights),
             (rf"(?:turn|switch) (?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
-            # Not "is the lamp on?", whose "is" isn't part of the name - Nova's own lights
-            # would switch the lamp on if the guard refused it. That's a question for Assist.
-            (rf"(?!is\b)(?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
+            # Not "is the lamp on?" or "are the lights on?", whose "is" and "are" aren't part
+            # of the name - Nova's own lights would switch them on if the guard refused it.
+            # They're questions, the first for Assist's shape below.
+            (rf"(?!(?:is|are)\b)(?P<words>{LIGHT}) (?P<state>on|off)", self._lights),
             (rf"set (?P<words>{LIGHT}) to (?P<brightness>\d{{1,3}})(?: percent)?", self._lights),
             # The calendar, for a day asked about by name. One rule each, since a
             # pattern can only name the day once.
@@ -330,8 +344,8 @@ class LocalIntents:
         # A pronoun anywhere, not only alone, as in "pause it in five minutes" - which
         # isn't a thing called "it in five minutes".
         words = found["thing"].split()
-        if self.home is None or any(word in NOVAS_OWN or word in PRONOUNS or word in NOT_A_THING
-                                    or word.isdigit() for word in words):
+        if self.home is None or _says_a_time(words) or any(word in NOVAS_OWN or word in PRONOUNS
+                                                           or word in NOT_A_THING for word in words):
             return None
         return self._result("Okay.", [Action("control_home", {"command": found.string, "wider": True})])
 

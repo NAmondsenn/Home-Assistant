@@ -814,6 +814,14 @@ def test_any_sentence_of_assists_goes_to_claude_when_home_assistant_cant_be_reac
     assert home.command("turn on the lamp") == {"success": False, "message": "I can't reach Home Assistant right now."}
 
 
+def test_a_token_home_assistant_refuses_is_said_for_any_sentence(make_home):
+    # Home Assistant answered, so the user is told what needs putting right.
+    home = make_home({"/api/states": FakeResponse({}, status=401)})
+    result = home.command("pause the tv", wider=True)
+    assert result["success"] is False and "HA_TOKEN in the .env file needs checking" in result["message"]
+    assert "not_understood" not in result
+
+
 def test_with_no_network_it_isnt_asked_at_all(make_home, monkeypatch):
     # With the Pi's cable out, "turn on the lamp" waited 20 seconds for Home
     # Assistant's name to fail to be looked up.

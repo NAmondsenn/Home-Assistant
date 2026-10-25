@@ -155,6 +155,8 @@ def test_the_lights_with_something_else_are_left_to_claude():
     "Set the TV volume to 40.", "Is the fan on?", "Run goodnight.", "Activate movie night.", "Close the blinds.",
     # The light rule doesn't take "is" for part of a light's name.
     "Is the lamp on?",
+    # "In" and a number are only a delay together - "in five minutes", "at six".
+    "Turn off the TV in the kitchen.", "Turn on fan 2.",
 ])
 def test_assists_own_sentences_go_to_assist(text):
     # Sent whole, on the wider rule - see HomeAssistant.command.
@@ -179,7 +181,7 @@ def test_assists_own_sentences_go_to_assist(text):
     # When, rather than what - a delay is Claude's.
     "Pause the TV in five minutes.", "Pause the TV for a bit.", "Turn off the TV in ten minutes.",
     "Turn off the oven at six.", "Turn on the heating until ten.", "Turn off the light in five minutes.",
-    "Turn off the TV after the film.", "Run the dishwasher tonight.", "Turn on the heating by 7.",
+    "Run the dishwasher tonight.", "Turn on the heating by 7.", "Turn on the oven for half an hour.",
     # For the user, not a thing of Home Assistant's.
     "Run me a bath.", "Open us a window.",
     # The shapes with nothing above yet for what they mustn't catch.
@@ -189,6 +191,12 @@ def test_what_the_assist_rule_mustnt_catch_is_left_alone(text):
     # 0003: local rules stay strict. Nova's own things, words Assist can't know the
     # meaning of, a delay, or two things at once, are Claude's.
     assert _actions(text) is None
+
+
+def test_a_question_isnt_taken_for_a_light_sentence():
+    # "Are the lights" isn't a light's name, which Nova's own lights would switch on
+    # if the guard refused the sentence.
+    assert _actions("Are the lights on?") is None
 
 
 @pytest.mark.parametrize("text", [
