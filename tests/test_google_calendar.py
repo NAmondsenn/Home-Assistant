@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import requests
+import urllib3
 
 from voice_assistant import google_calendar, storage
 from voice_assistant.choices import ChoiceStore
@@ -1099,8 +1100,8 @@ def for_adding(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(google_calendar.network, "online", lambda: True)
 
-    def make(new_events=None, answers=None):
-        entries = [_entry("calendar-personal", "Personal", primary=True), _entry("calendar-work", "Work"),
+    def make(new_events=None, answers=None, primary="Personal"):
+        entries = [_entry("calendar-personal", primary, primary=True), _entry("calendar-work", "Work"),
                    _entry("calendar-uni", "Uni", access_role="reader")]
         google = FakeGoogle(**{LIST: [_calendar_list(*entries)],
                                **{_events_url(entry["id"]): list(answers or [_inserted()]) for entry in entries}})
@@ -1161,10 +1162,14 @@ def test_with_no_time_its_all_day(for_adding):
 
 def test_a_time_that_cant_be_read_or_ends_first_isnt_added(for_adding):
     calendar = for_adding()
-    for start, end in (("Thursday at 3", None), ("2026-10-29 15:00", "about four"), ("", None)):
+    # Only exactly "YYYY-MM-DD HH:MM" or "YYYY-MM-DD" - "20261029" was a time, at midnight.
+    for start, end in (("Thursday at 3", None), ("2026-10-29 15:00", "about four"), ("", None), ("20261029", None),
+                       ("2026-10-29T15:00", None), ("2026-10-29 15:00+01:00", None), ("2026-W44-4", None),
+                       ("2026-10-29 15", None), ("2026-10-29 3:00", None), (None, None)):
         assert calendar.add("Dentist", start, end=end, today=SATURDAY) == {
             "success": False, "message": "I didn't catch when that is."}
-    for start, end in (("2026-10-29 15:00", "2026-10-29 14:00"), ("2026-10-30", "2026-10-29")):
+    for start, end in (("2026-10-29 15:00", "2026-10-29 14:00"), ("2026-10-30", "2026-10-29"),
+                       ("2026-10-29 15:00", "2026-10-29 15:00")):
         assert calendar.add("Dentist", start, end=end, today=SATURDAY) == {
             "success": False, "message": "That ends before it starts."}
     assert calendar.add("  ", "2026-10-29 15:00", today=SATURDAY) == {
@@ -1184,6 +1189,17 @@ def test_a_calendar_named_is_used(for_adding):
     assert calendar.add("Dentist", "2026-10-29 15:00", calendar="personal", today=SATURDAY)["message"] == \
         "Added Dentist, Thursday the 29th at 3 PM."
     assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal"]
+
+    # The user's own, whatever Google calls it.
+    for named in ("my calendar", "primary", "personal", "my own calendar", "Nathaniel"):
+        calendar = for_adding(primary="Nathaniel")
+        assert calendar.add("Dentist", "2026-10-29 15:00", calendar=named, today=SATURDAY)["message"] == \
+            "Added Dentist, Thursday the 29th at 3 PM.", named
+        assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-personal"], named
+    # "My work calendar" is still Work.
+    calendar = for_adding()
+    calendar.add("Shift", "2026-10-31 09:00", calendar="my work calendar", today=SATURDAY)
+    assert [calendar_id for calendar_id, _ in _added(calendar)] == ["calendar-work"]
 
 
 def test_the_chosen_calendar_is_used_until_its_gone(for_adding):
@@ -1219,28 +1235,76 @@ def test_a_calendar_nova_cant_add_to_says_so(for_adding):
 
 
 def test_an_event_next_month_says_which_month(for_adding):
-    calendar = for_adding(answers=[_inserted(), _inserted()])
+    calendar = for_adding(answers=[_inserted()] * 5)
     assert calendar.add("Dentist", "2026-11-02 10:30", today=date(2026, 10, 30))["message"] == \
         "Added Dentist, Monday the 2nd of November at 10:30 AM."
     assert calendar.add("Dentist", "2026-11-02", today=date(2026, 11, 1))["message"] == \
         "Added Dentist, Monday the 2nd, all day."
+    # The year too, once it's not within the coming twelve months - a year misheard is heard.
+    assert calendar.add("Dentist", "2027-10-23 15:00", today=SATURDAY)["message"] == \
+        "Added Dentist, Saturday the 23rd of October at 3 PM."
+    assert calendar.add("Dentist", "2027-10-24 15:00", today=SATURDAY)["message"] == \
+        "Added Dentist, Sunday the 24th of October 2027 at 3 PM."
+    assert calendar.add("Dentist", "2028-01-03", today=SATURDAY)["message"] == \
+        "Added Dentist, Monday the 3rd of January 2028, all day."
+
+
+def test_a_day_already_gone_isnt_added(for_adding):
+    # Claude getting the week or the year wrong is the likeliest mishearing.
+    calendar = for_adding()
+    for start in ("2026-10-23 15:00", "2026-10-23", "2025-10-29 15:00"):
+        assert calendar.add("Dentist", start, today=SATURDAY) == {
+            "success": False, "message": "That day's already gone - which day did you mean?"}, start
+    assert calendar._session.posted == []
+    # Earlier today is added - something just done, logged.
+    assert calendar.add("Run", "2026-10-24 07:00", today=SATURDAY)["message"] == "Added Run, Saturday the 24th at 7 AM."
+
+
+@pytest.mark.parametrize("zone, start, end", [
+    # 1:30 comes twice in London on the 25th - first on BST - and an hour on, it's 1:30 on GMT.
+    ("Europe/London", "2026-10-25T01:30:00+01:00", "2026-10-25T01:30:00+00:00"),
+    ("UTC", "2026-10-25T01:30:00+00:00", "2026-10-25T02:30:00+00:00"),
+])
+def test_an_event_as_the_clocks_go_back_lasts_an_hour(for_adding, monkeypatch, zone, start, end):
+    # Set here, whatever the run's own zone, so each is checked in both runs.
+    monkeypatch.setenv("TZ", zone)
+    time.tzset()
+    calendar = for_adding()
+    assert calendar.add("Night out", "2026-10-25 01:30", today=SATURDAY)["message"] == \
+        "Added Night out, Sunday the 25th at 1:30 AM."
+    assert _added(calendar)[0][1]["start"] == {"dateTime": start} and _added(calendar)[0][1]["end"] == {"dateTime": end}
 
 
 def _refused(status, reason="forbidden"):
     return FakeResponse(status, {"error": {"code": status, "errors": [{"domain": "global", "reason": reason}]}})
 
 
+LOST = "I lost Google partway through, so I can't tell whether Dentist was added."
+
+
 @pytest.mark.parametrize("answer, said, posts", [
+    # Refused.
     (_refused(403), "Google wouldn't add that.", 1),
-    (_refused(500, "backendError"), "Google wouldn't add that.", 1),
-    (_refused(403, "rateLimitExceeded"), "Google wouldn't add that.", 1),
+    (_refused(400, "invalid"), "Google wouldn't add that.", 1),
+    # Google's own trouble, or slowing Nova down - as when reading.
+    (_refused(500, "backendError"), CANT_REACH_GOOGLE, 1),
+    (_refused(503, "backendError"), CANT_REACH_GOOGLE, 1),
+    (_refused(403, "rateLimitExceeded"), CANT_REACH_GOOGLE, 1),
+    (_refused(403, "userRateLimitExceeded"), CANT_REACH_GOOGLE, 1),
+    (_refused(429, "rateLimitExceeded"), CANT_REACH_GOOGLE, 1),
     # Sent, but unanswered - so it may well have been added, and isn't sent again.
     (requests.ReadTimeout("Read timed out."), "Google didn't answer in time, so I can't tell whether Dentist was "
                                               "added.", 1),
     (FakeResponse(200, "not an event"), "Google's answer didn't say, so I can't tell whether Dentist was added.", 1),
+    (requests.ConnectionError(urllib3.exceptions.ProtocolError(
+        "Connection aborted.", ConnectionResetError(104, "Connection reset by peer"))), LOST, 1),
+    (requests.ConnectionError("Connection aborted."), LOST, 1),
+    (requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead"), LOST, 1),
+    (requests.exceptions.ContentDecodingError("Received response with content-encoding: gzip"), LOST, 1),
     # Never sent, so certainly not added.
     (requests.ConnectTimeout("Connection timed out."), CANT_REACH_GOOGLE, 1),
-    (requests.ConnectionError("Name or service not known"), CANT_REACH_GOOGLE, 1),
+    (requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/calendar/v3", reason=(
+        urllib3.exceptions.NewConnectionError(None, "Failed to establish a new connection")))), CANT_REACH_GOOGLE, 1),
     # Turned down before it ran out, the access token is got afresh once - Google added nothing.
     (_refused(401, "authError"), NEEDS_SIGN_IN, 2),
 ])

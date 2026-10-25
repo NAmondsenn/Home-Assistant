@@ -38,6 +38,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 import requests
+import urllib3
 
 from voice_assistant import network, paths, storage
 from voice_assistant.choices import ChoiceStore
@@ -103,6 +104,7 @@ SAME_AS = {"work": ("working", "shift", "shifts"), "uni": ("university", "lectur
 
 CANT_REACH_GOOGLE = "I can't reach Google's calendar right now."
 NO_ANSWER = "Google didn't answer in time"
+LOST = "I lost Google partway through"
 NEEDS_SIGN_IN = "I need signing in to Google again. That's done with a command on the brain."
 
 # Most events said for one day before the rest are only counted.
@@ -126,6 +128,13 @@ MOST_FOUND = 3
 
 # How long an event added with no end lasts.
 DEFAULT_LENGTH = timedelta(hours=1)
+
+# The only ways a time to add is read - "20261029" or "2026-10-29T15" would be read by
+# fromisoformat as times nobody meant.
+WHEN_GIVEN = re.compile(r"\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?")
+
+# What the user's own calendar is called, whatever Google names it - "my calendar", "my own".
+OWN_CALENDAR = {"", "primary", "personal", "own", "mine", "main"}
 
 
 class SignInNeeded(Exception):
@@ -680,9 +689,14 @@ class GoogleCalendar:
         summary = summary.strip() if isinstance(summary, str) else ""
         if not summary:
             return {"success": False, "message": "I didn't catch what to add."}
+        today = today or date.today()
         times = _event_times(start, end, all_day)
         if isinstance(times, str):
             return {"success": False, "message": times}
+        # Earlier today is fine - something just done, logged - but a day gone is most
+        # likely the week or the year misheard.
+        if _first_day(times[0]) < today:
+            return {"success": False, "message": "That day's already gone - which day did you mean?"}
         try:
             found = self._calendar_to_add_to(calendar)
             if isinstance(found, str):
@@ -696,7 +710,7 @@ class GoogleCalendar:
             return _not_added(e)
         logger.info("Added an event to Google's calendar")
         to = f" to {chosen['name']}" if chosen["id"] != default["id"] and chosen["name"] else ""
-        return {"success": True, "message": f"Added {summary}{to}, {_added_when(times[0], today or date.today())}."}
+        return {"success": True, "message": f"Added {summary}{to}, {_added_when(times[0], today)}."}
 
     def _calendar_to_add_to(self, named: Optional[str]) -> Union[str, Tuple[Dict, Dict]]:
         """
@@ -719,10 +733,16 @@ class GoogleCalendar:
         if not isinstance(named, str) or not named.strip():
             return default, default
         said = _as_said(named)
-        matches = [each for each in calendars if _as_said(each["name"]) == said]
-        word = self.activity_words().get(said)
+        # "My work calendar" is Work, and "my calendar" the user's own.
+        bare = re.sub(r"(?:^| )calendar$", "", re.sub(r"^(?:my|the) ", "", said)).strip()
+        matches = [each for each in calendars if _as_said(each["name"]) in (said, bare)]
+        words = self.activity_words()
+        word = words.get(said) or words.get(bare)
         if not matches and word is not None:
             matches = [self.activity_calendars()[word]]
+        if not matches and bare in OWN_CALENDAR:
+            matches = [next((each for each in calendars if each["primary"]), None) or
+                       {"id": "primary", "name": "", "primary": True, "writable": True}]
         if not matches:
             return "I haven't got a calendar called that."
         writable = [each for each in matches if each["writable"]]
@@ -757,6 +777,12 @@ class GoogleCalendar:
             except requests.Timeout as e:
                 # Sent, but unanswered - so it may well have been added.
                 raise _NotSure(NO_ANSWER, "no answer in time") from e
+            except (requests.ConnectionError, requests.exceptions.ChunkedEncodingError,
+                    requests.exceptions.ContentDecodingError) as e:
+                if isinstance(e, requests.ConnectionError) and _never_connected(e):
+                    raise
+                # Cut off after it may have been sent - a reset, or an answer broken off.
+                raise _NotSure(LOST, type(e).__name__) from e
             if response.status_code != 401:
                 break
             self.sign_in.drop_access_token()
@@ -798,9 +824,32 @@ def _not_added(error: Exception) -> Dict:
     logger.error(f"Couldn't add to the calendar: {type(error).__name__}{f' {status}' if status else ''}")
     if isinstance(error, SignInNeeded):
         return {"success": False, "message": NEEDS_SIGN_IN}
-    if isinstance(error, requests.HTTPError):
+    # Google's own trouble, or it slowing Nova down, is Google out of reach, as when
+    # reading - only a 4xx otherwise is the event refused.
+    if isinstance(error, requests.HTTPError) and status is not None and 400 <= status < 500 and status != 429 \
+            and not _rate_limited(error.response):
         return {"success": False, "message": "Google wouldn't add that."}
     return {"success": False, "message": CANT_REACH_GOOGLE}
+
+
+def _never_connected(error: Exception) -> bool:
+    """
+    Whether a requests ConnectionError is a connection never made - so nothing was sent -
+    from the urllib3 errors underneath it: a NewConnectionError, which a name that won't
+    resolve is too, or a connect timeout.
+    """
+    seen = set()
+    stack = [error]
+    while stack:
+        each = stack.pop()
+        if each is None or id(each) in seen:
+            continue
+        seen.add(id(each))
+        if isinstance(each, (urllib3.exceptions.NewConnectionError, urllib3.exceptions.ConnectTimeoutError)):
+            return True
+        stack += [getattr(each, "reason", None), each.__cause__, each.__context__]
+        stack += [arg for arg in getattr(each, "args", ()) if isinstance(arg, BaseException)]
+    return False
 
 
 def _when_said(when: str) -> Union[date, datetime, None]:
@@ -809,10 +858,12 @@ def _when_said(when: str) -> Union[date, datetime, None]:
     it can't be read.
     """
     when = when.strip() if isinstance(when, str) else ""
+    if not WHEN_GIVEN.fullmatch(when):
+        return None
     try:
         if len(when) == 10:
             return date.fromisoformat(when)
-        # A time without a zone is the brain's own.
+        # The brain's own zone.
         return datetime.fromisoformat(when).astimezone()
     except ValueError:
         return None
@@ -847,23 +898,38 @@ def _event_times(start: str, end: Optional[str], all_day: Optional[bool]) -> Uni
     # Added on, then put in the brain's zone again, so an hour over the clocks going back is
     # still an hour, at its own offset.
     last = last or (first + DEFAULT_LENGTH).astimezone()
-    if last < first:
+    # Nor at the moment it starts - an event of no length is a mishearing too.
+    if last <= first:
         return "That ends before it starts."
     return {"dateTime": first.isoformat()}, {"dateTime": last.isoformat()}
+
+
+def _first_day(start: Dict) -> date:
+    """The day an event to add starts on, from its start as events.insert takes it."""
+    return date.fromisoformat(start["date"]) if "date" in start else datetime.fromisoformat(start["dateTime"]).date()
 
 
 def _added_when(start: Dict, today: date) -> str:
     """
     When an event added starts, as it's said back - the weekday and the day of the month
     always, so a mistake is heard: "Thursday the 29th at 3 PM", "Monday the 2nd of
-    November, all day".
+    November, all day", and the year once it's not within the coming twelve months.
     """
+    day = _first_day(start)
     if "date" in start:
-        day, at = date.fromisoformat(start["date"]), ", all day"
+        at = ", all day"
     else:
         when = datetime.fromisoformat(start["dateTime"])
-        day, at = when.date(), f" at {spoken_clock_time(when.hour, when.minute).replace(':00', '')}"
-    month = f" of {day.strftime('%B')}" if (day.year, day.month) != (today.year, today.month) else ""
+        at = f" at {spoken_clock_time(when.hour, when.minute).replace(':00', '')}"
+    # A year on is the same day of the month - the 28th of February, from a 29th.
+    year_on = today.replace(year=today.year + 1, day=28) if (today.month, today.day) == (2, 29) else \
+        today.replace(year=today.year + 1)
+    if day >= year_on:
+        month = f" of {day.strftime('%B')} {day.year}"
+    elif (day.year, day.month) != (today.year, today.month):
+        month = f" of {day.strftime('%B')}"
+    else:
+        month = ""
     return f"{day.strftime('%A')} the {_ordinal(day.day)}{month}{at}"
 
 

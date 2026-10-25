@@ -139,6 +139,27 @@ def not_a_list(said: Optional[str]) -> bool:
     return any(re.sub(r"s$", "", re.sub(r"'s$", "", word)) in NOT_A_LIST for word in (said or "").split())
 
 
+# A day or a time in what was said for a list - "put the dentist on Thursday at 3" is
+# the calendar, Claude's, not a list called "Thursday at 3". A list named after a day is
+# still one with "list" said: "my Monday jobs list".
+MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+          "november", "december"]
+HOURS_SAID = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|noon|midnight"
+WHEN_WORDS = re.compile(rf"\b(?:today|tonight|tomorrow|next week|(?:{'|'.join(WEEKDAYS)})s?|{'|'.join(MONTHS)}"
+                        rf"|at (?:\d+|{HOURS_SAID})|\d+(?: \d+)? ?(?:am|pm|a m|p m))\b")
+
+
+def names_a_day(said: Optional[str]) -> bool:
+    """
+    Whether a list's words hold a day or a time - and not the word "list" - e.g.
+    "thursday at 3" in "put the dentist on Thursday at 3".
+
+    Args:
+        said: The list as it was said, or None.
+    """
+    return bool(said) and not names_list(said) and WHEN_WORDS.search(said) is not None
+
+
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
 DAY = r"(?P<day>today|tonight|tomorrow|this weekend|the weekend|" + "|".join(WEEKDAYS) + ")"
@@ -459,11 +480,12 @@ class LocalIntents:
     def _listed(self, found, tool: str, item: Optional[str] = None, **params) -> Optional[Dict]:
         """
         A list's action - None without Home Assistant, for a thing which only points back, or
-        for list words naming one of Nova's own things or a device, or joining two requests.
+        for list words naming one of Nova's own things or a device, a day or a time, or
+        joining two requests.
         """
         said = found.groupdict().get("list")
         words = (said or "").split()
-        if (self.home is None or not_a_list(said) or {"and", "then", "plus"} & set(words)
+        if (self.home is None or not_a_list(said) or names_a_day(said) or {"and", "then", "plus"} & set(words)
                 or (item is not None and points_back(item))):
             return None
         if item is None:

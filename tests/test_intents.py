@@ -573,6 +573,22 @@ def test_what_else_the_list_rules_mustnt_catch_is_left_alone(text):
     assert _actions(text) is None
 
 
+@pytest.mark.parametrize("text", [
+    # When, not a list - Claude adds it to the calendar.
+    "Put the dentist on Thursday at 3.", "Add the dentist to my calendar on Thursday at 3.",
+    "Put lunch with Sam on tomorrow.", "Add a haircut to Friday at 10am.", "Put the MOT on the 3rd of March.",
+    "Add dinner with Sam to next week.", "Put football on today at 6 pm.", "Take the day off work tomorrow.",
+    "Put the plumber on at nine.", "Put tea on at 5pm.", "Add yoga to Mondays.",
+])
+def test_a_day_or_time_in_a_lists_words_is_left_to_claude(text):
+    assert _actions(text) is None
+
+
+def test_a_list_named_after_a_day_is_still_one_said_with_list():
+    assert _actions("Add the bins to my Monday jobs list.") == [Action("add_to_list", {
+        "item": "the bins", "list": "my monday jobs list", "command": "add the bins to my monday jobs list"})]
+
+
 def test_a_thing_is_ticked_off_a_list_said_after_it():
     assert _actions("Tick milk off my shopping list.") == [Action("tick_off_list", {
         "item": "milk", "list": "my shopping list", "command": "tick milk off my shopping list"})]
