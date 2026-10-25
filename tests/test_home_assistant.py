@@ -2466,29 +2466,45 @@ def test_status_leaves_out_any_address_whatever_its_called(make_home):
         "Example router uptime (sensor.example_router_uptime): 12.5 d"
 
 
-def test_status_gives_a_personal_device_only_numbers_and_on_off(make_home):
+def test_status_gives_a_personal_devices_sensors_only_as_numbers_and_times(make_home):
     things = [_status("sensor.example_phone_message", "Example phone message", "See you at Example Hall"),
               _status("sensor.example_phone_steps", "Example phone steps", "4200"),
               _status("binary_sensor.example_phone_interactive", "Example phone interactive", "on"),
               _status("switch.example_phone_dnd", "Example phone dnd", "off"),
               _status("sensor.example_pc_session", "Example pc session", "Example window title"),
               _status("sensor.example_pc_last_boot", "Example pc last boot", "2026-10-20T08:00:00+00:00"),
-              _status("button.example_pc_sleep", "Example pc sleep", "unknown"),
-              _status("sensor.example_nas_status", "Example nas status", "healthy")]
+              _status("sensor.example_nas_status", "Example nas status", "healthy"),
+              _status("update.example_nas_firmware", "Example nas firmware", "off"),
+              _status("light.example_lamp", "Example lamp", "on")]
     platforms = {"sensor.example_phone_message": ("mobile_app", None), "sensor.example_phone_steps": ("mobile_app", None),
                  "binary_sensor.example_phone_interactive": ("mobile_app", None),
                  "switch.example_phone_dnd": ("mobile_app", None), "sensor.example_pc_session": ("mqtt", "pc"),
-                 "sensor.example_pc_last_boot": ("mqtt", "pc"), "button.example_pc_sleep": ("mqtt", "pc")}
+                 "sensor.example_pc_last_boot": ("mqtt", "pc")}
     home = _status_home(make_home, things, platforms, devices={"pc": {"name": "Example PC", "maker": "HASS.Agent Team"}})
+    # Only a sensor's state can be free text, so only a sensor is held to a number or a time.
     assert home.status("example", now=STATUS_NOW)["message"] == "\n".join([
+        "Example lamp (light.example_lamp): on",
+        "Example nas firmware (update.example_nas_firmware): off",
         "Example nas status (sensor.example_nas_status): healthy",
         "Example pc last boot (sensor.example_pc_last_boot): 2026-10-20 09:00",
+        "Example phone dnd (switch.example_phone_dnd): off",
         "Example phone interactive (binary_sensor.example_phone_interactive): on",
         "Example phone steps (sensor.example_phone_steps): 4200"])
-    # Without the registry, nothing can be told to be personal, so everything is held to that.
+    # A sensor the registry hasn't got yet - added since it was read - may be a phone's.
+    home._session.answers["/api/states"] = things + [
+        _status("sensor.example_new_sensor", "Example new sensor", "Something private"),
+        _status("sensor.example_new_count", "Example new count", "3")]
+    said = home.status("example new", now=STATUS_NOW)["message"]
+    assert said.splitlines()[0] == "Example new count (sensor.example_new_count): 3"
+    assert "example_new_sensor" not in said and "Something private" not in said
+    # Without the registry, nothing can be told to be personal, so every sensor is held to that.
+    home._session.answers["/api/states"] = things
     home.registry.read = None
     assert home.status("example", now=STATUS_NOW)["message"] == "\n".join([
+        "Example lamp (light.example_lamp): on",
+        "Example nas firmware (update.example_nas_firmware): off",
         "Example pc last boot (sensor.example_pc_last_boot): 2026-10-20 09:00",
+        "Example phone dnd (switch.example_phone_dnd): off",
         "Example phone interactive (binary_sensor.example_phone_interactive): on",
         "Example phone steps (sensor.example_phone_steps): 4200"])
 

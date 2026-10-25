@@ -262,9 +262,9 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 HARDWARE_ADDRESS = re.compile(r"[0-9a-f]{2}([:-][0-9a-f]{2}){5}", re.IGNORECASE)
 
 # The integration of the Home Assistant app on a phone, tablet or Mac. Its sensors, and
-# HASS.Agent's on a PC, are given only as numbers, times or on and off, as their free
-# text is where app names, window titles and messages are - and a sensor the app adds
-# later is covered without a new entry above.
+# HASS.Agent's on a PC, are given only as numbers or times, as their free text is where
+# app names, window titles and messages are - and a sensor the app adds later is
+# covered without a new entry above.
 MOBILE_APP = "mobile_app"
 
 # Seconds after which a state is given with how old it is - a PC switched off still
@@ -1453,7 +1453,7 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
     Whether status leaves an entity out, as private or another tool's: by its domain
     (NOT_STATUS_DOMAINS), by its id (NOT_STATUS_IDS), its device class, a state which
     is an address of any kind, or - on a personal device, or without the registry to
-    tell - a state which isn't a binary sensor's, a number or a time.
+    tell - a sensor whose state isn't a number or a time.
 
     Args:
         entity: e.g. "sensor.example_phone_steps".
@@ -1478,18 +1478,20 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
             return True
         except ValueError:
             pass
-    if snapshot is not None and not _personal(entity, snapshot):
+    # Only a sensor's state can be free text - a light's is on or off, whatever the device.
+    if domain != "sensor" or (snapshot is not None and not _personal(entity, snapshot)):
         return False
-    if domain == "binary_sensor":
-        return False
-    return not (domain == "sensor" and (_number(state) or _moment(state)))
+    return not (_number(state) or _moment(state))
 
 
 def _personal(entity: str, snapshot: Snapshot) -> bool:
-    """Whether an entity is the Home Assistant app's, on a phone, tablet or Mac, or on a HASS.Agent PC."""
+    """
+    Whether an entity is the Home Assistant app's, on a phone, tablet or Mac, or on a
+    HASS.Agent PC - or may be, as one added since the registry was read.
+    """
     entry = snapshot.entries.get(entity)
     if entry is None:
-        return False
+        return True
     device = snapshot.devices.get(entry.device_id or "") or {}
     return entry.platform == MOBILE_APP or (device.get("maker") or "").startswith(HASS_AGENT_MAKER)
 
