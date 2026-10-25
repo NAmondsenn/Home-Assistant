@@ -22,6 +22,7 @@ from voice_assistant.ha_registry import Entry, HomeSocketError, Snapshot
 from voice_assistant.home_assistant import REQUEST_TIMEOUT, HomeAssistant, NotAllowed
 from voice_assistant.intents import LocalIntents
 from voice_assistant.llm import LLMHandler
+from voice_assistant.settings_page import SettingsPage
 
 
 @pytest.fixture(autouse=True)
@@ -1714,6 +1715,17 @@ def test_a_guarded_script_is_still_never_offered(make_home):
     assert home.overview()["routines"] == []
     assert home.run("script.evening") == {"success": False,
                                           "message": "Nova doesn't run anything which locks, unlocks or opens."}
+    assert _ran(home) == []
+
+
+def test_the_settings_page_yes_doesnt_get_a_guarded_script_past_the_guard(make_home):
+    # The page's yes lets a script reach Home Assistant, but the 0008 guard still decides.
+    home = _scripted(make_home, {"script.evening": ("Evening", UNLOCKS)}, FRONT_DOOR)
+    session = SimpleNamespace(home=home)
+    brain = SimpleNamespace(session_for=lambda satellite: session, default_satellite=lambda: "bedroom")
+    page = SettingsPage(["you@example.com"], port=0, brain=brain)
+    assert page.run("script.evening", "you@example.com", confirmed=True) == {
+        "success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."}
     assert _ran(home) == []
 
 
