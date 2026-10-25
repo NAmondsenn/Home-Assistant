@@ -1548,6 +1548,18 @@ def test_a_script_handing_a_sentence_to_assist_or_publishing_over_mqtt_cant_be_c
     assert home.run_script("arrive") == {"success": True, "message": "Started Arrive."}
 
 
+@pytest.mark.parametrize("action", ["hassio.host_shutdown", "hassio.host_reboot", "homeassistant.stop",
+                                    "homeassistant.restart", "HomeAssistant.Restart"])
+def test_a_script_stopping_home_assistant_or_its_host_is_refused(make_home, action):
+    # Ruling 147, revised: they take down the hub Nova works the house through, as
+    # Proxmox's buttons take down the machines - and they need no entity to do it.
+    home = _scripted(make_home, {"script.reset": ("Reset", _config("Reset", {"action": action}))})
+    assert home.run_script("reset") == {"success": False, "message": REFUSED["message"]}
+    home._session.answers["/api/config/script/config/reset"] = _config("Reset", {"service": action, "data": {}})
+    assert home.works_guarded("script.reset", *_now(home))
+    assert _ran(home) == []
+
+
 class TooDeep(FakeResponse):
     """An answer nested deeper than Python's json will decode."""
 

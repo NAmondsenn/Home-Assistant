@@ -107,6 +107,10 @@ ACTION_KEYS = ("action", "service", "service_template")
 # front door" does, and mqtt.publish could press HASS.Agent's commands by their topic.
 PASSED_ON = ("conversation", "mqtt.publish")
 
+# Actions which stop Home Assistant, or the machine it runs on - the hub Nova works the house
+# through - so they work something guarded as Proxmox's buttons do, with no entity named.
+STOPS_HOME = ("hassio.host_shutdown", "hassio.host_reboot", "homeassistant.stop", "homeassistant.restart")
+
 # The script domain's own actions. Every other script.<name> is a script's own action, named
 # by its key - see _walk.
 SCRIPT_SERVICES = ("turn_on", "turn_off", "toggle", "reload")
@@ -338,6 +342,8 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
                 found.append(WORKS_GUARDED)
             if domain in PASSED_ON or action in PASSED_ON:
                 found.append(UNSEEN)
+            if action in STOPS_HOME:
+                found.append(WORKS_GUARDED)
     devices = part.get("device_id")
     if devices is not None:
         # A device action names its device and the domain it acts in, but its entity only
