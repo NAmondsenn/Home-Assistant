@@ -1350,7 +1350,12 @@ class HomeAssistant:
                 # script.leave_home. So the script of that key is walked as well as any of
                 # that entity id, and a name that's neither can't be checked.
                 keyed = _keyed_script(name, snapshot)
-                if keyed not in (None, entity):
+                if keyed is not None and keyed not in by_id:
+                    # The registry can be up to five minutes behind a rename, still putting
+                    # the key at an entity id the states no longer have - so which script it
+                    # is now can't be told.
+                    found.append(UNSEEN)
+                elif keyed not in (None, entity):
                     found.append(self._walk(keyed, by_id, snapshot, checked, configs))
                 if entity not in by_id:
                     if keyed is None:

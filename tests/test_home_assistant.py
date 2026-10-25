@@ -1410,6 +1410,32 @@ def test_a_script_called_by_its_key_is_walked_after_its_entity_id_is_renamed(mak
     assert home.works_guarded("script.evening", *_now(home))
 
 
+def test_a_scripts_key_the_registry_has_at_a_renamed_entity_cant_be_checked(make_home):
+    # The registry can be up to five minutes behind a rename: here it still has the script
+    # whose key is "leaving" at script.leaving, which the states now call script.front_door_routine.
+    states = [_thing("script.evening", "Evening"), _thing("script.front_door_routine", "Front door routine"),
+              FRONT_DOOR]
+    home = make_home({"/api/states": states, "/api/services/script/turn_on": [],
+                      "/api/config/script/config/evening": _config("Evening", {"action": "script.leaving"}),
+                      "/api/config/script/config/leaving": UNLOCKS})
+    home.registry.read = _registry(_script_entry("script.evening", "evening"), _script_entry("script.leaving", "leaving"),
+                                   _entry("lock.front_door"))
+    assert home.run_script("evening") == {"success": False, "message": UNSEEN.format("Evening")}
+    # Nor is it taken for another script whose key is the entity id's object id the
+    # registry still has for it.
+    states.append(_thing("script.bedtime", "Bedtime"))
+    home._session.answers["/api/config/script/config/old_name"] = _config("Bedtime")
+    home.registry.read = _registry(_script_entry("script.evening", "evening"),
+                                   _script_entry("script.old_name", "leaving"),
+                                   _script_entry("script.bedtime", "old_name"), _entry("lock.front_door"))
+    assert home.run_script("evening") == {"success": False, "message": UNSEEN.format("Evening")}
+    # Once the registry has caught up, it's walked and refused for what it works.
+    home.registry.read = _registry(_script_entry("script.evening", "evening"),
+                                   _script_entry("script.front_door_routine", "leaving"), _entry("lock.front_door"))
+    assert home.run_script("evening") == {"success": False, "message": REFUSED["message"]}
+    assert _ran(home) == []
+
+
 # A registry id, as Home Assistant takes in place of an entity id - only it can say whose it is.
 REGISTRY_ID = "0123456789abcdef0123456789abcdef"
 
