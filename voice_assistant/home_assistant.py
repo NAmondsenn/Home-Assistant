@@ -606,7 +606,12 @@ class HomeAssistant:
             runs = [target for target in (match.targets if match else [])
                     if RUNNABLE.fullmatch(target) or _members(by_id.get(target)) is not None]
             runs += [entity for entity in runnables_named(request, states, snapshot) if entity not in runs]
-            if why_not_run(runs, states, snapshot, self._scripts(), self._too_deep):
+            # Every script it would run has its key looked up in one round, as the settings
+            # page's are.
+            scripts = self._scripts()
+            if snapshot is not None:
+                scripts.look_up([entity for entity in runs if entity.startswith("script.")])
+            if why_not_run(runs, states, snapshot, scripts, self._too_deep):
                 logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
                                f"can't be checked: '{request}'", extra=TRANSCRIPT)
                 return refused
@@ -783,8 +788,13 @@ class HomeAssistant:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         snapshot = self._snapshot()
-        # Each script's key and configuration are read once a draw, however many others run it.
+        # Each script's key and configuration are read once a draw, however many others run
+        # it - and every script's key in one round, as the walk would only ask for one at a
+        # time. Without the registry, none is checked, so none is looked up.
         scripts = self._scripts()
+        if snapshot is not None:
+            scripts.look_up([entity for entity in (state.get("entity_id") or "" for state in states)
+                             if RUNNABLE.fullmatch(entity) and entity.startswith("script.")])
         routines = []
         for state in states:
             entity = state.get("entity_id") or ""
@@ -1502,33 +1512,39 @@ class HomeAssistant:
 
     def _scripts(self) -> Scripts:
         """How a check reads the scripts, each once - see ha_guard.Scripts."""
-        return Scripts(self._script_config, self._script_key)
+        return Scripts(self._script_config, self._script_keys)
 
-    def _script_key(self, entity_id: str) -> Optional[str]:
+    def _script_keys(self, entity_ids: List[str]) -> Dict[str, Optional[str]]:
         """
-        The key a script's entity id has in Home Assistant now - the registry's unique id
-        for it, and its key in the script editor - looked up afresh over the WebSocket, as
-        the registry's snapshot can be five minutes behind a rename. One round of about 20
-        ms, within the socket's own deadline.
+        The keys some scripts' entity ids have in Home Assistant now - the registry's unique
+        id for each, and its key in the script editor - looked up afresh over the WebSocket,
+        as the registry's snapshot can be five minutes behind a rename. All of them in one
+        round of about 20 ms, within the socket's own deadline - so with the WebSocket
+        stalled, a settings page draw waits that deadline once, not once a script.
 
         Args:
-            entity_id: e.g. "script.goodnight".
+            entity_ids: e.g. ["script.goodnight", "script.leaving"].
 
         Returns:
-            e.g. "goodnight", or None if Home Assistant doesn't answer in time, or the
-            registry hasn't got the script or has no key for it.
+            Each one's key, e.g. {"script.goodnight": "goodnight"} - or None for each if
+            Home Assistant doesn't answer in time or answers oddly, and for one the registry
+            hasn't got or has no key for.
         """
+        keys: Dict[str, Optional[str]] = dict.fromkeys(entity_ids)
         try:
-            entry, = self.socket.call([{"type": "config/entity_registry/get", "entity_id": entity_id}])
+            entries, = self.socket.call([{"type": "config/entity_registry/get_entries", "entity_ids": entity_ids}])
         except (HomeSocketError, ValueError) as e:
-            why = f"Home Assistant's registry wouldn't say which script it is now ({e})"
-        else:
+            for entity_id in entity_ids:
+                self._cant_see(entity_id, f"Home Assistant's registry wouldn't say which script it is now ({e})")
+            return keys
+        for entity_id in entity_ids:
+            entry = entries.get(entity_id) if isinstance(entries, dict) else None
             key = entry.get("unique_id") if isinstance(entry, dict) else None
             if isinstance(key, str) and key:
-                return key
-            why = "Home Assistant's registry has no key for it"
-        self._cant_see(entity_id, why)
-        return None
+                keys[entity_id] = key
+            else:
+                self._cant_see(entity_id, "Home Assistant's registry has no key for it")
+        return keys
 
     def _script_config(self, key: str, name: str) -> Optional[Dict]:
         """

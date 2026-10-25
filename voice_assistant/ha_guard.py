@@ -426,21 +426,32 @@ class Scripts:
     it, and afresh for the next check.
     """
 
-    def __init__(self, read_config: Callable[[str, str], Optional[Dict]], key_of: Callable[[str], Optional[str]]):
+    def __init__(self, read_config: Callable[[str, str], Optional[Dict]],
+                 keys_of: Callable[[List[str]], Dict[str, Optional[str]]]):
         """
         Args:
             read_config: Reads a script's configuration by its key, given the script as
                 it's named for saying it can't be read, e.g. ("leaving", "script.leaving")
                 - or gives None if it can't be read. See
                 home_assistant.HomeAssistant._script_config.
-            key_of: Looks up the key a script's entity id has in Home Assistant now, or
-                gives None if that can't be told - see
-                home_assistant.HomeAssistant._script_key.
+            keys_of: Looks up the keys some scripts' entity ids have in Home Assistant
+                now, all at once - each None if it can't be told. See
+                home_assistant.HomeAssistant._script_keys.
         """
         self._read_config = read_config
-        self._key_of = key_of
+        self._keys_of = keys_of
         self._configs: Dict[str, Optional[Dict]] = {}
         self._keys: Dict[str, Optional[str]] = {}
+
+    def look_up(self, entity_ids: Iterable[str]):
+        """
+        Looks up the keys of these scripts' entity ids together, those not looked up
+        already - so a settings page draw asks once for every script, rather than once each.
+        """
+        wanted = list(dict.fromkeys(entity for entity in entity_ids if entity not in self._keys))
+        if wanted:
+            found = self._keys_of(wanted)
+            self._keys.update({entity: found.get(entity) for entity in wanted})
 
     def config(self, key: str, name: str) -> Optional[Dict]:
         """The configuration of the script of this key, or None if it can't be read."""
@@ -450,8 +461,7 @@ class Scripts:
 
     def key(self, entity_id: str) -> Optional[str]:
         """The key of the script with this entity id now, or None if it can't be told."""
-        if entity_id not in self._keys:
-            self._keys[entity_id] = self._key_of(entity_id)
+        self.look_up([entity_id])
         return self._keys[entity_id]
 
 
