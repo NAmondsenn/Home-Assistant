@@ -325,10 +325,8 @@ class HomeAssistant:
         self._device_missing = False
         # Whether Home Assistant last turned a template down - see _template.
         self._templates_refused = False
-        # Why decision 2's wider rule is off, or None while it's on - see _wider_rule - and
-        # why the sentence debugging last didn't answer, for saying so.
+        # Why decision 2's wider rule is off, or None while it's on - see _wider_rule.
         self._wider_off: Optional[str] = None
-        self._unanswered = ""
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -460,7 +458,11 @@ class HomeAssistant:
             # What's there is read afresh each time, so a lock added a minute ago is
             # refused too. Nothing goes to Assist if it can't be read.
             states = self._request("GET", "/api/states").json()
-            if not isinstance(states, list) or not all(isinstance(state, dict) for state in states):
+            # Attributes which aren't a dict make the states unreadable, rather than being
+            # taken for none: a door cover would then have no device class, and pass for
+            # a blind.
+            if not isinstance(states, list) or not all(
+                    isinstance(state, dict) and isinstance(state.get("attributes", {}), dict) for state in states):
                 raise ValueError("Home Assistant's states aren't a list of states")
             snapshot = self._snapshot()
             if snapshot is None:
@@ -474,9 +476,10 @@ class HomeAssistant:
                                extra=TRANSCRIPT)
                 return refused
 
-            match = self._assist_targets(request)
+            # Told the same device as Assist, which find_device can change meanwhile.
+            match, unanswered = self._assist_targets(request, asked.get("device_id"))
             if snapshot is not None:
-                self._wider_rule(None if match is not None else self._unanswered)
+                self._wider_rule(unanswered)
             if match is None and wider:
                 logger.info(f"Not sent to Assist, which is only given light sentences just now: '{request}'",
                             extra=TRANSCRIPT)
@@ -487,8 +490,9 @@ class HomeAssistant:
                 # sentence never has none: every light it means is a target, by its
                 # room or by its name.
                 if not match.matched or (only is not None and match.intent not in only) or not match.targets:
-                    logger.info(f"Not sent to Assist, which reads it as {match.intent or 'nothing'} on "
-                                f"{match.targets}: '{request}'", extra=TRANSCRIPT)
+                    what = match.intent or ("something it can't show" if match.matched else "nothing")
+                    logger.info(f"Not sent to Assist, which reads it as {what} on {match.targets}: '{request}'",
+                                extra=TRANSCRIPT)
                     return not_understood
                 by_id = {state.get("entity_id"): state for state in states}
                 barred = [target for target in match.targets if _target_refused(target, by_id.get(target), snapshot)]
@@ -514,47 +518,58 @@ class HomeAssistant:
             failed["not_understood"] = True
         return failed
 
-    def _assist_targets(self, request: str) -> Optional[AssistMatch]:
+    def _assist_targets(self, request: str,
+                        device_id: Optional[str] = None) -> Tuple[Optional[AssistMatch], Optional[str]]:
         """
         What Assist would act on for a request, without it acting - from the WebSocket
         API's own sentence debugging, which matches a sentence as Assist would.
 
         Args:
             request: e.g. "turn off the TV".
+            device_id: The device Assist is told it's talking to, or None - the one
+                /api/conversation/process is told, so "the lights" are the same room's.
 
         Returns:
-            AssistMatch(True, the intent, the entity ids it would act on) for a match, or
-            AssistMatch(False, None, []) for none. None if it couldn't be asked, or gave
-            an answer of a shape it never has - and when requests go to an agent other
-            than Home Assistant's own, which the debugging doesn't speak for.
+            (what it would do, None) once the debugging has answered: AssistMatch(True,
+            the intent, the entity ids it would act on) for a match, AssistMatch(True,
+            None, []) for one whose intent and targets can't be seen - an automation's
+            own sentence, say - and AssistMatch(False, None, []) for none. Or (None, why
+            not) if it didn't answer, or answered without a result for the sentence - and
+            when requests go to an agent other than Home Assistant's own, which the
+            debugging doesn't speak for.
         """
         if self.agent != DEFAULT_AGENT:
-            self._unanswered = f"requests go to {self.agent}, which Assist's sentence debugging doesn't speak for"
-            return None
+            return None, f"requests go to {self.agent}, which Assist's sentence debugging doesn't speak for"
         asked = {"type": "conversation/agent/homeassistant/debug", "sentences": [request], "language": "en"}
-        if self.device_id:
-            # As for Assist itself, so "the lights" are the same room's.
-            asked["device_id"] = self.device_id
+        if device_id:
+            asked["device_id"] = device_id
         try:
-            results = self.socket.call([asked])[0]["results"]
-            if len(results) != 1:
-                raise ValueError(f"{len(results)} results for one sentence")
-            found = results[0]
-            # A sentence which fits one of Assist's but names nothing there - "pause the
-            # tv", with no media player called that - is answered in full, with "match":
-            # false, and can still carry targets. Only "match": true is a match.
-            if found is None or found.get("match") is not True:
-                return AssistMatch(False, None, [])
-            intent, targets = found["intent"]["name"], found["targets"]
-            if not isinstance(intent, str) or not isinstance(targets, dict):
-                raise TypeError(f"a match of {type(intent).__name__} on {type(targets).__name__}")
+            answer = self.socket.call([asked])[0]
         except HomeSocketError as error:
-            self._unanswered = f"Assist's sentence debugging didn't answer ({error})"
-            return None
-        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
-            self._unanswered = f"Assist's sentence debugging answered oddly ({type(error).__name__}: {error})"
-            return None
-        return AssistMatch(True, intent, list(targets))
+            return None, f"Assist's sentence debugging didn't answer ({error})"
+        results = answer.get("results") if isinstance(answer, dict) else None
+        if not isinstance(results, list) or not results or not (results[0] is None or isinstance(results[0], dict)):
+            return None, "Assist's sentence debugging answered without a result for the sentence"
+
+        found = results[0]
+        # A sentence which fits one of Assist's but names nothing there - "pause the tv",
+        # with no media player called that - is answered in full, with "match": false,
+        # and can still carry targets. Only "match": true is a match.
+        if found is None or found.get("match") is not True:
+            return AssistMatch(False, None, []), None
+        # An automation's own sentence matches with no intent or targets, as what the
+        # automation does can't be told without running it.
+        if found.get("source") == "trigger":
+            logger.info("Assist's sentence debugging matched an automation's own sentence, which isn't sent")
+            return AssistMatch(True, None, []), None
+        intent = found.get("intent")
+        name = intent.get("name") if isinstance(intent, dict) else None
+        targets = found.get("targets")
+        if not isinstance(name, str) or not name or not isinstance(targets, dict):
+            logger.warning(f"Assist's sentence debugging gave a match whose intent or targets can't be read "
+                           f"(intent {intent!r}, targets {type(targets).__name__}), so it isn't sent")
+            return AssistMatch(True, None, []), None
+        return AssistMatch(True, name, list(targets)), None
 
     def _wider_rule(self, off: Optional[str]):
         """

@@ -443,6 +443,15 @@ def test_nothing_goes_to_assist_when_whats_there_cant_be_read(make_home):
     assert [path for _, path, _ in home._session.requests] == ["/api/states"]
 
 
+@pytest.mark.parametrize("attributes", [None, "door", ["device_class", "door"]])
+def test_nothing_goes_to_assist_when_a_things_attributes_cant_be_read(make_home, attributes):
+    # Taken for no attributes, a door cover would have no device class - and pass for a blind.
+    patio = {"entity_id": "cover.patio", "state": "closed", "attributes": attributes}
+    home = make_home({"/api/states": [patio], "/api/conversation/process": _assist("action_done", "Opened")})
+    assert home.command("turn on the patio") == {"success": False, "message": "Home Assistant had a problem with that."}
+    assert _paths(home) == ["/api/states"]
+
+
 def test_a_guarded_name_said_in_other_words_is_still_refused(make_home):
     # Speech-to-text writes what it hears, so "PVE2 Shutdown" can come out as "pve 2
     # shutdown", and "Shutdown" as "shut down" - which Assist could still take for it.
@@ -519,13 +528,31 @@ def test_assist_is_asked_what_a_sentence_would_act_on_before_acting(make_home):
     assert "device_id" not in home.socket.calls[0][0][0] and "device_id" not in _asked(home)
 
 
+def test_the_debugging_and_assist_are_told_the_same_device(make_home):
+    # Nova's device can be found, or lost, while a request is under way - here as the
+    # registry's looked at.
+    home = _assisted(make_home, [TV], [_entry("switch.tv")], _match("HassTurnOff", "switch.tv"))
+    home.device_id = "da94"
+    snapshot = home.registry.read
+
+    def found_elsewhere():
+        home.device_id = "ab12"
+        return snapshot
+
+    home._snapshot = found_elsewhere
+    assert home.command("turn off the TV", wider=True)["success"]
+    assert home.socket.calls[0][0][0]["device_id"] == _asked(home)["device_id"] == "da94"
+
+
 def test_assists_answer_is_read_as_what_it_would_act_on(make_home):
     home = _assisted(make_home, [TV], [_entry("switch.tv")], _match("HassTurnOff", "switch.tv"))
-    assert home._assist_targets("turn off the TV") == home_assistant.AssistMatch(True, "HassTurnOff", ["switch.tv"])
+    assert home._assist_targets("turn off the TV") == (
+        home_assistant.AssistMatch(True, "HassTurnOff", ["switch.tv"]), None)
     home.socket.answer = _debugged(None)
-    assert home._assist_targets("turn off the toaster") == home_assistant.AssistMatch(False, None, [])
+    assert home._assist_targets("turn off the toaster") == (home_assistant.AssistMatch(False, None, []), None)
     home.socket.answer = HomeSocketError("timed out")
-    assert home._assist_targets("turn off the TV") is None
+    match, why = home._assist_targets("turn off the TV")
+    assert match is None and "timed out" in why
 
 
 def test_a_lock_exposed_as_front_door_is_never_reached_either_way(make_home):
@@ -611,7 +638,7 @@ def test_a_near_miss_isnt_a_match(make_home, targets, match, wider):
     near = {**_match("HassMediaPause", *targets), "unmatched_slots": {"name": "tv"}}
     near.pop("match")
     home = _assisted(make_home, [TV], [_entry("switch.tv")], {**near, **match})
-    assert home._assist_targets("pause the tv") == home_assistant.AssistMatch(False, None, [])
+    assert home._assist_targets("pause the tv") == (home_assistant.AssistMatch(False, None, []), None)
     assert home.command("pause the tv", wider=wider) == DIDNT_UNDERSTAND
     assert "/api/conversation/process" not in _paths(home)
 
@@ -626,17 +653,60 @@ def test_only_the_intents_asked_for_are_sent(make_home):
 
 
 def test_a_match_with_no_targets_isnt_sent_on_the_wider_rule(make_home):
-    # As Assist matches a script which isn't exposed, or an automation's own sentence
-    # trigger: the guard can't see what it would act on.
+    # As Assist matches a script which isn't exposed: the guard can't see what it would
+    # act on.
     home = _assisted(make_home, [_thing("script.goodnight", "Goodnight")], [_entry("script.goodnight")],
                      _match("HassTurnOn"))
     assert home.command("run goodnight", wider=True) == DIDNT_UNDERSTAND
     home.socket.answer = _debugged(_match("HassListAddItem"))
     assert home.command("add milk to notes", wider=True, only=("HassListAddItem",)) == DIDNT_UNDERSTAND
-    # Nor is a light sentence: every light it means is a target, by its room or its name.
+    # Nor is a light sentence - here for a script "Goodnight lights" which isn't exposed:
+    # every light it means is a target, by its room or its name.
     home.socket.answer = _debugged(_match("HassTurnOn"))
     assert home.command("turn on goodnight lights") == DIDNT_UNDERSTAND
     assert "/api/conversation/process" not in _paths(home)
+
+
+# How Home Assistant's sentence debugging answers an automation's own sentence trigger.
+TRIGGER = {"match": True, "source": "trigger", "sentence_template": "turn off the lights"}
+
+
+def _wider_rule_said(caplog):
+    """What's been logged about the wider rule."""
+    return [record.message for record in caplog.records if "wider rule" in record.message]
+
+
+@pytest.mark.parametrize("wider", [True, False])
+def test_an_automations_own_sentence_is_never_sent(make_home, caplog, wider):
+    # It's answered without an intent or targets, as what the automation does can't be
+    # told without running it - which could be anything, such as closing the garage as
+    # it turns off the lights. The debugging did answer, though, so the wider rule's on.
+    home = _assisted(make_home, [LAMP], [_entry("light.lamp")], TRIGGER)
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        assert home.command("turn off the lights", wider=wider) == DIDNT_UNDERSTAND
+    assert "/api/conversation/process" not in _paths(home)
+    assert _wider_rule_said(caplog) == []
+    assert home._assist_targets("turn off the lights") == (home_assistant.AssistMatch(True, None, []), None)
+
+
+@pytest.mark.parametrize("found", [
+    {"match": True},
+    {"match": True, "intent": "HassTurnOn", "targets": {}},
+    {"match": True, "intent": {"name": None}, "targets": {"light.lamp": {"matched": True}}},
+    {"match": True, "intent": {"name": ""}, "targets": {"light.lamp": {"matched": True}}},
+    {"match": True, "intent": {"name": "HassTurnOn"}, "targets": ["light.lamp"]},
+])
+@pytest.mark.parametrize("wider", [True, False])
+def test_a_match_that_cant_be_read_is_never_sent(make_home, caplog, found, wider):
+    # A match it can't see the intent or targets of is a match all the same, so the
+    # debugging answered and the wider rule stays on - but nothing is sent.
+    home = _assisted(make_home, [LAMP], [_entry("light.lamp")], found)
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        assert home.command("turn on the lamp", wider=wider) == DIDNT_UNDERSTAND
+    assert "/api/conversation/process" not in _paths(home)
+    assert _wider_rule_said(caplog) == []
+    assert [record for record in caplog.records if record.levelname == "WARNING" and "can't be read" in record.message]
+    assert home._assist_targets("turn on the lamp") == (home_assistant.AssistMatch(True, None, []), None)
 
 
 def test_the_wider_rule_is_off_without_the_registry(make_home):
@@ -647,12 +717,13 @@ def test_the_wider_rule_is_off_without_the_registry(make_home):
     assert home.command("turn on the lamp")["success"] and _asked(home)["text"] == "turn on the lamp"
 
 
-@pytest.mark.parametrize("answer", [HomeSocketError("timed out"), {"results": []}, {"results": [{"match": True}]},
-                                    {"results": "no"}, {}, [], "odd"])
+@pytest.mark.parametrize("answer", [HomeSocketError("timed out"), {"results": []}, {"results": [True]},
+                                    {"results": ["match"]}, {"results": "no"}, {}, [], "odd"])
 def test_the_wider_rule_is_off_when_assist_cant_be_asked_what_it_would_do(make_home, answer):
     home = _assisted(make_home, [TV, LAMP], [_entry("switch.tv"), _entry("light.lamp")], None)
     home.socket.answer = answer
-    assert home._assist_targets("turn off the TV") is None
+    match, why = home._assist_targets("turn off the TV")
+    assert match is None and why
     assert home.command("turn off the TV", wider=True) == DIDNT_UNDERSTAND
     assert "/api/conversation/process" not in _paths(home)
     assert home.command("turn on the lamp")["success"] and _asked(home)["text"] == "turn on the lamp"
