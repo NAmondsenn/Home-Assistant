@@ -176,8 +176,9 @@ def limit_problem(section: str, name: str, value: Any) -> Optional[str]:
             message = f"should be from {limit.low:g} to {limit.high:g}"
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return message
-        # json.loads (the settings page's) and YAML both accept infinity and NaN, which int() raises on.
-        if not math.isfinite(value) or (limit.whole and value != int(value)):
+        # json.loads (the settings page's) and YAML both accept infinity and NaN, which int()
+        # raises on. Only a float is tested: isfinite() raises on an int too big for a float.
+        if (isinstance(value, float) and not math.isfinite(value)) or (limit.whole and value != int(value)):
             return message
         return None if limit.low <= value <= limit.high else message
     if limit.form == "time":

@@ -374,3 +374,15 @@ def test_an_unquoted_time_gets_the_time_sentence(tmp_path):
     with pytest.raises(ConfigError) as caught:
         Config(path=str(tmp_path / "config.yaml"))
     assert "'ntfy.quiet_from' should be a time of day, from 00:00 to 23:59, not 1380" in str(caught.value)
+
+
+@pytest.mark.parametrize("setting", ["mqtt.port", "conversation.history_max_age",
+                                     "thresholds.silence_duration", "voice.speed"])
+def test_a_huge_whole_number_is_just_out_of_range(tmp_path, setting):
+    section, name = setting.split(".")
+    for value in (10**400, -10**400):
+        assert limit_problem(section, name, value).startswith("should be")
+        assert limit_problem(section, name, json.loads(str(value))).startswith("should be")
+    (tmp_path / "config.yaml").write_text(f"{section}:\n  {name}: {'9' * 401}\n")
+    with pytest.raises(ConfigError, match=f"'{setting}' should be"):
+        Config(path=str(tmp_path / "config.yaml"))
