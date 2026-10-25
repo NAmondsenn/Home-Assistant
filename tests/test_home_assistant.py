@@ -2356,6 +2356,23 @@ def _status(entity, name, state, unit=None, reported="2026-10-20T11:30:00+00:00"
             "last_reported": reported, "last_updated": "2026-10-19T08:00:00+00:00"}
 
 
+def _status_home(make_home, things, platforms=None, devices=None, areas=None):
+    """
+    A Home Assistant with these states, and a registry which has each of them - from
+    the "demo" platform on no device unless a test says, e.g. {"sensor.x": ("mobile_app", None)}.
+    """
+    home = make_home({"/api/states": things})
+    platforms = platforms or {}
+    entries = {}
+    for thing in things:
+        entity = thing["entity_id"]
+        platform, device = platforms.get(entity, ("demo", None))
+        entries[entity] = Entry(entity, platform, device, (areas or {}).get(entity), entity, None, (), True)
+    home.registry.read = Snapshot(entries=entries, devices=devices or {},
+                                  areas={area: area.title() for area in (areas or {}).values()}, read_at=0.0)
+    return home
+
+
 def test_status_gives_the_best_few_matches_with_their_state_and_age(make_home):
     things = [_status("sensor.navidrome_uptime", "Navidrome uptime", "12", "d"),
               _status("binary_sensor.navidrome_status", "Navidrome status", "on"),
@@ -2365,10 +2382,7 @@ def test_status_gives_the_best_few_matches_with_their_state_and_age(make_home):
               _status("sensor.bedroom_temperature", "Temperature", "19.5", "°C"),
               _status("light.desk_lamp", "Desk lamp", "off")]
     things += [_status(f"switch.plug_{number}", f"Plug {number}", "on") for number in range(10)]
-    home = make_home({"/api/states": things})
-    home.registry.read = Snapshot(entries={"sensor.bedroom_temperature": Entry(
-        "sensor.bedroom_temperature", "demo", None, "bedroom", "temp", None, (), True)},
-        devices={}, areas={"bedroom": "Bedroom"}, read_at=0.0)
+    home = _status_home(make_home, things, areas={"sensor.bedroom_temperature": "bedroom"})
 
     assert home.status("navidrome", now=STATUS_NOW) == {"success": True, "message": "\n".join([
         "Navidrome status (binary_sensor.navidrome_status): on",
@@ -2387,26 +2401,100 @@ def test_status_gives_the_best_few_matches_with_their_state_and_age(make_home):
     assert set(_paths(home)) == {"/api/states"}
 
 
+def test_status_leaves_out_little_words_and_puts_whole_words_first(make_home):
+    things = [_status("climate.thermostat", "Thermostat", "heat"),
+              _status("binary_sensor.desk_pc_online", "Desk PC online", "on"),
+              _status("binary_sensor.pcie_fan", "PCIe fan", "off"),
+              _status("sensor.desk_pc_cpu", "Desk PC CPU", "31", "%")]
+    home = _status_home(make_home, things)
+    # "the", "is" and "on" match nothing, and "pc" itself comes before "pcie".
+    assert home.status("is the pc on?", now=STATUS_NOW)["message"] == "\n".join([
+        "Desk PC CPU (sensor.desk_pc_cpu): 31 %",
+        "Desk PC online (binary_sensor.desk_pc_online): on",
+        "PCIe fan (binary_sensor.pcie_fan): off"])
+    assert home.status("is it on?")["message"] == "Nothing in Home Assistant matches that."
+
+
 def test_status_leaves_out_batteries_and_where_things_are(make_home):
+    # Where people and things are, free text, and what has tools of its own.
     things = [_status("sensor.s25_ultra_battery_level", "S25 Ultra battery level", "80", "%", device_class="battery"),
-              _status("sensor.s25_ultra_battery_state", "S25 Ultra battery state", "discharging"),
               _status("binary_sensor.s25_ultra_is_charging", "S25 Ultra is charging", "off",
                       device_class="battery_charging"),
               _status("sensor.s25_ultra_geocoded_location", "S25 Ultra geocoded location", "1 Example Road",
                       Locality="Exampleton"),
-              _status("device_tracker.s25_ultra", "S25 Ultra", "home", latitude=51.5, longitude=-0.1,
-                      gps_accuracy=12),
-              _status("sensor.s25_ultra_wifi_connection", "S25 Ultra wifi connection", "ExampleNet")]
-    home = make_home({"/api/states": things})
+              _status("device_tracker.s25_ultra", "S25 Ultra", "home", latitude=51.5, longitude=-0.1),
+              _status("person.example", "Example S25 Ultra owner", "home"),
+              _status("zone.s25_ultra_home", "S25 Ultra home", "1"),
+              _status("input_text.s25_ultra_event_location", "S25 Ultra event location", "Example Hall"),
+              _status("notify.mobile_app_s25_ultra", "S25 Ultra notify", "unknown"),
+              _status("tts.s25_ultra", "S25 Ultra speech", "unknown"),
+              _status("conversation.s25_ultra", "S25 Ultra conversation", "unknown"),
+              _status("image.s25_ultra", "S25 Ultra image", "unknown"),
+              _status("calendar.s25_ultra", "S25 Ultra calendar", "on"),
+              _status("sensor.s25_ultra_daily_steps", "S25 Ultra daily steps", "4200", "steps")]
+    home = _status_home(make_home, things)
     message = home.status("s25 ultra", now=STATUS_NOW)["message"]
-    assert message == ("S25 Ultra (device_tracker.s25_ultra): home\n"
-                       "S25 Ultra wifi connection (sensor.s25_ultra_wifi_connection): ExampleNet")
-    for left_out in ("battery", "charging", "Example Road", "Exampleton", "51.5", "0.1", "12"):
+    assert message == "S25 Ultra daily steps (sensor.s25_ultra_daily_steps): 4200 steps"
+    for left_out in ("Example Road", "Exampleton", "51.5", "Example Hall"):
         assert left_out not in message
 
 
+def test_status_leaves_out_network_and_app_sensors_by_their_id(make_home):
+    # Shaped like the live ones, on no personal device, so only their ids leave them out.
+    ids = ["sensor.example_phone_last_used_app", "sensor.example_phone_last_app", "sensor.example_pc_activewindow",
+           "sensor.example_pc_active_window", "sensor.example_laptop_ssid", "sensor.example_laptop_bssid",
+           "sensor.example_router_ip_address", "sensor.example_phone_wi_fi_connection", "sensor.example_tablet_wifi",
+           "sensor.example_phone_network_type", "sensor.example_laptop_frontmost_app",
+           "sensor.example_phone_last_notification", "sensor.example_pc_loggedusers", "sensor.example_pc_logged_users",
+           "sensor.example_laptop_active_camera", "sensor.example_laptop_active_audio_input",
+           "sensor.example_laptop_displays", "sensor.example_pc_clipboard", "sensor.example_phone_charger_type",
+           "sensor.example_phone_battery_health"]
+    home = _status_home(make_home, [_status(entity, "Example thing", "Something private") for entity in ids]
+                        + [_status("sensor.example_pc_cpu", "Example PC CPU", "31", "%")])
+    assert home.status("example", now=STATUS_NOW)["message"] == "Example PC CPU (sensor.example_pc_cpu): 31 %"
+
+
+def test_status_leaves_out_any_address_whatever_its_called(make_home):
+    things = [_status("sensor.example_router_wan", "Example router WAN", "192.168.0.10"),
+              _status("sensor.example_router_lan", "Example router LAN", "fe80::1"),
+              _status("sensor.example_router_link", "Example router link", "aa:bb:cc:dd:ee:ff"),
+              _status("sensor.example_router_port", "Example router port", "AA-BB-CC-DD-EE-FF"),
+              _status("sensor.example_router_both", "Example router both", "10.0.0.2, 10.0.0.3"),
+              _status("sensor.example_router_uptime", "Example router uptime", "12.5", "d")]
+    home = _status_home(make_home, things)
+    assert home.status("example router", now=STATUS_NOW)["message"] == \
+        "Example router uptime (sensor.example_router_uptime): 12.5 d"
+
+
+def test_status_gives_a_personal_device_only_numbers_and_on_off(make_home):
+    things = [_status("sensor.example_phone_message", "Example phone message", "See you at Example Hall"),
+              _status("sensor.example_phone_steps", "Example phone steps", "4200"),
+              _status("binary_sensor.example_phone_interactive", "Example phone interactive", "on"),
+              _status("switch.example_phone_dnd", "Example phone dnd", "off"),
+              _status("sensor.example_pc_session", "Example pc session", "Example window title"),
+              _status("sensor.example_pc_last_boot", "Example pc last boot", "2026-10-20T08:00:00+00:00"),
+              _status("button.example_pc_sleep", "Example pc sleep", "unknown"),
+              _status("sensor.example_nas_status", "Example nas status", "healthy")]
+    platforms = {"sensor.example_phone_message": ("mobile_app", None), "sensor.example_phone_steps": ("mobile_app", None),
+                 "binary_sensor.example_phone_interactive": ("mobile_app", None),
+                 "switch.example_phone_dnd": ("mobile_app", None), "sensor.example_pc_session": ("mqtt", "pc"),
+                 "sensor.example_pc_last_boot": ("mqtt", "pc"), "button.example_pc_sleep": ("mqtt", "pc")}
+    home = _status_home(make_home, things, platforms, devices={"pc": {"name": "Example PC", "maker": "HASS.Agent Team"}})
+    assert home.status("example", now=STATUS_NOW)["message"] == "\n".join([
+        "Example nas status (sensor.example_nas_status): healthy",
+        "Example pc last boot (sensor.example_pc_last_boot): 2026-10-20 09:00",
+        "Example phone interactive (binary_sensor.example_phone_interactive): on",
+        "Example phone steps (sensor.example_phone_steps): 4200"])
+    # Without the registry, nothing can be told to be personal, so everything is held to that.
+    home.registry.read = None
+    assert home.status("example", now=STATUS_NOW)["message"] == "\n".join([
+        "Example pc last boot (sensor.example_pc_last_boot): 2026-10-20 09:00",
+        "Example phone interactive (binary_sensor.example_phone_interactive): on",
+        "Example phone steps (sensor.example_phone_steps): 4200"])
+
+
 def test_status_says_when_nothing_matches(make_home):
-    home = make_home({"/api/states": [_status("light.desk_lamp", "Desk lamp", "off")]})
+    home = _status_home(make_home, [_status("light.desk_lamp", "Desk lamp", "off")])
     assert home.status("kettle") == {"success": True, "message": "Nothing in Home Assistant matches that."}
     assert home.status("?!") == {"success": True, "message": "Nothing in Home Assistant matches that."}
 

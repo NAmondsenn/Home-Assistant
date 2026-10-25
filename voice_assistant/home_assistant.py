@@ -43,6 +43,7 @@ The calendar is whichever calendars Home Assistant has, such as a Google Calenda
 added through its Google Calendar integration.
 """
 
+import ipaddress
 import json
 import logging
 import math
@@ -59,7 +60,7 @@ from voice_assistant.clock import format_duration, spoken_clock_time
 from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, names_guarded,
                                       runnables_named, sensitive, sensitive_words, split_words, target_refused,
                                       why_not_run)
-from voice_assistant.ha_registry import HomeRegistry, HomeSocket, HomeSocketError, Snapshot
+from voice_assistant.ha_registry import HASS_AGENT_MAKER, HomeRegistry, HomeSocket, HomeSocketError, Snapshot
 from voice_assistant.logging_setup import TRANSCRIPT
 
 # Logger setup
@@ -243,11 +244,28 @@ MOST_FOUND = 3
 # every one of the PC's sensors, and each is more for Claude to read.
 MOST_STATUS = 8
 
-# What status leaves out: the batteries and charging states, which get_batteries says
-# (see batteries.py), and the phone's whereabouts, which its geocoded location gives as
-# an address.
+# What status leaves out, as what Claude reads goes to Anthropic. It fails shut, in four
+# layers - see _private. First, whole domains: where people and things are, free text
+# such as an event's address, and what has tools of its own, such as the calendar.
+NOT_STATUS_DOMAINS = {"device_tracker", "person", "zone", "input_text", "notify", "tts", "conversation", "image",
+                      "calendar"}
+
+# Then anything with one of these anywhere in its id: the phones', the Mac's and the PC's
+# network details, the apps and windows in use, notifications and who's logged in - and
+# the batteries and charging, which get_batteries says (see batteries.py).
+NOT_STATUS_IDS = ("ip_address", "bssid", "ssid", "wi_fi", "wifi", "network", "last_used_app", "last_app",
+                  "frontmost_app", "activewindow", "active_window", "notification", "loggedusers", "logged_users",
+                  "active_camera", "active_audio", "display", "clipboard", "geocoded", "battery", "charg")
 NOT_STATUS_CLASSES = ("battery", "battery_charging")
-NOT_STATUS_ENDINGS = ("_battery_level", "_battery_state", "_geocoded_location")
+
+# A hardware (MAC) address, e.g. "aa:bb:cc:dd:ee:ff" - an IP address is told by ipaddress.
+HARDWARE_ADDRESS = re.compile(r"[0-9a-f]{2}([:-][0-9a-f]{2}){5}", re.IGNORECASE)
+
+# The integration of the Home Assistant app on a phone, tablet or Mac. Its sensors, and
+# HASS.Agent's on a PC, are given only as numbers, times or on and off, as their free
+# text is where app names, window titles and messages are - and a sensor the app adds
+# later is covered without a new entry above.
+MOBILE_APP = "mobile_app"
 
 # Seconds after which a state is given with how old it is - a PC switched off still
 # has the last CPU temperature it reported, which isn't how warm it is now.
@@ -257,6 +275,10 @@ STATUS_STALE_AFTER = 3600
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}.*")
 
 NOTHING_MATCHES = "Nothing in Home Assistant matches that."
+
+# Words in what's asked about which say nothing of what's meant - "is the PC on?" is
+# about "pc" alone, and "on" would otherwise find everything "online".
+STATUS_STOP_WORDS = {"the", "is", "a", "an", "my", "on", "any", "how", "what", "whats", "are", "it"}
 
 
 class NotAllowed(ValueError):
@@ -1100,11 +1122,13 @@ class HomeAssistant:
         The state of whatever best matches the words asked about, for Claude to answer
         "when's sunset?" or "is Navidrome up?" from. It's only read: nothing is called,
         and of each entity's attributes only its unit is given, so no address or
-        coordinates - and no battery, which is get_batteries'.
+        coordinates. What's private is left out - see _private.
 
-        Each entity scores how many of the words asked begin a word of its name, its
-        entity id or its area's name, so "navidrome" finds "Navidrome status" and
-        "update.navidrome_update" alike.
+        Each entity scores how many of the words asked, bar little ones such as "the"
+        (STATUS_STOP_WORDS), begin a word of its name, its entity id or its area's name,
+        so "navidrome" finds "Navidrome status" and "update.navidrome_update" alike. A
+        tie goes to the one more of the words are whole words of, so "pc" puts the PC's
+        own sensors before "PCIe fan".
 
         Args:
             about: The words asked about, e.g. "navidrome".
@@ -1121,24 +1145,26 @@ class HomeAssistant:
             logger.warning(f"Couldn't read Home Assistant's states: {e}")
             return {"success": False, "message": self._failure_message(e)}
         now = time.time() if now is None else now
-        # Without the registry, nothing has an area, which is no reason not to answer.
+        # Without the registry, nothing has an area, which is no reason not to answer -
+        # but nothing can be told not to be a phone's or the PC's, either (see _private).
         snapshot = self._snapshot()
-        asked = set(split_words(about))
+        asked = set(split_words(about)) - STATUS_STOP_WORDS
         found = []
         for state in states:
             entity = str(state.get("entity_id") or "")
             attributes = state.get("attributes") or {}
-            if attributes.get("device_class") in NOT_STATUS_CLASSES or entity.endswith(NOT_STATUS_ENDINGS):
+            if _private(entity, attributes, str(state.get("state")), snapshot):
                 continue
             name = str(attributes.get("friendly_name") or entity)
             area = snapshot.area_name(entity) if snapshot else None
             words = split_words(f"{name} {entity} {area or ''}")
             score = sum(1 for word in asked if any(its.startswith(word) for its in words))
+            whole = sum(1 for word in asked if word in words)
             if score:
-                found.append((-score, name.lower(), entity, name, area, state))
+                found.append((-score, -whole, name.lower(), entity, name, area, state))
         if not found:
             return {"success": True, "message": NOTHING_MATCHES}
-        best = sorted(found, key=lambda match: match[:3])[:MOST_STATUS]
+        best = sorted(found, key=lambda match: match[:4])[:MOST_STATUS]
         return {"success": True, "message": "\n".join(_status_said(name, area, state, now)
                                                        for *_, name, area, state in best)}
 
@@ -1422,6 +1448,72 @@ def _refused(error: Exception) -> bool:
     return isinstance(error, requests.HTTPError) and status in (401, 403)
 
 
+def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snapshot]) -> bool:
+    """
+    Whether status leaves an entity out, as private or another tool's: by its domain
+    (NOT_STATUS_DOMAINS), by its id (NOT_STATUS_IDS), its device class, a state which
+    is an address of any kind, or - on a personal device, or without the registry to
+    tell - a state which isn't a binary sensor's, a number or a time.
+
+    Args:
+        entity: e.g. "sensor.example_phone_steps".
+        attributes: Its attributes, for its device class.
+        state: Its state, e.g. "4200".
+        snapshot: The registry, or None if it can't be read.
+
+    Returns:
+        Whether it's left out.
+    """
+    domain = entity.partition(".")[0]
+    if domain in NOT_STATUS_DOMAINS or any(word in entity for word in NOT_STATUS_IDS):
+        return True
+    if attributes.get("device_class") in NOT_STATUS_CLASSES:
+        return True
+    # Whatever it's called - "10.0.0.2, 10.0.0.3" as well as one alone.
+    for part in re.split(r"[\s,;]+", state.strip()):
+        if HARDWARE_ADDRESS.fullmatch(part):
+            return True
+        try:
+            ipaddress.ip_address(part)
+            return True
+        except ValueError:
+            pass
+    if snapshot is not None and not _personal(entity, snapshot):
+        return False
+    if domain == "binary_sensor":
+        return False
+    return not (domain == "sensor" and (_number(state) or _moment(state)))
+
+
+def _personal(entity: str, snapshot: Snapshot) -> bool:
+    """Whether an entity is the Home Assistant app's, on a phone, tablet or Mac, or on a HASS.Agent PC."""
+    entry = snapshot.entries.get(entity)
+    if entry is None:
+        return False
+    device = snapshot.devices.get(entry.device_id or "") or {}
+    return entry.platform == MOBILE_APP or (device.get("maker") or "").startswith(HASS_AGENT_MAKER)
+
+
+def _number(state: str) -> bool:
+    """Whether a state is a number, e.g. "19.5"."""
+    try:
+        float(state)
+    except ValueError:
+        return False
+    return True
+
+
+def _moment(state: str) -> bool:
+    """Whether a state is a moment, e.g. "2026-10-20T16:52:00+00:00"."""
+    if not TIMESTAMP.fullmatch(state):
+        return False
+    try:
+        datetime.fromisoformat(state)
+    except ValueError:
+        return False
+    return True
+
+
 def _status_said(name: str, area: Optional[str], state: Dict, now: float) -> str:
     """
     One entity's state, as status gives it.
@@ -1438,11 +1530,9 @@ def _status_said(name: str, area: Optional[str], state: Dict, now: float) -> str
     entity = state.get("entity_id")
     value = str(state.get("state"))
     # Given in local time, as everything else Claude's told is - see LLMHandler._situation.
-    if TIMESTAMP.fullmatch(value):
-        try:
-            value = datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M")
-        except ValueError:
-            pass
+    # That's the brain's own zone, so it's right as long as the brain runs on the user's.
+    if _moment(value):
+        value = datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M")
     unit = (state.get("attributes") or {}).get("unit_of_measurement")
     said = f"{name} ({entity}, {area}): {value}" if area else f"{name} ({entity}): {value}"
     if unit:

@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Callable, Dict, List, Optional, Sequence
 import anthropic
 from anthropic import Anthropic
-from voice_assistant.actions import Action
+from voice_assistant.actions import Action, bare_acknowledgement
 from voice_assistant.clock import spoken_clock_time
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant import network
@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 # The most rounds of reading Claude may do before it answers - one is usually enough,
 # and each is another request to wait for before anything's said.
 MOST_READS = 2
+
+# Said when Claude read something but said nothing of it - what was read is never said
+# itself, as entity ids read out are no answer.
+COULDNT_FIND_OUT = "Sorry, I couldn't find that out."
+
+# What Claude is told when a read went wrong, rather than the error itself.
+READ_FAILED = "That couldn't be read."
 
 
 class LLMHandler:
@@ -360,7 +367,8 @@ class LLMHandler:
 
         When all Claude does is call read tools, they're read straight away and their
         answers sent back to it, up to MOST_READS times, so it replies from them -
-        "Sunset's at 5:52 PM." rather than the sensor's own line.
+        "Sunset's at 5:52 PM." rather than the sensor's own line. The last round may call
+        no tool, and a read tool is never an action, so what's read is never said as it is.
 
         Args:
             text: What the user said.
@@ -381,6 +389,8 @@ class LLMHandler:
         if not network.online():
             logger.warning("No network connection, so Claude isn't asked")
             return {"response": OFFLINE_MESSAGE, "actions": self._fallback_actions(text), "success": False}
+        # How many rounds of reading there have been - see the read loop below.
+        reads = 0
         try:
             # The time is given already on the 12-hour clock ("7:36 PM"). Given "19:36",
             # the model would sometimes say it straight back despite being asked not to,
@@ -432,26 +442,28 @@ class LLMHandler:
 
             # A long-running search can come back as "pause_turn" rather than a finished
             # answer. The paused turn is sent back unchanged to let it continue, with a
-            # small cap so a misbehaving search can't loop forever.
-            for _ in range(3):
-                if getattr(response, "stop_reason", None) != "pause_turn":
-                    break
-                logger.info("Search paused by the API, continuing the turn...")
-                messages.append({"role": "assistant", "content": response.content})
-                response = client.messages.create(
-                    model=self.model_name, system=system, messages=messages, **request_kwargs)
-
-            # Only when every call is a read. One beside another tool - "when's sunset, and
-            # set a timer" - is run as an ordinary action with it, as asking again after the
-            # read would leave the timer either never set or asked for a second time.
-            for _ in range(MOST_READS):
+            # small cap so a misbehaving search can't loop forever - before reading or after.
+            # And when every call is a read, the answers are sent back for Claude to reply
+            # from. Only then: a read beside another tool - "when's sunset, and set a timer"
+            # - is dropped below, as asking again after it could have the timer asked for
+            # a second time.
+            pauses = 0
+            while True:
                 uses = [block for block in response.content if getattr(block, "type", None) == "tool_use"]
-                if read is None or not uses or not all(use.name in self.read_tools for use in uses):
+                if getattr(response, "stop_reason", None) == "pause_turn" and pauses < 3:
+                    pauses += 1
+                    logger.info("Search paused by the API, continuing the turn...")
+                    messages.append({"role": "assistant", "content": response.content})
+                elif (read is not None and reads < MOST_READS and uses
+                      and all(use.name in self.read_tools for use in uses)):
+                    reads += 1
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": [self._read(use, read) for use in uses]})
+                else:
                     break
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append({"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": use.id,
-                     "content": read(self._action_from_tool_use(use)) or "Done."} for use in uses]})
+                # The last round may call no tool, so Claude says what it found in words.
+                if reads == MOST_READS:
+                    request_kwargs["tool_choice"] = {"type": "none"}
                 response = client.messages.create(
                     model=self.model_name, system=system, messages=messages, **request_kwargs)
 
@@ -479,6 +491,14 @@ class LLMHandler:
                 if action.params.get("search_type") == "album" and not self._asked_for_album(text):
                     logger.info("Album wasn't asked for by name, playing the track instead")
                     action.params["search_type"] = "track"
+
+            # What a read tool gives is for Claude alone, and never said as it is - so one
+            # still in the final response, beside another tool, past MOST_READS or with no
+            # way to read, is dropped. Claude's own words are kept, unless there are none.
+            dropped = [action for action in actions if action.tool in self.read_tools]
+            actions = [action for action in actions if action.tool not in self.read_tools]
+            if (dropped or reads) and not actions and (not response_text or bare_acknowledgement(response_text)):
+                response_text = COULDNT_FIND_OUT
 
             # Fallback for when the action is called by the model, but no message is produced.
             if actions and not response_text:
@@ -511,8 +531,29 @@ class LLMHandler:
         # controlled when the API is unreachable.
         except Exception as e:
             logger.error(f"LLM processing failed ({type(e).__name__}): {e}")
+            # Once Claude has read something, the request was a question, not a command for
+            # the keyword parser - which would take "are the lights on?" for one.
             return {"response": self._failure_message(e),
-                    "actions": self._fallback_actions(text), "success": False}
+                    "actions": [] if reads else self._fallback_actions(text), "success": False}
+
+    def _read(self, use, read: Callable[[Action], str]) -> Dict:
+        """
+        Reads what a read tool was called for, as the tool_result Claude is sent.
+
+        Args:
+            use: The tool_use content block.
+            read: Runs the tool's Action and gives what it said.
+
+        Returns:
+            The tool_result - marked as an error if the read went wrong, so Claude can say
+            so, rather than it failing the whole request.
+        """
+        try:
+            return {"type": "tool_result", "tool_use_id": use.id,
+                    "content": read(self._action_from_tool_use(use)) or "Done."}
+        except Exception:
+            logger.exception(f"Reading {use.name} for Claude failed")
+            return {"type": "tool_result", "tool_use_id": use.id, "content": READ_FAILED, "is_error": True}
 
     def _fallback_actions(self, text: str) -> list:
         """

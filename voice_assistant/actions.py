@@ -148,7 +148,7 @@ def confirm(results: List[ActionResult], chime_enabled: bool = True,
     others = [result for result in results if not (result.ok and result.confirm == "note")]
     # Only notes - something remembered while answering a question - so the answer
     # itself is said first, unless it's only the "Okay." which goes with a tool call.
-    if not others and fallback and _words(fallback) not in BARE_ACKNOWLEDGEMENTS:
+    if not others and fallback and not bare_acknowledgement(fallback):
         messages.append(fallback)
     for result in others:
         sound = None
@@ -179,6 +179,11 @@ BARE_ACKNOWLEDGEMENTS = {"okay", "ok", "sure", "done", "got it", "will do", "not
 
 def _words(text: str) -> str:
     return re.sub(r"[^a-z ]", "", text.lower()).strip()
+
+
+def bare_acknowledgement(text: str) -> bool:
+    """Whether the model's text is only an acknowledgement, e.g. "Okay." - nothing to say on its own."""
+    return _words(text) in BARE_ACKNOWLEDGEMENTS
 
 
 def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (), for_model: bool = True,
