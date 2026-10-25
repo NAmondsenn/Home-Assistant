@@ -413,6 +413,19 @@ def test_only_novas_own_keys_are_saved_and_nothing_odd(files, name, value):
     assert not (files / ".env").exists()
 
 
+def test_the_page_takes_googles_keys(files, caplog):
+    page = _page()
+    labels = {key["name"]: key["label"] for key in page.state()["keys"]}
+    assert labels["GOOGLE_CLIENT_ID"] == "Google client ID"
+    assert labels["GOOGLE_CLIENT_SECRET"] == "Google client secret"
+
+    assert page.set_key("GOOGLE_CLIENT_SECRET", "made-up-client-secret", LOGIN)["success"]
+
+    assert 'GOOGLE_CLIENT_SECRET="made-up-client-secret"' in (files / ".env").read_text()
+    assert stat.S_IMODE(os.stat(files / ".env").st_mode) == 0o600
+    assert "made-up-client-secret" not in caplog.text and "made-up-client-secret" not in json.dumps(page.state())
+
+
 def test_settings_are_saved_as_only_whats_different_with_a_copy_of_the_old_file(files):
     (files / "config.yaml").write_text("# My own settings\nnavidrome:\n  url: http://old.local:4533\n")
     result = _page().save_settings({"navidrome.url": "http://music.local:4533", "ntfy.alerts": "homelab, servers",

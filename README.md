@@ -174,9 +174,28 @@ Whatever's exposed, Nova never locks, unlocks or opens anything by voice: it che
      url: "http://homeassistant.local:8123"
    ```
 5. In Settings > Voice assistants > Expose, choose what Assist may control. Exposing something now means Nova works it by voice, so check what's exposed already - a switch such as AdGuard's protection may well be, from before. Names and areas are what you'll call things. Scripts aren't exposed by default, so expose any you'll ask for, such as goodnight - a routine's "run goodnight" step goes through Assist too. "Run goodnight" runs Home Assistant's script called goodnight; "goodnight routine" (or a routine's own words) is Nova's own routine. Claude isn't limited to these for the lights - it can work any light.
-6. For your calendar, add Google Calendar (or any other) to Home Assistant through its integration. Every calendar it has is read, unless you list the ones you want in `home_assistant.calendars`.
 
-Then restart the brain. Its log says `Home Assistant at ...` once it's on.
+Then restart the brain. Its log says `Home Assistant at ...` once it's on. The calendar isn't Home Assistant's - Nova reads it from Google itself, below.
+
+### Google Calendar
+
+Nova reads your calendars straight from Google, not through Home Assistant, with a sign-in of its own kept on the brain - readable by Nova's user only, and never on a satellite. It asks Google for only what it uses: the list of your calendars, reading their events, and adding events to them.
+
+1. In [Google Cloud's console](https://console.cloud.google.com/), make a project for Nova, and under APIs & Services > Library switch on the Google Calendar API.
+2. Under the OAuth consent screen, make it External, and add the three scopes Nova asks for: `calendar.calendarlist.readonly`, `calendar.events.readonly` and `calendar.events.owned`. Then publish it, so it's In production - in Testing, Google ends the sign-in after a week. Google may warn that the app isn't verified; it's your own, so carry on.
+3. Under Credentials, make an OAuth client ID of type Desktop app. Its client ID and secret go under Keys on the settings page, or in the brain's `~/.config/nova/.env` yourself - the secret is a password, so don't paste it anywhere else:
+
+   ```
+   GOOGLE_CLIENT_ID=the-client-id
+   GOOGLE_CLIENT_SECRET=the-client-secret
+   ```
+4. Sign in once, on the brain, as Nova's user - it prints an address to open in a browser. Google's page then sends the browser to one which won't load; that's expected, and you paste its address back:
+
+   ```bash
+   runuser -u nova -- venv/bin/python -m voice_assistant.google_calendar
+   ```
+
+   Already signed in, it says so; `--again` signs in again, as a different account or after the sign-in was removed in your Google account.
 
 ### Batteries
 
