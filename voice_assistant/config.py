@@ -48,6 +48,7 @@ RETIRED = ("speech_to_text", "moonshine", "whisper")
 # so it's let through, and a section holding only these, with a warning saying so.
 REMOVED: Dict[Tuple[str, str], str] = {
     ("weather", "location"): "the weather is Home Assistant's own, for its home location",
+    ("home_assistant", "calendars"): "every calendar in Google's own list is read now",
 }
 
 

@@ -176,14 +176,10 @@ home_assistant:
   # made by a Home Assistant user of its own who is an administrator - Home Assistant
   # only tells an administrator which room each device is in, which Nova's room and
   # Claude's lights need. An administrator's token can do anything in Home Assistant,
-  # so it's Nova's own code which keeps it to the lights, the calendar, and scripts and
-  # scenes run from the settings page, and never anything which locks, unlocks or
-  # opens. Assist, for the requests passed on in plain words, only reaches the devices
+  # so it's Nova's own code which keeps it to the lights, and scripts and scenes run
+  # from the settings page, and never anything which locks, unlocks or opens. Assist, for the requests passed on in plain words, only reaches the devices
   # exposed to it. See the README.
   url: ""
-  # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
-  # Left empty, every calendar Home Assistant has is read.
-  calendars: []
   # The regular things in your life, and what they're called on the calendar, for
   # "what time do I have work tomorrow?" or "when do I finish uni today?". An event with
   # a word in its name starting with one of them counts - e.g. work: ["Shift"], or

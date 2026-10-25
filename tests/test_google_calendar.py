@@ -2,8 +2,9 @@
 Google Calendar Test
 Checks Nova's own Google sign-in - that it asks for only what Nova uses, refuses an
 address from another sign-in, keeps the sign-in readable by Nova's user only, and
-keeps an access token until it nearly runs out - with a fake of Google's token
-address, so nothing ever reaches Google. Every id, secret, code and token is made up.
+keeps an access token until it nearly runs out - and the calendar read from Google
+with it, and said. A fake stands in for Google, answering as its API reference
+gives it, so nothing ever reaches Google. Every id, secret, code and token is made up.
 """
 
 import base64
@@ -11,13 +12,17 @@ import hashlib
 import json
 import os
 import stat
-from urllib.parse import parse_qs, urlencode, urlsplit
+import time
+from datetime import date, datetime, timedelta
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from zoneinfo import ZoneInfo
 
 import pytest
 import requests
 
 from voice_assistant import google_calendar, storage
-from voice_assistant.google_calendar import GoogleSignIn, SignInNeeded
+from voice_assistant.google_calendar import (CANT_REACH_GOOGLE, NEEDS_SIGN_IN, GoogleCalendar, GoogleSignIn,
+                                             SignInNeeded, describe_agenda, describe_found)
 
 CLIENT_ID = "made-up-client.apps.example.com"
 CLIENT_SECRET = "made-up-client-secret"
@@ -36,28 +41,38 @@ class FakeResponse:
 
     def raise_for_status(self):
         if not self.ok:
-            raise requests.HTTPError(f"{self.status_code} error")
+            raise requests.HTTPError(f"{self.status_code} error", response=self)
 
 
 class FakeGoogle:
     """
     Stands in for a requests.Session, answering each address from a list of answers
-    and noting every request - an answer can be an exception, to be raised instead.
+    and noting every request - an answer can be an exception, to be raised instead,
+    and an answer that isn't a FakeResponse is a 200 with it as the body.
     """
 
     def __init__(self, **answers):
         self.answers = {address: list(each) for address, each in answers.items()}
         self.asked = []
+        # What each GET was sent with besides its address - its params, headers and timeout.
+        self.fetched = []
 
     def post(self, url, data=None, timeout=None, **kwargs):
         self.asked.append((url, dict(data or {})))
+        return self._answer(url)
+
+    def get(self, url, params=None, headers=None, timeout=None, **kwargs):
+        if url not in self.answers:
+            raise AssertionError(f"Nothing should be fetched from {url}")
+        self.asked.append((url, dict(params or {})))
+        self.fetched.append({"params": dict(params or {}), "headers": dict(headers or {}), "timeout": timeout})
+        return self._answer(url)
+
+    def _answer(self, url):
         answer = self.answers[url].pop(0)
         if isinstance(answer, Exception):
             raise answer
-        return answer
-
-    def get(self, url, **kwargs):
-        raise AssertionError(f"Nothing should be fetched from {url}")
+        return answer if isinstance(answer, FakeResponse) else FakeResponse(200, answer)
 
 
 def _token_answer(access=ACCESS_TOKEN, expires_in=3600, refresh=REFRESH_TOKEN):
@@ -118,6 +133,18 @@ def test_a_sign_in_finished_from_another_address_is_refused(token_file, started)
 
     with pytest.raises(ValueError, match="That address isn't from this sign-in."):
         sign_in.finish(_pasted("another-sign-ins-state"))
+
+    assert google.asked == [] and not os.path.exists(token_file)
+
+
+def test_a_pasted_state_that_isnt_plain_ascii_is_refused_as_another_sign_ins(token_file):
+    # Compared as it came, a pasted "state=%C3%A9" raised a TypeError rather than saying so.
+    google = FakeGoogle()
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+    sign_in.start()
+
+    with pytest.raises(ValueError, match="That address isn't from this sign-in."):
+        sign_in.finish(_pasted("\u00e9"))
 
     assert google.asked == [] and not os.path.exists(token_file)
 
@@ -198,6 +225,19 @@ def test_a_revoked_sign_in_says_it_needs_doing_again(token_file):
         sign_in.access_token()
 
 
+@pytest.mark.parametrize("status", [400, 401])
+def test_a_client_google_no_longer_knows_says_the_sign_in_needs_doing_again(token_file, status):
+    # The client deleted in Google Cloud, or its secret made anew: taken for Google being
+    # out of reach, "I can't reach Google's calendar" would never have gone away.
+    _signed_in(token_file)
+    google = FakeGoogle(**{google_calendar.TOKEN: [
+        FakeResponse(status, {"error": "invalid_client", "error_description": "The OAuth client was not found."})]})
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+
+    with pytest.raises(SignInNeeded):
+        sign_in.access_token()
+
+
 def test_without_a_sign_in_it_needs_doing(token_file):
     google = FakeGoogle()
     sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
@@ -210,12 +250,19 @@ def test_without_a_sign_in_it_needs_doing(token_file):
 
 # The command
 
-def test_the_sign_in_command_never_prints_a_secret(token_file, monkeypatch, capsys):
+def _command(token_file, monkeypatch, capsys, answer):
+    """
+    Sets the sign-in command up to run with Google answering the code with this, and the
+    user pasting back the address for the state it printed.
+
+    Returns:
+        Everything printed before each paste, as it's pasted.
+    """
     monkeypatch.setattr(google_calendar.paths, "load_secrets", lambda: None)
     monkeypatch.setattr(google_calendar.paths, "GOOGLE_TOKEN_FILE", token_file)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", CLIENT_SECRET)
-    google = FakeGoogle(**{google_calendar.TOKEN: [_token_answer()]})
+    google = FakeGoogle(**{google_calendar.TOKEN: [answer]})
     monkeypatch.setattr(google_calendar.requests, "Session", lambda: google)
     printed = []
 
@@ -227,6 +274,11 @@ def test_the_sign_in_command_never_prints_a_secret(token_file, monkeypatch, caps
         return _pasted(_query(address)["state"])
 
     monkeypatch.setattr("builtins.input", paste)
+    return printed
+
+
+def test_the_sign_in_command_never_prints_a_secret(token_file, monkeypatch, capsys):
+    printed = _command(token_file, monkeypatch, capsys, _token_answer())
 
     google_calendar.main([])
 
@@ -242,3 +294,528 @@ def test_the_sign_in_command_never_prints_a_secret(token_file, monkeypatch, caps
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("Nothing should be asked"))
     google_calendar.main([])
     assert "Already signed in to Google" in capsys.readouterr().out
+
+
+def test_a_sign_in_without_every_permission_isnt_kept(token_file, monkeypatch, capsys):
+    # Google lets each box on its page be unticked. Kept, the sign-in said "Signed in to
+    # Google." - and adding an event would only have failed later, by voice.
+    answer = _token_answer()
+    answer.body["scope"] = " ".join(google_calendar.SCOPES[:2])
+    _command(token_file, monkeypatch, capsys, answer)
+
+    with pytest.raises(SystemExit) as stopped:
+        google_calendar.main([])
+
+    said = str(stopped.value)
+    assert "add events to your own calendars" in said and "read your calendars' events" not in said
+    assert "sign in again, with every box ticked" in said
+    assert not os.path.exists(token_file)
+
+
+# Reading the calendars
+
+LIST = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
+
+# Made as the file is read, before the london fixture has set the time zone, so
+# given it themselves.
+LONDON = ZoneInfo("Europe/London")
+
+
+@pytest.fixture(autouse=True)
+def london(monkeypatch):
+    """
+    Runs every test on UK time, whatever the machine's own time zone. Calendar times are
+    said in the brain's own time, and the events here are written in BST - so on
+    GitHub, which runs on UTC, uni "from 11:30 AM" came out as "from 10:30 AM".
+    """
+    monkeypatch.setenv("TZ", "Europe/London")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+class FakeSignIn:
+    """Stands in for GoogleSignIn, with an access token that's always good."""
+
+    def access_token(self):
+        return ACCESS_TOKEN
+
+    def drop_access_token(self):
+        pass
+
+
+def _events_url(calendar_id):
+    return f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events"
+
+
+def _entry(calendar_id, name, primary=False, access_role="owner", override=None):
+    """One calendar in Google's calendarList, as its API reference gives it."""
+    entry = {"kind": "calendar#calendarListEntry", "etag": '"1"', "id": calendar_id, "summary": name,
+             "timeZone": "Europe/London", "accessRole": access_role, "selected": True}
+    if primary:
+        entry["primary"] = True
+    if override:
+        entry["summaryOverride"] = override
+    return entry
+
+
+def _calendar_list(*entries, next_page=None):
+    page = {"kind": "calendar#calendarList", "etag": '"1"', "items": list(entries)}
+    if next_page:
+        page["nextPageToken"] = next_page
+    return page
+
+
+def _when(value):
+    """An event's start or end as Google gives it - a date for all day, or a time."""
+    return {"date": value} if len(value) == 10 else {"dateTime": value, "timeZone": "Europe/London"}
+
+
+def _google_event(summary, start, end=None, **more):
+    """One event, as Google's events.list gives it."""
+    event = {"kind": "calendar#event", "id": f"made-up-{abs(hash((summary, start)))}", "status": "confirmed",
+             "summary": summary, "start": _when(start)}
+    if end:
+        event["end"] = _when(end)
+    event.update(more)
+    return event
+
+
+def _events_page(*events, next_page=None):
+    page = {"kind": "calendar#events", "summary": "A calendar", "timeZone": "Europe/London", "items": list(events)}
+    if next_page:
+        page["nextPageToken"] = next_page
+    return page
+
+
+@pytest.fixture
+def make_calendar(monkeypatch):
+    """
+    Makes GoogleCalendars reading from a FakeGoogle: one calendar, Personal, with the
+    events given, unless calendars gives each calendar's id and its events - each read
+    reads times over.
+    """
+    monkeypatch.setattr(google_calendar.network, "online", lambda: True)
+
+    def make(events=(), calendars=None, activities=None, reads=1):
+        calendars = calendars if calendars is not None else {"calendar-personal": list(events)}
+        google = FakeGoogle(**{LIST: [_calendar_list(*[_entry(calendar_id, calendar_id.split("-", 1)[1].title())
+                                                         for calendar_id in calendars])],
+                               **{_events_url(calendar_id): [_events_page(*its_events)] * reads
+                                  for calendar_id, its_events in calendars.items()}})
+        return GoogleCalendar(FakeSignIn(), activities=activities, session=google)
+
+    return make
+
+
+def _read(calendar):
+    """The events requests made, each as (calendar id, params)."""
+    prefix = "https://www.googleapis.com/calendar/v3/calendars/"
+    return [(url[len(prefix):-len("/events")], params) for url, params in calendar._session.asked
+            if url.startswith(prefix)]
+
+
+def test_every_calendar_in_googles_list_is_read(monkeypatch):
+    monkeypatch.setattr(google_calendar.network, "online", lambda: True)
+    google = FakeGoogle(**{
+        LIST: [_calendar_list(_entry("calendar-personal", "Personal", primary=True),
+                              _entry("calendar-uni", "My timetable", access_role="reader", override="Uni"),
+                              next_page="page-2"),
+               _calendar_list(_entry("calendar-work", "Work", access_role="writer"))],
+        _events_url("calendar-personal"): [_events_page(
+            _google_event("Dentist", "2026-10-22T09:30:00+01:00", "2026-10-22T10:00:00+01:00"))],
+        _events_url("calendar-uni"): [_events_page(
+            _google_event("CSC2035 Lecture", "2026-10-22T11:30:00+01:00", "2026-10-22T12:30:00+01:00"))],
+        _events_url("calendar-work"): [_events_page(
+            _google_event("Shift", "2026-10-22T07:00:00+01:00", "2026-10-22T09:00:00+01:00"))],
+    })
+    calendar = GoogleCalendar(FakeSignIn(), session=google)
+
+    events = calendar.events(date(2026, 10, 22), 1)
+
+    assert [(event["summary"], event["calendar"]) for event in events] == [
+        ("Shift", "Work"), ("Dentist", "Personal"), ("CSC2035 Lecture", "Uni")]
+    # Both pages of the list, the second asked for by Google's token for it.
+    assert [params.get("pageToken") for url, params in google.asked if url == LIST] == [None, "page-2"]
+    assert calendar.known() == [
+        {"id": "calendar-personal", "name": "Personal", "primary": True, "writable": True},
+        {"id": "calendar-uni", "name": "Uni", "primary": False, "writable": False},
+        {"id": "calendar-work", "name": "Work", "primary": False, "writable": False}]
+    for calendar_id, params in _read(calendar):
+        assert params["singleEvents"] == "true" and params["orderBy"] == "startTime"
+        assert params["maxResults"] == 250
+        assert params["timeMin"] == "2026-10-22T00:00:00+01:00" and params["timeMax"] == "2026-10-23T00:00:00+01:00"
+    assert [calendar_id for calendar_id, _ in _read(calendar)] == ["calendar-personal", "calendar-uni",
+                                                                    "calendar-work"]
+    # Each with Nova's access token, and a time limit.
+    assert all(fetched["headers"] == {"Authorization": f"Bearer {ACCESS_TOKEN}"} and fetched["timeout"]
+               for fetched in google.fetched)
+
+    # The list is kept for a while, and only the calendars given are read when some are.
+    google.answers[_events_url("calendar-work")].append(_events_page())
+    calendar.events(date(2026, 10, 22), 1, calendar_ids=["calendar-work"])
+    assert [url for url, _ in google.asked].count(LIST) == 2
+    assert [calendar_id for calendar_id, _ in _read(calendar)][-1] == "calendar-work"
+    assert len(_read(calendar)) == 4
+
+
+def test_every_page_of_events_is_read(make_calendar):
+    calendar = make_calendar()
+    calendar._session.answers[_events_url("calendar-personal")] = [
+        _events_page(_google_event("Dentist", "2026-10-22T09:30:00+01:00"), next_page="events-2"),
+        _events_page(_google_event("Dinner with Sam", "2026-10-22T19:00:00+01:00"), next_page="events-3"),
+        _events_page(_google_event("Bin day", "2026-10-22", "2026-10-23"))]
+
+    events = calendar.events(date(2026, 10, 22), 1)
+
+    assert [event["summary"] for event in events] == ["Bin day", "Dentist", "Dinner with Sam"]
+    pages = [params for _, params in _read(calendar)]
+    assert [params.get("pageToken") for params in pages] == [None, "events-2", "events-3"]
+    # Every page is for the same days.
+    assert len({(params["timeMin"], params["timeMax"]) for params in pages}) == 1
+
+
+def test_a_repeating_event_is_on_each_of_its_days(make_calendar):
+    # singleEvents=true has Google give each time it's on, as Home Assistant did.
+    lectures = [_google_event("CSC2035 Lecture", f"2026-10-{day}T11:00:00+01:00", f"2026-10-{day}T12:00:00+01:00",
+                              recurringEventId="made-up-weekly-lecture",
+                              originalStartTime={"dateTime": f"2026-10-{day}T11:00:00+01:00",
+                                                 "timeZone": "Europe/London"})
+                for day in (20, 22)]
+    calendar = make_calendar(lectures)
+
+    assert calendar.find("lecture", date(2026, 10, 20), today=date(2026, 10, 20))["message"] == (
+        "You've got CSC2035 Lecture today, at 11:00 AM; and CSC2035 Lecture on Thursday, at 11:00 AM.")
+
+
+def test_an_all_day_event_is_said_on_its_day(make_calendar):
+    calendar = make_calendar([_google_event("Sam's birthday", "2026-10-30", "2026-10-31")], reads=2)
+
+    assert calendar.agenda(date(2026, 10, 30), 1, today=date(2026, 10, 20))["message"] == \
+        "On Friday the 30th of October, you've got Sam's birthday, all day."
+    # Google's end is the day after - the 30th is the only day it's on.
+    [event] = calendar.events(date(2026, 10, 30), 1)
+    assert (event["start"], event["end"], event["all_day"]) == (date(2026, 10, 30), None, True)
+
+
+def test_a_cancelled_event_is_left_out(make_calendar):
+    # A time taken off a repeating event comes as its own entry, cancelled.
+    calendar = make_calendar([
+        _google_event("CSC2035 Lecture", "2026-10-22T11:00:00+01:00", "2026-10-22T12:00:00+01:00"),
+        {"kind": "calendar#event", "id": "made-up-cancelled", "status": "cancelled",
+         "recurringEventId": "made-up-weekly-lecture",
+         "originalStartTime": {"dateTime": "2026-10-22T15:00:00+01:00"}},
+        _google_event("Football", "2026-10-22T18:00:00+01:00", "2026-10-22T19:00:00+01:00", status="cancelled")])
+
+    assert [event["summary"] for event in calendar.events(date(2026, 10, 22), 1)] == ["CSC2035 Lecture"]
+
+
+def test_an_event_after_the_clocks_go_back_is_said_at_its_own_time(make_calendar):
+    # The clocks went back on Sunday the 25th of October 2026. Google gives a winter time
+    # in London as UTC, with a Z.
+    calendar = make_calendar([_google_event("Lecture", "2026-10-24T09:00:00+01:00", "2026-10-24T10:00:00+01:00"),
+                              _google_event("Lecture", "2026-10-26T09:00:00Z", "2026-10-26T10:00:00Z")])
+
+    assert calendar.find("lecture", date(2026, 10, 24), today=date(2026, 10, 24))["message"] == (
+        "You've got Lecture today, at 9:00 AM; and Lecture on Monday, at 9:00 AM.")
+
+    # Three days over the change are each a whole day, from local midnight to local midnight.
+    calendar = make_calendar()
+    calendar.events(date(2026, 10, 24), 3)
+    [(_, params)] = _read(calendar)
+    assert params["timeMin"] == "2026-10-24T00:00:00+01:00" and params["timeMax"] == "2026-10-27T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("down", ["no network", "not answering", "a server error", "a wrong answer"])
+def test_without_the_internet_it_says_it_cant_reach_google(make_calendar, monkeypatch, down):
+    calendar = make_calendar()
+    if down == "no network":
+        monkeypatch.setattr(google_calendar.network, "online", lambda: False)
+
+    for asked in (lambda: calendar.agenda(date(2026, 10, 22), 1), lambda: calendar.find("MOT", date(2026, 10, 22)),
+                  lambda: calendar.activity("work", date(2026, 10, 22))):
+        calendar._session.answers[_events_url("calendar-personal")] = [{
+            "no network": _events_page(),
+            "not answering": requests.ConnectionError("no route"),
+            "a server error": FakeResponse(503, {"error": {"code": 503, "message": "Backend Error"}}),
+            "a wrong answer": {"items": "nothing"}}[down]]
+        assert asked() == {"success": False, "message": CANT_REACH_GOOGLE}
+    if down == "no network":
+        # Nothing is even tried - not the sign-in either.
+        assert calendar._session.asked == []
+
+
+def test_a_sign_in_that_needs_doing_again_says_so(make_calendar, token_file):
+    calendar = make_calendar()
+    # Not signed in at all, so nothing is asked of Google.
+    calendar.sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=FakeGoogle())
+
+    assert calendar.agenda(date(2026, 10, 22), 1) == {"success": False, "message": NEEDS_SIGN_IN}
+    assert NEEDS_SIGN_IN == "I need signing in to Google again. That's done with a command on the brain."
+    assert calendar._session.asked == []
+
+
+def test_an_access_token_google_turns_down_is_got_afresh_once(make_calendar, token_file):
+    # A sign-in removed in the Google account turns its access token down straight away.
+    # Kept until it ran out, that would have been "I can't reach Google" for an hour.
+    _signed_in(token_file)
+    calendar = make_calendar(reads=2)
+    url = _events_url("calendar-personal")
+    google = calendar._session
+    google.answers[google_calendar.TOKEN] = [_token_answer("first-access", refresh=None),
+                                             _token_answer("second-access", refresh=None)]
+    google.answers[url] = [FakeResponse(401, {"error": {"code": 401}}), _events_page()]
+    calendar.sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file, session=google)
+
+    assert calendar.agenda(date(2026, 10, 22), 1)["success"] is True
+    assert [fetched["headers"]["Authorization"] for fetched in google.fetched if fetched["params"].get("timeMin")] \
+        == ["Bearer first-access", "Bearer second-access"]
+
+    # Turned down afresh, it's the sign-in that needs doing again.
+    google.answers[google_calendar.TOKEN] = [_token_answer("third-access", refresh=None)]
+    google.answers[url] = [FakeResponse(401, {"error": {"code": 401}}), FakeResponse(401, {"error": {"code": 401}})]
+    assert calendar.agenda(date(2026, 10, 22), 1) == {"success": False, "message": NEEDS_SIGN_IN}
+
+
+def test_the_calendar_is_off_without_googles_keys(monkeypatch, make_config, caplog):
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+    with caplog.at_level("INFO"):
+        assert GoogleCalendar.from_env(make_config()) is None
+    assert len([record for record in caplog.records if "GOOGLE_CLIENT_ID" in record.getMessage()]) == 1
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", CLIENT_SECRET)
+    monkeypatch.setattr(google_calendar.paths, "GOOGLE_TOKEN_FILE", "/made/up/google_token.json")
+    calendar = GoogleCalendar.from_env(make_config())
+    assert calendar.sign_in.client_id == CLIENT_ID and calendar.sign_in.path == "/made/up/google_token.json"
+
+
+# The calendar's words, moved from Home Assistant's
+
+def test_the_calendar_is_read_for_the_days_asked_about(make_calendar):
+    thursday = date(2026, 10, 22)
+    calendar = make_calendar([
+        _google_event("Dinner with Sam", "2026-10-22T19:00:00+01:00"),
+        _google_event("Dentist", "2026-10-22T09:30:00+01:00"),
+        _google_event("Bin day", "2026-10-22", "2026-10-23"),
+    ])
+    events = calendar.events(thursday, 1)
+
+    assert [event["summary"] for event in events] == ["Bin day", "Dentist", "Dinner with Sam"]
+    [(_, sent)] = _read(calendar)
+    start = datetime.fromisoformat(sent["timeMin"])
+    assert start.date() == thursday and datetime.fromisoformat(sent["timeMax"]) - start == timedelta(days=1)
+
+
+def _event(summary, when, all_day=False):
+    return {"summary": summary, "start": when, "all_day": all_day}
+
+
+TODAY = date(2026, 10, 20)
+
+
+def test_a_day_is_said_event_by_event():
+    events = [_event("Bin day", date(2026, 10, 22), all_day=True),
+              _event("Dentist", datetime(2026, 10, 22, 9, 30))]
+    assert describe_agenda(events, date(2026, 10, 22), 1, TODAY) == \
+        "On Thursday, you've got Bin day, all day, and Dentist at 9:30 AM."
+
+
+def test_a_free_day_says_so():
+    assert describe_agenda([], TODAY + timedelta(days=1), 1, TODAY) == "You've got nothing on tomorrow."
+    assert describe_agenda([], date(2026, 10, 24), 2, TODAY) == "You've got nothing on Saturday or Sunday."
+
+
+def test_several_days_only_say_the_ones_with_something_on():
+    events = [_event("Football", datetime(2026, 10, 25, 10, 0))]
+    assert describe_agenda(events, date(2026, 10, 24), 2, TODAY) == "On Sunday, you've got Football at 10:00 AM."
+
+
+def test_a_busy_day_is_cut_short():
+    events = [_event(f"Meeting {n}", datetime(2026, 10, 20, 9 + n, 0)) for n in range(7)]
+    assert describe_agenda(events, TODAY, 1, TODAY).endswith("Meeting 4 at 1:00 PM, and 2 more.")
+
+
+def test_a_day_further_off_is_said_in_full():
+    assert describe_agenda([], date(2026, 10, 30), 1, TODAY) == "You've got nothing on Friday the 30th of October."
+
+
+def _activity(name, day):
+    """An activity's day, as _as_activities gives it."""
+    start = datetime.combine(day, datetime.min.time()).replace(hour=9)
+    return {"summary": name, "start": start, "all_day": False, "spans": [[start, start + timedelta(hours=4)]],
+            "activity": True}
+
+
+def test_a_week_is_an_overview_without_the_times():
+    # Every time of every day, "uni from 11:30 AM until 1 PM and from 2:30 PM until
+    # 4:30 PM", took 52 seconds for a week.
+    events = sorted([_activity("uni", TODAY), _activity("uni", date(2026, 10, 22)), _activity("uni", date(2026, 10, 26)),
+                     _activity("work", date(2026, 10, 21)), _activity("work", date(2026, 10, 24)),
+                     _event("Payday", datetime(2026, 10, 21, 16)), _event("Haircut", datetime(2026, 10, 23, 12, 20))],
+                    key=lambda event: event["start"])
+    assert describe_agenda(events, TODAY, 7, TODAY) == (
+        "Over the next week, you've got uni today, Thursday and Monday, and work tomorrow and Saturday. "
+        "There's also Payday tomorrow, and Haircut on Friday.")
+
+
+def test_a_fortnight_counts_the_days_and_names_only_a_few_things():
+    # Read out whole, a fortnight once took three and a half minutes.
+    events = ([_activity("work", TODAY + timedelta(days=n)) for n in range(14)]
+              + [_activity("uni", TODAY + timedelta(days=n)) for n in (0, 2, 7)]
+              + [_event(f"Meeting {n}", datetime(2026, 10, 21, 10) + timedelta(days=n)) for n in range(7)])
+    events.sort(key=lambda event: event["start"])
+    said = describe_agenda(events, TODAY, 14, TODAY)
+    assert said.startswith("Over the next two weeks, you've got work every day, and uni on 3 days. There's also "
+                           "Meeting 0 tomorrow, Meeting 1 on Thursday,")
+    assert said.count("Meeting") == 5 and said.endswith(", and 2 more.")
+
+
+def test_an_overview_of_another_week_says_which_one():
+    events = [_activity("uni", date(2026, 10, 27)), _event("Dentist", datetime(2026, 10, 29, 9, 30))]
+    assert describe_agenda(events, date(2026, 10, 26), 7, TODAY) == (
+        "From Monday to Sunday the 1st of November, you've got uni on Tuesday. "
+        "There's also Dentist on Thursday the 29th of October.")
+    assert describe_agenda([], date(2026, 10, 26), 7, TODAY) == \
+        "You've got nothing on from Monday to Sunday the 1st of November."
+
+
+UNI_DAY = [
+    _google_event("CSC2035/P01/01 <04-07>", "2026-10-20T11:30:00+01:00", "2026-10-20T12:30:00+01:00"),
+    _google_event("CSC2032/T01/01", "2026-10-20T14:30:00+01:00", "2026-10-20T15:30:00+01:00"),
+    _google_event("CSC2035/L01/01 <04-07>", "2026-10-20T15:30:00+01:00", "2026-10-20T17:30:00+01:00"),
+    _google_event("Discussion group", "2026-10-20T18:00:00+01:00", "2026-10-20T19:00:00+01:00"),
+]
+
+
+def test_a_day_of_uni_is_said_as_uni_not_session_by_session(make_calendar):
+    # Each session was read out by its own name - "CSC2035/P01/01 <04-07> at 11:30
+    # AM" - which took 25 seconds for one day, and meant little.
+    calendar = make_calendar(UNI_DAY)
+    calendar.activities = {"uni": ["csc"]}
+    assert calendar.agenda(TODAY, today=TODAY)["message"] == (
+        "Today, you've got uni from 11:30 AM until 12:30 PM and from 2:30 PM until 5:30 PM, "
+        "and Discussion group at 6:00 PM.")
+
+
+def test_one_thing_is_looked_for_months_ahead(make_calendar):
+    calendar = make_calendar(UNI_DAY + [
+        _google_event("Car MOT", "2026-11-30T09:30:00+00:00", "2026-11-30T10:30:00+00:00")])
+    assert calendar.find("mot", TODAY, today=TODAY) == {
+        "success": True, "message": "You've got Car MOT on Monday the 30th of November, at 9:30 AM."}
+    [(_, sent)] = _read(calendar)
+    assert (datetime.fromisoformat(sent["timeMax"]).date() - datetime.fromisoformat(sent["timeMin"]).date()).days == 90
+
+
+def test_looking_for_something_which_isnt_there_says_so(make_calendar):
+    calendar = make_calendar(UNI_DAY)
+    assert calendar.find("MOT", TODAY, today=TODAY)["message"] == \
+        "I can't see MOT on your calendar in the next three months."
+
+
+def test_several_found_are_said_together_up_to_a_few():
+    events = [_event("Football", datetime(2026, 10, 21, 10, 0)), _event("Sam's birthday", date(2026, 10, 22), True)]
+    assert describe_found("football", events[:1] * 5, TODAY) == (
+        "You've got Football tomorrow, at 10:00 AM; Football tomorrow, at 10:00 AM; and Football tomorrow, "
+        "at 10:00 AM. And 2 more after that.")
+    assert describe_found("sam", events[1:], TODAY) == "You've got Sam's birthday on Thursday, all day."
+
+
+# Work, uni and the like
+
+def test_an_activity_is_found_by_its_name_and_said_with_its_hours(make_calendar):
+    calendar = make_calendar(calendars={"calendar-work": [
+        _google_event("Dentist", "2026-10-21T08:00:00+01:00", "2026-10-21T08:30:00+01:00"),
+        _google_event("Shift", "2026-10-21T15:30:00+01:00", "2026-10-21T22:00:00+01:00"),
+    ]})
+    calendar.activities = {"work": ["shift"]}
+    result = calendar.activity("work", date(2026, 10, 21), today=date(2026, 10, 20))
+    assert result == {"success": True, "message": "Tomorrow, you've got work from 3:30 PM until 10:00 PM."}
+
+
+def test_uni_sessions_back_to_back_are_said_as_one_stretch(make_calendar):
+    # From the user's calendar: a practical, a tutorial, then a lecture straight after it.
+    calendar = make_calendar(calendars={"calendar-uni": [
+        _google_event("CSC2035/P01/01 <04-07>", "2026-10-20T11:30:00+01:00", "2026-10-20T12:30:00+01:00"),
+        _google_event("CSC2032/T01/01", "2026-10-20T14:30:00+01:00", "2026-10-20T15:30:00+01:00"),
+        _google_event("CSC2035/L01/01 <04-07>", "2026-10-20T15:30:00+01:00", "2026-10-20T17:30:00+01:00"),
+        _google_event("Discussion group", "2026-10-20T18:00:00+01:00", "2026-10-20T19:00:00+01:00"),
+    ]})
+    calendar.activities = {"uni": ["csc"]}
+    assert calendar.activity("uni", date(2026, 10, 20), today=date(2026, 10, 20))["message"] == \
+        "Today, you've got uni from 11:30 AM until 12:30 PM, and from 2:30 PM until 5:30 PM."
+
+
+def test_a_day_off_says_so(make_calendar):
+    calendar = make_calendar([_google_event("Football", "2026-10-24T10:00:00+01:00", "2026-10-24T11:00:00+01:00")],
+                             reads=2)
+    assert calendar.activity("work", date(2026, 10, 24), 2, today=date(2026, 10, 20))["message"] == \
+        "You haven't got work between Saturday and Sunday."
+    assert calendar.activity("work", date(2026, 10, 21), today=date(2026, 10, 20))["message"] == \
+        "You haven't got work tomorrow."
+
+
+def test_an_activity_it_doesnt_know_says_where_to_add_it(make_calendar):
+    result = make_calendar().activity("gym", date(2026, 10, 21))
+    assert result["success"] is False and "home_assistant.activities" in result["message"]
+
+
+def test_split_shifts_and_all_day_work_are_both_said():
+    from voice_assistant.google_calendar import describe_activity
+    events = [{"summary": "Shift", "start": datetime(2026, 10, 22, 9, 0), "end": datetime(2026, 10, 22, 13, 0),
+               "all_day": False},
+              {"summary": "Shift", "start": datetime(2026, 10, 22, 14, 0), "end": datetime(2026, 10, 22, 18, 0),
+               "all_day": False},
+              {"summary": "Shift", "start": date(2026, 10, 23), "end": None, "all_day": True}]
+    assert describe_activity("work", events, date(2026, 10, 22), 2, TODAY) == (
+        "On Thursday, you've got work from 9:00 AM until 1:00 PM, and from 2:00 PM until 6:00 PM. "
+        "On Friday, you've got work all day.")
+
+
+def test_just_work_called_work_unless_set(make_config, monkeypatch):
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", CLIENT_SECRET)
+    calendar = GoogleCalendar.from_env(make_config(home_assistant={"url": "http://ha:8123"}))
+    assert calendar.activities == {"work": ["work"]}
+    calendar = GoogleCalendar.from_env(make_config(home_assistant={
+        "url": "http://ha:8123", "activities": {"Work": ["Shift"], "uni": ["CSC"]}}))
+    assert calendar.activities == {"work": ["shift"], "uni": ["csc"]}
+
+
+# The next time
+
+def _shift(day, start_hour, end_hour):
+    return {"summary": "Shift", "start": datetime(2026, 10, day, start_hour, 0, tzinfo=LONDON),
+            "end": datetime(2026, 10, day, end_hour, 0, tzinfo=LONDON), "all_day": False}
+
+
+NOW = datetime(2026, 10, 20, 12, 0, tzinfo=LONDON)
+SHIFTS = [_shift(20, 8, 11), _shift(21, 15, 23), _shift(24, 14, 22), _shift(25, 14, 21)]
+
+
+def test_the_next_time_is_just_the_one():
+    # Asked "when do I next have work?", every shift for a fortnight used to be read out.
+    from voice_assistant.google_calendar import describe_next
+    # This morning's shift is over, so it's tomorrow's.
+    assert describe_next("work", SHIFTS, 1, date(2026, 10, 20), NOW) == \
+        "You're next at work tomorrow, from 3:00 PM until 11:00 PM."
+
+
+def test_the_next_few_times_are_said_together():
+    from voice_assistant.google_calendar import describe_next
+    assert describe_next("work", SHIFTS, 3, date(2026, 10, 20), NOW) == (
+        "Your next 3 times at work: tomorrow, from 3:00 PM until 11:00 PM; on Saturday, from 2:00 PM until "
+        "10:00 PM; and on Sunday, from 2:00 PM until 9:00 PM.")
+
+
+def test_being_there_now_says_so():
+    from voice_assistant.google_calendar import describe_next
+    assert describe_next("work", SHIFTS, 1, date(2026, 10, 20), datetime(2026, 10, 20, 9, 30, tzinfo=LONDON)) == \
+        "You're at work now, until 11:00 AM."
+
+
+def test_nothing_coming_up_says_so():
+    from voice_assistant.google_calendar import describe_next
+    assert describe_next("uni", [], 1, date(2026, 10, 20), NOW) == "You haven't got uni in the next two weeks."

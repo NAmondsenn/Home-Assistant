@@ -89,7 +89,7 @@ The brain plays Navidrome's music to the satellite, and drives Spotify, so these
 - **"Spotify needs signing in again on the server"** - run the sign-in again, on the brain: `runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller`.
 - **"I can't find the ... speaker"** - raspotify, on the satellite, isn't running, or its name doesn't match `spotify.device_name` in the brain's settings. Check `systemctl status raspotify` on the satellite. It's restarted every night anyway (`raspotify-restart.timer`), since its connection can drop silently.
 
-## The lights or the calendar don't work
+## The lights don't work
 
 On the brain, which talks to Home Assistant for every satellite:
 
@@ -98,8 +98,6 @@ On the brain, which talks to Home Assistant for every satellite:
 - **"Home Assistant didn't accept my token"** - the token has been deleted or mistyped. Make a new one for Nova's Home Assistant user.
 - **"Sorry, I am not aware of any area called ..."** - that's Home Assistant's own answer. Check the light is exposed to Assist (Settings > Voice assistants > Expose), and what it and its area are called there.
 - **"The lights" means the wrong room** - each satellite's lights are those of the area its device is in, in Home Assistant. Check the satellite's Nova device is in the right one.
-- **The calendar says nothing's on** - check the calendar shows events in Home Assistant itself, and, if `home_assistant.calendars` is set, that it's listed there.
-
 ### A switch, media player, script or scene doesn't work
 
 Nova's own commands come first, so a request using one of their words - timer, alarm, music, volume, notifications, microphone and the like - goes to Claude, not to Assist. So does one with a word that points back ("it", "that", "the other one"), a delay ("in five minutes", "at six"), or two things joined with "and", "then" or "plus". Two things with only a comma between them do reach Assist, where what it would act on is still checked. Otherwise, the brain's log says what happened to it:
@@ -109,11 +107,21 @@ Nova's own commands come first, so a request using one of their words - timer, a
 - **`Refused a Home Assistant request ...`** or **`Refused a sensitive Home Assistant request`** - its words are for locking, unlocking or opening something, or it names, or would work, a lock, door, gate, window, valve, alarm panel, anything of Proxmox or one of the PC's HASS.Agent commands, or a script, scene or group that does - or something which acts that Home Assistant's registry hasn't caught up with yet, for up to five minutes after it's added. That's on purpose. A question about one, such as "is the garage door open?", goes to Claude instead.
 - **`Can't see what ... does`** - Home Assistant can't show that script's contents, usually because it's written in YAML outside `scripts.yaml`, so it isn't run. Move it into `scripts.yaml`, or make it in the script editor. If it says the registry wouldn't say which script it is now, Home Assistant's WebSocket didn't answer in time, and it's tried again next time.
 
+## The calendar doesn't work
+
+On the brain, which reads the calendars from Google itself for every satellite - not through Home Assistant. See the README's "Google Calendar".
+
+- **"The calendar isn't set up yet"** - `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` isn't in the brain's `~/.config/nova/.env` (or under Keys on the settings page). Its log says `The calendar is off until ...` at startup.
+- **"I need signing in to Google again"** - Nova hasn't signed in yet, or the sign-in was removed in your Google account, or the OAuth client was deleted or its secret made anew in Google Cloud. Sign in again with the command in the README, with `--again`. If the client changed, put its new id and secret in the `.env` first. A client left in Testing rather than In production ends the sign-in after a week.
+- **"I can't reach Google's calendar right now"** - the brain can't reach Google, or Google answered with an error. With no network at all, it's said straight away. The brain's log says `Couldn't read the calendar:` and the kind of failure, with no calendar's id.
+- **The sign-in says Google didn't let Nova do something** - a box on Google's page was left unticked. Sign in again, with every box ticked.
+- **The calendar says nothing's on** - check the event shows in Google Calendar itself, on a calendar in your account's list. A calendar added there turns up within five minutes. `home_assistant.calendars` isn't used any more - the brain's log says so at startup, and it can be deleted.
+
 ## A battery warning didn't come
 
 On the brain, which watches the batteries for every satellite:
 
-- **Nothing is watched without Home Assistant** - "Battery levels need Home Assistant" means `home_assistant.url` or `HA_TOKEN` isn't set up on the brain - see "The lights or the calendar don't work" above. Its log says `Home Assistant didn't answer, so batteries aren't being watched` once while it can't be reached, and `Home Assistant answers again` when it can.
+- **Nothing is watched without Home Assistant** - "Battery levels need Home Assistant" means `home_assistant.url` or `HA_TOKEN` isn't set up on the brain - see "The lights don't work" above. Its log says `Home Assistant didn't answer, so batteries aren't being watched` once while it can't be reached, and `Home Assistant answers again` when it can.
 - **Nova says it can't reach Home Assistant, but it's running** - batteries need an administrator's `HA_TOKEN`, as Home Assistant only answers templates for one. The brain's log says `Home Assistant won't tell Nova what's in which room`. Make Nova's user an administrator.
 - **The device isn't there** - ask "battery levels". A device is only found if Home Assistant has a battery sensor for it which reads in percent, and it isn't unavailable.
 - **It's only on the phone, or only said out loud** - a warning is said out loud only while you're home (Home Assistant's person) and outside `ntfy.quiet_from` to `ntfy.quiet_until`; otherwise it goes to `ntfy.phone`. The phone's own warning isn't sent to itself. With no ntfy, or a failed send, it's said instead - and held until the quiet hours end if it came in them, then said only if it's still true.

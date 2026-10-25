@@ -22,7 +22,9 @@ thresholds:
 music:
   player: "spotify"
 home_assistant:
-  calendars: []
+  url: ""
+batteries:
+  other_marks: [15, 5]
 """
 
 
@@ -60,7 +62,7 @@ def test_an_empty_file_of_its_own_is_fine(config_with):
     ("thresholds:\n  silence_duration: quick\n", "'thresholds.silence_duration' should be a number, not 'quick'"),
     ("thresholds:\n  vad_threshold: 5\n", "'thresholds.vad_threshold' should be between 0 and 1, not 5"),
     ("music:\n  player: winamp\n", "'music.player' should be one of navidrome, spotify, not 'winamp'"),
-    ("home_assistant:\n  calendars: calendar.personal\n", "'home_assistant.calendars' should be a list"),
+    ("batteries:\n  other_marks: 15\n", "'batteries.other_marks' should be a list"),
     ("music: spotify\n", "'music' should be settings under it"),
     ("music:\n  player: [spotify\n", "isn't valid YAML"),
 ])
@@ -123,6 +125,16 @@ def test_a_setting_nova_no_longer_has_is_let_through_with_where_its_set_now(conf
     with pytest.raises(ConfigError) as caught:
         config_with("weather:\n  location: Leeds\n  units: metric\n")
     assert "there's no 'weather' section" in str(caught.value)
+
+
+def test_home_assistant_calendars_is_let_through_with_where_its_set_now(config_with, caplog):
+    # The brain's own file may still name the calendars Home Assistant read, from before
+    # the calendar was Google's.
+    with caplog.at_level(logging.WARNING):
+        config = config_with('home_assistant:\n  url: "http://ha:8123"\n  calendars: [calendar.personal]\n')
+    (warning,) = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "'home_assistant.calendars'" in warning and "Google's own list" in warning and "deleted" in warning
+    assert config.section("home_assistant") == {"url": "http://ha:8123"}
 
 
 @pytest.mark.parametrize("own", ["weather:\n", "weather: null\n", "weather: {}\n"])

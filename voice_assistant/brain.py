@@ -31,6 +31,7 @@ from voice_assistant import paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock, spoken_clock_time
+from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.lists import Lists
@@ -266,6 +267,10 @@ class Brain:
         # PC, for a home with several - see pc.py.
         self.pc = (PCPower(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "pcs.json"), {"wake": {}}))
                    if self.home else None)
+        # The user's calendars, read from Google itself rather than through Home Assistant,
+        # and shared by every session - or None until Google's keys are set. See
+        # google_calendar.py.
+        self.calendar: Optional[GoogleCalendar] = GoogleCalendar.from_env(config)
 
         # Every satellite's timers and alarms, rung on the satellite each was set from.
         # Started in run(), once what rings on no satellite has gone to the default.

@@ -249,28 +249,44 @@ def test_offline_spotify_says_so_straight_away(make_executor, monkeypatch):
 
 
 def test_the_calendar_needs_a_day_it_can_read():
-    class FakeHome:
+    class FakeCalendar:
         def agenda(self, first, days):
             self.asked = (first.isoformat(), days)
             return {"success": True, "message": "You've got nothing on."}
 
-    home = FakeHome()
-    executor = ActionExecutor(home=home)
+    calendar = FakeCalendar()
+    executor = ActionExecutor(calendar=calendar)
     assert executor.execute(Action("get_calendar", {"start": "Thursday"})).ok is False
     executor.execute(Action("get_calendar", {"start": "2026-10-22", "days": 90}))
-    assert home.asked == ("2026-10-22", 14)
+    assert calendar.asked == ("2026-10-22", 14)
 
 
 def test_one_thing_is_looked_for_rather_than_reading_whole_days():
-    class FakeHome:
+    class FakeCalendar:
         def find(self, wanted, first):
             self.asked = (wanted, first.isoformat())
             return {"success": True, "message": "You've got Car MOT on Monday."}
 
-    home = FakeHome()
-    result = ActionExecutor(home=home).execute(
+    calendar = FakeCalendar()
+    result = ActionExecutor(calendar=calendar).execute(
         Action("get_calendar", {"start": "2026-10-20", "days": 14, "search": "MOT"}))
-    assert home.asked == ("MOT", "2026-10-20") and result.say == "You've got Car MOT on Monday."
+    assert calendar.asked == ("MOT", "2026-10-20") and result.say == "You've got Car MOT on Monday."
+
+
+def test_the_calendar_is_only_offered_once_google_is_set_up():
+    # It's Google's now, not Home Assistant's, so Home Assistant alone doesn't bring it.
+    class FakeHome:
+        pass
+
+    executor = ActionExecutor(home=FakeHome())
+    offered = [schema["name"] for schema in executor.tool_schemas()]
+    assert "get_calendar" not in offered and "get_activity" not in offered
+    for action in (Action("get_calendar", {"start": "2026-10-22"}), Action("get_activity", {"start": "2026-10-22"})):
+        result = executor.execute(action)
+        assert (result.ok, result.say) == (False, "The calendar isn't set up yet."), action.tool
+
+    offered = [schema["name"] for schema in ActionExecutor(calendar=object()).tool_schemas()]
+    assert "get_calendar" in offered and "get_activity" in offered
 
 
 def test_without_home_assistant_the_lights_say_so():
@@ -480,26 +496,28 @@ def test_a_light_which_cant_be_worked_is_told_in_homes_words():
     assert (result.ok, result.say) == (False, "Which room?")
 
 
-def test_an_activity_is_asked_of_home_assistant_for_the_days_given():
-    class FakeHome:
+def test_an_activity_is_asked_of_the_calendar_for_the_days_given():
+    class FakeCalendar:
         def activity(self, name, first, days):
             self.asked = (name, first.isoformat(), days)
             return {"success": True, "message": "You haven't got uni tomorrow."}
 
-    home = FakeHome()
-    result = ActionExecutor(home=home).execute(Action("get_activity", {"activity": "uni", "start": "2026-10-21"}))
-    assert home.asked == ("uni", "2026-10-21", 1) and result.say == "You haven't got uni tomorrow."
+    calendar = FakeCalendar()
+    result = ActionExecutor(calendar=calendar).execute(
+        Action("get_activity", {"activity": "uni", "start": "2026-10-21"}))
+    assert calendar.asked == ("uni", "2026-10-21", 1) and result.say == "You haven't got uni tomorrow."
 
 
 def test_the_next_times_are_looked_for_across_a_fortnight():
-    class FakeHome:
+    class FakeCalendar:
         def activity(self, name, first, days, count=None):
             self.asked = (name, first.isoformat(), days, count)
             return {"success": True, "message": "You're next at work tomorrow."}
 
-    home = FakeHome()
-    ActionExecutor(home=home).execute(Action("get_activity", {"activity": "work", "start": "2026-10-20", "count": 50}))
-    assert home.asked == ("work", "2026-10-20", 14, 10)
+    calendar = FakeCalendar()
+    ActionExecutor(calendar=calendar).execute(
+        Action("get_activity", {"activity": "work", "start": "2026-10-20", "count": 50}))
+    assert calendar.asked == ("work", "2026-10-20", 14, 10)
 
 
 # Notifications

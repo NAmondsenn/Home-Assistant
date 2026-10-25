@@ -231,8 +231,8 @@ def brain(tmp_path, monkeypatch, make_config):
     config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"})
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
-                           batteries=None, lists=None, pc=None, registry=None, tts=FakePiper(), stt=FakeSpeechToText(),
-                           sounds_folder=Path(paths.SOUNDS_DIR))
+                           batteries=None, lists=None, pc=None, registry=None, calendar=None, tts=FakePiper(),
+                           stt=FakeSpeechToText(), sounds_folder=Path(paths.SOUNDS_DIR))
 
 
 @pytest.fixture
@@ -1020,6 +1020,12 @@ def test_a_sessions_actions_read_batteries_from_the_brains_watcher(brain, make_s
     # One watcher for the brain, so a spoken answer and a warning are the same reading.
     brain.batteries = object()
     assert make_session().actions.batteries is brain.batteries
+
+
+def test_a_sessions_actions_read_the_brains_calendar(brain, make_session):
+    # One Google calendar for the brain, rather than one for each satellite.
+    brain.calendar = object()
+    assert make_session().actions.calendar is brain.calendar
 
 
 def _the_brain_says(session, message):

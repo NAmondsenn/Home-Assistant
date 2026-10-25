@@ -48,6 +48,7 @@ UNAVAILABLE = {
     "batteries": "Battery levels need Home Assistant.",
     "lists": "Lists need Home Assistant.",
     "pc": "Your PC needs Home Assistant.",
+    "calendar": "The calendar isn't set up yet.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -243,15 +244,14 @@ class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
     def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
-                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None):
+                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None, calendar=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
             clock: Clock instance, for timers, reminders and alarms.
             volume: VolumeControl instance, for the assistant's own volumes.
             weather: Weather instance, for the forecast.
-            home: HomeAssistant instance, for the lights and the calendar, or None
-                if it isn't set up.
+            home: HomeAssistant instance, for the lights, or None if it isn't set up.
             memory: Memory instance, for what the assistant knows about the user.
             ntfy: Ntfy instance, for the user's notifications, or None if it isn't
                 set up.
@@ -262,6 +262,8 @@ class ActionExecutor:
             lists: Lists, for Home Assistant's to-do lists, or None if Home Assistant
                 isn't set up.
             pc: PCPower, for turning the PC on and off, or None if Home Assistant isn't
+                set up.
+            calendar: GoogleCalendar, for the user's calendars, or None if Google isn't
                 set up.
         """
         self.music = music
@@ -275,6 +277,7 @@ class ActionExecutor:
         self.batteries = batteries
         self.lists = lists
         self.pc = pc
+        self.calendar = calendar
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -948,7 +951,7 @@ class ActionExecutor:
         "thing on it, for 'when's my MOT?', 'when am I next seeing Sam?' or 'is the "
         "dentist soon?' - give what to search for, and today as the first day, rather "
         "than reading whole days. What's on is read out to the user, so just reply 'Okay.'",
-        needs="home",
+        needs="calendar",
         required=["start"],
         start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
         days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
@@ -961,8 +964,8 @@ class ActionExecutor:
     )
     def get_calendar(self, start: Optional[str] = None, days: Optional[int] = None, search: Optional[str] = None):
         if search and search.strip():
-            return self._calendar_days(start, None, lambda first, days: self.home.find(search, first))
-        return self._calendar_days(start, days, self.home.agenda)
+            return self._calendar_days(start, None, lambda first, days: self.calendar.find(search, first))
+        return self._calendar_days(start, days, self.calendar.agenda)
 
     @tool(
         "When the user has something regular on their calendar - work, uni and the like - "
@@ -972,7 +975,7 @@ class ActionExecutor:
         "activity, the first day, worked out from today's date (today, for 'next'), and "
         "how many days, or for 'next', how many times. The times are read out to the user, "
         "so just reply 'Okay.'",
-        needs="home",
+        needs="calendar",
         required=["activity", "start"],
         activity={
             "type": "string",
@@ -990,10 +993,10 @@ class ActionExecutor:
                      count: Optional[int] = None):
         if count:
             # Looked for across the next fortnight, and only the first few said.
-            return self._calendar_days(start, MOST_CALENDAR_DAYS, lambda first, days: self.home.activity(
+            return self._calendar_days(start, MOST_CALENDAR_DAYS, lambda first, days: self.calendar.activity(
                 activity or "work", first, days, count=max(1, min(int(count), MOST_NEXT))))
         return self._calendar_days(start, days,
-                                   lambda first, days: self.home.activity(activity or "work", first, days))
+                                   lambda first, days: self.calendar.activity(activity or "work", first, days))
 
     @staticmethod
     def _calendar_days(start: Optional[str], days: Optional[int], read) -> Dict:

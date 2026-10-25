@@ -29,6 +29,7 @@ from voice_assistant import paths, protocol
 from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
 from voice_assistant.batteries import BatteryWatcher
+from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
 from voice_assistant.ntfy import Alert
 from voice_assistant.recording import RATE
@@ -1066,6 +1067,19 @@ def test_the_brain_reads_the_registry_when_home_assistant_is_set_up(make_brain, 
     monkeypatch.delenv("HA_TOKEN")
     assert make_brain(home_assistant=HOME_ASSISTANT).registry is None
     assert make_brain().registry is None
+
+
+def test_the_brain_reads_the_calendar_from_google_once_its_keys_are_set(make_brain, monkeypatch):
+    # Google's, not Home Assistant's - so it's there without Home Assistant, and not without Google.
+    monkeypatch.delenv("HA_TOKEN", raising=False)
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "made-up-client.apps.example.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "made-up-client-secret")
+    brain = make_brain()
+    assert isinstance(brain.calendar, GoogleCalendar) and brain.home is None
+    assert brain.calendar.sign_in.path == paths.GOOGLE_TOKEN_FILE
+
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET")
+    assert make_brain(home_assistant=HOME_ASSISTANT).calendar is None
 
 
 def test_a_battery_warning_is_said_on_the_default_satellite(brain, connect):

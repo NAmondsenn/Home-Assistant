@@ -167,17 +167,17 @@ class Session:
         # Keeps the music paused while there's something to say - see MusicHold.
         self.music = MusicHold(self.music_player, online=online)
 
-        # Home Assistant, for the lights and the calendar - None until it's set up. One
-        # for each session, since it keeps the room its satellite is in.
+        # Home Assistant, for the lights - None until it's set up. One for each session,
+        # since it keeps the room its satellite is in.
         self.home = HomeAssistant.from_config(config, os.getenv("HA_TOKEN"), registry=brain.registry)
 
-        # Everything the assistant can do for the user - see actions.py. The lights and
-        # the calendar are only there once Home Assistant is set up, and timers and
-        # alarms ring on the satellite they were set from.
+        # Everything the assistant can do for the user - see actions.py. The lights are
+        # only there once Home Assistant is set up, and the calendar once Google is, and
+        # timers and alarms ring on the satellite they were set from.
         self.actions = ActionExecutor(music=self.music_player, clock=brain.clock, volume=self.volume,
                                       weather=brain.weather, home=self.home, memory=brain.memory,
                                       ntfy=brain.ntfy, satellite=satellite.name, batteries=brain.batteries,
-                                      lists=brain.lists, pc=brain.pc)
+                                      lists=brain.lists, pc=brain.pc, calendar=brain.calendar)
 
         # The everyday commands handled without Claude - see intents.py.
         self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home)
