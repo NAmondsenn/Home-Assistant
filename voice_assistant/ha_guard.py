@@ -150,7 +150,15 @@ def guarded(entity_id: str, attributes: Dict, snapshot: Optional[Snapshot]) -> O
         worked by voice.
     """
     domain = entity_id.partition(".")[0]
-    kind = GUARDED_COVERS.get(attributes.get("device_class")) if domain == "cover" else GUARDED.get(domain)
+    if domain == "cover":
+        device_class = attributes.get("device_class")
+        # Home Assistant only ever gives a word, or none - a list, say, is a cover whose
+        # kind can't be told, so it could be a garage door.
+        if device_class is not None and not isinstance(device_class, str):
+            return ()
+        kind = GUARDED_COVERS.get(device_class)
+    else:
+        kind = GUARDED.get(domain)
     if kind is not None or snapshot is None:
         return kind
     if snapshot.platform(entity_id) == PROXMOX:

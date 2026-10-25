@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from voice_assistant import home_assistant, network
+from voice_assistant import ha_guard, home_assistant, network
 from voice_assistant.actions import Action, ActionExecutor
 from voice_assistant.ha_registry import Entry, HomeSocketError, Snapshot
 from voice_assistant.home_assistant import (REQUEST_TIMEOUT, HomeAssistant, NotAllowed, describe_agenda,
@@ -304,6 +304,17 @@ def test_blinds_curtains_and_the_like_may_open_and_close(make_home, device_class
                       "/api/conversation/process": _assist("action_done", "Opened")})
     assert home.command("turn on the bedroom cover")["success"]
     assert _asked(home)["text"] == "turn on the bedroom cover"
+
+
+@pytest.mark.parametrize("device_class", [["garage"], {"kind": "garage"}, 3])
+def test_a_cover_whose_device_class_isnt_a_word_is_guarded(make_home, device_class):
+    # Home Assistant only ever gives a word, so anything else is a cover whose kind can't
+    # be told - which could be a garage door - rather than one to fail at.
+    cover = _thing("cover.side", "Side", device_class)
+    assert ha_guard.guarded("cover.side", cover["attributes"], None) == ()
+    home = make_home({"/api/states": [cover], "/api/conversation/process": _assist("action_done", "Opened")})
+    assert home.command("turn on the side") == REFUSED
+    assert "/api/conversation/process" not in _paths(home)
 
 
 def test_a_light_whose_name_holds_a_locks_is_that_light(make_home):
