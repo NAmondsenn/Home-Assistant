@@ -72,7 +72,7 @@ def test_actions():
 
         print()
 
-    # Also check execute(None), since main.py can call this when no action
+    # Also check execute(None), since the brain can call this when no action
     # was detected in a query, this shouldn't raise an exception.
     print("-" * 60)
     print("[extra] Action: None (no action detected)")

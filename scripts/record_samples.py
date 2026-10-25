@@ -3,7 +3,7 @@
 Record Samples
 Records you saying a list of things, through Nova's own microphone, echo cancelling
 and end-of-speech detection, so each recording is just what speech-to-text would be
-given - for scripts/compare_speech_to_text.py to measure models on.
+given - to measure speech-to-text models on.
 
 Stop Nova first, so it isn't listening as well, and start it again afterwards:
 
@@ -153,7 +153,7 @@ def record_samples(prompts: List[Dict[str, str]], folder: str, record: Callable[
 
 def main():
     parser = argparse.ArgumentParser(description="Records you saying a list of things, for "
-                                                 "compare_speech_to_text.py.")
+                                                 "measuring speech-to-text models.")
     parser.add_argument("prompts", help="the things to say - see scripts/sample_prompts.txt")
     parser.add_argument("folder", nargs="?", default=os.path.join(paths.DATA_DIR, "voice-samples"),
                         help="where the recordings go")
@@ -167,11 +167,12 @@ def main():
     from voice_assistant.config import Config
     from voice_assistant.echo import make_echo_canceller
     from voice_assistant.microphone import Microphone
+    from voice_assistant.recording import record_until_silence
     from voice_assistant.speaker import Speaker
     from voice_assistant.vad import make_detector
 
     # The same microphone, echo cancelling and end-of-speech detection as Nova, with
-    # its settings - see main.py.
+    # its settings - see session.py.
     config = Config()
     rate = config.section("audio").get("sample_rate", 48000)
     echo = make_echo_canceller(config, rate)
@@ -187,14 +188,13 @@ def main():
             playback.wait()
         # Longer than Nova allows to start talking and to talk for, since reading the
         # prompt takes a moment, and the made up ones can be longer.
-        return microphone.record_until_silence(detector, listen_from=microphone.position,
-                                               silence_duration=silence, speech_timeout=5.0, timeout=15.0)
+        return record_until_silence(microphone, detector, listen_from=microphone.position,
+                                      silence_duration=silence, speech_timeout=5.0, timeout=15.0)
 
     print(f"{len(prompts)} things to say. Each recording is kept in {folder} as it's made.")
     try:
         recorded = record_samples(prompts, folder, record, input)
-        print(f"\nRecorded {recorded} this time. Compare models on them with scripts/compare_speech_to_text.py, "
-              f"and delete {folder} once you're done.")
+        print(f"\nRecorded {recorded} this time. Delete {folder} once you're done with them.")
     except (KeyboardInterrupt, EOFError):
         print(f"\nStopped - what was recorded is kept in {folder}. Run this again to carry on.")
     finally:

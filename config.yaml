@@ -1,8 +1,8 @@
 # Every setting, with its default. Don't change them here: put just the ones you want
 # different in ~/.config/nova/config.yaml, in the same sections - e.g.
 #
-#   weather:
-#     location: "Leeds"
+#   music:
+#     player: "navidrome"
 #
 # That file is this install's own, outside the repository, so an update never touches
 # it. It's checked against this one as Nova starts, so a misspelt setting is caught.
@@ -37,7 +37,8 @@ audio:
   # program, so isn't taken out.
   echo_cancellation: true
   # Seconds of audio from just before the wake word was detected which are kept,
-  # so "Hey Nova what time is it", said in one breath, isn't cut short.
+  # so "Hey Nova what time is it", said in one breath, isn't cut short. Set on the
+  # satellite, which tells the brain how much it sent with each wake.
   pre_roll: 0.3
 
 music:
@@ -55,47 +56,16 @@ spotify:
   device_name: "Voice-Assistant"
   pause_while_speaking: true
 
-speech_to_text:
-  # Which model turns speech into text: "moonshine", or "whisper" (below). Measured on
-  # the Pi, Moonshine took 0.8s where Whisper took 2.2s, with fewer words wrong.
-  engine: "moonshine"
-
-moonshine:
-  # "small-streaming" suits the Pi. "tiny-streaming" is quicker, at 0.35s, but got
-  # twice as many words wrong as Whisper; "medium-streaming" was slower, not better.
-  model: "small-streaming"
-  # Where the model files are kept, inside the project. setup.sh downloads them here.
-  download_root: "models/moonshine"
-  # Words to listen out for - names it would otherwise mishear. No commas in them.
-  keyterms: ["Nova", "Hey Nova", "Spotify", "Navidrome", "uni"]
-
-whisper:
-  model: "base.en"
-  # Where the model files are kept, inside the project. setup.sh downloads them here,
-  # so the first start doesn't need the internet.
-  download_root: "models/whisper"
-  device: "cpu"
-  compute_type: "int8"
-  fallback_model: "tiny.en"
-  # How many guesses at the words Whisper keeps open as it goes. Higher is meant to be
-  # more accurate, but on 20 spoken commands on the Pi, 1 heard them as well as 5 did
-  # and was 0.15s quicker - nearly all of Whisper's time goes on listening to the
-  # audio, not on choosing the words.
-  beam_size: 1
-  # Words the model is told to expect, which biases it towards the names this
-  # assistant actually hears rather than similar sounding ones.
-  initial_prompt: >-
-    Hey Nova. Play some music. Pause Spotify, skip this track, shuffle,
-    repeat, play my playlist. Set a timer, set a reminder, cancel the timer.
-    Turn off the kitchen lights. What have I got on Thursday? What time is it?
-    What's the weather?
-
 backend:
-  # Nova's backend on PVE2, which does the speech-to-text for this Pi - see
-  # docs/decisions/0004 - as "name:port" on the tailnet, e.g. "nova:10400". Left
-  # empty, this Pi does it all itself, as above. Both need the same password, as
-  # NOVA_BACKEND_TOKEN in ~/.config/nova/.env.
+  # On a satellite: Nova's brain, as "name:port" on the tailnet, e.g. "nova:10400" -
+  # see docs/decisions/0006. The satellite needs the password the brain gave it from
+  # add-satellite, as NOVA_BACKEND_TOKEN in ~/.config/nova/.env. There's no standalone
+  # mode: without a brain it can only ring its timers and alarms, and say it can't
+  # reach it.
   address: ""
+  # This satellite's name, which the brain knows its password by - see add-satellite
+  # in backend.py. Left empty, it's this machine's own name.
+  satellite: ""
   # Only used on the backend itself: the port it listens on, on its own machine -
   # Tailscale passes the tailnet's connections on to it - and the streaming model it
   # hears with, inside the project.
@@ -196,15 +166,20 @@ sounds:
 
 logging:
   # Whether what's said to the assistant, and its replies, are written to the logs
-  # (smart_assistant.log in ~/.local/share/nova/logs, and the system journal). Handy while setting things up;
-  # turn it off to keep conversations out of the logs altogether.
+  # (backend.log on the brain, in ~/.local/share/nova/logs, and the system journal). Handy
+  # while setting things up; turn it off to keep conversations out of the logs altogether.
   log_transcripts: true
 
 home_assistant:
   # Home Assistant's address, e.g. "http://homeassistant.local:8123". Nova signs in
-  # with a long-lived access token, as HA_TOKEN in ~/.config/nova/.env, made by a Home
-  # Assistant user of its own rather than an administrator. It can only reach the
-  # devices exposed to Assist - see the README.
+  # with a long-lived access token, as HA_TOKEN in ~/.config/nova/.env on the brain,
+  # made by a Home Assistant user of its own who is an administrator - Home Assistant
+  # only tells an administrator which room each device is in, which Nova's room and
+  # Claude's lights need. An administrator's token can do anything in Home Assistant,
+  # so it's Nova's own code which keeps it to the lights, the calendar, and scripts and
+  # scenes run from the settings page, and never anything which locks, unlocks or
+  # opens. Assist, for the requests passed on in plain words, only reaches the devices
+  # exposed to it. See the README.
   url: ""
   # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
   # Left empty, every calendar Home Assistant has is read.
@@ -215,6 +190,22 @@ home_assistant:
   # uni: ["CSC"] for course codes like CSC203.
   activities:
     work: ["work"]
+
+batteries:
+  # Nova finds every device Home Assistant has a battery level for, and warns you once as
+  # each falls past a mark. Warnings go to your phone through ntfy.phone and, while
+  # you're home outside ntfy's quiet hours, are said out loud as well - see
+  # docs/decisions/0007. Home Assistant is needed for this. These are the marks to start
+  # with; each device's own are changed on the settings page.
+  # Phones and tablets, which are warned about once, as a percentage.
+  mobile_marks: [5]
+  # Everything else - a laptop, a remote - warned about at each, highest first.
+  other_marks: [15, 5]
+  # How often, in seconds, the batteries are read.
+  check_every: 60
+  # How old a reading may be, in seconds, and still count as the level now. One older
+  # is said with its age - "was on 88%, 3 days ago" - so it isn't taken for the level now.
+  stale_after: 3600
 
 mqtt:
   # Home Assistant's MQTT broker - the Mosquitto add-on - through which Nova is a
@@ -231,8 +222,3 @@ mqtt:
   # the machine's own name, so a second Nova is a second device. Changing it later
   # makes a new device, leaving the old one to be deleted in Home Assistant.
   name: "Nova"
-
-weather:
-  # The town or city the weather is for, e.g. "Leeds". Looked up on Open-Meteo, which
-  # is free and needs no key. Until it's set, Nova says it doesn't know where you are.
-  location: ""

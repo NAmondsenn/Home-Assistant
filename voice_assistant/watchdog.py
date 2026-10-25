@@ -16,6 +16,7 @@ import os
 import socket
 import threading
 import time
+from typing import Optional
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -28,10 +29,17 @@ ALLOWANCE = 150.0
 _last_beat = time.monotonic()
 
 
-def beat():
-    """Says the main loop is still going. Cheap enough to call many times a second."""
+def beat(at: Optional[float] = None):
+    """
+    Says the main loop is still going. Cheap enough to call many times a second.
+
+    Args:
+        at: When it was last known to be getting on, by time.monotonic(), if not now -
+            the brain's, which goes on listening for satellites while one of its
+            sessions is stuck in a turn, says when that session last moved.
+    """
     global _last_beat
-    _last_beat = time.monotonic()
+    _last_beat = time.monotonic() if at is None else at
 
 
 def _notify(message: str) -> bool:

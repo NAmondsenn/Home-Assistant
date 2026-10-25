@@ -125,13 +125,6 @@ if _module_missing("requests"):
     sys.modules["requests"] = requests
 
 
-# faster_whisper: only WhisperModel, which the tests replace with their own fake.
-if _module_missing("faster_whisper"):
-    faster_whisper = types.ModuleType("faster_whisper")
-    faster_whisper.WhisperModel = None
-    sys.modules["faster_whisper"] = faster_whisper
-
-
 # openwakeword: the wake word Model and Silero's VAD. Tests give the detectors their
 # own fakes for both, so no model ever has to be downloaded.
 if _module_missing("openwakeword"):
@@ -145,6 +138,16 @@ if _module_missing("openwakeword"):
     sys.modules["openwakeword"] = openwakeword
     sys.modules["openwakeword.model"] = openwakeword_model
     sys.modules["openwakeword.vad"] = openwakeword_vad
+
+
+# websocket-client: the connection function and the two errors ha_registry.py catches.
+# Tests replace create_connection with their own fake, so nothing ever connects.
+if _module_missing("websocket"):
+    websocket = types.ModuleType("websocket")
+    websocket.create_connection = None
+    websocket.WebSocketException = type("WebSocketException", (Exception,), {})
+    websocket.WebSocketTimeoutException = type("WebSocketTimeoutException", (websocket.WebSocketException,), {})
+    sys.modules["websocket"] = websocket
 
 
 class FakeConfig:

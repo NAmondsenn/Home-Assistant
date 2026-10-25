@@ -25,8 +25,15 @@ TEST_CASES = [
     ("previous song", Action("control_playback", {"action": "previous"})),
     ("What's playing right now?", Action("control_playback", {"action": "current"})),
     ("What song is this?", Action("control_playback", {"action": "current"})),
-    ("Turn on the lights", Action("control_home", {"command": "Turn on the lights"})),
-    ("Lamp off", Action("control_home", {"command": "Lamp off"})),
+    ("Turn on the lights", Action("control_home", {"command": "Turn on the lights", "wider": False})),
+    ("Lamp off", Action("control_home", {"command": "Lamp off", "wider": False})),
+    # A sentence joining more than one thing could name anything besides the lights, so
+    # it's only sent on the wider rule - see HomeAssistant.command.
+    ("Turn off the lights and the TV", Action("control_home", {"command": "Turn off the lights and the TV",
+                                                               "wider": True})),
+    ("Lights off then the heater", Action("control_home", {"command": "Lights off then the heater", "wider": True})),
+    ("Lamp on plus the fan", Action("control_home", {"command": "Lamp on plus the fan", "wider": True})),
+    ("Turn on the lamp, the fan", Action("control_home", {"command": "Turn on the lamp, the fan", "wider": True})),
 ]
 
 

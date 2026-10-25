@@ -10,3 +10,4 @@
 *.wav binary
 *.mp3 binary
 *.onnx binary
+*.woff2 binary

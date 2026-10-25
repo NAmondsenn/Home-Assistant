@@ -12,14 +12,16 @@ import anthropic
 import pytest
 
 from voice_assistant import llm as llm_module
-from voice_assistant.actions import Action
+from voice_assistant.actions import Action, ActionExecutor
+from voice_assistant.home_assistant import CANT_REACH
 from voice_assistant.llm import LLMHandler
 
 
 class FakeClient:
     """
-    Stands in for the Anthropic client. Returns the given reply, or raises the given
-    error, and keeps every request so the test can look at what was sent.
+    Stands in for the Anthropic client. Returns the given reply - or each of a list of
+    them in turn - or raises the given error, and keeps every request so the test can
+    look at what was sent, its messages as they were then.
     """
 
     def __init__(self, outcome):
@@ -33,10 +35,11 @@ class FakeClient:
         return self
 
     def create(self, **request):
-        self.requests.append(request)
-        if isinstance(self.outcome, BaseException):
-            raise self.outcome
-        return self.outcome
+        self.requests.append({**request, "messages": list(request["messages"])})
+        outcome = self.outcome.pop(0) if isinstance(self.outcome, list) else self.outcome
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def _reply(text, *tools, stop_reason="end_turn"):
@@ -55,9 +58,9 @@ def _error(cls):
     return error
 
 
-def _tool(name, **params):
+def _tool(name, use_id="toolu_1", **params):
     """A tool_use block, shaped like the ones the API returns."""
-    return SimpleNamespace(type="tool_use", name=name, input=params)
+    return SimpleNamespace(type="tool_use", id=use_id, name=name, input=params)
 
 
 @pytest.fixture
@@ -66,8 +69,9 @@ def llm():
 
 
 def test_a_tool_call_becomes_an_action_naming_it(llm):
+    # Marked as the model's, so it can only run what it was offered - see ActionExecutor.execute.
     assert llm._action_from_tool_use(_tool("set_timer", at="16:00", label="Call mum")) == \
-        Action("set_timer", {"at": "16:00", "label": "Call mum"})
+        Action("set_timer", {"at": "16:00", "label": "Call mum"}, from_model=True)
 
 
 def test_an_album_is_only_played_when_asked_for_by_name(llm):
@@ -211,6 +215,145 @@ def test_every_tool_call_is_run_not_just_the_first(llm):
     assert [action.tool for action in result["actions"]] == ["control_playback", "set_timer"]
 
 
+# Reading before answering
+
+SUNSET = "Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52"
+
+
+def _reader():
+    """An LLMHandler offered home_status as a read tool."""
+    return LLMHandler(api_key=None, read_tools=["home_status"])
+
+
+def _results(message):
+    """A user message's tool_results, as (id, content) pairs."""
+    return [(result["tool_use_id"], result["content"]) for result in message["content"]]
+
+
+def test_a_read_tools_answer_goes_back_to_claude():
+    llm = _reader()
+    asking = _reply("Let me check.", _tool("home_status", use_id="t1", about="sunset"))
+    llm.client = FakeClient([asking, _reply("Sunset's at 5:52 PM.")])
+    read = []
+
+    def reader(action):
+        read.append(action)
+        return SUNSET
+
+    result = llm.process_query("when's sunset?", read=reader)
+    assert read == [Action("home_status", {"about": "sunset"}, from_model=True)]
+    first, second = llm.client.requests
+    assert second["messages"][:-2] == first["messages"]
+    assert second["messages"][-2:] == [
+        {"role": "assistant", "content": asking.content},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": SUNSET}]}]
+    assert (result["response"], result["actions"], result["success"]) == ("Sunset's at 5:52 PM.", [], True)
+    # Only the final reply is kept, as for any other turn.
+    assert (llm.history[-1]["assistant"], llm.history[-1]["tools"]) == ("Sunset's at 5:52 PM.", [])
+    # Tools may still be called in the round after a read.
+    assert "tool_choice" not in second
+
+
+def test_two_reads_at_once_are_each_answered_in_turn():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset"),
+                                    _tool("home_status", use_id="t2", about="navidrome")),
+                             _reply("Sunset's at 5:52 PM, and Navidrome is up.")])
+    result = llm.process_query("when's sunset, and is navidrome up?", read=lambda action: action.params["about"])
+    assert _results(llm.client.requests[1]["messages"][-1]) == [("t1", "sunset"), ("t2", "navidrome")]
+    assert result["response"] == "Sunset's at 5:52 PM, and Navidrome is up."
+
+
+def test_a_tool_called_after_reading_is_an_action():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="desk lamp")),
+                             _reply("Okay.", _tool("set_lights", use_id="t2", on=False, light="light.desk_lamp"))])
+    result = llm.process_query("if the desk lamp's on, turn it off", read=lambda action: "Desk lamp: on")
+    assert result["actions"] == [Action("set_lights", {"on": False, "light": "light.desk_lamp"}, from_model=True)]
+
+
+def test_reads_stop_after_two_rounds():
+    # A model which keeps reading can't hold the answer up for long: the last round may
+    # call no tool, so Claude says what it found - and a read it calls anyway is dropped,
+    # never said as it is.
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id=f"t{n}", about="sunset")) for n in range(5)])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert len(llm.client.requests) == 1 + llm_module.MOST_READS == 3
+    first, second, third = llm.client.requests
+    assert "tool_choice" not in first and "tool_choice" not in second
+    assert third["tool_choice"] == {"type": "none"}
+    assert _results(second["messages"][-1]) == [("t0", SUNSET)]
+    assert _results(third["messages"][-1]) == [("t1", SUNSET)]
+    assert (result["response"], result["actions"]) == ("Sorry, I couldn't find that out.", [])
+
+
+def test_a_read_without_a_way_to_read_is_never_said():
+    llm = _reader()
+    llm.client = FakeClient([_reply("Okay.", _tool("home_status", about="sunset"))])
+    result = llm.process_query("when's sunset?")
+    assert (result["response"], result["actions"]) == ("Sorry, I couldn't find that out.", [])
+    assert len(llm.client.requests) == 1
+
+
+def test_a_read_tool_beside_another_tool_is_dropped():
+    # Read and then asked again, the timer beside it could be asked for twice - so the read
+    # is dropped, and the timer and Claude's words kept.
+    llm = _reader()
+    llm.client = FakeClient([_reply("I'll set that timer.", _tool("home_status", use_id="t1", about="sunset"),
+                                    _tool("set_timer", use_id="t2", duration_seconds=600))])
+    read = []
+    result = llm.process_query("when's sunset, and set a ten minute timer", read=read.append)
+    assert read == [] and len(llm.client.requests) == 1
+    assert result["actions"] == [Action("set_timer", {"duration_seconds": 600}, from_model=True)]
+    assert result["response"] == "I'll set that timer."
+    assert llm.history[-1]["tools"] == [("set_timer", {"duration_seconds": 600})]
+
+
+def test_home_assistant_down_reaches_claude_rather_than_being_said():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _reply("I can't reach Home Assistant to check.")])
+    home = SimpleNamespace(status=lambda about: {"success": False, "message": CANT_REACH})
+    executor = ActionExecutor(home=home)
+    result = llm.process_query("when's sunset?", read=lambda action: executor.execute(action).say)
+    assert _results(llm.client.requests[1]["messages"][-1]) == [("t1", CANT_REACH)]
+    assert (result["response"], result["actions"]) == ("I can't reach Home Assistant to check.", [])
+
+
+def test_a_read_that_fails_tells_claude_so():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _reply("Sorry, I couldn't check that.")])
+
+    def broken(action):
+        raise RuntimeError("bug")
+
+    result = llm.process_query("when's sunset?", read=broken)
+    answered, = llm.client.requests[1]["messages"][-1]["content"]
+    assert (answered["tool_use_id"], answered["is_error"]) == ("t1", True)
+    assert result["response"] == "Sorry, I couldn't check that."
+
+
+def test_a_failure_after_reading_runs_no_fallback_action():
+    # The offline parser would take "are the lights on" for a light command.
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="lights")),
+                             _error(anthropic.APIConnectionError)])
+    result = llm.process_query("are the lights on", read=lambda action: "Desk lamp: on")
+    assert (result["actions"], result["success"]) == ([], False)
+    assert llm._fallback_actions("are the lights on") != []
+
+
+def test_a_paused_search_after_reading_is_carried_on():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _reply("", stop_reason="pause_turn"),
+                             _reply("Sunset's at 5:52 PM.")])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert len(llm.client.requests) == 3 and result["response"] == "Sunset's at 5:52 PM."
+
+
 # History
 
 def test_history_records_what_was_actually_said(llm):
@@ -218,7 +361,7 @@ def test_history_records_what_was_actually_said(llm):
     llm.process_query("remind me in 20 minutes")
     assert llm.history[-1]["assistant"] == "Okay."
 
-    # What main.py does once the action has asked its question.
+    # What the conversation does once the action has asked its question.
     llm.record_reply("remind me in 20 minutes", "What would you like to name this reminder?")
     assert (llm.history[-1]["user"], llm.history[-1]["assistant"]) == \
         ("remind me in 20 minutes", "What would you like to name this reminder?")
@@ -319,3 +462,29 @@ def test_thinking_is_off_and_temperature_only_sent_when_set(llm):
     llm.temperature = 0.7
     llm.process_query("and Spain")
     assert llm.client.requests[-1]["temperature"] == 0.7
+
+
+@pytest.mark.parametrize("said, item, where", [
+    # Claude would split them; offline, they're kept as one thing rather than lost.
+    ("Add eggs, milk and bread to my shopping list.", "eggs milk and bread", "shopping"),
+    ("add milk to notes", "milk", "notes"),
+    ("Add salt and vinegar crisps to the todo list.", "salt and vinegar crisps", "todo"),
+    # The last " to " is the list's, and "to do" is a list's name.
+    ("Add a trip to Ikea to my list.", "a trip to ikea", "list"),
+    ("Add milk to my to-do list.", "milk", "to do"),
+    ("Add one egg to my list.", "one egg", "list"),
+    ("Add the last of the bread to my list.", "the last of the bread", "list"),
+])
+def test_offline_several_things_are_added_as_one(llm, said, item, where):
+    llm.client = FakeClient(_error(anthropic.APIConnectionError))
+    assert llm.process_query(said)["actions"] == [Action("add_to_list", {"item": item, "list": where})]
+
+
+@pytest.mark.parametrize("said", ["Add ten minutes to the timer.", "Add the dentist to my calendar.",
+                                  "Add it to my list.", "Add to my list.", "What should I add to my list?",
+                                  "Add them to my shopping list.", "Add all of those to my list.",
+                                  "Add a note to my phone's notes.", "Add that cake to my list.",
+                                  "Add the other one to my list."])
+def test_offline_what_isnt_a_list_isnt_added_to_one(llm, said):
+    llm.client = FakeClient(_error(anthropic.APIConnectionError))
+    assert llm.process_query(said)["actions"] == []

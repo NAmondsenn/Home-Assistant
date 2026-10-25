@@ -8,6 +8,7 @@ here touches the real data/ folder or waits on a real clock.
 """
 
 import json
+import logging
 import threading
 import time
 from datetime import datetime, timedelta
@@ -29,7 +30,7 @@ def make_clock(tmp_path, monkeypatch, make_config):
     monkeypatch.setattr(clock_module, "TIMERS_FILE", str(tmp_path / "timers.json"))
     monkeypatch.setattr(clock_module, "ALARMS_FILE", str(tmp_path / "alarms.json"))
 
-    def factory(on_announce=None, on_unanswered=None, **timers_config):
+    def factory(on_announce=None, on_unanswered=None, on_change=None, can_hear=None, **timers_config):
         # One announcement per round and no pauses, so ringing never sleeps in a test.
         settings = {"announcements": 1, "repeat_gap": 0, **timers_config}
         announced = []
@@ -40,7 +41,7 @@ def make_clock(tmp_path, monkeypatch, make_config):
                 on_announce(made, announced[-1])
 
         made = Clock(on_timer_finished=announce, config=make_config(timers=settings), start=False,
-                     on_unanswered=on_unanswered)
+                     on_unanswered=on_unanswered, on_change=on_change, can_hear=can_hear)
         made.announced = announced
         return made
 
@@ -260,6 +261,43 @@ def test_a_timer_rings_when_due_and_dismisses(make_clock):
     assert not clock.is_ringing()
 
 
+def test_whats_ringing_is_heard_and_dismissed_only_where_it_rings(make_clock):
+    # With a second satellite, the kitchen saying "stop" dismissed the bedroom's alarm,
+    # and talking to it at all silenced the bedroom's timer - neither of which could
+    # be heard there.
+    clock = make_clock()
+    clock.set_timer(60, satellite="bedroom")
+    clock.set_timer(120, label="pizza", satellite="kitchen")
+    clock._tick(time.time() + 121)
+    assert clock.is_ringing() and clock.is_ringing("bedroom") and clock.is_ringing("kitchen")
+    assert not clock.is_ringing("hall")
+
+    kitchen = clock.ringing_state("kitchen")
+    assert kitchen["insistent_entries"] == [] and kitchen["reminder"] == "pizza"
+    assert [entry["timer"]["satellite"] for entry in clock.ringing_state("bedroom")["insistent_entries"]] == ["bedroom"]
+
+    assert clock.dismiss(satellite="kitchen")["success"]
+    assert not clock.is_ringing("kitchen") and clock.is_ringing("bedroom")
+    # Anywhere, when nothing says where.
+    clock.dismiss()
+    assert not clock.is_ringing()
+
+
+def test_dismissing_only_clears_what_was_missed_where_it_was_dismissed(make_clock):
+    clock = make_clock()
+    clock.set_timer(60, satellite="bedroom")
+    clock.set_timer(120, satellite="kitchen")
+    now = time.time()
+    clock._tick(now + 121)
+    # As if both had rung out, with nobody there.
+    for entry in clock._ringing:
+        entry["give_up_at"] = 0
+    clock._tick(now + 1000)
+
+    assert clock.dismiss(satellite="kitchen")["success"]
+    assert [timer["satellite"] for timer in clock._unacknowledged] == ["bedroom"]
+
+
 def test_talking_only_silences_what_was_ringing_at_the_wake_word(make_clock):
     # A timer which comes due while the assistant is replying hasn't been heard yet,
     # since announcements wait for the conversation to end - so it mustn't be
@@ -278,13 +316,98 @@ def test_talking_only_silences_what_was_ringing_at_the_wake_word(make_clock):
 
 def test_a_missed_timer_is_only_announced_once_however_often_it_restarts(make_clock, tmp_path):
     # The file kept missed timers until something else changed, so a crash loop
-    # announced the same "while I was off" on every start.
+    # announced the same "while I was off" on every start. Then they were forgotten as
+    # soon as they'd been read, so a crash loop lost them before they were said at all.
     due = time.time() - 60
     (tmp_path / "timers.json").write_text(json.dumps(
         {"next_id": 2, "timers": [{"id": 1, "due_at": due, "duration": 600, "label": None}]}))
 
+    # Kept through restarts until it's said...
     assert len(make_clock()._missed) == 1
-    assert make_clock()._missed == []
+    clock = make_clock()
+    assert len(clock._missed) == 1
+    clock._tick(time.time())
+    assert len(clock.announced) == 1
+
+    # ...and never said again.
+    again = make_clock()
+    again._tick(time.time())
+    assert again._missed == [] and again.announced == []
+
+
+def test_a_brain_lost_while_saying_what_it_missed_doesnt_say_it_again(make_clock, tmp_path):
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None}]}))
+    restarted = []
+    # Restarted the moment it's said - so it must have been let go of before.
+    clock = make_clock(on_announce=lambda clock, announcement: restarted.append(make_clock()))
+
+    clock._tick(time.time())
+
+    assert len(clock.announced) == 1
+    assert restarted[0]._missed == []
+
+
+def test_whats_missed_and_then_settled_by_its_satellite_doesnt_come_back(make_clock, tmp_path):
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 90, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    clock = make_clock()
+
+    clock.apply_away("bedroom", rang=[f"timer-1@{int(now - 60)}"], dismissed=[f"timer-2@{int(now - 90)}"])
+
+    restarted = make_clock()
+    restarted._tick(time.time())
+    assert restarted._missed == [] and restarted.announced == []
+
+
+def test_three_restarts_in_a_row_note_whatever_was_missed_once(make_clock, tmp_path):
+    # A timer and two alarms came due while the brain was off, and another timer was
+    # ringing as it went - and it restarts three times before any satellite is back.
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"}], "ringing": [
+        {"id": 2, "due_at": now - 30, "duration": 300, "label": None, "satellite": "bedroom"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": now - 120, "satellite": "bedroom"},
+        {"id": 2, "hour": 8, "minute": 0, "repeat": None, "due_at": now - 180, "satellite": "bedroom"}]}))
+
+    for _ in range(3):
+        clock = make_clock()
+
+    assert sorted(clock._occurrence(item) for item in clock._missed) == sorted([
+        f"timer-1@{int(now - 60)}", f"timer-2@{int(now - 30)}", f"alarm-1@{int(now - 120)}",
+        f"alarm-2@{int(now - 180)}"])
+    # The repeating alarm is set for its next occurrence, the once, and the one-off is gone.
+    assert list(clock._alarms) == [1] and now < clock._alarms[1]["due_at"] <= now + 25 * 3600
+    assert clock._timers == {}
+    clock._tick(time.time())
+    assert len(clock.announced) == 4
+
+
+def test_a_repeating_alarm_missed_by_a_brain_lost_as_it_started_is_noted_and_moved_on_once(make_clock,
+                                                                                         tmp_path):
+    # Lost having noted the alarm as missed in the timers file, but before it moved it
+    # on in the alarms file - so the next brain finds it in both.
+    now = time.time()
+    alarms = json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": now - 120, "satellite": "bedroom"}]})
+    (tmp_path / "alarms.json").write_text(alarms)
+    make_clock()
+    (tmp_path / "alarms.json").write_text(alarms)
+
+    for _ in range(2):
+        clock = make_clock()
+
+    assert [clock._occurrence(item) for item in clock._missed] == [f"alarm-1@{int(now - 120)}"]
+    assert now < clock._alarms[1]["due_at"] <= now + 25 * 3600
+    clock._tick(time.time())
+    assert len(clock.announced) == 1
+    # Said, and moved on in the alarms file too, so it's never noted again.
+    again = make_clock()
+    again._tick(time.time())
+    assert again._missed == [] and again.announced == []
 
 
 def test_a_timer_ringing_when_the_assistant_stops_is_reported_as_missed(make_clock, tmp_path):
@@ -652,9 +775,9 @@ def test_unanswered_alarm_shows_up_as_missed(make_clock):
 
 
 def test_a_reminder_nobody_answers_is_passed_on_once_it_stops_ringing(make_clock):
-    # So it can be sent to the user's phone - see main.py's _unanswered.
+    # So it can be sent to the user's phone - see the brain's _unanswered.
     unanswered = []
-    clock = make_clock(on_unanswered=lambda timer, kind: unanswered.append((timer["label"], kind)))
+    clock = make_clock(on_unanswered=lambda timer, kind, satellite: unanswered.append((timer["label"], kind)))
     clock.set_timer(60, label="take the bins out")
     now = time.time()
     clock._tick(now + 61)
@@ -670,11 +793,28 @@ def test_a_reminder_nobody_answers_is_passed_on_once_it_stops_ringing(make_clock
 
 def test_a_dismissed_reminder_isnt_passed_on(make_clock):
     unanswered = []
-    clock = make_clock(on_unanswered=lambda timer, kind: unanswered.append(timer))
+    clock = make_clock(on_unanswered=lambda timer, kind, satellite: unanswered.append(timer))
     clock.set_timer(60, label="take the bins out")
     clock._tick(time.time() + 61)
     clock.dismiss()
     assert unanswered == []
+
+
+def test_a_reminder_which_rings_out_is_taken_out_of_its_satellites_copy(make_clock):
+    # It used to stop ringing without on_change hearing, so the satellite's copy kept
+    # it - and a satellite which lost the brain in the next few minutes rang it again.
+    copies = []
+    clock = make_clock(on_change=lambda: copies.append(clock.copy_for("bedroom")))
+    clock.set_timer(60, label="take the bins out", satellite="bedroom")
+    now = time.time()
+    clock._tick(now + 61)
+    assert [entry["kind"] for entry in copies[-1]] == ["timer"]
+
+    # As if it had rung for the five minutes a reminder's allowed.
+    clock._ringing[0]["give_up_at"] = 0
+    clock._tick(now + 1000)
+    assert not clock.is_ringing()
+    assert copies[-1] == []
 
 
 # The settings page
@@ -701,3 +841,645 @@ def test_one_can_be_removed_by_its_id(make_clock):
     assert clock.overview() == {"timers": [], "alarms": []}
     # Twice is once too many.
     assert clock.remove("alarm", overview["alarms"][0]["id"])["success"] is False
+
+
+# Satellites
+
+def test_a_timer_rings_on_the_satellite_it_was_set_from(make_clock):
+    unanswered = []
+    clock = make_clock(on_unanswered=lambda timer, kind, satellite: unanswered.append(satellite))
+    clock.set_timer(60, satellite="bedroom")
+    now = time.time()
+    clock._tick(now + 61)
+    assert clock.announced[0]["satellite"] == "bedroom"
+
+    # As if it had rung for the ten minutes a timer's allowed, with nobody there.
+    clock._ringing[0]["give_up_at"] = 0
+    clock._tick(now + 1000)
+    assert unanswered == ["bedroom"]
+
+
+def test_an_alarm_rings_on_the_satellite_it_was_set_from(make_clock):
+    clock = make_clock(on_announce=_stop_on_first_sound)
+    clock.set_alarm(7, 0, satellite="bedroom")
+    _make_due(clock)
+    clock._tick(time.time())
+    assert [announcement["satellite"] for announcement in clock.announced] == ["bedroom"]
+
+
+def test_a_reminder_named_afterwards_rings_where_it_was_asked_for(make_clock):
+    clock = make_clock()
+    clock.set_timer(1200, is_reminder=True, satellite="bedroom")
+    clock.name_pending_reminder("walk the dogs")
+    assert [timer["satellite"] for timer in clock._timers.values()] == ["bedroom"]
+
+
+def test_the_copy_holds_each_occurrence_within_a_week(make_clock, monkeypatch):
+    # A Wednesday noon in June, well away from the clocks changing, so the week
+    # ahead is seven whole days.
+    wednesday = datetime(2026, 6, 10, 12, 0).timestamp()
+    monkeypatch.setattr(clock_module.time, "time", lambda: wednesday)
+    clock = make_clock()
+    clock.set_alarm(7, 0, "weekdays", satellite="bedroom")
+    clock.set_timer(600, satellite="bedroom")
+    clock.set_timer(1200, label="pizza", satellite="bedroom")
+    # One rings somewhere else, and the other after the week's out.
+    clock.set_timer(900, satellite="kitchen")
+    clock.set_timer(8 * 86400, satellite="bedroom")
+
+    copy = clock.copy_for("bedroom")
+    alarms = [entry for entry in copy if entry["kind"] == "alarm"]
+    assert [(datetime.fromtimestamp(alarm["due"]).weekday(), datetime.fromtimestamp(alarm["due"]).hour)
+            for alarm in alarms] == [(3, 7), (4, 7), (0, 7), (1, 7), (2, 7)]
+    assert all(alarm["id"] == f"alarm-1@{int(alarm['due'])}" and alarm["sound"] == "alarm_sound.wav"
+               for alarm in alarms)
+    # Timer 1 isn't alarm 1, though they're numbered the same.
+    assert [entry for entry in copy if entry["kind"] == "timer"] == [
+        {"id": f"timer-1@{int(wednesday) + 600}", "due": wednesday + 600, "kind": "timer", "sound": "timer_beep.wav"},
+        {"id": f"timer-2@{int(wednesday) + 1200}", "due": wednesday + 1200, "kind": "timer",
+         "sound": "announcement_sound.wav"}]
+    assert [entry["due"] for entry in copy] == sorted(entry["due"] for entry in copy)
+    assert [entry["due"] for entry in clock.copy_for("kitchen")] == [wednesday + 900]
+
+
+def test_what_was_dismissed_while_away_doesnt_ring_again(make_clock):
+    clock = make_clock()
+    clock.set_timer(60, label="pizza", satellite="bedroom")
+    clock.set_timer(120, label="bins", satellite="bedroom")
+    clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    copy = clock.copy_for("bedroom")
+    pizza, bins = [entry["id"] for entry in copy if entry["kind"] == "timer"]
+    first, second = [entry for entry in copy if entry["kind"] == "alarm"][:2]
+
+    # Another satellite's report has nothing to do with these.
+    clock.apply_away("kitchen", rang=[pizza], dismissed=[pizza])
+    assert len(clock._timers) == 2
+
+    # The pizza timer and the alarm were dismissed there. The bins reminder only
+    # rang, with nobody there to answer it, so it's left to ring here.
+    clock.apply_away("bedroom", rang=[pizza, bins, first["id"]], dismissed=[pizza, first["id"]])
+
+    assert [timer["label"] for timer in clock._timers.values()] == ["bins"]
+    assert clock._alarms[1]["due_at"] == second["due"]
+    clock._tick(time.time() + 121)
+    assert {announcement["message"] for announcement in clock.announced} == {"This is a reminder: bins"}
+
+
+def test_what_was_dismissed_while_away_stops_ringing_here_too(make_clock):
+    # The brain rings them as well while the satellite can't be reached, so they're
+    # still going when it comes back and says they were dismissed.
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock.set_timer(60, satellite="bedroom")
+    clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    _make_due(clock)
+    rang = [entry["id"] for entry in clock.copy_for("bedroom")][:2]
+    clock._tick(time.time() + 61)
+    assert len(clock._ringing) == 2
+
+    clock.apply_away("bedroom", rang=rang, dismissed=rang)
+    assert not clock.is_ringing()
+
+
+def test_changes_are_told_to_on_change(make_clock, tmp_path):
+    told = []
+
+    def on_change():
+        # Only once the change is saved, and with the lock let go - the brain asks
+        # straight back for each satellite's copy.
+        saved = json.loads((tmp_path / "timers.json").read_text())
+        told.append((len(saved["timers"]), clock._lock.locked()))
+
+    clock = make_clock(on_change=on_change)
+    clock.set_timer(60, satellite="bedroom")
+    assert told == [(1, False)]
+
+    clock.set_timer(600, satellite="bedroom")
+    clock.set_alarm(7, 0, satellite="bedroom")
+    clock.remove("timer", 2)
+    clock.cancel_alarm("7am")
+    clock._tick(time.time() + 61)
+    clock.dismiss()
+    clock.set_timer(600)
+    clock.assign_unowned("bedroom")
+    clock.apply_away("bedroom", rang=[], dismissed=[clock.copy_for("bedroom")[0]["id"]])
+    assert len(told) == 10
+
+    # Nothing changed, so there's nothing to tell.
+    clock.set_alarm(25, 0)
+    clock.cancel_timer()
+    clock.dismiss()
+    clock.assign_unowned("bedroom")
+    clock.apply_away("bedroom", rang=[], dismissed=["timer-1@0"])
+    assert len(told) == 10
+    assert not any(locked for _, locked in told)
+
+
+def test_entries_from_before_satellites_are_given_to_the_default(make_clock, tmp_path):
+    # Saved before there were satellites, one of them without an id at all.
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 2, "due_at": time.time() + 600, "duration": 600, "label": None},
+        {"due_at": time.time() + 1200, "duration": 1200, "label": "pizza"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": _at(7, 0, days_ahead=1)}]}))
+    clock = make_clock()
+    # The id it was given is saved, so its copy's ids still mean it after a restart.
+    assert [timer.get("id") for timer in json.loads((tmp_path / "timers.json").read_text())["timers"]] == [2, 3]
+
+    clock.set_timer(1800, satellite="kitchen")
+    assert clock.assign_unowned("pi") == 3
+    assert clock.assign_unowned("pi") == 0
+
+    restarted = make_clock()
+    assert [timer["name"] for timer in restarted.overview("pi")["timers"]] == ["10 minute timer", "pizza reminder"]
+    assert [timer["name"] for timer in restarted.overview("kitchen")["timers"]] == ["30 minute timer"]
+    assert len(restarted.overview("pi")["alarms"]) == 1 and restarted.overview("kitchen")["alarms"] == []
+    assert sorted(timer["id"] for timer in restarted.overview()["timers"]) == [2, 3, 4]
+
+
+def test_an_occurrence_id_survives_the_alarm_moving_on(make_clock, monkeypatch):
+    # A minute before a daily 7am alarm, on a June morning well away from the clocks changing.
+    before = datetime(2026, 6, 10, 6, 59).timestamp()
+    monkeypatch.setattr(clock_module.time, "time", lambda: before)
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    first, second, third = [entry["id"] for entry in clock.copy_for("bedroom")][:3]
+
+    # It rings, and is moved on to tomorrow straight away, but the copy still
+    # names both by the same ids.
+    clock._tick(before + 60)
+    assert [entry["id"] for entry in clock.copy_for("bedroom")][:2] == [first, second]
+
+    # So the satellite dismissing today's stops what's ringing, and dismissing
+    # tomorrow's moves the alarm on to the day after.
+    clock.apply_away("bedroom", rang=[first], dismissed=[first])
+    assert not clock.is_ringing()
+    clock.apply_away("bedroom", rang=[second], dismissed=[second])
+    assert clock.copy_for("bedroom")[0]["id"] == third
+
+
+def test_what_rings_now_stays_in_the_copy(make_clock):
+    # The brain sends a fresh copy the moment something starts ringing. If the
+    # link drops part way through, the satellite carries on from that copy.
+    copies = []
+    clock = make_clock(on_change=lambda: copies.append(clock.copy_for("bedroom")))
+    clock.set_timer(60, label="pizza", satellite="bedroom")
+    occurrence = copies[-1][0]["id"]
+    now = time.time()
+    clock._tick(now + 61)
+    assert copies[-1] == [{"id": occurrence, "due": now + 61, "kind": "timer", "sound": "announcement_sound.wav"}]
+
+    clock.dismiss()
+    assert copies[-1] == []
+
+
+def test_a_dismissal_reported_late_stops_the_ringing_and_the_reminder(make_clock):
+    # Both rang on the satellite and were dismissed there, while the brain, unable
+    # to reach it, rang them too - and one has rung out here, unanswered, by the
+    # time the satellite reports back.
+    unanswered = []
+    clock = make_clock(on_unanswered=lambda timer, kind, satellite: unanswered.append(timer["label"]))
+    clock.set_timer(60, label="take the bins out", satellite="bedroom")
+    clock.set_timer(120, label="feed the cat", satellite="bedroom")
+    bins, cat = [entry["id"] for entry in clock.copy_for("bedroom")]
+    now = time.time()
+    clock._tick(now + 121)
+    next(entry for entry in clock._ringing if entry["timer"]["label"] == "feed the cat")["give_up_at"] = 0
+    clock._tick(now + 200)
+    assert unanswered == ["feed the cat"]
+
+    clock.apply_away("bedroom", rang=[bins, cat], dismissed=[bins, cat])
+
+    assert not clock.is_ringing()
+    clock._tick(now + 10000)
+    # The bins reminder never rang out, so it never went to the phone.
+    assert unanswered == ["feed the cat"]
+    assert clock.missed()["message"] == "You haven't missed anything."
+
+
+def test_what_rang_while_away_isnt_announced_as_missed(make_clock, tmp_path):
+    # The brain was off while all three came due. The satellite rang two of them
+    # from its copy - which had stopped by the time it was back, unanswered - so only
+    # the third is worth a "While I was off".
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 90, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": now - 120, "satellite": "bedroom"}]}))
+    clock = make_clock()
+    assert len(clock._missed) == 3
+
+    clock.apply_away("bedroom", rang=[f"timer-1@{int(now - 60)}", f"alarm-1@{int(now - 120)}"], dismissed=[],
+                     ringing=[])
+    clock._tick(time.time())
+    assert len(clock.announced) == 1
+    assert clock.announced[0]["message"].startswith("While I was off: your 15 minutes timer.")
+    assert not clock.is_ringing()
+
+
+def test_what_was_still_ringing_while_away_rings_on_here(make_clock, tmp_path):
+    # The brain restarted as they came due, so missed them, while the satellite rang
+    # them from its copy - and they were still ringing as it reached the brain again.
+    # It stops ringing them then, for the brain to take over, which only rang what it
+    # was ringing itself: nothing, so the alarm went quiet half a minute in.
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 30, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 40, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    timer, dismissed, alarm = f"timer-1@{int(now - 30)}", f"timer-2@{int(now - 40)}", f"alarm-1@{int(now - 30)}"
+
+    # Another satellite's report has nothing to do with them.
+    clock.apply_away("kitchen", rang=[timer], dismissed=[], ringing=[timer])
+    assert not clock.is_ringing()
+    # One dismissed there isn't rung here, whatever else is said of it.
+    clock.apply_away("bedroom", rang=[timer, dismissed, alarm], dismissed=[dismissed],
+                     ringing=[timer, dismissed, alarm])
+
+    assert clock._missed == []
+    assert sorted(entry["timer"]["id"] for entry in clock._ringing) == [1, 1]
+    messages = [announcement["message"] for announcement in clock.announced]
+    assert messages[0] == "Timer for 10 minutes." and messages[1].endswith("Time to get up.")
+    assert len(messages) == 2 and {announcement["satellite"] for announcement in clock.announced} == {"bedroom"}
+    # Nor is either said to have been missed.
+    clock._tick(time.time())
+    assert len(clock.announced) == 2
+    # Both are in the satellite's copy, for if it loses the brain again.
+    assert {timer, alarm} <= {entry["id"] for entry in clock.copy_for("bedroom")}
+
+
+def test_whats_missed_waits_until_its_satellite_can_hear_it(make_clock, tmp_path):
+    # The brain was off as both came due, and neither satellite is back to say what it
+    # rang from its copy meanwhile - so neither can be told yet what it missed.
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 90, "duration": 900, "label": None, "satellite": "kitchen"}]}))
+    back = set()
+    clock = make_clock(can_hear=lambda satellite: satellite in back)
+    clock._tick(time.time())
+    assert clock.announced == []
+
+    back.add("bedroom")
+    clock._tick(time.time())
+    clock._tick(time.time())
+    assert [entry["satellite"] for entry in clock.announced] == ["bedroom"]
+    # The kitchen's is still kept for it.
+    clock.apply_away("kitchen", rang=[f"timer-2@{int(now - 90)}"], dismissed=[])
+    back.add("kitchen")
+    clock._tick(time.time())
+    assert len(clock.announced) == 1
+
+
+# A satellite's report, applied twice - as one is when the brain has saved it, but the
+# connection drops before the satellite hears so, and it says it all again.
+
+def test_a_timer_dismissed_while_away_and_told_twice_is_just_gone(make_clock):
+    clock = make_clock()
+    clock.set_timer(60, label="pizza", satellite="bedroom")
+    clock.set_timer(120, label="bins", satellite="bedroom")
+    pizza = clock.copy_for("bedroom")[0]["id"]
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[pizza], dismissed=[pizza])
+
+    assert [timer["label"] for timer in clock._timers.values()] == ["bins"]
+
+
+def test_a_one_off_alarm_dismissed_while_away_and_told_twice_is_just_gone(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, satellite="bedroom")
+    clock.set_alarm(8, 0, satellite="bedroom")
+    seven = next(entry["id"] for entry in clock.copy_for("bedroom") if entry["id"].startswith("alarm-1@"))
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[seven], dismissed=[seven])
+
+    assert [alarm["hour"] for alarm in clock._alarms.values()] == [8]
+
+
+def test_a_repeating_alarm_dismissed_while_away_and_told_twice_moves_on_once(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    first, second = [entry["id"] for entry in clock.copy_for("bedroom")][:2]
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[first], dismissed=[first])
+
+    assert clock.copy_for("bedroom")[0]["id"] == second
+
+
+def test_what_rang_while_away_and_is_told_twice_still_isnt_announced_as_missed(make_clock, tmp_path):
+    now = time.time()
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": now - 60, "duration": 600, "label": None, "satellite": "bedroom"},
+        {"id": 2, "due_at": now - 90, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    clock = make_clock()
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[f"timer-1@{int(now - 60)}"], dismissed=[], ringing=[])
+    clock._tick(time.time())
+
+    assert len(clock.announced) == 1
+    assert clock.announced[0]["message"].startswith("While I was off: your 15 minutes timer.")
+
+
+def test_a_report_which_cant_be_saved_isnt_taken_as_settled(make_clock, tmp_path, monkeypatch):
+    # The brain's disk full, say. It went on as if it had saved it, so the satellite was
+    # told it was settled and forgot it - and the brain, restarted, had lost it.
+    now = time.time()
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    alarm = f"alarm-1@{int(now - 30)}"
+    save_json = clock_module.storage.save_json
+
+    def full(path, data):
+        if path == clock_module.TIMERS_FILE:
+            raise OSError("No space left on device")
+        save_json(path, data)
+
+    monkeypatch.setattr(clock_module.storage, "save_json", full)
+    with pytest.raises(OSError):
+        clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+    # Rung here all the same, while the satellite, never told it's settled, rings on.
+    assert clock.is_ringing("bedroom")
+    # Told again, with nothing more to change, it still hasn't been saved.
+    with pytest.raises(OSError):
+        clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+
+    # Once it can be, it is, and it's taken as settled.
+    monkeypatch.setattr(clock_module.storage, "save_json", save_json)
+    clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+    saved = json.loads((tmp_path / "timers.json").read_text())
+    assert [clock._occurrence(item) for item in saved["ringing"]] == [alarm] and saved["missed"] == []
+    assert len(clock._ringing) == 1
+
+
+def test_a_report_of_nothing_is_settled_though_an_earlier_save_failed(make_clock, monkeypatch):
+    # A kitchen timer and alarm set while the brain's disk was full, say. Every satellite
+    # reaching the brain after that was hung up on, though one which reported nothing
+    # has nothing to forget once it's settled - so Nova was unusable until the disk was
+    # freed.
+    clock = make_clock()
+
+    def full(path, data):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(clock_module.storage, "save_json", full)
+    clock.set_timer(600, satellite="kitchen")
+    clock.set_alarm(7, 0, satellite="kitchen")
+    assert clock._timers_unsaved and clock._alarms_unsaved
+
+    clock.apply_away("bedroom", rang=[], dismissed=[], ringing=[])
+
+
+def _still_ringing_as_the_brain_came_back(make_clock, tmp_path):
+    """
+    A clock restarted as an alarm came due, which its satellite was still ringing as it
+    reached the brain again.
+
+    Returns:
+        The clock, and the id the satellite knows the alarm by.
+    """
+    now = time.time()
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    return clock, f"alarm-1@{int(now - 30)}"
+
+
+def test_what_was_still_ringing_while_away_and_is_told_twice_rings_once(make_clock, tmp_path):
+    clock, alarm = _still_ringing_as_the_brain_came_back(make_clock, tmp_path)
+
+    for _ in range(2):
+        clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+
+    assert len(clock._ringing) == 1
+    assert len(clock.announced) == 1 and clock.announced[0]["message"].endswith("Time to get up.")
+
+
+def test_what_was_still_ringing_while_away_rings_once_on_a_brain_restarted_before_saying_it_has_it(
+        make_clock, tmp_path):
+    # Saved as ringing by the first, so the restarted brain rings it - once.
+    clock, alarm = _still_ringing_as_the_brain_came_back(make_clock, tmp_path)
+    clock.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+
+    restarted = make_clock()
+    restarted.alarm_ring_duration = 0
+    restarted.apply_away("bedroom", rang=[alarm], dismissed=[], ringing=[alarm])
+    restarted._tick(time.time())
+
+    assert len(restarted._ringing) == 1
+    assert len(restarted.announced) == 1 and restarted.announced[0]["message"].endswith("Time to get up.")
+
+
+def test_a_clock_made_without_its_thread_can_be_started_later(make_clock):
+    # The brain makes its clock without, so it can give what rings on no satellite to
+    # the default before anything rings.
+    clock = make_clock()
+    clock.check_interval = 0.01
+    clock.set_timer(60)
+    for timer in clock._timers.values():
+        timer["due_at"] = time.time() - 1
+    clock.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not clock.announced and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert clock.announced[0]["message"] == "Timer for 1 minute."
+    finally:
+        clock.stop()
+
+
+def test_a_tick_which_fails_is_logged_and_the_clock_carries_on(make_clock, monkeypatch, caplog):
+    # Anything unexpected in a tick used to end the clock's thread, and every timer and
+    # alarm with it, with the traceback only on stderr - never in backend.log.
+    clock = make_clock()
+    clock.check_interval = 0.01
+    clock.set_timer(60)
+    for timer in clock._timers.values():
+        timer["due_at"] = time.time() + 0.2
+    ticked, failed = clock._tick, []
+
+    def tick(now):
+        if not failed:
+            failed.append(now)
+            raise KeyError("due_at")
+        ticked(now)
+
+    monkeypatch.setattr(clock, "_tick", tick)
+    with caplog.at_level(logging.ERROR, logger="voice_assistant.clock"):
+        clock.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not clock.announced and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            clock.stop()
+
+    assert failed and clock.announced[0]["message"] == "Timer for 1 minute."
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1 and errors[0].exc_info[0] is KeyError
+
+
+def test_a_tick_which_keeps_failing_is_logged_once_a_minute_at_most(make_clock, monkeypatch, caplog):
+    # It ticks every half a second, so one bad entry would otherwise be 120 tracebacks a minute.
+    clock = make_clock()
+    error = KeyError("due_at")
+
+    def tick(now):
+        raise error
+
+    monkeypatch.setattr(clock, "_tick", tick)
+    with caplog.at_level(logging.ERROR, logger="voice_assistant.clock"):
+        for moment in (0, 0.5, 30, 59.9):
+            clock._tick_safely(time.time(), moment)
+        assert len(caplog.records) == 1
+        clock._tick_safely(time.time(), 60)
+        assert len(caplog.records) == 2
+        # A different error is said straight away.
+        error = ValueError("not a time")
+        clock._tick_safely(time.time(), 61)
+        assert len(caplog.records) == 3
+
+
+def test_an_alarm_saved_without_an_id_gets_one(make_clock, tmp_path):
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 4, "alarms": [
+        {"id": 3, "hour": 7, "minute": 0, "repeat": "daily", "due_at": _at(7, 0, days_ahead=1)},
+        {"hour": 8, "minute": 30, "repeat": None, "due_at": _at(8, 30, days_ahead=1)}]}))
+    make_clock()
+
+    # Saved with it straight away, so it keeps it.
+    saved = json.loads((tmp_path / "alarms.json").read_text())
+    assert [alarm["id"] for alarm in saved["alarms"]] == [3, 4] and saved["next_id"] == 5
+    assert sorted(make_clock()._alarms) == [3, 4]
+
+
+def test_silencing_while_ringing_saves_and_tells_on_change(make_clock, tmp_path):
+    # Cancelling every timer while the only one rang left it in the file as
+    # ringing, so a restart said it had been missed - and nothing was told.
+    told = []
+    clock = make_clock(on_change=lambda: told.append(True))
+    _ring_a_timer(clock)
+    told.clear()
+    assert clock.cancel_timer(cancel_all=True)["message"] == "Okay."
+    assert told == [True]
+    assert json.loads((tmp_path / "timers.json").read_text())["ringing"] == []
+
+    _ring_an_alarm(clock)
+    told.clear()
+    assert clock.cancel_alarm(cancel_all=True)["message"] == "Okay."
+    assert told == [True]
+
+
+def test_whats_ringing_or_missed_is_given_to_the_default_too(make_clock, tmp_path):
+    clock = make_clock()
+    _ring_a_timer(clock)
+    assert clock.assign_unowned("pi") == 1
+    assert [entry["kind"] for entry in clock.copy_for("pi")] == ["timer"]
+
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None}]}))
+    restarted = make_clock()
+    assert restarted.assign_unowned("pi") == 1
+    # Still given, through a restart before it's said.
+    again = make_clock()
+    again._tick(time.time())
+    assert again.announced[0]["satellite"] == "pi"
+
+
+def _ring_alarm_then_restart(make_clock, repeat):
+    """
+    An alarm for the bedroom satellite, ringing on the brain's clock as it restarts.
+
+    Returns:
+        The restarted clock, and the id the satellite knows the ringing occurrence by.
+    """
+    clock = make_clock()
+    # One round only, so it's still ringing when the tick returns.
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, repeat, satellite="bedroom")
+    _make_due(clock)
+    occurrence = clock.copy_for("bedroom")[0]["id"]
+    clock._tick(time.time())
+    assert clock.is_ringing("bedroom")
+    return make_clock(), occurrence
+
+
+@pytest.mark.parametrize("repeat", [None, "daily"])
+def test_an_alarm_ringing_when_the_brain_restarts_rings_again_if_still_ringing_there(make_clock, repeat):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, repeat)
+    restarted.alarm_ring_duration = 0
+
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[], ringing=[occurrence])
+
+    assert restarted._missed == []
+    assert restarted.is_ringing("bedroom")
+    assert restarted.announced[0]["satellite"] == "bedroom"
+    assert restarted.announced[0]["message"].endswith("Time to get up.")
+    # Nothing said of it as missed afterwards.
+    restarted._tick(time.time())
+    assert len(restarted.announced) == 1
+
+
+@pytest.mark.parametrize("repeat", [None, "daily"])
+def test_an_alarm_ringing_when_the_brain_restarts_stays_quiet_if_dismissed_there(make_clock, repeat):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, repeat)
+
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[occurrence], ringing=[])
+    restarted._tick(time.time())
+
+    assert restarted._missed == []
+    assert not restarted.is_ringing()
+    assert restarted.announced == []
+
+
+@pytest.mark.parametrize("repeat", [None, "daily"])
+def test_an_alarm_ringing_when_the_brain_restarts_is_mentioned_if_the_satellite_says_nothing(make_clock, repeat):
+    # As a timer is, when the satellite restarted too.
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, repeat)
+
+    restarted._tick(time.time())
+
+    assert len(restarted.announced) == 1
+    assert restarted.announced[0]["message"].startswith("While I was off: your 7:00 AM alarm")
+    assert restarted.announced[0]["satellite"] == "bedroom"
+
+
+def test_a_repeating_alarm_ringing_when_the_brain_restarts_is_still_set_once(make_clock):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, "daily")
+    restarted.alarm_ring_duration = 0
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[], ringing=[occurrence])
+
+    assert restarted.list_alarms()["message"] == "One alarm: 7:00 AM alarm, every day."
+    tomorrow = [entry["id"] for entry in restarted.copy_for("bedroom") if entry["due"] > time.time()]
+    assert len(tomorrow) == len(set(tomorrow)) and len(tomorrow) >= 1
+    assert occurrence not in tomorrow
+
+
+def test_a_one_off_alarm_ringing_when_the_brain_restarts_isnt_set_again(make_clock):
+    restarted, occurrence = _ring_alarm_then_restart(make_clock, None)
+    restarted.alarm_ring_duration = 0
+    restarted.apply_away("bedroom", rang=[occurrence], dismissed=[], ringing=[occurrence])
+
+    assert restarted.list_alarms()["message"] == "You don't have any alarms set."
+
+
+def test_dismissing_a_ringing_alarm_means_a_restart_doesnt_report_it(make_clock):
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, None)
+    _make_due(clock)
+    clock._tick(time.time())
+    assert clock.is_ringing()
+    clock.dismiss()
+
+    assert make_clock()._missed == []

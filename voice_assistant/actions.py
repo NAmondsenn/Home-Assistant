@@ -17,11 +17,18 @@ both a description and the code to run it.
 import inspect
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+
+import requests
 
 from voice_assistant import network
+from voice_assistant.batteries import HOME_FAILURES, find, said
+from voice_assistant.devices import AppDevice, ring_call, said_as, where
+from voice_assistant.home_assistant import CANT_REACH, HomeAssistant, NotAllowed
+from voice_assistant.lists import NO_ANSWER, names_list
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -34,10 +41,13 @@ UNAVAILABLE = {
     "music": "The music isn't available right now.",
     "clock": "Timers aren't available right now.",
     "volume": "Volume control isn't available right now.",
-    "weather": "The weather isn't available right now.",
+    "weather": "The weather needs Home Assistant.",
     "home": "Home Assistant isn't set up yet.",
     "memory": "I can't remember things right now.",
     "ntfy": "Notifications aren't set up yet.",
+    "batteries": "Battery levels need Home Assistant.",
+    "lists": "Lists need Home Assistant.",
+    "pc": "Your PC needs Home Assistant.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -54,9 +64,12 @@ class Action:
     Attributes:
         tool: The name of an ActionExecutor tool.
         params: What it was given, by parameter name.
+        from_model: Whether the model asked for it, which can only run what it's
+            offered - as opposed to a local command or the offline keyword fallback.
     """
     tool: str
     params: Dict[str, Any] = field(default_factory=dict)
+    from_model: bool = False
 
 
 @dataclass
@@ -78,6 +91,10 @@ class ActionResult:
         understood: False when Home Assistant's Assist matched nothing in what was
             said - which the model may be able to do something with - rather than
             understanding it and failing.
+        private: Whether what it says is the user's alone - where their phone is - and
+            so kept from Claude when it was asked for locally (see Conversation.handle).
+        ask_first: What to do if the user says yes to the question it asks - shutting
+            the PC down, after "Shut down the PC?" - or None (see Conversation.handle).
     """
     ok: bool
     say: str = ""
@@ -85,6 +102,8 @@ class ActionResult:
     sound: Optional[str] = None
     sound_category: str = "general"
     understood: bool = True
+    private: bool = False
+    ask_first: Optional[Action] = None
 
     @classmethod
     def from_reply(cls, reply: Dict) -> "ActionResult":
@@ -102,17 +121,18 @@ class ActionResult:
         """
         ok = bool(reply.get("success"))
         say = reply.get("message") or ""
+        kept = {"private": bool(reply.get("private")), "ask_first": reply.get("ask_first")}
         if ok and reply.get("silent"):
-            return cls(ok, say, confirm="music")
+            return cls(ok, say, confirm="music", **kept)
         if ok and reply.get("note"):
-            return cls(ok, say, confirm="note")
+            return cls(ok, say, confirm="note", **kept)
         if ok and reply.get("sound"):
             return cls(ok, say, confirm="sound", sound=reply["sound"],
-                       sound_category=reply.get("sound_category", "general"))
+                       sound_category=reply.get("sound_category", "general"), **kept)
         if ok and reply.get("chime"):
-            return cls(ok, say, confirm="chime")
+            return cls(ok, say, confirm="chime", **kept)
         # Only a failure can be not understood, and a failure always gets this far.
-        return cls(ok, say, understood=not reply.get("not_understood"))
+        return cls(ok, say, understood=not reply.get("not_understood"), **kept)
 
 
 def confirm(results: List[ActionResult], chime_enabled: bool = True,
@@ -141,7 +161,7 @@ def confirm(results: List[ActionResult], chime_enabled: bool = True,
     others = [result for result in results if not (result.ok and result.confirm == "note")]
     # Only notes - something remembered while answering a question - so the answer
     # itself is said first, unless it's only the "Okay." which goes with a tool call.
-    if not others and fallback and _words(fallback) not in BARE_ACKNOWLEDGEMENTS:
+    if not others and fallback and not bare_acknowledgement(fallback):
         messages.append(fallback)
     for result in others:
         sound = None
@@ -174,19 +194,31 @@ def _words(text: str) -> str:
     return re.sub(r"[^a-z ]", "", text.lower()).strip()
 
 
-def tool(description: str, needs: Optional[str] = None, required: Sequence[str] = (), for_model: bool = True,
+def bare_acknowledgement(text: str) -> bool:
+    """Whether the model's text is only an acknowledgement, e.g. "Okay." - nothing to say on its own."""
+    return _words(text) in BARE_ACKNOWLEDGEMENTS
+
+
+def tool(description: str, needs: Union[str, Tuple[str, ...], None] = None, required: Sequence[str] = (),
+         for_model: bool = True, reads: bool = False, private: bool = False,
          **parameters: Dict[str, Any]) -> Callable:
     """
     Declares an ActionExecutor method as a tool the model can call.
 
     Args:
         description: What the model is told the tool is for, and when to use it.
-        needs: The ActionExecutor attribute it can't work without, e.g. "music". The
-            tool isn't offered while that isn't set up.
+        needs: The ActionExecutor attribute it can't work without, e.g. "music", or a
+            tuple of them if any one will do, e.g. ("ntfy", "home"). The tool isn't
+            offered while that isn't set up (or none of them is), and what's said then
+            is the first's.
         required: The parameters it must always be given.
-        for_model: Whether the model is offered it at all. False for one which is
-            still run when a local command or the offline keyword fallback asks for it,
-            but which the model has a better tool for.
+        for_model: Whether the model is offered it at all. False for one which only
+            a local command or the offline keyword fallback may run - the model has a
+            better tool, and execute refuses the model's own call to it.
+        reads: Whether it only reads something for the model to answer from, so its
+            answer goes back to the model rather than being said - see read_tools.
+        private: Whether what it says is the user's alone, never to be in the model's
+            history - see private_tools.
         parameters: Each parameter's JSON schema, by name - the method's own
             keyword arguments, which it's called with.
 
@@ -194,16 +226,24 @@ def tool(description: str, needs: Optional[str] = None, required: Sequence[str] 
         A decorator which marks the method, leaving it otherwise unchanged.
     """
     def declare(method: Callable) -> Callable:
-        method.tool = {"description": description, "needs": needs,
-                       "required": list(required), "for_model": for_model, "parameters": parameters}
+        method.tool = {"description": description, "needs": needs, "required": list(required),
+                       "for_model": for_model, "reads": reads, "private": private, "parameters": parameters}
         return method
     return declare
+
+
+def _things(items: Any) -> List[str]:
+    """The things the model gave, if it gave a list of them, e.g. ["eggs", "milk"] - else none."""
+    if not isinstance(items, list):
+        return []
+    return [item.strip() for item in items if isinstance(item, str) and item.strip()]
 
 
 class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
-    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None):
+    def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
+                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -215,6 +255,14 @@ class ActionExecutor:
             memory: Memory instance, for what the assistant knows about the user.
             ntfy: Ntfy instance, for the user's notifications, or None if it isn't
                 set up.
+            satellite: The satellite the user is talking to, whose timers and alarms
+                ring where they were set - or None for none in particular.
+            batteries: BatteryWatcher, for asking how full the batteries are, or None
+                if Home Assistant isn't set up.
+            lists: Lists, for Home Assistant's to-do lists, or None if Home Assistant
+                isn't set up.
+            pc: PCPower, for turning the PC on and off, or None if Home Assistant isn't
+                set up.
         """
         self.music = music
         self.clock = clock
@@ -223,6 +271,10 @@ class ActionExecutor:
         self.home = home
         self.memory = memory
         self.ntfy = ntfy
+        self.satellite = satellite
+        self.batteries = batteries
+        self.lists = lists
+        self.pc = pc
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -245,9 +297,27 @@ class ActionExecutor:
                 for name, method in self.tools().items()
                 if method.tool["for_model"] and self._available(method)]
 
+    @classmethod
+    def private_tools(cls) -> List[str]:
+        """
+        The tools whose answers are the user's alone - where their phone is - which Claude's
+        history never has, and whose local rules are matched even when Nova is listening for
+        an answer (see Conversation.handle).
+        """
+        return [name for name, method in cls.tools().items() if method.tool["private"]]
+
+    def read_tools(self) -> List[str]:
+        """
+        The tools which only read something for the model to answer from - see
+        LLMHandler.process_query, which sends their answers back to it.
+        """
+        return [name for name, method in self.tools().items() if method.tool["reads"]]
+
     def _available(self, method: Callable) -> bool:
         needs = method.tool["needs"]
-        return needs is None or getattr(self, needs) is not None
+        if needs is None:
+            return True
+        return any(getattr(self, name) is not None for name in ((needs,) if isinstance(needs, str) else needs))
 
     def execute(self, action: Optional[Action]) -> ActionResult:
         """
@@ -264,11 +334,18 @@ class ActionExecutor:
 
         method = self.tools().get(action.tool)
         if method is None:
-            # The model can only call what it's offered, so this would be a bug.
+            # The model can ask for any tool by name, offered or not, so one it made up
+            # is refused here.
             logger.warning(f"Unknown tool: {action.tool}")
             return ActionResult(False, "Sorry, I don't know how to do that yet.")
+        if action.from_model and not method.tool["for_model"]:
+            # Nor can it run one it wasn't offered: control_home passes free text on to
+            # Assist, and only the local commands and the offline fallback may use it.
+            logger.warning(f"Refused {action.tool}, which the model isn't offered")
+            return ActionResult(False, "Sorry, I can't do that.")
         if not self._available(method):
-            return ActionResult(False, UNAVAILABLE[method.tool["needs"]])
+            needs = method.tool["needs"]
+            return ActionResult(False, UNAVAILABLE[needs if isinstance(needs, str) else needs[0]])
 
         # Only the parameters the tool takes are passed on, so a stray one the model
         # made up can't stop it running.
@@ -444,7 +521,7 @@ class ActionExecutor:
     )
     def set_timer(self, duration_seconds: Optional[int] = None, at: Optional[str] = None,
                   label: Optional[str] = None, is_reminder: bool = False):
-        return self.clock.set_timer(duration_seconds, label or None, bool(is_reminder), at=at)
+        return self.clock.set_timer(duration_seconds, label or None, bool(is_reminder), at=at, satellite=self.satellite)
 
     @tool(
         "Give a name to the reminder which was just asked about, right after the "
@@ -473,7 +550,8 @@ class ActionExecutor:
         needs="clock",
     )
     def dismiss_timer(self):
-        return self.clock.dismiss()
+        # Only what rings where the user is talking, which is all they can hear.
+        return self.clock.dismiss(satellite=self.satellite)
 
     @tool(
         "Report timers and reminders which went off without being acknowledged, for "
@@ -542,7 +620,7 @@ class ActionExecutor:
             # The days themselves. Left as "custom" if none were given, which the
             # clock can't read, so it asks which days rather than guessing.
             repeat = days or "custom"
-        return self.clock.set_alarm(hour, minute, repeat or None)
+        return self.clock.set_alarm(hour, minute, repeat or None, satellite=self.satellite)
 
     @tool("Report which alarms are set, for 'what alarms do I have' or 'list my alarms'.", needs="clock")
     def list_alarms(self):
@@ -749,11 +827,46 @@ class ActionExecutor:
         required=["command"],
         for_model=False,
         command={"type": "string", "description": "The request, in plain English."},
+        wider={"type": "boolean", "description": "Whether it's any of Assist's sentences, not a light sentence."},
+        on={"type": "boolean", "description": "For a light sentence: on or off."},
+        words={"type": "string", "description": "For a light sentence: the lights, as the user said them."},
+        brightness={"type": "integer", "description": "For a light sentence: how bright, in percent."},
+        question={"type": "boolean", "description": "Whether it only asks how something is."},
     )
-    def control_home(self, command: Optional[str] = None):
+    def control_home(self, command: Optional[str] = None, wider: bool = False, on: Optional[bool] = None,
+                     words: Optional[str] = None, brightness: Optional[int] = None, question: bool = False):
         if not command:
             return {"success": False, "message": "I didn't catch what to do with the lights."}
-        return self.home.command(command)
+        # Any sentence of Assist's, rather than a light sentence, is only sent on the
+        # wider rule - see HomeAssistant.command.
+        reply = self.home.command(command, wider=wider)
+        # A question the guard won't give Assist - "is the garage door open?" - is
+        # Claude's, which can read it with home_status and has nothing that opens.
+        if reply.get("refused") and question:
+            return {"success": False, "message": reply.get("message"), "not_understood": True}
+        # A light sentence the guard won't give Assist - "turn on the front door light",
+        # with a lock called "front door" - is done by Nova's own lights instead, which
+        # only ever work lights. The offline fallback gives no on or off, so what it
+        # passes on stays refused.
+        if reply.get("refused") and on is not None:
+            return self.home.switch_lights(on, words, brightness)
+        return reply
+
+    # Only the local "dim the lights" produces this: Nova steps each light's brightness
+    # itself (see HomeAssistant.dim), as Assist has no sentence for it. Claude is only
+    # asked when Nova doesn't know the lights by that name.
+    @tool(
+        "Make lights dimmer or brighter by a step.",
+        needs="home",
+        for_model=False,
+        required=["direction", "words"],
+        direction={"type": "string", "description": "down or up."},
+        words={"type": "string", "description": "The lights, as the user said them."},
+    )
+    def dim_lights(self, direction: Optional[str] = None, words: Optional[str] = None):
+        if direction not in ("down", "up") or not words:
+            return {"success": False, "message": "I didn't catch what to dim."}
+        return self.home.dim(direction, words)
 
     @tool(
         "Work the lights through Home Assistant: switch them on or off, set how bright "
@@ -794,6 +907,38 @@ class ActionExecutor:
         if on is None:
             return {"success": False, "message": "I didn't catch whether to switch the lights on or off."}
         return self.home.set_lights(on, light=light, area=area, brightness=brightness, colour=colour, warmth=warmth)
+
+    # What each script or scene does is checked before it's run - see HomeAssistant.run_script.
+    @tool(
+        "Run one of the user's Home Assistant scripts or scenes by name, for wordings like 'do my goodnight "
+        "thing'. Only those exposed to Assist run. What happened is said for you, so just reply 'Okay.'",
+        needs="home",
+        required=["name"],
+        name={"type": "string", "description": "Its name, as the user said it, e.g. 'goodnight'."},
+    )
+    def run_home_script(self, name: Optional[str] = None):
+        if not isinstance(name, str) or not name.strip():
+            return {"success": False, "message": "I didn't catch which script or scene to run."}
+        return self.home.run_script(name)
+
+    # Only ever read, by Claude, to answer from - see HomeAssistant.status.
+    @tool(
+        "Read the state of things in Home Assistant - the house, the devices and the homelab - for "
+        "'when's sunset?', 'is Navidrome up?', 'any updates?', 'is the PC on?' or 'how warm is the "
+        "bedroom?'. Give the words asked about. For batteries, use get_batteries. You get the answer "
+        "to reply from.",
+        needs="home",
+        reads=True,
+        required=["about"],
+        about={
+            "type": "string",
+            "description": "The words asked about, e.g. 'sunset', 'navidrome', 'update' or 'bedroom temperature'.",
+        },
+    )
+    def home_status(self, about: Optional[str] = None):
+        if not isinstance(about, str) or not about.strip():
+            return {"success": False, "message": "I didn't catch what to look up."}
+        return self.home.status(about)
 
     @tool(
         "Read the user's calendar for a day or a few days, for 'what have I got on "
@@ -859,6 +1004,135 @@ class ActionExecutor:
             return {"success": False, "message": "I didn't catch which day you meant."}
         return read(first, max(1, min(int(days or 1), MOST_CALENDAR_DAYS)))
 
+    # Lists - see lists.py
+
+    def _assist_first(self, command: Optional[str], intent: str) -> Optional[Dict]:
+        """
+        Asks Assist to do a list sentence, but only with the one intent live check 1 found
+        for it - so "take milk off my shopping list", which Assist reads as removing it, is
+        never sent.
+
+        Args:
+            command: The request as the local rule had it, or None from the offline fallback.
+            intent: The intent Assist may act on it with, e.g. "HassListAddItem".
+
+        Returns:
+            What Assist said, or None for Nova to do it itself - when Assist wouldn't act
+            on it with that intent, on a list, or Home Assistant couldn't be reached before
+            anything was sent. Or when the guard refused it, as for "add a door lock to my
+            shopping list": Nova's own lists only ever call todo services.
+        """
+        if not command:
+            return None
+        reply = self.home.command(command, wider=True, only=(intent,))
+        if reply.get("not_understood") or reply.get("refused"):
+            return None
+        # Said, not chimed: a list changing isn't seen or heard, as a light's is.
+        return {key: value for key, value in reply.items() if key != "chime"}
+
+    @staticmethod
+    def _unreached(reply: Dict, said: Optional[str]) -> Dict:
+        """
+        A list's failure to reach Home Assistant, as Claude's when the words don't say it's
+        a list - "I've got a headache" is ticking something off to the local rule, and "put
+        Drake on Spotify" adding to a list, but a sentence about the world mustn't end at "I
+        can't reach Home Assistant".
+
+        Args:
+            reply: What Lists said.
+            said: The list as it was said, or None for none.
+
+        Returns:
+            The reply, with 'not_understood' when Home Assistant couldn't be reached and
+            the words have no "list" in them.
+        """
+        if not reply.get("success") and reply.get("message") == CANT_REACH and not names_list(said):
+            return {**reply, "not_understood": True}
+        return reply
+
+    @tool(
+        "Add a thing to a list.",
+        needs="lists",
+        required=["item"],
+        for_model=False,
+        item={"type": "string", "description": "The thing, as the user said it."},
+        list={"type": "string", "description": "The list, as the user said it, or left out for the main one."},
+        command={"type": "string", "description": "The request, for Assist to be asked first."},
+    )
+    def add_to_list(self, item: Optional[str] = None, list: Optional[str] = None, command: Optional[str] = None):
+        if not item:
+            return {"success": False, "message": "I didn't catch what to add."}
+        assisted = self._assist_first(command, "HassListAddItem")
+        if assisted:
+            return assisted
+        reply = self._unreached(self.lists.add([item], list), list)
+        # Only the offline fallback gives no command. Its "add a reminder to call mum"
+        # isn't a list, so the model's own reply - that Claude can't be reached - is said
+        # rather than "I haven't got a list called that.".
+        if command is None and reply.get("not_understood"):
+            return {**reply, "message": ""}
+        return reply
+
+    @tool(
+        "Read a list.",
+        needs="lists",
+        for_model=False,
+        list={"type": "string", "description": "The list, as the user said it, or left out for the main one."},
+    )
+    def read_list(self, list: Optional[str] = None):
+        # Always Nova's own, which says what's on it in a way that can be listened to.
+        return self._unreached(self.lists.read(list), list)
+
+    @tool(
+        "Tick a thing off a list.",
+        needs="lists",
+        required=["item"],
+        for_model=False,
+        item={"type": "string", "description": "The thing, as the user said it."},
+        list={"type": "string", "description": "The list, as the user said it, or left out to look through all."},
+        command={"type": "string", "description": "The request, for Assist to be asked first."},
+        exact={"type": "boolean", "description": "Whether only a thing with the same words will do."},
+    )
+    def tick_off_list(self, item: Optional[str] = None, list: Optional[str] = None, command: Optional[str] = None,
+                      exact: bool = False):
+        if not item:
+            return {"success": False, "message": "I didn't catch what to tick off."}
+        # Anything else Assist would read it as - HassTurnOn, for "tick off milk on my
+        # shopping list" - isn't sent, so Nova ticks it off. What Assist itself said is
+        # never Claude's, as once sent it may have ticked it off.
+        assisted = self._assist_first(command, "HassListCompleteItem")
+        if assisted:
+            return assisted
+        return self._unreached(self.lists.tick_off(item, list, exact=bool(exact)), list)
+
+    @tool(
+        "Add things to, read, or tick things off one of the user's to-do lists in Home Assistant. Split several "
+        "things into separate items, but keep one thing whole ('salt and vinegar crisps'). Leave list out for their "
+        "main list. What happened is said for you, so just reply 'Okay.'",
+        needs="lists",
+        required=["action"],
+        action={"type": "string", "enum": ["add", "read", "tick_off"]},
+        items={
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The things to add or tick off, each as the user said it, e.g. ['eggs', 'milk', 'bread'].",
+        },
+        list={"type": "string", "description": "The list, as the user said it, e.g. 'shopping' or 'notes'."},
+    )
+    def manage_list(self, action: Optional[str] = None, items: Optional[List[str]] = None,
+                    list: Optional[str] = None):
+        if action == "read":
+            return self.lists.read(list or None)
+        things = _things(items)
+        if action not in ("add", "tick_off") or not things:
+            return {"success": False, "message": "I didn't catch what to do with the list."}
+        if action == "add":
+            return self.lists.add(things, list or None)
+        # One at a time, as each is found on the list by its own words.
+        replies = [self.lists.tick_off(thing, list or None) for thing in things]
+        return {"success": all(reply["success"] for reply in replies),
+                "message": " ".join(reply["message"] for reply in replies)}
+
     # Memory
 
     @tool(
@@ -908,28 +1182,240 @@ class ActionExecutor:
     def list_memories(self):
         return self.memory.describe()
 
+    # Batteries
+
+    @tool(
+        "Say how full the batteries of the user's devices are - their phone, tablet, Mac and "
+        "the like - for 'how's my Mac's battery?', 'what's my phone on?' or 'battery levels'. "
+        "Give the device as the user said it, or leave it out for all of them. It's read out "
+        "for you, so just reply 'Okay.'",
+        needs="batteries",
+        device={
+            "type": "string",
+            "description": ("Which device, as the user said it, e.g. 'mac', 'phone', 'tablet' or "
+                            "'s25 ultra'. Leave out for every battery."),
+        },
+    )
+    def get_batteries(self, device: Optional[str] = None):
+        try:
+            batteries = self.batteries.read()
+        except HOME_FAILURES as e:
+            logger.warning(f"Couldn't read the batteries: {e}")
+            return {"success": False, "message": CANT_REACH}
+        found = find(batteries, device or "")
+        if not found:
+            return {"success": False, "message": "I can't find a battery called that."}
+        now = time.time()
+        return {"success": True, "message": " ".join(said(battery, now, self.batteries.stale_after)
+                                                     for battery in found)}
+
+    # Where the phone is, and ringing it - see devices.py
+
+    # Not HomeAssistant.find_device, which finds Nova's own device for its room.
+    @tool(
+        "Say where one of the user's devices is - their phone, tablet or Mac - and ring it if asked ('find my "
+        "phone', 'make my tablet ring'). What's found is said for you, so just reply 'Okay.'",
+        needs="home",
+        required=["device"],
+        private=True,
+        device={
+            "type": "string",
+            "description": "Which device, as the user said it, e.g. 'phone', 'tablet', 'mac' or 's25 ultra'.",
+        },
+        ring={"type": "boolean", "description": "True to ring it as well, wherever it is."},
+    )
+    def find_device(self, device: Optional[str] = None, ring: bool = False):
+        # Every answer is private: even "I haven't got a device called that" is about the user's devices.
+        try:
+            devices = [AppDevice.from_home(found) for found in self.home.app_devices()]
+        except HOME_FAILURES as e:
+            logger.warning(f"Couldn't read the Home Assistant app's devices: {e}")
+            return {"success": False, "message": CANT_REACH, "private": True}
+        found = find(devices, device or "phone")
+        if not found:
+            return {"success": False, "message": "I haven't got a device called that.", "private": True}
+        now = time.time()
+        parts, ok = [], True
+        for app_device in found:
+            parts.append(where(app_device, now))
+            # Never the place itself, which is the user's alone.
+            logger.info(f"Said where the {app_device.name} is")
+            if ring:
+                rang, said_of_ringing = self._ring(app_device)
+                ok = ok and rang
+                parts.append(said_of_ringing)
+        return {"success": ok, "message": " ".join(parts), "private": True}
+
+    def _ring(self, device: AppDevice) -> Tuple[bool, str]:
+        """
+        Rings a device through its notify service.
+
+        Args:
+            device: The device.
+
+        Returns:
+            Whether Home Assistant took it, and what to say: "Ringing your phone.", or why not.
+        """
+        word = said_as(device)
+        call = ring_call(device)
+        outcome, error = self._notify(device, "ring", call["message"], data=call["data"])
+        if outcome == "taken":
+            return True, f"Ringing your {word}."
+        if outcome == "no service":
+            return False, f"Your {word} can't be rung - it hasn't got the Home Assistant app's notifications."
+        if outcome == "unanswered":
+            # Sent, but unanswered - so it may well be ringing.
+            return False, f"{NO_ANSWER}, so I can't tell whether your {word} rang."
+        if outcome == "token":
+            return False, HomeAssistant._failure_message(error)
+        return False, f"I couldn't ring your {word}."
+
+    def _notify(self, device: AppDevice, doing: str, message: str, title: Optional[str] = None,
+                data: Optional[Dict] = None) -> Tuple[str, Optional[Exception]]:
+        """
+        Sends a device a notification through its notify service - one place for ringing
+        and sending, so what each says of a failure can't drift apart.
+
+        Args:
+            device: The device.
+            doing: What for, for the log only, e.g. "ring".
+            message: The message.
+            title: Its title, or None.
+            data: What else the app is given, or None.
+
+        Returns:
+            "taken" once Home Assistant took it, "no service" if the device hasn't got a notify
+            service, "unanswered" if Home Assistant didn't answer in time, "token" if it
+            refused Nova's token, else "failed" - with the error, if there was one.
+        """
+        if device.notify is None:
+            return "no service", None
+        try:
+            self.home.notify(device.notify, message, title=title, data=data)
+        except requests.Timeout as e:
+            logger.warning(f"Home Assistant didn't answer in time to {doing} the {device.name}: {e}")
+            return "unanswered", e
+        except (requests.RequestException, NotAllowed) as e:
+            logger.warning(f"Couldn't {doing} the {device.name}: {e}")
+            if getattr(getattr(e, "response", None), "status_code", None) == 401:
+                return "token", e
+            return "failed", e
+        # Never the words, which may be the user's alone.
+        logger.info(f"Notified the {device.name} to {doing}")
+        return "taken", None
+
+    # The PC - see pc.py
+
+    @tool(
+        "Turn the user's PC on, shut it down, restart it, put it or its screen to sleep, lock it, or say whether "
+        "it's on. Shutting down and restarting ask the user first. What happens is said for you, so just reply "
+        "'Okay.'",
+        needs="pc",
+        required=["action"],
+        action={"type": "string", "enum": ["on", "off", "restart", "sleep", "screen_off", "lock", "status"]},
+        name={"type": "string", "description": "Which PC, as the user said it - only when they've been asked which."},
+    )
+    def pc_power(self, action: Optional[str] = None, name: Optional[str] = None):
+        return self.pc.act(action or "", name or None)
+
+    # Only ever run by the conversation, on the user's yes to pc_power's question - so Claude,
+    # which isn't offered it, can't shut the PC down without one.
+    @tool(
+        "Shut down or restart the PC, once the user has said yes.",
+        needs="pc",
+        required=["action"],
+        for_model=False,
+        action={"type": "string", "enum": ["off", "restart"]},
+        name={"type": "string", "description": "Which PC, as the user said it, or left out."},
+    )
+    def press_pc_button(self, action: Optional[str] = None, name: Optional[str] = None):
+        return self.pc.press(action or "", name or None)
+
     # Notifications
 
     @tool(
         "Send something to the user's phone, as a notification - for 'send that to my phone', "
         "'text me the recipe', 'put the shopping list on my phone'. Write out in full what "
         "they'd want to read there: it isn't said out loud, so it can be longer and more "
-        "detailed than a spoken reply. Leave text out to send exactly what you last said.",
-        needs="ntfy",
+        "detailed than a spoken reply. Leave text out to send exactly what you last said. "
+        "Give device only when the user names one other than their phone, e.g. 'mac' or 'tablet'.",
+        needs=("ntfy", "home"),
         text={"type": "string", "description": "What to send, written to be read."},
         title={"type": "string", "description": "A few words saying what it is, e.g. 'Pancake recipe'."},
+        device={"type": "string", "description": "Which device, if not their phone, e.g. 'mac' or 'tablet'."},
     )
-    def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None):
-        if not self.ntfy.phone:
+    def send_to_phone(self, text: Optional[str] = None, title: Optional[str] = None,
+                      device: Optional[str] = None):
+        # Claude's "my mac" or "the phone" is the device itself, so it's "your mac", and the
+        # phone is still the phone.
+        asked = re.sub(r"^(?:my|the) ", "", (device or "").strip().lower())
+        # The phone is ntfy whatever Home Assistant is doing, so it's never looked up.
+        phone_only = asked in ("", "phone", "mobile")
+        found = []
+        if not phone_only:
+            if self.home is None:
+                return {"success": False, "message": f"Sending to your {asked} needs Home Assistant."}
+            try:
+                found = find([AppDevice.from_home(app) for app in self.home.app_devices()], asked)
+            except HOME_FAILURES as e:
+                logger.warning(f"Couldn't read the Home Assistant app's devices: {e}")
+                return {"success": False, "message": CANT_REACH}
+            if not found:
+                return {"success": False, "message": "I haven't got a device called that."}
+        # Any phones among them go by ntfy, as the phone always has; the rest by notify.
+        by_ntfy = phone_only or any(app_device.phone for app_device in found)
+        others = [app_device for app_device in found if not app_device.phone]
+        if by_ntfy and self.ntfy is None:
+            return {"success": False, "message": UNAVAILABLE["ntfy"]}
+        if by_ntfy and not self.ntfy.phone:
             return {"success": False, "message": "There's nowhere set up to send things to your phone."}
         if not text:
             if self.last_answer is None:
                 return {"success": False, "message": "There's nothing to send yet."}
-            asked, text = self.last_answer
-            title = title or asked
-        if self.ntfy.send(self.ntfy.phone, text, title=(title or "From Nova")[:100]):
+            asked_for, text = self.last_answer
+            title = title or asked_for
+        title = (title or "From Nova")[:100]
+
+        sent, failed = [], []
+        if by_ntfy:
+            if self.ntfy.send(self.ntfy.phone, text, title=title):
+                sent.append("phone")
+            else:
+                failed.append("I couldn't reach your notifications.")
+        for app_device in others:
+            failure = self._send_to(app_device, text, title)
+            if failure:
+                failed.append(failure)
+            else:
+                sent.append(app_device.name)
+        if not failed:
             return {"success": True, "message": "Sent.", "chime": True}
-        return {"success": False, "message": "I couldn't reach your notifications."}
+        # Which got it matters when only some did, so it isn't sent again to those.
+        got = f"Sent to your {' and your '.join(sent)}. " if sent else ""
+        return {"success": False, "message": got + " ".join(failed)}
+
+    def _send_to(self, device: AppDevice, text: str, title: str) -> Optional[str]:
+        """
+        Sends a notification to a device through its notify service.
+
+        Args:
+            device: The device.
+            text: What to send.
+            title: A few words saying what it is.
+
+        Returns:
+            None once Home Assistant took it, else what to say of why not.
+        """
+        outcome, error = self._notify(device, "send to", text, title=title)
+        if outcome == "taken":
+            return None
+        if outcome == "no service":
+            return f"Your {device.name} hasn't got the Home Assistant app's notifications."
+        if outcome == "unanswered":
+            return f"{NO_ANSWER}, so I can't tell whether that was sent to your {device.name}."
+        if outcome == "token":
+            return HomeAssistant._failure_message(error)
+        return f"I couldn't send that to your {device.name}."
 
     @tool(
         "Read out the notifications which came in without being said - at night, or while "

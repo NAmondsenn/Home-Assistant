@@ -46,6 +46,10 @@
       <section aria-labelledby="status-title">
         <h2 class="heading" id="status-title"><svg class="icon" aria-hidden="true"><use href="#i-pulse"></use></svg>Status</h2>
         <div class="tiles" id="status"></div>
+        <!-- Each satellite, and a choice of which to look after when there's more than one. -->
+        <h3 class="subheading">Satellites</h3>
+        <ul class="list" id="satellites"></ul>
+        <div class="chips" id="satellite-choice" role="group" aria-label="Look after" hidden></div>
         <!-- The microphone's mute, which Home Assistant can change too. -->
         <ul class="list microphone">
           <li id="microphone">
@@ -99,6 +103,15 @@
         <ul class="list lights" id="lights"></ul>
       </section>
 
+      <section aria-labelledby="batteries-title">
+        <h2 class="heading" id="batteries-title"><svg class="icon" aria-hidden="true"><use href="#i-battery"></use></svg>Batteries</h2>
+        <div class="panel field switch also-send" id="also-send" hidden>
+          <label for="also-send-box">Also send to my phone when Nova says it</label>
+          <input type="checkbox" id="also-send-box" role="switch">
+        </div>
+        <ul class="list batteries" id="batteries"></ul>
+      </section>
+
       <section aria-labelledby="routines-title">
         <h2 class="heading" id="routines-title"><svg class="icon" aria-hidden="true"><use href="#i-routine"></use></svg>Routines</h2>
         <ul class="list" id="own-routines"></ul>
@@ -149,6 +162,7 @@
       <section aria-labelledby="sound-title">
         <h2 class="heading" id="sound-title"><svg class="icon" aria-hidden="true"><use href="#i-sound"></use></svg>Sound</h2>
         <div class="tiles single" id="volumes"></div>
+        <p class="panel note" id="volumes-missing" hidden>This satellite isn't connected, so its volumes can't be changed.</p>
         <p class="hint">As you drag, Nova beeps at the new level, so you can hear how loud it is.</p>
       </section>
 
@@ -219,6 +233,7 @@
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10"/><path d="M17 7L7 17"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6.5 9.5l5.5 5.5 5.5-5.5"/></symbol>
     <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9.5 18h5"/><path d="M10.5 21h3"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.1 2.2h5c0-.9.4-1.6 1.1-2.2A6 6 0 0 0 12 3z"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect x="3.5" y="7.5" width="16" height="9" rx="2"/><path d="M21.5 10.5v3"/><path d="M6.5 10.5v3"/></symbol>
     <symbol id="i-routine" viewBox="0 0 24 24"><path d="M4 6h11"/><path d="M4 12h7"/><path d="M4 18h7"/><path d="M15 12.5v6.5l5-3.25z"/></symbol>
     <symbol id="i-scene" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6L18 18M6 18l1.4-1.4M16.6 7.4L18 6"/></symbol>
     <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.5 19.5h4l10-10-4-4-10 10z"/><path d="M13 7l4 4"/></symbol>

@@ -7,10 +7,15 @@ One line of JSON per interaction is appended to latency.jsonl in the logs folder
 the number of milliseconds since the wake word (or, for a follow-up question, since
 listening started again), and summarise() turns a pile of them into typical (p50)
 and bad-day (p95) times for each stage - see scripts/latency_report.py.
+
+Once the file reaches MAX_BYTES it's moved to latency.jsonl.1 and started afresh, as
+the logs are, keeping that one old file. It grew for ever on both machines - the
+Pi's SD card, and the brain's small disk.
 """
 
 import json
 import logging
+import os
 import statistics
 import time
 from datetime import datetime
@@ -18,6 +23,11 @@ from typing import Dict, List, Optional
 
 # Logger setup
 logger = logging.getLogger(__name__)
+
+# How big the file grows before it's started afresh - about 10,000 interactions -
+# and how much of it is read at a time from its end, in bytes.
+MAX_BYTES = 5_000_000
+TAIL_BLOCK = 65536
 
 # The stages reported on, each as the gap between two marks. Where a stage could
 # start from more than one mark - speech synthesis starts once the action has run,
@@ -67,7 +77,8 @@ class Timeline:
 
     def save(self, path: str):
         """
-        Appends this timeline to the log as one line of JSON.
+        Appends this timeline to the log as one line of JSON - to a new file once it
+        has reached MAX_BYTES, with the old one kept as path + ".1".
 
         Best-effort: a failure here is only logged, since timing an interaction
         must never be the thing which breaks it.
@@ -79,30 +90,54 @@ class Timeline:
             return
         try:
             line = {"at": datetime.now().isoformat(timespec="seconds"), "marks_ms": self.marks, **self.notes}
+            if os.path.isfile(path) and os.path.getsize(path) >= MAX_BYTES:
+                os.replace(path, path + ".1")
             with open(path, "a") as f:
                 f.write(json.dumps(line) + "\n")
         except Exception as e:
             logger.warning(f"Could not save the latency timeline: {e}")
 
 
-def load(path: str) -> List[Dict]:
+def load(path: str, most: Optional[int] = None) -> List[Dict]:
     """
-    Reads every timeline saved in a log, skipping any line which can't be read.
+    Reads the timelines saved in a log, skipping any line which can't be read.
 
     Args:
         path: The .jsonl file written by Timeline.save.
+        most: Only the last this many, read from the end of the file rather than
+            the whole of it - or None for all of them.
 
     Returns:
         The timelines, oldest first.
+
+    Raises:
+        OSError: If the file can't be read.
     """
+    with open(path, "rb") as f:
+        lines = _last_lines(f, most) if most is not None else f.read().splitlines()
     timelines = []
-    with open(path) as f:
-        for line in f:
-            try:
-                timelines.append(json.loads(line))
-            except ValueError:
-                continue
+    for line in lines:
+        try:
+            timelines.append(json.loads(line))
+        except ValueError:
+            continue
     return timelines
+
+
+def _last_lines(f, most: int) -> List[bytes]:
+    """The last few lines of a file open for reading in binary, read a block at a time from its end."""
+    position = f.seek(0, os.SEEK_END)
+    read = b""
+    while position > 0 and read.count(b"\n") <= most:
+        step = min(TAIL_BLOCK, position)
+        position -= step
+        f.seek(position)
+        read = f.read(step) + read
+    lines = read.splitlines()
+    # Unless it's the start of the file, the first line read may be only the end of one.
+    if position > 0:
+        lines = lines[1:]
+    return lines[-most:] if most else []
 
 
 def summarise(timelines: List[Dict]) -> List[Dict]:

@@ -5,10 +5,13 @@ The user's own routines: several things done at once, from a few words - "good
 morning" - or at a time of their choosing. Each step is something the user could
 say to Nova - "what's the weather", "turn on the kitchen lights", "play my morning
 playlist" - and is done just as if they had said it (see Conversation.run_routine),
-so a routine can do anything Nova can, with nothing of its own to learn.
+so a routine can do anything Nova can, with nothing of its own to learn. A step like
+"run goodnight" reaches Home Assistant's scripts through Assist, as the user would by
+voice - so only those exposed to Assist, and checked by the guard (see ha_guard.py).
 
 Kept in routines.json in the data folder (see paths.py), readable by this user only,
-and made and changed from the settings page.
+and made and changed from the settings page. Beside it, routines-missed.json keeps
+any which came due while their satellite was away, until it's back - see missed.
 """
 
 import logging
@@ -94,10 +97,16 @@ def _checked(given: Dict) -> Dict:
     if any(len(step) > LONGEST_STEP for step in steps):
         raise ValueError("One of those steps is too long.")
 
+    # The satellite it runs on at its time, by name - or None for the default one, the
+    # first added (see SatellitePasswords).
+    satellite = str(given.get("satellite") or "").strip()
+    if len(satellite) > LONGEST_NAME:
+        raise ValueError("That satellite's name is too long.")
+
     known = str(given.get("id") or "")
     return {"id": known if re.fullmatch(r"[a-z0-9]{1,16}", known) else uuid.uuid4().hex[:8], "name": name,
             "phrases": phrases, "at": f"{int(found[1]):02d}:{found[2]}" if at else "", "repeat": repeat,
-            "steps": steps}
+            "steps": steps, "satellite": satellite or None}
 
 
 class Routines:
@@ -114,6 +123,9 @@ class Routines:
         # The day each one last ran by itself, so it runs once at its time, however
         # often due() is asked within that minute.
         self._ran: Dict[str, str] = {}
+        # Those which came due while their satellite was away - see missed.
+        self._missed_path = os.path.join(os.path.dirname(self.path), "routines-missed.json")
+        self._missed: List[Dict] = self._load_missed()
 
     def _load(self) -> List[Dict]:
         try:
@@ -129,6 +141,58 @@ class Routines:
             except (ValueError, AttributeError) as e:
                 logger.error(f"Left out a routine which didn't make sense: {e}")
         return routines
+
+    def _load_missed(self) -> List[Dict]:
+        try:
+            missed = storage.load_json(self._missed_path, default=[])
+            return [entry for entry in missed
+                    if isinstance(entry, dict) and isinstance(entry.get("due_at"), (int, float))]
+        except (OSError, ValueError, TypeError) as e:
+            logger.error(f"Couldn't read the routines missed while a satellite was away, so starting without: {e}")
+            return []
+
+    def _save_missed(self):
+        """Keeps what's been missed for the next start. Called with the lock held."""
+        try:
+            storage.save_json(self._missed_path, self._missed)
+        except (OSError, TypeError) as e:
+            logger.error(f"Couldn't save the routines missed while a satellite was away: {e}")
+
+    def missed(self, routine: Dict, satellite: str, due_at: float):
+        """
+        Notes a routine which came due while its satellite was away, until it's back
+        - see take_missed. Only the latest time each was missed is kept.
+
+        Args:
+            routine: The routine, as due() gave it.
+            satellite: The satellite it runs on, by name.
+            due_at: When it came due, as an epoch timestamp.
+        """
+        entry = {"id": routine["id"], "name": routine["name"], "at": routine["at"], "satellite": satellite,
+                 "due_at": due_at}
+        with self._lock:
+            self._missed = [kept for kept in self._missed
+                            if (kept.get("id"), kept.get("satellite")) != (entry["id"], satellite)] + [entry]
+            self._save_missed()
+        logger.info(f"The {routine['name']} routine is kept until the {satellite} satellite's back", extra=TRANSCRIPT)
+
+    def take_missed(self, satellite: str) -> List[Dict]:
+        """
+        The routines which came due while a satellite was away, let go of here.
+
+        Args:
+            satellite: The satellite, by name.
+
+        Returns:
+            Each as missed noted it - its id, name and time ("at"), the satellite,
+            and when it came due ("due_at") - oldest first.
+        """
+        with self._lock:
+            taken = [entry for entry in self._missed if entry.get("satellite") == satellite]
+            if taken:
+                self._missed = [entry for entry in self._missed if entry.get("satellite") != satellite]
+                self._save_missed()
+        return sorted(taken, key=lambda entry: entry["due_at"])
 
     def all(self) -> List[Dict]:
         """Every routine, by name."""

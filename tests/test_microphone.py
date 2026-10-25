@@ -16,6 +16,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("soxr")
 
 from voice_assistant import microphone as microphone_module
+from voice_assistant import recording
 from voice_assistant.microphone import FRAME, RATE, Microphone
 
 
@@ -230,7 +231,7 @@ def record(microphone, **kwargs):
     settings = dict(silence_duration=10 * FRAME / RATE, speech_timeout=20 * FRAME / RATE,
                     timeout=100 * FRAME / RATE, min_speech=4 * FRAME / RATE)
     settings.update(kwargs)
-    return microphone.record_until_silence(FakeDetector(), **settings)
+    return recording.record_until_silence(microphone, FakeDetector(), **settings)
 
 
 def test_recording_stops_once_the_user_goes_quiet(streams):

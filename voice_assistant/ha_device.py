@@ -44,7 +44,7 @@ ONLINE, OFFLINE = "online", "offline"
 ON, OFF = "ON", "OFF"
 UNKNOWN = "None"
 
-# What Nova can be doing, as main.py has it.
+# What Nova can be doing, as each satellite's session has it - see session.py.
 STATUSES = ("idle", "listening", "thinking", "speaking")
 
 # Nova's volumes, each with its control's id, its name in Home Assistant and its icon.
@@ -63,7 +63,8 @@ QOS = 1
 @dataclass
 class DeviceControls:
     """
-    What Home Assistant can see and do of Nova, each a function main.py gives it.
+    What Home Assistant can see and do of Nova, each a function a satellite's session
+    gives it.
 
     The ones which read how Nova is - status, volumes, clock, backend and muted - are
     called every second on the device's own state thread, and on paho's as it connects,
@@ -124,7 +125,8 @@ class NovaDevice:
     """Nova's device in Home Assistant, kept up to date over MQTT."""
 
     def __init__(self, host: str, port: int, username: str, password: str, controls: DeviceControls,
-                 name: str = "Nova", node_id: Optional[str] = None, client_factory=None):
+                 name: str = "Nova", node_id: Optional[str] = None, client_factory=None,
+                 hostname: Optional[str] = None):
         """
         Args:
             host: Home Assistant's broker - its own address on the home network, e.g.
@@ -139,12 +141,14 @@ class NovaDevice:
                 so a second Nova is a second device rather than taking over the first.
             client_factory: Makes the MQTT client from its client id - only replaced by
                 the tests.
+            hostname: The machine whose name goes in the id, if it isn't this one - a
+                satellite's, for the device the brain runs for it.
         """
         self.host, self.port = host, port
         self.username, self.password = username, password
         self.controls = controls
         self.name = name
-        self.node_id = node_id or _slug(f"{name}_{socket.gethostname().split('.')[0]}")
+        self.node_id = node_id or _slug(f"{name}_{(hostname or socket.gethostname()).split('.')[0]}")
         self._client_factory = client_factory
 
         base = f"nova/{self.node_id}"
@@ -174,7 +178,8 @@ class NovaDevice:
         self._state_failing = False
 
     @classmethod
-    def from_config(cls, config, password: Optional[str], controls: DeviceControls) -> Optional["NovaDevice"]:
+    def from_config(cls, config, password: Optional[str], controls: DeviceControls,
+                    hostname: Optional[str] = None) -> Optional["NovaDevice"]:
         """
         The device mqtt.host in config.yaml sets up, or None if it doesn't name a broker.
 
@@ -182,6 +187,8 @@ class NovaDevice:
             config: Configs loaded from config.yaml.
             password: MQTT_PASSWORD.
             controls: What Home Assistant sees and does of Nova.
+            hostname: The satellite's own hostname, which names the device in place of
+                this machine's - so the Pi keeps the device it had, and with it its room.
         """
         settings = config.section("mqtt")
         host = (settings.get("host") or "").strip()
@@ -191,7 +198,8 @@ class NovaDevice:
             logger.warning("mqtt.host is set but MQTT_PASSWORD isn't, in ~/.config/nova/.env, "
                            "so Home Assistant's broker will most likely turn Nova away")
         return cls(host, int(settings.get("port") or 1883), (settings.get("username") or "").strip(),
-                   password or "", controls, name=(settings.get("name") or "").strip() or "Nova")
+                   password or "", controls, name=(settings.get("name") or "").strip() or "Nova",
+                   hostname=hostname)
 
     @property
     def identifier(self) -> str:

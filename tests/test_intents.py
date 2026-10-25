@@ -4,6 +4,7 @@ Checks which everyday commands are handled without Claude, and - just as much -
 which are left to it.
 """
 
+import re
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -14,9 +15,13 @@ from voice_assistant.actions import Action
 from voice_assistant.intents import LocalIntents, calendar_days
 
 
-def _actions(text, clock=None):
+# Stands in for Home Assistant, which the Assist shapes need to be there at all.
+HOME = object()
+
+
+def _actions(text, clock=None, home=HOME):
     """The actions a request is handled with locally, or None if it's left to Claude."""
-    result = LocalIntents(clock=clock).match(text)
+    result = LocalIntents(clock=clock, home=home).match(text)
     return None if result is None else result["actions"]
 
 
@@ -104,19 +109,124 @@ def test_the_weather_is_asked_for_without_claude(text, day):
     assert _actions(text) == [Action("get_weather", {"day": day})]
 
 
-@pytest.mark.parametrize("text, command", [
-    ("Turn off the kitchen lights.", "turn off the kitchen lights"),
-    ("Living room lights on.", "living room lights on"),
-    ("Lights off, please.", "lights off"),
-    ("Set the bedroom lamp to 30 percent.", "set the bedroom lamp to 30 percent"),
+@pytest.mark.parametrize("text, command, on, words, brightness", [
+    ("Turn off the kitchen lights.", "turn off the kitchen lights", False, "the kitchen lights", None),
+    ("Switch the lamp on.", "switch the lamp on", True, "the lamp", None),
+    ("Living room lights on.", "living room lights on", True, "living room lights", None),
+    ("Lights off, please.", "lights off", False, "lights", None),
+    ("Set the bedroom lamp to 30 percent.", "set the bedroom lamp to 30 percent", True, "the bedroom lamp", 30),
+    # Off, as Home Assistant takes 0% - so Nova's own lights don't switch it on at 1%.
+    ("Set the garage light to 0 percent.", "set the garage light to 0 percent", False, "the garage light", 0),
 ])
-def test_the_lights_go_straight_to_home_assistant(text, command):
-    assert _actions(text) == [Action("control_home", {"command": command})]
+def test_the_lights_go_straight_to_home_assistant(text, command, on, words, brightness):
+    # With what Nova's own lights need, should the guard refuse the sentence.
+    assert _actions(text) == [Action("control_home", {"command": command, "on": on, "words": words,
+                                                      "brightness": brightness})]
+
+
+@pytest.mark.parametrize("text, direction, words", [
+    ("Dim the lights.", "down", "the lights"),
+    ("Brighten the lamp.", "up", "the lamp"),
+    ("Dim the bedroom lights.", "down", "the bedroom lights"),
+    ("Dim the main light.", "down", "the main light"),
+    ("brighten all the lights, please", "up", "all the lights"),
+])
+def test_dimming_is_done_without_claude(text, direction, words):
+    assert _actions(text) == [Action("dim_lights", {"direction": direction, "words": words})]
+
+
+@pytest.mark.parametrize("text", ["Dim the timer and the lights.", "Dim the screen.", "Dim the lights by half.",
+                                  "Brighten my day.", "Brighten up the lights a bit.", "Dim."])
+def test_dimming_leaves_what_isnt_a_light_to_claude(text):
+    assert _actions(text) is None
+
+
+def test_setting_a_light_to_a_level_still_goes_to_assist():
+    assert _actions("Set the lamp to 30 percent.") == [Action("control_home", {
+        "command": "set the lamp to 30 percent", "on": True, "words": "the lamp", "brightness": 30})]
 
 
 def test_the_lights_with_something_else_are_left_to_claude():
     # Sent whole, Home Assistant would take "the timer and the" for a light's name.
     assert _actions("Turn off the timer and the lights.") is None
+
+
+@pytest.mark.parametrize("text", [
+    "Pause the TV.", "Turn off AdGuard protection.", "Switch the fan on.", "Next track on the TV.",
+    "Set the TV volume to 40.", "Run goodnight.", "Activate movie night.", "Close the blinds.",
+    # "In" and a number are only a delay together - "in five minutes", "at six".
+    "Turn off the TV in the kitchen.", "Turn on fan 2.",
+])
+def test_assists_own_sentences_go_to_assist(text):
+    # Sent whole, on the wider rule - see HomeAssistant.command.
+    request = text.lower().rstrip(".?")
+    assert _actions(text) == [Action("control_home", {"command": request, "wider": True})]
+
+
+@pytest.mark.parametrize("text", [
+    "Is the fan on?", "Is the garage door open?", "Is the patio closed?",
+    # The light rule doesn't take "is" for part of a light's name.
+    "Is the lamp on?",
+])
+def test_a_question_for_assist_says_its_a_question(text):
+    # So a refused one goes to Claude, which can read it with home_status, rather than
+    # being refused - see ActionExecutor.control_home.
+    request = text.lower().rstrip(".?")
+    assert _actions(text) == [Action("control_home", {"command": request, "wider": True, "question": True})]
+
+
+@pytest.mark.parametrize("text", [
+    "Turn off the microphone.", "Turn off my alarm.", "Turn off the timer.", "Turn on shuffle.", "Turn on repeat.",
+    "Turn it off.", "Pause it.", "Is it on?", "Turn off the music.", "Turn off notifications.",
+    "Turn off the TV and the lamp.", "Turn up the heating.",
+    # "My" isn't a name, so this isn't "the volume" of something called "my".
+    "Set my volume to 40.",
+    # Nova's own, by more of their words.
+    "Pause playback.", "Pause Navidrome.", "Turn off the chime.", "Turn off the wake word.", "Turn off quiet hours.",
+    "Turn on battery alerts.", "Turn off the warnings.",
+    # Words that only point back, to something the conversation so far says.
+    "Turn the other one off.", "Turn the same one on.", "Turn both off.", "Switch the rest off.", "Run again.",
+    "Run the last one.", "Open the first one.",
+    # Two things at once, however they're joined.
+    "Turn off the TV plus the fan.", "Turn off the TV then the fan.",
+    # When, rather than what - a delay is Claude's.
+    "Pause the TV in five minutes.", "Pause the TV for a bit.", "Turn off the TV in ten minutes.",
+    "Turn off the oven at six.", "Turn on the heating until ten.", "Turn off the light in five minutes.",
+    "Run the dishwasher tonight.", "Turn on the heating by 7.", "Turn on the oven for half an hour.",
+    # For the user, not a thing of Home Assistant's.
+    "Run me a bath.", "Open us a window.",
+    # The shapes with nothing above yet for what they mustn't catch.
+    "Previous track on Spotify.", "Run the timer.", "Activate it.", "Open it.", "Close that.",
+])
+def test_what_the_assist_rule_mustnt_catch_is_left_alone(text):
+    # 0003: local rules stay strict. Nova's own things, words Assist can't know the
+    # meaning of, a delay, or two things at once, are Claude's.
+    assert _actions(text) is None
+
+
+def test_a_question_isnt_taken_for_a_light_sentence():
+    # "Are the lights" isn't a light's name, which Nova's own lights would switch on
+    # if the guard refused the sentence.
+    assert _actions("Are the lights on?") is None
+
+
+@pytest.mark.parametrize("text", [
+    "Pause the TV.", "Is the post office open?", "Is Tesco open?", "Is the pharmacy closed?", "Is the football on?",
+    "Run through my day.", "Open YouTube.", "Open the settings.", "Turn on the news.",
+])
+def test_without_home_assistant_nothing_is_taken_for_assist(text):
+    # Otherwise "is the post office open?" would get "Home Assistant isn't set up yet",
+    # and never reach Claude.
+    assert _actions(text, home=None) is None
+
+
+@pytest.mark.parametrize("text, action", [
+    ("Pause.", Action("control_playback", {"action": "pause"})),
+    ("Next track.", Action("control_playback", {"action": "skip"})),
+    ("Set the volume to 40.", Action("set_volume", {"level": 40})),
+])
+def test_novas_own_commands_still_come_before_assist(text, action):
+    assert _actions(text) == [action]
 
 
 @pytest.mark.parametrize("text", ["What have I got on Thursday?", "What's on my calendar for Thursday?",
@@ -215,3 +325,266 @@ def test_tell_me_more_is_only_about_an_alert_just_said():
 def test_without_ntfy_notification_commands_go_to_claude():
     for said in ("Any notifications?", "Send that to my phone.", "Tell me more."):
         assert LocalIntents().match(said) is None
+
+
+@pytest.mark.parametrize("text, params", [
+    ("How's my Mac's battery?", {"device": "mac"}),
+    ("what's my phone on", {"device": "phone"}),
+    ("What's the tablet's battery?", {"device": "tablet"}),
+    ("Battery levels.", {}),
+    ("How are my batteries?", {}),
+])
+def test_battery_questions_are_answered_locally(text, params):
+    assert _actions(text) == [Action("get_batteries", params)]
+
+
+@pytest.mark.parametrize("text", [
+    "What's on my phone",
+    "What's on tonight",
+    "Play battery by Metallica",
+    "Set an alarm for 7",
+    "How's my battery",
+    "My phone's battery is flat",
+    "What's the battery of the car",
+    "Battery levels and the weather",
+    "Turn off my phone",
+])
+def test_what_the_battery_rules_mustnt_catch_is_left_alone(text):
+    # 0003: local rules stay strict. "What's on tonight" is the calendar's, and the rest isn't a battery question.
+    actions = _actions(text)
+    assert not actions or all(action.tool != "get_batteries" for action in actions)
+
+
+def test_the_phone_is_found_and_rung_without_claude():
+    assert _actions("Where's my phone?") == [Action("find_device", {"device": "phone", "ring": False})]
+    assert _actions("Where is the tablet?") == [Action("find_device", {"device": "tablet", "ring": False})]
+    assert _actions("Find my phone.") == [Action("find_device", {"device": "phone", "ring": True})]
+    assert _actions("Ring my tablet.") == [Action("find_device", {"device": "tablet", "ring": True})]
+    assert _actions("Ring the Mac, please.") == [Action("find_device", {"device": "mac", "ring": True})]
+    # Still the battery, and anything less plain is Claude's.
+    assert _actions("What's my phone on?") == [Action("get_batteries", {"device": "phone"})]
+    assert _actions("Where's my phone charger?") is None
+    assert _actions("Find my phone and turn off the lamp.") is None
+    # Without Home Assistant it's still Nova's, which says so, rather than Claude's.
+    assert _actions("Where's my phone?", home=None) == [Action("find_device", {"device": "phone", "ring": False})]
+
+
+@pytest.mark.parametrize("text", [
+    "Find my phone number",
+    "Ring my mum",
+    "Ring my phone in five minutes",
+    "Where's the Mac's charger?",
+    "Where's my phone case",
+    "Where is my tablet's charger",
+    "Find my keys",
+    "Where's the TV remote?",
+    "Find the laptop bag",
+    "Ring the doorbell",
+])
+def test_what_the_find_device_rules_mustnt_catch_is_left_alone(text):
+    # 0003: local rules stay strict - only the device itself, said plainly.
+    actions = _actions(text)
+    assert not actions or all(action.tool != "find_device" for action in actions)
+
+
+@pytest.mark.parametrize("text, device", [
+    ("Send that to my Mac.", "mac"), ("Put it on the tablet.", "tablet"), ("Text this to my laptop", "laptop"),
+    ("Send it to my MacBook.", "macbook"), ("Put that on my iPad please.", "ipad"),
+])
+def test_sending_to_the_mac_and_tablet_is_done_without_claude(text, device):
+    assert _actions(text) == [Action("send_to_phone", {"device": device})]
+    # Without Home Assistant there is nothing to send it through.
+    assert _actions(text, home=None) is None
+
+
+def test_the_send_to_device_rule_comes_before_assists_shapes():
+    rules = LocalIntents(home=HOME)._rules
+    sending = [n for n, (pattern, _) in enumerate(rules) if "(?P<device>mac|macbook|laptop|tablet|ipad)" in pattern]
+    assisting = [n for n, (_, handle) in enumerate(rules) if getattr(handle, "__name__", "") in ("_assist", "_ask")]
+    assert len(sending) == 1 and assisting and sending[0] < min(assisting)
+
+
+@pytest.mark.parametrize("text", [
+    "Send that to my Mac mini in the loft",
+    "Put it on my iPad's list",
+    "Put it on the tablet in the kitchen",
+    "Send that to my mum",
+    "Send the photo to my Mac",
+    "Put a film on the tablet",
+    "Send that to my Mac and my phone",
+])
+def test_what_the_send_to_device_rule_mustnt_catch_is_left_alone(text):
+    actions = _actions(text)
+    assert not actions or all(action.tool != "send_to_phone" for action in actions)
+
+
+def test_the_find_device_rules_come_before_assists_shapes():
+    # So "find my phone" is never a thing of Home Assistant's, should Assist ever learn a "find" shape.
+    rules = LocalIntents(home=HOME)._rules
+    finding = [n for n, (pattern, _) in enumerate(rules) if "(?P<device>phone|tablet|mac|laptop)" in pattern]
+    assisting = [n for n, (_, handle) in enumerate(rules) if getattr(handle, "__name__", "") in ("_assist", "_ask")]
+    assert len(finding) == 2 and assisting and max(finding) < min(assisting)
+
+
+# Lists - see lists.py
+
+@pytest.mark.parametrize("text, item, said, command", [
+    ("Put milk on my shopping list.", "milk", "my shopping list", "put milk on my shopping list"),
+    # Assist matches this with no list, so it isn't sent, and Nova adds it - see add_to_list.
+    ("Add milk to notes.", "milk", "notes", "add milk to notes"),
+    ("Add milk to the todo list, please.", "milk", "the todo list", "add milk to the todo list"),
+])
+def test_one_thing_is_added_without_claude(text, item, said, command):
+    assert _actions(text) == [Action("add_to_list", {"item": item, "list": said, "command": command})]
+
+
+@pytest.mark.parametrize("text", [
+    "Add eggs, milk and bread to my shopping list.",
+    # The comma said is lost with the punctuation, but still counts.
+    "Add eggs, milk, bread to my list.",
+    # One thing or two? Claude keeps it whole, or splits it.
+    "Add salt and vinegar crisps to my list.",
+    "Put eggs,milk on my list.",
+])
+def test_several_things_go_to_claude(text):
+    assert _actions(text) is None
+
+
+@pytest.mark.parametrize("text, tool", [
+    ("Add ten minutes to the timer.", None), ("Add the dentist to my calendar.", None),
+    ("Put the kettle on.", None), ("Put it on my phone.", "send_to_phone"), ("What's on tomorrow?", "get_calendar"),
+    # Nova's own things and the devices, by any of their words.
+    ("Add an hour to my alarm.", None), ("Add this to my reminders.", None), ("Put lunch in my diary.", None),
+    ("Put the meeting on my schedule.", None), ("Put Drake on my iPad.", None), ("Put a film on the tablet.", None),
+    ("Add a note to my agenda.", None), ("What's on my phone?", None), ("What's on the laptop?", None),
+    ("What's on my Mac?", None),
+    # Only pointing back, to something the conversation so far says.
+    ("Add it to my shopping list.", None), ("Put that on my list.", None), ("Tick that off.", None),
+    ("Take it off my list.", None), ("I've got it.", None), ("I have got this.", None), ("Cross this off my list.", None),
+    # Not a list's name, nor a thing to add.
+    ("Read me a story.", None), ("Read me the news.", None), ("Take the bins out.", None),
+    # Two requests at once.
+    ("Add milk to my list and play Drake.", None), ("Tick off milk on my list then the eggs.", None),
+])
+def test_what_the_list_rules_mustnt_catch_is_left_alone(text, tool):
+    # 0003: local rules stay strict.
+    found = LocalIntents(home=HOME, ntfy=SimpleNamespace(just_said=lambda: False)).match(text)
+    assert (found and [action.tool for action in found["actions"]]) == ([tool] if tool else None)
+
+
+@pytest.mark.parametrize("text, action", [
+    ("What's on my shopping list?", Action("read_list", {"list": "my shopping list"})),
+    ("Read me my todo list.", Action("read_list", {"list": "my todo list"})),
+    ("Tick off milk.", Action("tick_off_list", {"item": "milk", "list": None, "command": "tick off milk"})),
+    ("Tick milk off.", Action("tick_off_list", {"item": "milk", "list": None, "command": "tick milk off"})),
+    ("Tick off milk on my shopping list.", Action("tick_off_list", {
+        "item": "milk", "list": "my shopping list", "command": "tick off milk on my shopping list"})),
+    ("Take milk off my shopping list.", Action("tick_off_list", {
+        "item": "milk", "list": "my shopping list", "command": "take milk off my shopping list", "exact": False})),
+    ("Cross the eggs off the shopping list.", Action("tick_off_list", {
+        "item": "the eggs", "list": "the shopping list", "command": "cross the eggs off the shopping list",
+        "exact": False})),
+    # Without the word "list", only the thing itself - "take the day off work" is about the world.
+    ("Take the day off work.", Action("tick_off_list", {
+        "item": "the day", "list": "work", "command": "take the day off work", "exact": True})),
+    ("I've got the milk.", Action("tick_off_list", {"item": "milk", "list": None, "exact": True})),
+])
+def test_a_list_is_read_and_things_ticked_off_without_claude(text, action):
+    assert _actions(text) == [action]
+
+
+@pytest.mark.parametrize("text", [
+    "I've got a headache.", "Add milk to my shopping list.", "What's on my shopping list?", "Tick off milk.",
+    "Take milk off my shopping list.",
+])
+def test_without_home_assistant_the_list_rules_leave_it_to_claude(text):
+    # "I've got a headache" is a sentence about the world, which a brain without Home
+    # Assistant would otherwise answer with "Lists need Home Assistant."
+    assert _actions(text, home=None) is None
+
+
+@pytest.mark.parametrize("text, item, said", [
+    # The last " to " or " on " is the list's, so a thing can have one too.
+    ("Add a trip to Ikea to my list.", "a trip to ikea", "my list"),
+    ("Put a letter to the council on my list.", "a letter to the council", "my list"),
+    # "To do" is a list's name, never where the thing goes.
+    ("Add milk to my to do list.", "milk", "my to do list"),
+    ("Add milk to my to-do list.", "milk", "my to do list"),
+    ("Put the radio on my shopping list.", "the radio", "my shopping list"),
+    # Without commas, three words can't be told from one thing of three words.
+    ("Add eggs milk bread to my list.", "eggs milk bread", "my list"),
+])
+def test_a_thing_is_taken_up_to_the_last_to_or_on(text, item, said):
+    command = re.sub(r"[^a-z0-9' ]", " ", text.lower()).strip()
+    assert _actions(text) == [Action("add_to_list", {"item": item, "list": said, "command": " ".join(command.split())})]
+
+
+@pytest.mark.parametrize("text", [
+    # Only pointing back, by any of the words for it.
+    "Add them to my shopping list.", "Put all of those on my list.", "Add these to my list.", "Tick them off.",
+    "Tick both off my list.", "I've got them.", "Take those off my shopping list.", "Add the other one to my list.",
+    # Several things, joined other ways.
+    "Add eggs plus milk to my list.", "Add eggs as well as milk to my list.",
+    # Possessives of Nova's own things and the devices.
+    "Add a note to my phone's notes.", "Put lunch on my calendar's day.",
+    # Ticking off from what isn't a list.
+    "Tick milk off my calendar.", "Tick it off my list.", "Tick milk off my list and the eggs.",
+])
+def test_what_else_the_list_rules_mustnt_catch_is_left_alone(text):
+    assert _actions(text) is None
+
+
+def test_a_thing_is_ticked_off_a_list_said_after_it():
+    assert _actions("Tick milk off my shopping list.") == [Action("tick_off_list", {
+        "item": "milk", "list": "my shopping list", "command": "tick milk off my shopping list"})]
+
+
+def test_ive_got_only_ticks_off_an_exact_fit_and_never_asks_assist():
+    # "I've got the flu" is a sentence about the world - only "flu" itself on a list is
+    # ticked off, and Assist, which has no such sentence, is never sent it.
+    assert _actions("I've got the flu.") == [Action("tick_off_list", {"item": "flu", "list": None, "exact": True})]
+
+
+@pytest.mark.parametrize("text, item", [
+    ("Add one egg to my list.", "one egg"), ("Add the last of the bread to my list.", "the last of the bread"),
+    ("Add that cake to my list.", None), ("Add the other one to my list.", None),
+])
+def test_a_thing_is_only_left_to_claude_when_it_points_back(text, item):
+    # "That" always points back; "one" or "last" only when they're all the thing is.
+    expected = None if item is None else [Action("add_to_list", {
+        "item": item, "list": "my list", "command": text.lower().rstrip(".")})]
+    assert _actions(text) == expected
+
+
+# The PC - see pc.py
+
+@pytest.mark.parametrize("text, action", [
+    ("Turn on my PC.", "on"), ("Switch on the computer.", "on"), ("Turn the PC on.", "on"),
+    ("Switch my computer on.", "on"), ("Wake my PC.", "on"), ("Wake up the computer.", "on"),
+    ("Turn off the PC.", "off"), ("Switch off my computer.", "off"), ("Turn my PC off.", "off"),
+    ("Switch the computer off.", "off"), ("Shut down my PC.", "off"), ("Shut the computer down.", "off"),
+    ("Restart my PC.", "restart"), ("Reboot the computer.", "restart"),
+    ("Put my PC to sleep.", "sleep"), ("Put the computer to sleep.", "sleep"),
+    ("Turn off my PC's screen.", "screen_off"), ("Turn off the computer monitor.", "screen_off"),
+    ("Lock my PC.", "lock"), ("Lock the computer.", "lock"),
+    ("Is my PC on?", "status"), ("Is the computer on?", "status"),
+])
+def test_the_pc_is_worked_without_claude(text, action):
+    # "Lock my PC" is the PC's own, not Assist's; "is my PC on?" comes before Assist's
+    # "is X on", and "put my PC to sleep" before the lists' "put X to Y".
+    assert _actions(text) == [Action("pc_power", {"action": action})]
+    # Without Home Assistant too, which says the PC needs it.
+    assert _actions(text, home=None) == [Action("pc_power", {"action": action})]
+
+
+@pytest.mark.parametrize("text, tools", [
+    # Still the lights, and Assist's phone.
+    ("Turn on the PC lights.", ["control_home"]), ("Turn off my phone.", ["control_home"]),
+    # Claude's - the music, two requests at once, a delay, an alarm, a battery or unlocking.
+    ("Restart the music.", None), ("Shut down the PC and play Drake.", None),
+    ("Shut down my PC in ten minutes.", None), ("Wake me up at 7.", None), ("Is my PC's battery on?", None),
+    ("Is my PC on charge?", None), ("Unlock my PC.", None),
+])
+def test_what_the_pc_rules_mustnt_catch_is_left_alone(text, tools):
+    actions = _actions(text)
+    assert (None if actions is None else [action.tool for action in actions]) == tools

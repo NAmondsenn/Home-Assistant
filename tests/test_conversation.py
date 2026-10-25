@@ -5,9 +5,15 @@ Whisper or Claude - using fakes for the clock, local commands, Claude and the
 actions, so each rule can be checked on its own.
 """
 
-from voice_assistant.actions import Action, ActionResult
+import pytest
+
+from voice_assistant.actions import Action, ActionExecutor, ActionResult
+from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation
+from voice_assistant.ha_registry import Entry, Snapshot
+from voice_assistant.intents import LocalIntents
+from voice_assistant.pc import PCPower
 
 
 class FakeClock:
@@ -22,11 +28,13 @@ class FakeClock:
         self.dismissed = 0
         self.silenced = []
 
-    def is_ringing(self):
+    def is_ringing(self, satellite=None):
+        self.asked_about = satellite
         return self.ringing
 
-    def dismiss(self):
+    def dismiss(self, satellite=None):
         self.dismissed += 1
+        self.dismissed_on = satellite
         self.ringing = False
         return {"success": True, "message": "Okay, stopped."}
 
@@ -41,8 +49,11 @@ class FakeIntents:
     def __init__(self, handles=None):
         self.handles = handles or {}
 
-    def match(self, text):
-        return self.handles.get(text)
+    def match(self, text, only=None):
+        handled = self.handles.get(text)
+        if handled and only is not None and not all(action.tool in only for action in handled["actions"]):
+            return None
+        return handled
 
 
 class FakeLLM:
@@ -52,14 +63,17 @@ class FakeLLM:
         self.replies = list(replies)
         self.asked, self.remembered, self.recorded, self.tool_answers = [], [], [], []
         self.contexts, self.lights = [], []
+        # What Claude reads before answering, and what it's told - see LLMHandler.process_query.
+        self.to_read, self.read = [], []
 
     def forget_stale_history(self):
         pass
 
-    def process_query(self, text, context=None, lights=None):
+    def process_query(self, text, context=None, lights=None, read=None):
         self.asked.append(text)
         self.contexts.append(context)
         self.lights.append(lights)
+        self.read += [read(action) for action in self.to_read]
         return self.replies.pop(0)
 
     def remember(self, text, reply):
@@ -75,9 +89,11 @@ class FakeActions:
         self.results = results or {}
         self.home = home
         self.run = []
+        self.params = []
 
     def execute(self, action):
         self.run.append(action.tool)
+        self.params.append(action.params)
         return self.results.get(action.tool, ActionResult(True, "Done."))
 
 
@@ -121,6 +137,19 @@ def test_a_plain_answer_is_said_and_remembered():
     assert llm.recorded == [("what's the capital of France", "Paris.")]
 
 
+def test_claude_reads_home_status_rather_than_it_being_said():
+    # What home_status reads is for Claude to answer from, not to be said as it is.
+    llm = FakeLLM(_answer("Sunset's at 5:52 PM."))
+    llm.to_read = [Action("home_status", {"about": "sunset"}, from_model=True)]
+    actions = FakeActions({"home_status": ActionResult(
+        True, "Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52")})
+    reply = _conversation(llm=llm, actions=actions).handle("when's sunset?")
+    assert llm.read == ["Sun next setting (sensor.sun_next_setting): 2026-10-20 17:52"]
+    assert (actions.run, actions.params) == (["home_status"], [{"about": "sunset"}])
+    assert reply.say == "Sunset's at 5:52 PM."
+    assert llm.recorded == [("when's sunset?", "Sunset's at 5:52 PM.")]
+
+
 def test_a_local_command_never_reaches_claude():
     llm = FakeLLM()
     intents = FakeIntents({"pause": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
@@ -128,6 +157,54 @@ def test_a_local_command_never_reaches_claude():
     reply = _conversation(intents=intents, llm=llm, actions=actions).handle("pause")
     assert llm.asked == [] and llm.remembered == [("pause", "Okay.")]
     assert reply.sounds == [("success_chime.wav", "general")] and reply.say == ""
+
+
+def test_where_my_phone_is_never_reaches_claude_when_asked_locally():
+    # Claude's history goes to Anthropic with every later request, so a place said for a
+    # local "where's my phone?" is kept from it - it only hears that it was said.
+    where = "Your phone's near Example Road, Sometown, as of 10 minutes ago."
+    intents = FakeIntents({"where's my phone": _answer("Okay.", Action("find_device", {"device": "phone",
+                                                                                       "ring": False}))})
+    actions = FakeActions({"find_device": ActionResult(True, where, private=True)})
+    llm = FakeLLM()
+    reply = _conversation(intents=intents, llm=llm, actions=actions).handle("where's my phone")
+    assert reply.say == where and llm.asked == []
+    assert llm.remembered == [("where's my phone", "I said where your phone is.")]
+    assert llm.recorded == [("where's my phone", "I said where your phone is.")]
+    assert llm.tool_answers == [["I said where your phone is."]]
+
+
+
+def test_where_a_device_is_never_reaches_claude_even_when_claude_asked():
+    # Claude needs no place to answer anything it's asked, so its own call is kept from it too -
+    # beside anything else the turn said, which it keeps.
+    where = "Your phone's near Example Road, Sometown, as of 10 minutes ago."
+    llm = FakeLLM(_answer("Okay.", Action("find_device", {"device": "phone"}, from_model=True),
+                          Action("set_timer", {"duration_seconds": 600}, from_model=True)))
+    actions = FakeActions({"find_device": ActionResult(True, where, private=True),
+                           "set_timer": ActionResult(True, "Timer set for 10 minutes.")})
+    reply = _conversation(llm=llm, actions=actions).handle("where did I leave my phone, and set a ten minute timer")
+    assert reply.say == f"{where} Timer set for 10 minutes."
+    assert llm.recorded == [("where did I leave my phone, and set a ten minute timer",
+                             "I said where your phone is. Timer set for 10 minutes.")]
+    assert llm.tool_answers == [["I said where your phone is.", "Timer set for 10 minutes."]]
+    assert "Example Road" not in str((llm.recorded, llm.tool_answers, llm.remembered))
+
+
+def test_where_my_phone_is_still_found_locally_when_nova_was_listening_for_an_answer():
+    # After "Anything else?", "where's my phone?" can't be its answer, so it's still Nova's own -
+    # and Claude, which isn't asked, never hears where.
+    where = "Your phone's near Example Road, Sometown, as of 10 minutes ago."
+    intents = LocalIntents(home=object())
+    actions = FakeActions({"find_device": ActionResult(True, where, private=True)})
+    llm = FakeLLM(_answer("Okay."))
+    reply = _conversation(intents=intents, llm=llm, actions=actions).handle("Where's my phone?", follow_up=True)
+    assert reply.say == where and llm.asked == [] and actions.run == ["find_device"]
+    assert llm.remembered == [("Where's my phone?", "I said where your phone is.")]
+    assert "Example Road" not in str((llm.recorded, llm.tool_answers))
+    # Anything else in the window is still the conversation's, so "stop" isn't the music's.
+    _conversation(intents=intents, llm=llm, actions=actions).handle("pause", follow_up=True)
+    assert llm.asked == ["pause"]
 
 
 def test_the_answer_to_a_question_isnt_taken_for_a_local_command():
@@ -293,6 +370,13 @@ def test_stop_heard_as_so_while_ringing_is_still_a_stop():
     assert clock.dismissed == 1 and llm.asked == []
 
 
+def test_only_whats_ringing_where_the_user_is_talking_is_stopped():
+    # The kitchen's "stop" dismissed the bedroom's alarm, which couldn't be heard there.
+    clock = FakeClock(ringing=True)
+    _conversation(clock=clock, satellite="kitchen").handle("Stop.")
+    assert clock.asked_about == "kitchen" and clock.dismissed_on == "kitchen"
+
+
 def test_without_the_chime_a_dismissal_is_shown_not_said():
     reply = _conversation(clock=FakeClock(ringing=True), chime_enabled=False).handle("Stop.")
     assert (reply.sounds, reply.shown, reply.say) == ([], "Okay, stopped.", "")
@@ -418,6 +502,18 @@ def test_a_routines_steps_are_each_done_as_if_said_and_their_answers_said_togeth
     assert reply.say == "It's sunny." and reply.sounds == [("success_chime.wav", "general")]
 
 
+def test_a_routine_runs_a_home_assistant_script_through_assist():
+    class RecordingActions(FakeActions):
+        def execute(self, action):
+            self.run.append(action)
+            return ActionResult(True, "Done.", confirm="chime")
+
+    actions = RecordingActions()
+    goodnight = {"name": "Goodnight", "phrases": ["goodnight"], "steps": ["run goodnight"]}
+    _conversation(intents=LocalIntents(home=object()), actions=actions, routines=FakeRoutines(goodnight)).handle("goodnight")
+    assert actions.run == [Action("control_home", {"command": "run goodnight", "wider": True})]
+
+
 def test_a_step_which_is_a_routines_own_words_doesnt_start_it_again():
     llm = FakeLLM(_answer("Going."))
     reply = _conversation(llm=llm, routines=FakeRoutines({"name": "Loop", "phrases": ["go"], "steps": ["go"]})).handle("go")
@@ -435,3 +531,153 @@ def test_a_question_a_step_asks_isnt_listened_for():
     routine = {"name": "Lights", "phrases": ["lights"], "steps": ["turn on a light"]}
     reply = _conversation(llm=llm, routines=FakeRoutines(routine)).handle("lights")
     assert reply.say == "Which one?" and not reply.listen_again
+
+
+# Asking before shutting the PC down
+
+class FakePCHome:
+    """Stands in for Home Assistant with the desk PC on, noting each button pressed."""
+
+    def __init__(self):
+        entries = [Entry("button.desk_off", "mqtt", "desk", None, "desk_off", "Shutdown", (), False),
+                   Entry("button.desk_again", "mqtt", "desk", None, "desk_again", "Restart", (), False),
+                   Entry("sensor.desk_cpu", "mqtt", "desk", None, "desk_cpu", "CPU Load", (), False)]
+        self.snapshot = Snapshot(entries={entry.entity_id: entry for entry in entries},
+                                 devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}}, areas={},
+                                 read_at=0.0)
+        self.pressed = []
+
+    def _snapshot(self):
+        return self.snapshot
+
+    def _states(self):
+        return [{"entity_id": entity, "state": "12", "attributes": {}} for entity in self.snapshot.entries]
+
+    def press(self, entity_id):
+        self.pressed.append(entity_id)
+
+    def describe_lights(self, timeout=None):
+        return ""
+
+
+class AskingActions(ActionExecutor):
+    """The real actions, bar dim_lights, which asks "Which light?"."""
+
+    # The tools are looked up on the class itself.
+    tools = ActionExecutor.tools
+
+    def execute(self, action):
+        if action.tool == "dim_lights":
+            return ActionResult(False, "Which light?")
+        return super().execute(action)
+
+
+def _pc_conversation(tmp_path, *replies):
+    """A conversation with the real local rules and actions, and the PC on a fake Home Assistant."""
+    home = FakePCHome()
+    actions = AskingActions(home=home, pc=PCPower(home, ChoiceStore(str(tmp_path / "pcs.json"), {"wake": {}})))
+    llm = FakeLLM(*replies)
+    return _conversation(intents=LocalIntents(), llm=llm, actions=actions), home, llm
+
+
+def test_shutting_down_asks_first_and_only_a_yes_does_it(tmp_path):
+    conversation, home, llm = _pc_conversation(tmp_path)
+    reply = conversation.handle("Shut down the PC.")
+    assert (reply.say, reply.listen_again) == ("Shut down the PC?", True)
+    assert home.pressed == []
+    # Read before the follow-up window would send it to Claude.
+    assert conversation.handle("yes", follow_up=True).say == "Shutting down the PC."
+    assert home.pressed == ["button.desk_off"] and llm.asked == []
+
+    conversation, home, llm = _pc_conversation(tmp_path)
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle("no", follow_up=True).say == "Okay, I'll leave it."
+    # And once answered, a later yes is nobody's.
+    conversation.handle("Restart the PC.")
+    assert conversation.handle("leave it", follow_up=True).say == "Okay, I'll leave it."
+    assert home.pressed == []
+
+    # Anything else drops it, and is a fresh request - so a yes after that is Claude's.
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("It's sunny. Anything else?"), _answer("Okay."))
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle("what's the weather", follow_up=True).say == "It's sunny. Anything else?"
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == [] and llm.asked == ["what's the weather", "yes"]
+
+
+def test_claudes_shutdown_asks_first_too(tmp_path):
+    conversation, home, llm = _pc_conversation(
+        tmp_path, _answer("Okay.", Action("pc_power", {"action": "restart"}, from_model=True)))
+    assert conversation.handle("could you reboot the thing on my desk").say == "Restart the PC?"
+    assert home.pressed == []
+    assert conversation.handle("go on", follow_up=True).say == "Restarting the PC."
+    assert home.pressed == ["button.desk_again"]
+
+
+def test_a_yes_in_a_new_conversation_presses_nothing(tmp_path):
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay."), _answer("Okay."))
+    conversation.handle("Shut down the PC.")
+    conversation.start()
+    conversation.handle("yes")
+    assert home.pressed == [] and llm.asked == ["yes"]
+
+    # Nor does a yes said to any other question.
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Shall I play some music?"), _answer("Okay."))
+    conversation.handle("I'm bored")
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == []
+
+    # Nor one said with no question listened for - the follow-ups had run out.
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay."))
+    conversation.follow_ups = conversation.max_follow_ups
+    assert not conversation.handle("Shut down the PC.").listen_again
+    conversation.handle("yes")
+    assert home.pressed == []
+
+
+@pytest.mark.parametrize("answer", ["yes", "Yes please.", "Nova, yeah.", "yep", "go ahead", "Go on.", "sure",
+                                    "Do it.", "Okay, do it.", "ok do it please", "Yes.", "'yes'",
+                                    "\u2018yes\u2019"])
+def test_only_a_plain_yes_shuts_the_pc_down(tmp_path, answer):
+    conversation, home, llm = _pc_conversation(tmp_path)
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle(answer, follow_up=True).say == "Shutting down the PC."
+    assert home.pressed == ["button.desk_off"]
+
+
+@pytest.mark.parametrize("answer, said", [
+    # Backing out - "stop" and "cancel" most of all, which a reminder's offer takes for a yes.
+    ("stop", "Okay, I'll leave it."), ("Cancel.", "Okay, I'll leave it."), ("no thanks", "Okay, I'll leave it."),
+    ("Never mind.", "Okay, I'll leave it."), ("don't", "Okay, I'll leave it."), ("Nope.", "Okay, I'll leave it."),
+    ("leave it", "Okay, I'll leave it."),
+    # Neither, so a fresh request, Claude's - nor a yes with more said after it.
+    ("shut up", "Okay."), ("thanks", "Okay."), ("fine", "Okay."), ("okay thanks", "Okay."),
+    ("yes, play music", "Okay."), ("yes in a minute", "Okay."), ("absolutely", "Okay."),
+    # Digits and other scripts are words too - "Yes, 10." most likely means in ten minutes.
+    ("Yes, 10.", "Okay."), ("Yes. 10:30", "Okay."), ("yes 10", "Okay."), ("yes \u4e0d\u8981", "Okay."),
+])
+def test_no_or_anything_else_said_back_presses_nothing(tmp_path, answer, said):
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay."), _answer("Okay."))
+    conversation.handle("Shut down the PC.")
+    assert conversation.handle(answer, follow_up=True).say == said
+    assert home.pressed == []
+    assert llm.asked == ([] if said.startswith("Okay, I'll") else [answer])
+    # Either way, it's gone.
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == []
+
+
+@pytest.mark.parametrize("actions", [
+    # The PC's question isn't the whole reply...
+    [Action("pc_power", {"action": "off"}, from_model=True), Action("dim_lights", {}, from_model=True)],
+    [Action("dim_lights", {}, from_model=True), Action("pc_power", {"action": "off"}, from_model=True)],
+    # ...or there are two to answer.
+    [Action("pc_power", {"action": "off"}, from_model=True),
+     Action("pc_power", {"action": "restart"}, from_model=True)],
+])
+def test_a_yes_to_more_than_the_pcs_question_presses_nothing(tmp_path, actions):
+    conversation, home, llm = _pc_conversation(tmp_path, _answer("Okay.", *actions), _answer("Okay."))
+    reply = conversation.handle("shut it all down")
+    assert reply.listen_again and reply.say.count("?") == 2
+    conversation.handle("yes", follow_up=True)
+    assert home.pressed == [] and llm.asked == ["shut it all down", "yes"]

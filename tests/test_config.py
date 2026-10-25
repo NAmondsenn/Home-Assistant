@@ -4,14 +4,16 @@ Checks settings are read from config.yaml, with the install's own on top, and th
 mistake in the install's file is caught rather than ignored.
 """
 
+import logging
+
 import pytest
 
-from voice_assistant.config import Config, ConfigError
+from voice_assistant.config import Config, ConfigError, check, removed
 
 DEFAULTS = """
-weather:
-  location: ""
-  units: metric
+navidrome:
+  url: ""
+  username: nova
 audio:
   sample_rate: 48000
 thresholds:
@@ -38,13 +40,13 @@ def config_with(tmp_path):
 
 
 def test_the_installs_settings_override_only_what_they_name(config_with):
-    config = config_with("weather:\n  location: Bristol\n")
-    assert config.section("weather") == {"location": "Bristol", "units": "metric"}
+    config = config_with("navidrome:\n  url: http://music.local:4533\n")
+    assert config.section("navidrome") == {"url": "http://music.local:4533", "username": "nova"}
     assert config.section("audio") == {"sample_rate": 48000}
 
 
 def test_without_the_installs_own_the_defaults_are_used_as_they_are(config_with):
-    assert config_with().section("weather") == {"location": "", "units": "metric"}
+    assert config_with().section("navidrome") == {"url": "", "username": "nova"}
 
 
 def test_an_empty_file_of_its_own_is_fine(config_with):
@@ -54,18 +56,88 @@ def test_an_empty_file_of_its_own_is_fine(config_with):
 @pytest.mark.parametrize("own, said", [
     # Misspellings used to be ignored, leaving the default quietly in force.
     ("thresholds:\n  silence_duraton: 1.0\n", "'thresholds.silence_duraton' isn't a setting. Did you mean 'silence_duration'?"),
-    ("wether:\n  location: Leeds\n", "there's no 'wether' section. Did you mean 'weather'?"),
+    ("navidrom:\n  url: http://music.local:4533\n", "there's no 'navidrom' section. Did you mean 'navidrome'?"),
     ("thresholds:\n  silence_duration: quick\n", "'thresholds.silence_duration' should be a number, not 'quick'"),
     ("thresholds:\n  vad_threshold: 5\n", "'thresholds.vad_threshold' should be between 0 and 1, not 5"),
     ("music:\n  player: winamp\n", "'music.player' should be one of navidrome, spotify, not 'winamp'"),
     ("home_assistant:\n  calendars: calendar.personal\n", "'home_assistant.calendars' should be a list"),
-    ("weather: Leeds\n", "'weather' should be settings under it"),
-    ("weather:\n  location: [Leeds\n", "isn't valid YAML"),
+    ("music: spotify\n", "'music' should be settings under it"),
+    ("music:\n  player: [spotify\n", "isn't valid YAML"),
 ])
 def test_a_mistake_stops_it_starting_and_says_where(config_with, own, said):
     with pytest.raises(ConfigError) as caught:
         config_with(own)
     assert said in str(caught.value) and "config.yaml" in str(caught.value)
+
+
+RETIRED = """speech_to_text:
+  engine: moonshine
+moonshine:
+  keyterms: [Nova]
+whisper:
+  model: base.en
+music:
+  player: navidrome
+"""
+
+
+def test_the_sections_nova_no_longer_uses_are_let_through_with_a_warning(config_with, caplog):
+    # A Pi's own settings from before the brain heard for it, which stopped both the
+    # satellite and the brain starting.
+    with caplog.at_level(logging.WARNING):
+        config = config_with(RETIRED)
+    assert config.section("music")["player"] == "navidrome"
+    assert config.section("moonshine") == {}
+    (warning,) = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert all(name in warning for name in ("speech_to_text", "moonshine", "whisper")) and "deleted" in warning
+
+
+def test_the_settings_page_lets_them_through_too_and_says_nothing(config_with, tmp_path, caplog):
+    # It checks the file before saving to it, and reads it every time it looks.
+    (tmp_path / "config.yaml").write_text(RETIRED)
+    with caplog.at_level(logging.WARNING):
+        Config(path=str(tmp_path / "config.yaml"), defaults=str(tmp_path / "defaults.yaml"), quiet=True)
+    assert caplog.records == []
+    assert check({"moonshine": {"keyterms": []}}, {"music": {}}, "config.yaml") == ["moonshine"]
+
+
+def test_any_other_section_it_doesnt_know_still_stops_it(config_with):
+    with pytest.raises(ConfigError) as caught:
+        config_with("moonshine:\n  keyterms: [Nova]\nnavidrom:\n  url: http://music.local:4533\n")
+    assert "there's no 'navidrom' section" in str(caught.value)
+
+
+def test_a_setting_nova_no_longer_has_is_let_through_with_where_its_set_now(config_with, caplog):
+    # The brain's own file still had weather.location once the weather was Home Assistant's,
+    # and refusing it would have stopped the brain starting.
+    with caplog.at_level(logging.WARNING):
+        config = config_with("weather:\n  location: Leeds\n")
+    (warning,) = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "'weather.location'" in warning and "Home Assistant" in warning and "deleted" in warning
+    assert config.section("weather") == {}
+    assert removed({"weather": {"location": "Leeds"}, "music": {"player": "spotify"}}) == [("weather", "location")]
+
+    # Beside a setting which is still one, it's left out alone - and a mistake beside it still stops it.
+    assert config_with("music:\n  player: navidrome\nweather:\n  location: Leeds\n").section("music") == {
+        "player": "navidrome"}
+    with pytest.raises(ConfigError) as caught:
+        config_with("weather:\n  location: Leeds\n  units: metric\n")
+    assert "there's no 'weather' section" in str(caught.value)
+
+
+@pytest.mark.parametrize("own", ["weather:\n", "weather: null\n", "weather: {}\n"])
+def test_the_section_left_once_a_removed_setting_is_deleted_is_let_through_too(config_with, caplog, own):
+    # Deleting the line the warning names, and not the section above it, mustn't stop Nova starting.
+    with caplog.at_level(logging.WARNING):
+        config = config_with(own + "music:\n  player: navidrome\n")
+    (warning,) = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "'weather'" in warning and "Home Assistant" in warning and "deleted" in warning
+    assert config.section("weather") == {} and config.section("music") == {"player": "navidrome"}
+
+    # A section which never held a removed setting is still a mistake, empty or not.
+    with pytest.raises(ConfigError) as caught:
+        config_with("navidrom:\n")
+    assert "there's no 'navidrom' section" in str(caught.value)
 
 
 def test_a_setting_can_be_left_to_the_model_with_null(config_with, tmp_path):
@@ -81,3 +153,45 @@ def test_the_real_config_yaml_reads(tmp_path):
     # Every setting the repository ships has to be readable as the defaults.
     config = Config(path=str(tmp_path / "none.yaml"))
     assert config.section("music")["player"] in ("navidrome", "spotify")
+
+
+def test_the_batteries_defaults_are_checked(tmp_path):
+    config = Config(path=str(tmp_path / "none.yaml"))
+    batteries = config.section("batteries")
+    assert batteries["mobile_marks"] == [5] and batteries["other_marks"] == [15, 5]
+    assert batteries["check_every"] == 60 and batteries["stale_after"] == 3600
+
+    def own(text):
+        (tmp_path / "config.yaml").write_text(text)
+        return Config(path=str(tmp_path / "config.yaml"))
+
+    assert own("batteries:\n  mobile_marks: [10]\n  check_every: 30.5\n").section("batteries")["mobile_marks"] == [10]
+    with pytest.raises(ConfigError) as caught:
+        own('batteries:\n  mobile_marks: "five"\n')
+    assert "'batteries.mobile_marks' should be a list, not 'five'" in str(caught.value)
+
+
+@pytest.mark.parametrize("own, setting", [
+    ("mobile_marks: []", "mobile_marks"),
+    ("other_marks: []", "other_marks"),
+    ("mobile_marks:", "mobile_marks"),
+    ("mobile_marks: [0]", "mobile_marks"),
+    ("other_marks: [15, 100]", "other_marks"),
+    ("mobile_marks: [15, 5]", "mobile_marks"),
+    ("other_marks: [15]", "other_marks"),
+    ("other_marks: [20, 10, 5]", "other_marks"),
+    ("other_marks: [10, 10]", "other_marks"),
+    ("other_marks: [5.5]", "other_marks"),
+    ("other_marks: [true]", "other_marks"),
+    ('mobile_marks: ["5"]', "mobile_marks"),
+    ("check_every: 0", "check_every"),
+    ("check_every: -60", "check_every"),
+    ("check_every:", "check_every"),
+    ('stale_after: "an hour"', "stale_after"),
+    ("stale_after: 0", "stale_after"),
+])
+def test_a_battery_setting_which_cant_work_is_refused_by_name(tmp_path, own, setting):
+    (tmp_path / "config.yaml").write_text(f"batteries:\n  {own}\n")
+    with pytest.raises(ConfigError) as caught:
+        Config(path=str(tmp_path / "config.yaml"))
+    assert f"'batteries.{setting}'" in str(caught.value)

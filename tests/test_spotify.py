@@ -53,7 +53,12 @@ def make_controller(monkeypatch, make_config):
 
     def factory(cached=None, refreshed=None):
         oauth = FakeOAuth(cached, refreshed)
-        monkeypatch.setattr(spotify_controller, "SpotifyOAuth", lambda **kwargs: oauth)
+
+        def make_oauth(**kwargs):
+            oauth.kwargs = kwargs
+            return oauth
+
+        monkeypatch.setattr(spotify_controller, "SpotifyOAuth", make_oauth)
         controller = spotify_controller.SpotifyController(config=make_config(spotify={"device_name": "Kitchen"}))
         controller.oauth = oauth
         return controller
@@ -71,6 +76,30 @@ def test_client_fetches_a_fresh_token_for_every_request(make_controller):
     assert "auth" not in kwargs
     assert kwargs["auth_manager"].get_access_token(as_dict=False) == "new"
     assert kwargs["requests_timeout"] == spotify_controller.REQUEST_TIMEOUT
+
+
+def test_refreshing_the_sign_in_has_a_time_limit(make_controller):
+    # Every call refreshes an expired token with spotipy's own request, which waited for
+    # ever - so the first command after a stall could hang until the watchdog restarted
+    # the brain. The client's own time limit doesn't cover it.
+    controller = make_controller(cached=SAVED)
+    assert controller.oauth.kwargs["requests_timeout"] == spotify_controller.REQUEST_TIMEOUT
+
+
+@pytest.mark.skipif(not getattr(spotify_controller.spotipy, "__file__", None), reason="needs spotipy itself")
+# spotipy would rather have a cache_handler than a cache_path now - which isn't what
+# this checks.
+@pytest.mark.filterwarnings("ignore:Specifying cache_path")
+def test_spotipys_own_sign_in_keeps_the_time_limit(monkeypatch, make_config, tmp_path):
+    # Against the real SpotifyOAuth where it's installed, which passes it on as each
+    # token request's timeout - as 2.26.0, the brain's, does.
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
+    monkeypatch.setattr(spotify_controller.paths, "SPOTIFY_TOKEN_FILE", str(tmp_path / "spotify_token.json"))
+    monkeypatch.setattr(spotify_controller.spotipy, "Spotify", FakeSpotify)
+    controller = spotify_controller.SpotifyController(config=make_config(spotify={"device_name": "Kitchen"}))
+    assert controller.sp_oauth.requests_timeout == spotify_controller.REQUEST_TIMEOUT
 
 
 def test_starting_up_doesnt_go_over_the_network(make_controller):

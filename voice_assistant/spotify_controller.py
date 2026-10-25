@@ -20,6 +20,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 from voice_assistant import paths
+from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.music import means_liked_songs
 
 logger = logging.getLogger(__name__)
@@ -37,8 +38,9 @@ REQUEST_RETRIES = 1
 CACHE_SECONDS = 600
 
 # Said when there's no Spotify login to use, rather than a bare "not authenticated" -
-# signing in again is done by hand, by running this module on the Pi (see the bottom).
-NOT_SIGNED_IN = "Spotify needs signing in again on the Pi."
+# signing in again is done by hand, by running this module on the brain, which drives
+# Spotify for every satellite (see the bottom).
+NOT_SIGNED_IN = "Spotify needs signing in again on the server."
 
 # About how big a cover the settings page is given, in pixels a side - Spotify has
 # each in a few sizes.
@@ -105,12 +107,16 @@ class SpotifyController:
                  "user-library-read")
 
         self.cache_path = paths.SPOTIFY_TOKEN_FILE
+        # Every call refreshes an expired token through this, with spotipy's own
+        # request, which otherwise waits for ever - the client's time limit below
+        # doesn't cover it.
         self.sp_oauth = SpotifyOAuth(
             client_id=self.client_id,
             client_secret=self.client_secret,
             redirect_uri=self.redirect_uri,
             scope=scope,
-            cache_path=self.cache_path
+            cache_path=self.cache_path,
+            requests_timeout=REQUEST_TIMEOUT
         )
 
         self.sp = None
@@ -490,7 +496,8 @@ class SpotifyController:
                 items = results.get(f"{item_type}s", {}).get("items", [])
                 return [item for item in items if item]
             except Exception as e:
-                logger.warning(f"Search for {item_type} '{query}' failed at limit {limit}: {e}")
+                logger.warning(f"Search for {item_type} '{query}' failed at limit {limit}: {e}",
+                               extra=TRANSCRIPT)
 
         return []
 
@@ -528,7 +535,7 @@ class SpotifyController:
 
         if best_score < 0.6:
             logger.info(f"No artist close enough to '{query}' "
-                        f"(closest was {best['name'] if best else 'nothing'})")
+                        f"(closest was {best['name'] if best else 'nothing'})", extra=TRANSCRIPT)
             return None
 
         return best
@@ -683,13 +690,14 @@ class SpotifyController:
                     # Kept aside in case nothing better turns up: the artist may
                     # simply have been misheard, and the song is still worth playing.
                     fallback = fallback or track
-                    logger.info(f"'{name}' isn't credited to {artist_part}, holding it back")
+                    logger.info(f"'{name}' isn't credited to {artist_part}, holding it back", extra=TRANSCRIPT)
                     continue
 
             return track
 
         if fallback:
-            logger.info(f"Nothing credited to {artist_part}, falling back to {fallback['name']}")
+            logger.info(f"Nothing credited to {artist_part}, falling back to {fallback['name']}",
+                        extra=TRANSCRIPT)
         return fallback
 
     def _search_and_play(self, query: str, device_id: str, search_type: Optional[str] = None) -> Dict:
@@ -726,7 +734,7 @@ class SpotifyController:
 
             # Nothing close enough. Falling through to the track search would play a
             # song of that name instead, which isn't what was asked for.
-            logger.info(f"No album close enough to '{query}'")
+            logger.info(f"No album close enough to '{query}'", extra=TRANSCRIPT)
             return {"success": False, "message": f"Sorry, I couldn't find the album {query}."}
 
         # A genre or mood ("something chill") is best served by an existing playlist.
@@ -772,7 +780,7 @@ class SpotifyController:
         track = self._pick_track(items, query, artist_part)
 
         if not track:
-            logger.info(f"No acceptable track for '{query}'")
+            logger.info(f"No acceptable track for '{query}'", extra=TRANSCRIPT)
             return {"success": False, "message": f"Sorry, I couldn't find {query}."}
 
         track_name = track['name']
@@ -1241,9 +1249,6 @@ if __name__ == "__main__":
 
     from voice_assistant.config import Config
 
-    # An older install's sign-in is moved to where it now belongs first, rather
-    # than asking to sign in again.
-    paths.migrate()
     paths.load_secrets()
 
     # Config is passed in for the device name.

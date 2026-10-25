@@ -1,13 +1,29 @@
+"""
+LLM Module.
+
+Claude, for whatever the local commands don't cover: each request is sent with what's
+on the clock, the lights and the room Nova's in, what's known about the user and the
+last few exchanges, and Claude answers in words, or by calling the tools it's offered
+(see actions.py) - or both. Each tool call comes back as an Action, marked as the
+model's, so it can only run what it was offered. A tool which only reads something,
+such as home_status, is run straight away instead, and its answer sent back for
+Claude to reply from.
+
+With Claude out of reach - no key, or no internet - a few keywords are matched instead
+(see _parse_action), so the music and the lights can still be worked.
+"""
+
 import os
 import re
 import time
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 import anthropic
 from anthropic import Anthropic
-from voice_assistant.actions import Action
+from voice_assistant.actions import Action, bare_acknowledgement
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.intents import not_a_list, points_back
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant import network
 
@@ -17,11 +33,42 @@ OFFLINE_MESSAGE = "Sorry, I can't reach the internet right now. Timers, alarms a
 
 logger = logging.getLogger(__name__)
 
+# The most rounds of reading Claude may do before it answers - one is usually enough,
+# and each is another request to wait for before anything's said.
+MOST_READS = 2
+
+# Said when Claude read something but said nothing of it - what was read is never said
+# itself, as entity ids read out are no answer.
+COULDNT_FIND_OUT = "Sorry, I couldn't find that out."
+
+# What Claude is told when a read went wrong, rather than the error itself.
+READ_FAILED = "That couldn't be read."
+
 
 class LLMHandler:
-    def __init__(self, config=None, api_key=None, model=None, max_tokens=None,
-                 temperature=None, history_length=None, assistant_name=None, tools=None, memory=None):
+    """Claude, with the conversation so far, for one satellite's session."""
 
+    def __init__(self, config=None, api_key=None, model=None, max_tokens=None,
+                 temperature=None, history_length=None, assistant_name=None, tools=None, memory=None,
+                 read_tools: Sequence[str] = ()):
+        """
+        Each argument left out comes from config.yaml.
+
+        Args:
+            config: Configs loaded from config.yaml - its llm, conversation, assistant
+                and web_search sections.
+            api_key: Claude's key, or None for ANTHROPIC_API_KEY.
+            model: The model, e.g. "claude-haiku-5-5".
+            max_tokens: The longest an ordinary reply may be.
+            temperature: How varied replies are, or None to leave it to the model.
+            history_length: How many exchanges are kept and sent with each request.
+            assistant_name: What the assistant's called, e.g. "Nova".
+            tools: The tools to offer, in the API's format - see
+                ActionExecutor.tool_schemas.
+            memory: The Memory, whose facts go with every request, or None.
+            read_tools: The names of the tools which only read something for the model
+                to answer from - see ActionExecutor.read_tools.
+        """
         # Pulls llm, conversation, assistant and web_search sections from config.yaml
         llm_config = config.section("llm") if config else {}
         conversation_config = config.section("conversation") if config else {}
@@ -62,6 +109,7 @@ class LLMHandler:
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
         # The tools the model is offered, in the API's format - see ActionExecutor.tool_schemas.
         self.tools = list(tools or [])
+        self.read_tools = set(read_tools)
         # What's known about the user, given to the model with every request - see memory.py.
         self.memory = memory
 
@@ -111,9 +159,9 @@ class LLMHandler:
             block: A tool_use content block from the model's response.
 
         Returns:
-            The Action.
+            The Action, marked as the model's, so it can only run what it's offered.
         """
-        return Action(block.name, dict(block.input or {}))
+        return Action(block.name, dict(block.input or {}), from_model=True)
 
     @staticmethod
     def _earlier_messages(number: int, turn: Dict) -> List[Dict]:
@@ -311,17 +359,24 @@ class LLMHandler:
             situation += f" {lights.rstrip('.')}."
         return situation + "] "
 
-    def process_query(self, text, context=None, lights=None):
+    def process_query(self, text, context=None, lights=None, read: Optional[Callable[[Action], str]] = None):
         """
         Asks Claude to answer what the user said, with the recent conversation and
         the tools it may call. The keyword parser (_parse_action) is only used when
         Claude can't be reached - no API key, no network, or a failed request - so
         "pause the music" still works offline.
 
+        When all Claude does is call read tools, they're read straight away and their
+        answers sent back to it, up to MOST_READS times, so it replies from them -
+        "Sunset's at 5:52 PM." rather than the sensor's own line. The last round may call
+        no tool, and a read tool is never an action, so what's read is never said as it is.
+
         Args:
             text: What the user said.
             context: The timers and reminders running, as said to Claude.
             lights: The lights and the room Nova is in, as said to Claude, or None.
+            read: Runs a read tool's Action and gives what it said, or None for every
+                tool call to come back as an action.
 
         Returns:
             Dict with 'response' (what to say), 'actions' (the Actions asked for)
@@ -335,6 +390,8 @@ class LLMHandler:
         if not network.online():
             logger.warning("No network connection, so Claude isn't asked")
             return {"response": OFFLINE_MESSAGE, "actions": self._fallback_actions(text), "success": False}
+        # How many rounds of reading there have been - see the read loop below.
+        reads = 0
         try:
             # The time is given already on the 12-hour clock ("7:36 PM"). Given "19:36",
             # the model would sometimes say it straight back despite being asked not to,
@@ -386,12 +443,28 @@ class LLMHandler:
 
             # A long-running search can come back as "pause_turn" rather than a finished
             # answer. The paused turn is sent back unchanged to let it continue, with a
-            # small cap so a misbehaving search can't loop forever.
-            for _ in range(3):
-                if getattr(response, "stop_reason", None) != "pause_turn":
+            # small cap so a misbehaving search can't loop forever - before reading or after.
+            # And when every call is a read, the answers are sent back for Claude to reply
+            # from. Only then: a read beside another tool - "when's sunset, and set a timer"
+            # - is dropped below, as asking again after it could have the timer asked for
+            # a second time.
+            pauses = 0
+            while True:
+                uses = [block for block in response.content if getattr(block, "type", None) == "tool_use"]
+                if getattr(response, "stop_reason", None) == "pause_turn" and pauses < 3:
+                    pauses += 1
+                    logger.info("Search paused by the API, continuing the turn...")
+                    messages.append({"role": "assistant", "content": response.content})
+                elif (read is not None and reads < MOST_READS and uses
+                      and all(use.name in self.read_tools for use in uses)):
+                    reads += 1
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": [self._read(use, read) for use in uses]})
+                else:
                     break
-                logger.info("Search paused by the API, continuing the turn...")
-                messages.append({"role": "assistant", "content": response.content})
+                # The last round may call no tool, so Claude says what it found in words.
+                if reads == MOST_READS:
+                    request_kwargs["tool_choice"] = {"type": "none"}
                 response = client.messages.create(
                     model=self.model_name, system=system, messages=messages, **request_kwargs)
 
@@ -419,6 +492,14 @@ class LLMHandler:
                 if action.params.get("search_type") == "album" and not self._asked_for_album(text):
                     logger.info("Album wasn't asked for by name, playing the track instead")
                     action.params["search_type"] = "track"
+
+            # What a read tool gives is for Claude alone, and never said as it is - so one
+            # still in the final response, beside another tool, past MOST_READS or with no
+            # way to read, is dropped. Claude's own words are kept, unless there are none.
+            dropped = [action for action in actions if action.tool in self.read_tools]
+            actions = [action for action in actions if action.tool not in self.read_tools]
+            if (dropped or reads) and not actions and (not response_text or bare_acknowledgement(response_text)):
+                response_text = COULDNT_FIND_OUT
 
             # Fallback for when the action is called by the model, but no message is produced.
             if actions and not response_text:
@@ -451,8 +532,29 @@ class LLMHandler:
         # controlled when the API is unreachable.
         except Exception as e:
             logger.error(f"LLM processing failed ({type(e).__name__}): {e}")
+            # Once Claude has read something, the request was a question, not a command for
+            # the keyword parser - which would take "are the lights on?" for one.
             return {"response": self._failure_message(e),
-                    "actions": self._fallback_actions(text), "success": False}
+                    "actions": [] if reads else self._fallback_actions(text), "success": False}
+
+    def _read(self, use, read: Callable[[Action], str]) -> Dict:
+        """
+        Reads what a read tool was called for, as the tool_result Claude is sent.
+
+        Args:
+            use: The tool_use content block.
+            read: Runs the tool's Action and gives what it said.
+
+        Returns:
+            The tool_result - marked as an error if the read went wrong, so Claude can say
+            so, rather than it failing the whole request.
+        """
+        try:
+            return {"type": "tool_result", "tool_use_id": use.id,
+                    "content": read(self._action_from_tool_use(use)) or "Done."}
+        except Exception:
+            logger.exception(f"Reading {use.name} for Claude failed")
+            return {"type": "tool_result", "tool_use_id": use.id, "content": READ_FAILED, "is_error": True}
 
     def _fallback_actions(self, text: str) -> list:
         """
@@ -541,9 +643,23 @@ class LLMHandler:
                     query = query or None
                 return Action("play_music", {"query": query})
 
-        # The lights are left to Home Assistant, which works out which from the words.
+        # The lights are left to Home Assistant, which works out which from the words. A
+        # sentence joining more than one thing - "turn off the lights and the TV" - could
+        # name anything besides them, so it's only sent on the wider rule, which needs
+        # what Assist would act on checked (see HomeAssistant.command).
         if words & {"light", "lights", "lamp", "lamps"} and words & {"on", "off"}:
-            return Action("control_home", {"command": user_text})
+            joined = bool(words & {"and", "then", "plus"}) or "," in user_text
+            return Action("control_home", {"command": user_text, "wider": joined})
+
+        # "Add X to my Y list", with X kept whole - "eggs, milk and bread" is one thing,
+        # which Claude would have split, rather than none. Nova's own things and the devices
+        # aren't lists, as with the local rule.
+        said = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' -]", " ", user_lower)).strip()
+        said = re.sub(r"\bto-do\b", "to do", said)
+        listed = re.fullmatch(r"(?:please |can you |could you )?add (?P<item>.+) to (?!do\b)(?:my |the )?"
+                              r"(?P<list>[a-z0-9' -]+?)(?: list)?(?: please)?", said)
+        if listed and not points_back(listed["item"]) and not not_a_list(listed["list"]):
+            return Action("add_to_list", {"item": listed["item"], "list": listed["list"]})
 
         # If no specific action is detected, return None
         return None

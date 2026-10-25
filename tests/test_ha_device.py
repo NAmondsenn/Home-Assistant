@@ -393,6 +393,15 @@ def test_its_ids_come_from_its_name_and_the_machine(monkeypatch, make_config, no
     assert "MQTT_PASSWORD" in _complaints(caplog)[0].getMessage()
 
 
+def test_a_satellites_device_is_named_from_its_own_hostname(monkeypatch, make_config, nova):
+    # The brain runs each satellite's device, and the Pi has to keep the one it always
+    # had - and with it, the room Home Assistant has it in.
+    monkeypatch.setattr(ha_device.socket, "gethostname", lambda: "nova")
+    settings = {"host": "192.168.1.20", "port": 1883, "username": "nova", "name": "Nova"}
+    device = NovaDevice.from_config(make_config(mqtt=settings), "pw", nova.controls(), hostname="home-assistant.local")
+    assert device.identifier == "nova_home_assistant"
+
+
 def test_stopping_says_its_offline(started):
     device, client = started
     client.connects()

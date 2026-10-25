@@ -20,6 +20,9 @@ const STATE_EVERY = 20000;
 const MUSIC_EVERY = 5000;
 const HOME_EVERY = 15000;
 
+// The batteries change slowly, and every look asks Home Assistant, so once a minute.
+const BATTERIES_EVERY = 60000;
+
 // The least time between volume changes sent while a slider's dragged, in
 // milliseconds - often enough for the beep to keep up with the finger, without
 // asking for every step - and between a light's, which take Home Assistant longer.
@@ -62,7 +65,6 @@ const GROUPS = [
   ["Weather", ["weather."]],
   ["Music", ["music.", "navidrome.", "spotify."]],
   ["Home", ["home_assistant."]],
-  ["Backend", ["backend."]],
   ["Notifications", ["ntfy."]],
   ["Listening", ["thresholds."]],
   ["Privacy", ["logging."]],
@@ -74,6 +76,11 @@ let activity = "idle";
 let wakeWord = "Hey Nova";
 // Whether the microphone's muted, as /api/state last said - Home Assistant can change it too.
 let muted = false;
+
+// The satellites, as /api/state last said, and the one the user has chosen to look
+// after - or null for the default. The choice is only offered when there's more than one.
+let satellites = [];
+let chosen = null;
 
 // The timers on the page, ticked down every second, as [where it's shown, when it's due].
 let counting = [];
@@ -95,6 +102,9 @@ let allPlaylists = false;
 
 // What /api/home last said.
 let home = null;
+
+// What /api/batteries last said.
+let batteries = null;
 
 // Making things
 
@@ -231,18 +241,26 @@ function toast(message, ok) {
   toast.timer = setTimeout(() => shown.classList.remove("show"), 4000);
 }
 
-// Sends Nova a change, answering with what it said.
+// A path which asks after the chosen satellite, if there is one.
+function forChosen(path) {
+  if (!chosen) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}satellite=${encodeURIComponent(chosen)}`;
+}
+
+// Sends Nova a change, answering with what it said - for the chosen satellite, which
+// only the changes to its own volumes, music, lights, mute and alarms look at.
 async function send(path, body) {
   const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Nova": "page" },
-    body: JSON.stringify(body || {}),
+    body: JSON.stringify(chosen ? { ...body, satellite: chosen } : body || {}),
   });
   return response.json().catch(() => ({ success: false, message: "Nova didn't answer properly." }));
 }
 
-// Sends a change, says how it went, and shows the page as it is now.
-async function change(path, body) {
+// Sends a change, says how it went, and shows the page as it is now - or, as reload,
+// the part of it which changed.
+async function change(path, body, reload = load) {
   let result;
   try {
     result = await send(path, body);
@@ -250,14 +268,14 @@ async function change(path, body) {
     result = { success: false, message: "Couldn't reach Nova." };
   }
   toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
-  await load();
+  await reload();
   return result;
 }
 
 async function load() {
   let state;
   try {
-    const response = await fetch("/api/state");
+    const response = await fetch(forChosen("/api/state"));
     if (!response.ok) throw new Error(await response.text());
     state = await response.json();
   } catch (error) {
@@ -266,8 +284,10 @@ async function load() {
   }
   wakeWord = state.wake_word || wakeWord;
   muted = Boolean(state.muted);
+  satellites = state.satellites;
   showActivity();
   showStatus(state.status);
+  showSatellites(state);
   showMuted();
   showVolumes(state.volumes);
   drawIfChanged("clock", state.clock, showClock);
@@ -282,7 +302,7 @@ async function load() {
 async function live() {
   let now = "offline";
   try {
-    const response = await fetch("/api/live");
+    const response = await fetch(forChosen("/api/live"));
     if (response.ok) now = (await response.json()).activity;
   } catch (error) {
     // Out of reach, then.
@@ -292,6 +312,7 @@ async function live() {
     load();
     loadMusic();
     loadHome();
+    loadBatteries();
   }
   activity = now;
   showActivity();
@@ -343,11 +364,11 @@ function tile(about) {
 }
 
 // Where what's said is turned into text.
-function hearing(backend) {
-  const about = { icon: "i-server", label: "Speech to text" };
-  if (backend === null) return { ...about, value: "This Pi", detail: "No backend set up" };
-  if (backend === "answering") return { ...about, value: "Backend", detail: "Answering", mood: "good" };
-  return { ...about, value: "This Pi", detail: "The backend isn't answering", mood: "bad" };
+function hearing(speechToText) {
+  // Nemotron, on the brain, which hears every satellite.
+  const about = { icon: "i-server", label: "Speech to text", value: "Nemotron" };
+  if (speechToText === "ready") return { ...about, detail: "On the brain - ready", mood: "good" };
+  return { ...about, detail: "On the brain - missing", mood: "bad" };
 }
 
 function notifications(ntfy) {
@@ -367,7 +388,7 @@ function showStatus(status) {
     { icon: "i-star", label: "Running", value: duration(Date.now() / 1000 - status.started),
       detail: since(new Date(status.started * 1000)) },
     reply,
-    hearing(status.backend),
+    hearing(status.speech_to_text),
     notifications(status.ntfy),
   ].map(tile));
 
@@ -384,6 +405,50 @@ function showStatus(status) {
   document.getElementById("problems").replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
 }
 
+// Each satellite, and whether it's connected - with a choice of which to look after
+// below, when there's more than one.
+function showSatellites(state) {
+  const rows = satellites.map((satellite) => {
+    const row = element("li");
+    const what = element("span", undefined, "what");
+    what.append(satellite.name, element("span",
+      satellite.connected ? (DOING[satellite.activity] || (satellite.muted ? "Microphone muted" : "Listening for its wake word"))
+        : "Not connected", "detail"));
+    row.append(dot(satellite.connected ? "good" : "off"), what);
+    return row;
+  });
+  drawIfChanged("satellites", satellites, () => document.getElementById("satellites").replaceChildren(
+    ...(rows.length ? rows : [emptyRow("No satellites have been added.")])));
+
+  const choice = document.getElementById("satellite-choice");
+  choice.hidden = satellites.length < 2;
+  drawIfChanged("satellite-choice", [satellites.map((satellite) => satellite.name), state.satellite], () => {
+    choice.replaceChildren(...satellites.map((satellite) => {
+      const chip = element("button", satellite.name, "button quiet");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", String(satellite.name === state.satellite));
+      chip.addEventListener("click", () => choose(satellite.name));
+      return chip;
+    }));
+  });
+}
+
+// Looks after another satellite, showing what's its own from the start.
+function choose(name) {
+  chosen = name;
+  for (const part of ["satellite-choice", "clock", "lights", "routines"]) delete drawn[part];
+  for (const category of Object.keys(sliders)) {
+    sliders[category].remove();
+    delete sliders[category];
+  }
+  music = null;
+  home = null;
+  load();
+  live();
+  loadMusic();
+  loadHome();
+}
+
 function showMuted() {
   document.getElementById("mute").checked = muted;
   document.getElementById("microphone").classList.toggle("muted", muted);
@@ -393,6 +458,16 @@ function showMuted() {
 }
 
 function showVolumes(volumes) {
+  const none = Object.keys(volumes).length === 0;
+  // A satellite which isn't connected has no volumes to show.
+  document.getElementById("volumes-missing").hidden = !none;
+  document.getElementById("mute").disabled = none;
+  if (none) {
+    for (const category of Object.keys(sliders)) {
+      sliders[category].remove();
+      delete sliders[category];
+    }
+  }
   for (const [category, percent] of Object.entries(volumes)) {
     sliders[category] = sliders[category] || volumeSlider(category);
     sliders[category].show(percent);
@@ -484,6 +559,7 @@ function volumeSlider(category) {
   });
 
   return {
+    remove: () => made.remove(),
     // Shows the level Nova has - unless the slider's being moved, or a change to it
     // is on its way.
     show(percent) {
@@ -498,7 +574,7 @@ function volumeSlider(category) {
 
 async function loadMusic() {
   try {
-    const response = await fetch("/api/music");
+    const response = await fetch(forChosen("/api/music"));
     if (!response.ok) return;
     music = await response.json();
     musicAt = Date.now();
@@ -519,7 +595,7 @@ function showMusic() {
 
   // The cover's only fetched again once it's a different one.
   const cover = document.getElementById("cover");
-  const wanted = now && now.cover ? `/api/cover?for=${encodeURIComponent(now.cover)}` : "";
+  const wanted = now && now.cover ? forChosen(`/api/cover?for=${encodeURIComponent(now.cover)}`) : "";
   if (cover.dataset.for !== wanted) {
     cover.dataset.for = wanted;
     cover.hidden = true;
@@ -596,7 +672,7 @@ async function playMusic(body, say) {
 
 async function loadHome() {
   try {
-    const response = await fetch("/api/home");
+    const response = await fetch(forChosen("/api/home"));
     if (!response.ok) return;
     home = await response.json();
   } catch (error) {
@@ -636,6 +712,102 @@ function showHome() {
   for (const light of home.lights) lights[light.id].show(light);
   routines.hidden = false;
   drawIfChanged("routines", home.routines, showRoutines);
+}
+
+// The batteries
+
+async function loadBatteries() {
+  try {
+    const response = await fetch("/api/batteries");
+    if (!response.ok) return;
+    batteries = await response.json();
+  } catch (error) {
+    return;
+  }
+  showBatteries(batteries);
+}
+
+// Sends a change to a battery's warnings. The rows are drawn again whatever the data
+// says, as a switch which failed to save is still showing what wasn't saved.
+function changeBattery(path, body) {
+  return change(path, body, () => {
+    delete drawn.batteries;
+    return loadBatteries();
+  });
+}
+
+function showBatteries(state) {
+  const list = document.getElementById("batteries");
+  const also = document.getElementById("also-send");
+  if (!state.available) {
+    also.hidden = true;
+    drawIfChanged("batteries", state.message, () => list.replaceChildren(emptyRow(state.message)));
+    return;
+  }
+  also.hidden = false;
+  // Set at every load. A switch someone has just tapped is already as they want it, and a
+  // load that lands during its own save sets it back for the round trip, then corrects it.
+  document.getElementById("also-send-box").checked = state.also_send_when_said;
+  drawIfChanged("batteries", state.devices, () => {
+    // Not while a number is being typed, which a redraw would wipe - tried again next
+    // time. A tapped switch or button keeps the focus in Chromium, so only a box counts.
+    const typing = document.activeElement;
+    if (typing && typing.type === "number" && list.contains(typing)) return false;
+    list.replaceChildren(...(state.devices.length ? state.devices.map(batteryRow) : [emptyRow("Home Assistant has no batteries.")]));
+  });
+}
+
+// A battery: how it is, a switch for its warnings and one for sending them to the phone,
+// a box for each mark, and a way back to the defaults once anything's been changed.
+function batteryRow(device) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", device.name, "name"));
+  const charging = device.charging === null ? "" : device.charging ? ", charging" : ", not charging";
+  const decides = device.person ? `, ${device.person} decides if you're home` : "";
+  what.append(element("span", `${device.level}%${charging}${device.stale ? `, as of ${device.stale} ago` : ""}${decides}`, "sub"));
+  top.append(icon("i-battery"), what);
+  row.append(top);
+
+  const choose = (label, id, checked, key) => {
+    const field = element("div", undefined, "choice");
+    const name = element("label", label);
+    name.htmlFor = id;
+    const box = element("input");
+    Object.assign(box, { type: "checkbox", id, checked });
+    box.setAttribute("role", "switch");
+    box.addEventListener("change", () => changeBattery("/api/batteries", { id: device.id, [key]: box.checked }));
+    field.append(name, box);
+    return field;
+  };
+  row.append(choose("Warn me", `battery-on-${device.id}`, device.enabled, "enabled"));
+  row.append(choose("Send to my phone", `battery-phone-${device.id}`, device.send_to_phone, "send_to_phone"));
+
+  const marks = element("div", undefined, "marks");
+  marks.append(element("span", device.marks.length === 1 ? "Warn at" : "Warn at both"));
+  const boxes = device.marks.map((mark, i) => {
+    const box = element("input");
+    Object.assign(box, { type: "number", min: 1, max: 99, step: 1, value: mark });
+    box.inputMode = "numeric";
+    box.setAttribute("aria-label", `${device.name} warning mark ${i + 1}, in percent`);
+    box.addEventListener("change", () => {
+      // Done typing, so the rows may be drawn again with what comes back.
+      box.blur();
+      changeBattery("/api/batteries", { id: device.id, marks: boxes.map((each) => Number(each.value)) });
+    });
+    marks.append(box, element("span", "%"));
+    return box;
+  });
+  row.append(marks);
+
+  if (device.changed) {
+    const back = element("button", "Back to the defaults", "button quiet");
+    back.type = "button";
+    back.addEventListener("click", () => changeBattery("/api/batteries", { id: device.id, reset: true }));
+    row.append(back);
+  }
+  return row;
 }
 
 // How a colour looks at full brightness, for a light's icon and swatches.
@@ -1242,4 +1414,7 @@ document.addEventListener("DOMContentLoaded", () => {
   every(LIVE_EVERY, live);
   every(MUSIC_EVERY, loadMusic);
   every(HOME_EVERY, loadHome);
+  every(BATTERIES_EVERY, loadBatteries);
+  document.getElementById("also-send-box").addEventListener("change", (event) =>
+    changeBattery("/api/batteries/also", { on: event.target.checked }));
 });

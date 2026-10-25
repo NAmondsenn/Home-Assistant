@@ -64,3 +64,18 @@ def test_a_main_loop_which_stops_moving_stops_the_pings(systemd, monkeypatch):
     # What was sent before the allowance ran out is still waiting to be read.
     systemd(0.05)
     assert systemd(0.3) == []
+
+
+def test_a_beat_can_say_when_the_loop_last_moved(systemd, monkeypatch):
+    # The brain goes on listening for satellites while one of its sessions is stuck in
+    # a turn, so it says when that session last moved instead of now.
+    monkeypatch.setenv("WATCHDOG_USEC", "150000")
+    monkeypatch.setattr(watchdog, "ALLOWANCE", 0.2)
+    watchdog.start()
+    beat = watchdog.beat
+    # Nothing else checks in from here.
+    monkeypatch.setattr(watchdog, "beat", lambda at=None: None)
+    beat(at=time.monotonic() - 1)
+    # What was sent before the beat is still waiting to be read.
+    systemd(0.1)
+    assert systemd(0.3) == []

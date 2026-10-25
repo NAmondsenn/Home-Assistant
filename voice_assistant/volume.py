@@ -11,14 +11,15 @@ There are three separate levels, and changing one never affects the others:
             its own volume
 
 Levels are saved to volumes.json in the data folder (see paths.py), so a change made by voice survives a
-restart. They deliberately aren't in config.yaml: they're changed by speaking
-rather than by editing a file, and a config setting which quietly stopped taking
-effect after the first volume change would be misleading.
+restart - on the brain, to a file for each satellite (see session.py). They
+deliberately aren't in config.yaml: they're changed by speaking rather than by
+editing a file, and a config setting which quietly stopped taking effect after the
+first volume change would be misleading.
 """
 
 import os
 import logging
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from voice_assistant import paths, storage
 
@@ -40,12 +41,19 @@ class VolumeControl:
     # start at full, since something which goes off unprompted is no use unheard.
     DEFAULT_LEVELS = {"general": 0.7, "alarm": 1.0, "music": 0.5}
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, path: Optional[str] = None, on_change: Optional[Callable[[], None]] = None):
         """
         Args:
             config: Configs loaded from config.yaml, for the step size.
+            path: Where the levels are saved - VOLUMES_FILE unless given, as each
+                satellite's are kept apart on the brain.
+            on_change: Called with nothing once a level has been changed and saved -
+                so a satellite can be sent its new levels, which it rings by while it
+                can't reach the brain.
         """
         sounds_config = config.section("sounds") if config else {}
+        self.path = path
+        self.on_change = on_change
 
         # Fixed step size for volume controls, as a percentage point.
         self.step = self._clamp_step(sounds_config.get("volume_step", 10))
@@ -77,7 +85,7 @@ class VolumeControl:
     def _load(self):
         """Restores levels saved by a previous run, ignoring a missing or broken file."""
         try:
-            saved = storage.load_json(VOLUMES_FILE, default={})
+            saved = storage.load_json(self.path or VOLUMES_FILE, default={})
         except Exception as e:
             logger.error(f"Could not read saved volumes, using defaults: {e}")
             return
@@ -92,7 +100,7 @@ class VolumeControl:
         write can't leave a corrupt file behind.
         """
         try:
-            storage.save_json(VOLUMES_FILE, self._levels)
+            storage.save_json(self.path or VOLUMES_FILE, self._levels)
         except Exception as e:
             # Saving is best-effort - a failure here shouldn't stop the volume
             # working for the rest of this session.
@@ -136,6 +144,8 @@ class VolumeControl:
 
         self._levels[category] = self._clamp(percent / 100.0)
         self._save()
+        if self.on_change:
+            self.on_change()
 
         new_percent = self.percent(category)
         logger.info(f"{category.capitalize()} volume set to {new_percent}%")

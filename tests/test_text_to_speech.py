@@ -38,9 +38,9 @@ def tts(tmp_path, monkeypatch, make_config):
     piper.parent.mkdir(parents=True)
     piper.write_text(FAKE_PIPER)
     piper.chmod(0o755)
-    voice = tmp_path / "models" / "en_GB-cori-medium.onnx"
+    voice = tmp_path / "models" / "en_US-hfc_female-medium.onnx"
     voice.write_text("")
-    (tmp_path / "models" / "en_GB-cori-medium.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 16000}}))
+    (tmp_path / "models" / "en_US-hfc_female-medium.onnx.json").write_text(json.dumps({"audio": {"sample_rate": 16000}}))
     log = tmp_path / "piper.log"
     monkeypatch.setenv("FAKE_PIPER_LOG", str(log))
     monkeypatch.setattr(text_to_speech.paths, "MODELS_DIR", str(tmp_path / "models"))
@@ -88,6 +88,30 @@ def test_stopping_part_way_stops_piper(tts):
     next(pieces)
     pieces.close()
     assert taken[0].poll() is not None
+
+
+def test_two_sessions_can_speak_at_once(tts):
+    # The brain's one Piper is every satellite's, so two of them can be saying
+    # something at the same moment - each with a Piper process of its own.
+    import threading
+
+    begun = threading.Barrier(2, timeout=5)
+    heard = {}
+
+    def speak(satellite, text):
+        pieces = tts.stream(text, remember=False)
+        first = next(pieces)
+        # Neither finishes before both have begun.
+        begun.wait()
+        heard[satellite] = len(first) + sum(len(piece) for piece in pieces)
+
+    speakers = [threading.Thread(target=speak, args=("bedroom", "slow one two")),
+                threading.Thread(target=speak, args=("kitchen", "slow one two three four"))]
+    for speaker in speakers:
+        speaker.start()
+    for speaker in speakers:
+        speaker.join(5)
+    assert heard == {"bedroom": 300, "kitchen": 500}
 
 
 def test_something_said_again_soon_comes_from_memory(tts):
