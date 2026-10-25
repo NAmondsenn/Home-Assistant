@@ -87,7 +87,7 @@ EDITABLE = [
     ("logging", "log_transcripts", "Keep what's said in the logs", "now"),
     ("sounds", "listening_enabled", "The blip when Nova's listening", "now"),
     ("sounds", "chime_enabled", "The chime for done", "now"),
-    ("sounds", "reminder_enabled", "The reminder sound", "now"),
+    ("sounds", "reminder_enabled", "The sound before alerts and warnings", "now"),
     ("web_search", "enabled", "Search the web when asked to", "now"),
     ("conversation", "history_max_age", "Seconds a conversation's thread is kept", "now"),
     ("spotify", "pause_while_speaking", "Pause Spotify while Nova talks", "now"),

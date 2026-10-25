@@ -634,7 +634,7 @@ def test_the_safe_settings_are_on_the_page(files):
     expected = {
         "sounds.listening_enabled": ("The blip when Nova's listening", NOW),
         "sounds.chime_enabled": ("The chime for done", NOW),
-        "sounds.reminder_enabled": ("The reminder sound", NOW),
+        "sounds.reminder_enabled": ("The sound before alerts and warnings", NOW),
         "web_search.enabled": ("Search the web when asked to", NOW),
         "conversation.history_max_age": ("Seconds a conversation's thread is kept", NOW),
         "spotify.pause_while_speaking": ("Pause Spotify while Nova talks", NOW),

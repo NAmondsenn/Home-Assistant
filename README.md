@@ -322,7 +322,7 @@ The settings most likely to need changing:
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
 | `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
-| `sounds.listening_enabled`, `sounds.chime_enabled`, `sounds.reminder_enabled`, `web_search.enabled`, `conversation.history_max_age`, `spotify.pause_while_speaking` | The blip, chime and reminder sound (timers, reminders and alarms always sound), searching the web, how long a conversation's thread is kept, and pausing Spotify while Nova talks. On the settings page, and used straight away. |
+| `sounds.listening_enabled`, `sounds.chime_enabled`, `sounds.reminder_enabled`, `web_search.enabled`, `conversation.history_max_age`, `spotify.pause_while_speaking` | The blip, the chime for done, and the sound before alerts and warnings (alarms, timers and reminders always sound), searching the web, how long a conversation's thread is kept, and pausing Spotify while Nova talks. On the settings page, and used straight away. |
 | `ntfy.quiet_from`, `ntfy.quiet_until` | The night, when only the most urgent alerts are read out. |
 
 ## Running it
