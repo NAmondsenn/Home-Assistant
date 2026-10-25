@@ -448,6 +448,37 @@ def spotify(files, monkeypatch, make_config):
     return make_config(music={"player": "spotify"})
 
 
+def test_the_page_says_why_theres_no_music(spotify, make_config, monkeypatch):
+    keys = "Spotify's client ID and secret aren't set. Add them under Keys, then restart Nova."
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET")
+    page = _page(running=spotify)
+    assert page.music_state()["why"] == keys
+    # Playing says the same, in place of there being no player.
+    assert page.play("pause", LOGIN) == {"success": False, "message": keys}
+
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "client-secret")
+    couldnt = "Nova couldn't set up Spotify - Recent problems, in Status, says why."
+    assert page.music_state()["why"] == couldnt
+    assert page.play("pause", LOGIN)["message"] == couldnt
+    navidrome = make_config(music={"player": "navidrome"}, navidrome={"url": "", "username": "nova"})
+    assert _page(running=navidrome).music_state() == {
+        "available": False, "why": "Navidrome's address isn't set. Add it in Settings, under Music."}
+
+    # Not being signed in to Spotify isn't the player missing: the sign-in is shown, and
+    # the player is, as it is whether or not it's signed in.
+    shown = _page(running=spotify, sessions={"bedroom": FakeSession(music=FakePlayer())}).music_state()
+    assert shown["available"] and "why" not in shown and shown["spotify"] == {"signed_in": False}
+
+
+def test_the_page_tells_a_satellite_which_is_away_from_one_which_doesnt_exist(spotify):
+    page = _page(running=spotify, sessions={"bedroom": FakeSession()}, known=["bedroom", "garage"])
+    # Away, with no sign of a player to blame.
+    away = {"available": False, "why": "No satellite is connected just now.", "spotify": {"signed_in": False}}
+    assert page.music_state("garage") == away
+    assert page.music_state("ghost") == {"available": False, "why": "There's no satellite called ghost.",
+                                         "spotify": {"signed_in": False}}
+
+
 def test_the_spotify_sign_in_is_offered_with_no_satellite_connected(spotify, make_config):
     page = _page(running=spotify, sessions={})
     assert page.music_state() == {"available": False, "why": "No satellite is connected just now.",
@@ -1476,7 +1507,7 @@ def test_a_satellite_which_doesnt_exist_is_handled_everywhere(served):
     assert json.loads(_ask(served, "/api/state?satellite=ghost")[2])["volumes"] == {}
     assert _ask(served, "/api/cover?satellite=ghost")[0] == 404
     assert json.loads(_ask(served, "/api/music?satellite=ghost")[2]) == {"available": False,
-                                                                       "why": "No satellite is connected just now."}
+                                                                       "why": "There's no satellite called ghost."}
     assert json.loads(_ask(served, "/api/home?satellite=ghost")[2]) == {"available": False}
     assert json.loads(_ask(served, "/api/live?satellite=ghost")[2]) == {"activity": "idle", "stoppable": False}
     assert served.brain.clock.alarms == []

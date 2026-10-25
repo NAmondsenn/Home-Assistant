@@ -6,7 +6,7 @@ chosen, using fakes in place of the players themselves.
 
 import time
 
-from voice_assistant.music import MusicHold, make_player, means_liked_songs
+from voice_assistant.music import MusicHold, make_player, means_liked_songs, why_no_player
 
 
 class FakeMusic:
@@ -97,6 +97,28 @@ def test_navidrome_without_its_settings_means_no_music(make_config, monkeypatch)
     assert make_player(make_config(music={"player": "navidrome"}, navidrome={"url": "http://nd:4533",
                                                                              "username": "nova"}),
                        speaker=None, volume=None) is None
+
+
+def test_why_theres_no_music_is_said(make_config, monkeypatch):
+    for key in ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "NAVIDROME_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    spotify = make_config(music={"player": "spotify"})
+    # Spotify is the player when none is chosen.
+    assert why_no_player(make_config()) == "Spotify's client ID and secret aren't set. Add them under Keys, then restart Nova."
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")
+    assert why_no_player(spotify) == "Spotify's client ID and secret aren't set. Add them under Keys, then restart Nova."
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "client-secret")
+    assert why_no_player(spotify) == "Nova couldn't set up Spotify - Recent problems, in Status, says why."
+
+    navidrome = make_config(music={"player": "navidrome"}, navidrome={"url": "", "username": "nova"})
+    assert why_no_player(navidrome) == "Navidrome's address isn't set. Add it in Settings, under Music."
+    with_address = make_config(music={"player": "navidrome"}, navidrome={"url": "http://nd:4533", "username": "nova"})
+    assert why_no_player(with_address) == "Navidrome's password isn't set. Add it under Keys, then restart Nova."
+    monkeypatch.setenv("NAVIDROME_PASSWORD", "secret")
+    assert why_no_player(with_address) == "Nova couldn't set up Navidrome - Recent problems, in Status, says why."
+    # Not one of the two, so neither's to blame.
+    assert why_no_player(make_config(music={"player": "winamp"})) == (
+        "Nova's music player isn't Navidrome or Spotify. Choose one in Settings, under Music.")
 
 
 def test_liked_songs_are_recognised_when_misheard():

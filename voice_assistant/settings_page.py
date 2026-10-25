@@ -45,6 +45,7 @@ from voice_assistant import paths, storage, timeline
 from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
+from voice_assistant.music import why_no_player
 from voice_assistant.ntfy import RETOPIC
 from voice_assistant.spotify_controller import SpotifySignIn, SpotifySignInError, spotify_oauth
 from voice_assistant.undo import UndoShelf
@@ -470,9 +471,17 @@ class SettingsPage:
         session, name = self._session(satellite)
         music = session.music_player if session is not None else None
         if session is None:
-            shown = {"available": False, "why": "No satellite is connected just now."}
+            # Said before anything about the player, which a satellite can't be blamed
+            # for not having while it's away - and a name nobody has isn't away.
+            names = self._satellite_names() if satellite else None
+            if names is not None and satellite not in names:
+                shown = {"available": False, "why": f"There's no satellite called {satellite}."}
+            else:
+                shown = {"available": False, "why": "No satellite is connected just now."}
         elif music is None:
             shown = {"available": False}
+            if self.running is not None:
+                shown["why"] = why_no_player(self.running)
         else:
             shown = {"available": True, "player": getattr(music, "name", "Music"), "now": music.now_playing(),
                      "playlists": self._user_playlists(name, music)}
@@ -480,6 +489,10 @@ class SettingsPage:
         if self._spotify is not None:
             shown["spotify"] = {"signed_in": self._spotify.signed_in()}
         return shown
+
+    def _why_no_player(self) -> str:
+        """Why the satellite has no player, or - with Nova's config not known - that it hasn't."""
+        return why_no_player(self.running) if self.running is not None else "Nova has no music player set up."
 
     def _user_playlists(self, name: str, music) -> List[str]:
         kept = self._playlists.get(name)
@@ -932,7 +945,7 @@ class SettingsPage:
         if session is None:
             return self._not_connected(name)
         if session.music_player is None or session.actions is None:
-            return {"success": False, "message": "Nova has no music player set up."}
+            return {"success": False, "message": self._why_no_player()}
         if action == "play":
             result = session.actions.play_music(str(query).strip() or None)
         elif action == "playlist":

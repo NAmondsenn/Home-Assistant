@@ -79,6 +79,32 @@ def make_player(config, speaker, volume):
         return None
 
 
+def why_no_player(config) -> str:
+    """
+    Why make_player gave no player, as the settings page tells the user - the first
+    thing it can see is missing, else a pointer to the log.
+
+    Args:
+        config: Configs loaded from config.yaml, as make_player had them.
+
+    Returns:
+        A sentence saying what to do, or where to look.
+    """
+    choice = (config.section("music").get("player") or "spotify").strip().lower()
+    if choice == "spotify":
+        if not os.getenv("SPOTIFY_CLIENT_ID") or not os.getenv("SPOTIFY_CLIENT_SECRET"):
+            return "Spotify's client ID and secret aren't set. Add them under Keys, then restart Nova."
+        return "Nova couldn't set up Spotify - Recent problems, in Status, says why."
+    if choice == "navidrome":
+        if not (config.section("navidrome").get("url") or "").strip():
+            return "Navidrome's address isn't set. Add it in Settings, under Music."
+        if not os.getenv("NAVIDROME_PASSWORD"):
+            return "Navidrome's password isn't set. Add it under Keys, then restart Nova."
+        return "Nova couldn't set up Navidrome - Recent problems, in Status, says why."
+    # Neither, which make_player logged - so it isn't either one's to be blamed.
+    return "Nova's music player isn't Navidrome or Spotify. Choose one in Settings, under Music."
+
+
 class MusicHold:
     """
     Keeps the music paused while the assistant has something to say - a
