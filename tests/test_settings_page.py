@@ -623,6 +623,16 @@ def test_an_error_names_the_setting_as_the_page_does(files, given):
     assert not (files / "config.yaml").exists()
 
 
+@pytest.mark.parametrize("key, given, said", [
+    # A number box sends "" for anything it can't read, so this is the one most often seen.
+    ("thresholds.silence_duration", "", "Seconds of quiet which end what you're saying should be a number."),
+    ("sounds.chime_enabled", "yes", "The chime for done should be yes or no."),
+], ids=["number", "switch"])
+def test_a_value_of_the_wrong_kind_names_the_setting_as_the_page_does(files, key, given, said):
+    assert _page().save_settings({key: given}, LOGIN) == {"success": False, "message": said}
+    assert not (files / "config.yaml").exists()
+
+
 def test_settings_that_need_each_other_are_refused_on_saving(files):
     result = _page().save_settings({"music.player": "navidrome"}, LOGIN)
     assert result == {"success": False, "message": "Navidrome as the player needs Navidrome's address."}

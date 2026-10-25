@@ -687,7 +687,9 @@ class SettingsPage:
                 try:
                     value = _from_page(given, default)
                 except (TypeError, ValueError):
-                    return {"success": False, "message": f"{key} should be {_kind(default)}."}
+                    # Only a switch or a number can be sent as the wrong kind.
+                    kind = "yes or no" if isinstance(default, bool) else "a number"
+                    return {"success": False, "message": f"{label} should be {kind}."}
                 problem = limit_problem(section, name, value)
                 if problem:
                     return {"success": False, "message": f"{label} {problem}."}
