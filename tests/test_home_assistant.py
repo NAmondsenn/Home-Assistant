@@ -88,27 +88,37 @@ class FakeSocket:
         # to raise instead.
         self.live: Optional[Dict[str, Entry]] = None
         self.lookup_fails: Optional[Exception] = None
+        # What the lookup answers instead, for an answer of the wrong shape.
+        self.lookup_answer = None
         # Each call's messages, with how many requests the REST API had been sent by then.
         self.calls = []
 
     def call(self, messages):
         self.calls.append((messages, len(self.session.requests)))
-        if messages[0].get("type") == "config/entity_registry/get":
+        if messages[0].get("type") == "config/entity_registry/get_entries":
             if self.lookup_fails is not None:
                 raise self.lookup_fails
+            if self.lookup_answer is not None:
+                return [self.lookup_answer]
             live = self.live if self.live is not None else (self.registry.read.entries if self.registry.read else {})
-            entry = live.get(messages[0]["entity_id"])
-            if entry is None:
-                raise HomeSocketError("config/entity_registry/get failed: {'code': 'not_found'}")
-            return [{"entity_id": entry.entity_id, "platform": entry.platform, "unique_id": entry.unique_id}]
+            # Home Assistant answers None for an entity id it hasn't got.
+            entries = {entity: live.get(entity) for entity in messages[0]["entity_ids"]}
+            return [{entity: entry and {"entity_id": entry.entity_id, "platform": entry.platform,
+                                        "unique_id": entry.unique_id}
+                     for entity, entry in entries.items()}]
         if isinstance(self.answer, Exception):
             raise self.answer
         return [self.answer]
 
     def lookups(self):
-        """The entity ids whose registry entries were looked up afresh."""
-        return [messages[0]["entity_id"] for messages, _ in self.calls
-                if messages[0].get("type") == "config/entity_registry/get"]
+        """The entity ids whose registry entries were looked up afresh, in order."""
+        return [entity for messages, _ in self.calls
+                if messages[0].get("type") == "config/entity_registry/get_entries"
+                for entity in messages[0]["entity_ids"]]
+
+    def lookup_calls(self):
+        """How many times the socket was called to look scripts' keys up."""
+        return sum(messages[0].get("type") == "config/entity_registry/get_entries" for messages, _ in self.calls)
 
 
 class FakeRegistry:
@@ -687,6 +697,27 @@ def test_anything_acting_the_registry_cant_vouch_for_is_refused(make_home, entit
     # What only says how something is can still be asked about.
     home.socket.answer = _debugged(_match("HassGetState", "sensor.new"))
     assert home.command("is new on", wider=True)["success"]
+
+
+def test_the_refusal_says_why_the_registry_cant_vouch(make_home, caplog):
+    # A YAML template switch with no unique id is never in the registry, so it's refused
+    # for good - and the log says what to do about it.
+    home = _assisted(make_home, [_thing("switch.heater", "Heater"), LAMP], [_entry("light.lamp")],
+                     _match("HassTurnOn", "switch.heater"))
+    with caplog.at_level("WARNING", logger="voice_assistant.home_assistant"):
+        assert home.command("turn on the heater", wider=True) == REFUSED
+    assert caplog.records[-1].message == (
+        "Refused a Home Assistant request Assist would act on ['switch.heater'] (switch.heater is not in Home "
+        "Assistant's registry - give it a unique id to work it by voice) with: 'turn on the heater'")
+    # Without a read of the registry at all, it's that which is said instead.
+    home.registry.read = None
+    home.socket.answer = _debugged(_match("HassTurnOn", "light.lamp"))
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="voice_assistant.home_assistant"):
+        assert home.command("turn on the lamp") == REFUSED
+    message = caplog.records[-1].message
+    assert "light.lamp is not vouched for while Home Assistant's registry can't be read" in message
+    assert "unique id" not in message
 
 
 def test_a_group_assist_would_act_on_is_refused_for_a_guarded_member(make_home):
@@ -1776,12 +1807,72 @@ def test_a_script_whose_key_cant_be_looked_up_cant_be_checked(make_home):
     home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT)}, LAMP, PORCH,
                      _thing("media_player.bedroom", "Bedroom"), PC_SLEEP, entries=[PC_SLEEP_ENTRY], devices=DESK)
     assert home.run_script("goodnight") == {"success": True, "message": "Started Goodnight."}
-    for failure in (HomeSocketError("timed out"), HomeSocketError("config/entity_registry/get failed: not_found")):
+    for failure in (HomeSocketError("timed out"), HomeSocketError("config/entity_registry/get_entries failed")):
         home.socket.lookup_fails = failure
         assert home.run_script("goodnight") == {"success": False, "message": UNSEEN.format("Goodnight")}
         assert home.run("script.goodnight")["success"] is False
         assert home.overview()["routines"] == []
     assert _ran(home) == [("/api/services/script/turn_on", {"entity_id": "script.goodnight"})]
+
+
+def test_a_draw_looks_up_every_scripts_key_in_one_socket_call(make_home):
+    # The settings page draws every fifteen seconds, and a call is one connection with its
+    # own deadline - so however many scripts there are, a stalled socket costs one deadline.
+    lights_only = _config("Lights", _step("light.turn_off", entity_id="light.lamp"))
+    scripts = {f"script.lights_{number}": (f"Lights {number}", lights_only) for number in range(5)}
+    home = _scripted(make_home, scripts, LAMP)
+    assert [routine["id"] for routine in home.overview()["routines"]] == sorted(scripts)
+    assert home.socket.lookup_calls() == 1 and sorted(home.socket.lookups()) == sorted(scripts)
+    home.socket.lookup_fails = HomeSocketError("timed out")
+    assert home.overview()["routines"] == []
+    assert home.socket.lookup_calls() == 2
+    # With no scripts, nothing is looked up.
+    home = _scripted(make_home, {}, LAMP, _scene("scene.relax", "Relax", ["light.lamp"]))
+    assert [routine["id"] for routine in home.overview()["routines"]] == ["scene.relax"]
+    assert home.socket.lookup_calls() == 0
+
+
+def test_scripts_assist_would_run_together_are_looked_up_together(make_home):
+    lights_only = _config("Lights", _step("light.turn_off", entity_id="light.lamp"))
+    home = _scripted(make_home, {"script.lamp_off": ("Lamp off", lights_only), "script.dim": ("Dim", lights_only)}, LAMP)
+    home.socket.answer = _debugged(_match("HassTurnOn", "script.lamp_off", "script.dim"))
+    assert home.command("run lamp off and dim", wider=True)["success"]
+    assert home.socket.lookup_calls() == 1 and home.socket.lookups() == ["script.lamp_off", "script.dim"]
+
+
+def test_a_draw_only_looks_up_the_scripts_it_would_walk(make_home):
+    # One whose name says it unlocks is never offered, so its key isn't asked for.
+    lights_only = _config("Lights", _step("light.turn_off", entity_id="light.lamp"))
+    home = _scripted(make_home, {"script.dim": ("Dim", lights_only), "script.unlock_door": ("Unlock door", UNLOCKS)},
+                     LAMP, FRONT_DOOR)
+    assert [routine["id"] for routine in home.overview()["routines"]] == ["script.dim"]
+    assert home.socket.lookups() == ["script.dim"]
+
+
+def test_a_bad_entry_in_a_batch_fails_only_its_own_script(make_home):
+    lights_only = _config("Lights", _step("light.turn_off", entity_id="light.lamp"))
+    home = _scripted(make_home, {f"script.lights_{number}": (f"Lights {number}", lights_only) for number in range(3)},
+                     LAMP)
+    live = {**home.registry.read.entries}
+    del live["script.lights_1"]
+    home.socket.live = live
+    assert [routine["id"] for routine in home.overview()["routines"]] == ["script.lights_0", "script.lights_2"]
+    assert home.socket.lookup_calls() == 1
+
+
+@pytest.mark.parametrize("answer", [[], "odd", {"script.goodnight": "goodnight"}, {"script.goodnight": {}},
+                                    {"script.goodnight": {"unique_id": 7}}, {}])
+def test_a_script_whose_key_comes_back_odd_cant_be_checked(make_home, answer):
+    home = _scripted(make_home, {"script.goodnight": ("Goodnight", GOODNIGHT)}, LAMP, PORCH,
+                     _thing("media_player.bedroom", "Bedroom"), PC_SLEEP, entries=[PC_SLEEP_ENTRY], devices=DESK)
+    home.socket.lookup_answer = answer
+    assert home.overview()["routines"] == []
+    assert home.run_script("goodnight") == {"success": False, "message": UNSEEN.format("Goodnight")}
+    # Nor one the registry hasn't got now.
+    home.socket.lookup_answer = None
+    home.socket.live = {}
+    assert home.overview()["routines"] == []
+    assert _ran(home) == []
 
 
 # A registry id, as Home Assistant takes in place of an entity id - only it can say whose it is.
@@ -2741,6 +2832,33 @@ def test_status_leaves_out_anything_named_after_an_address(make_home):
     assert home.status("example", now=STATUS_NOW)["message"] == "Example router (binary_sensor.example_router, " \
                                                                  "Hall): on"
     assert home.status("10", now=STATUS_NOW)["message"] == "Nothing in Home Assistant matches that."
+
+
+def test_status_leaves_out_anything_with_a_hardware_address_in_its_id(make_home):
+    # A BLE or Shelly sensor's id carries its device's hardware address, however plain its
+    # name - run together, or with its colons made underscores.
+    things = [_status("sensor.ble_temperature_a4c1381234ab", "Example temperature", "21.5", "°C"),
+              _status("sensor.shelly1_c45bbe123456_temperature", "Example temperature", "20.5", "°C"),
+              _status("sensor.x_a4_c1_38_12_34_ab", "Example temperature", "22.5", "°C"),
+              _status("sensor.x_a4_c1_38_ab_12_cd", "Example temperature", "23.5", "°C"),
+              # A GUID too, run together or in its groups, whatever its letters - the PC's
+              # network sensors are named after their adapter's.
+              _status("sensor.windows_pc_network_32113e4d1a6c4d418be75feec6c69c40", "Example temperature", "1",
+                      "°C"),
+              _status("sensor.example_32113e4d1a6c4d418be75feec6c69c40", "Example temperature", "2", "°C"),
+              _status("sensor.example_1a2b3c4d_5e6f_47a8_b9c0_123456789012", "Example temperature", "3", "°C"),
+              _status("sensor.example_temperature", "Example temperature", "19.5", "°C")]
+    home = _status_home(make_home, things)
+    assert home.status("example temperature", now=STATUS_NOW)["message"] == \
+        "Example temperature (sensor.example_temperature): 19.5 °C"
+    # While a model's number in an id is no address, nor are twelve digits alone - more
+    # likely a count.
+    for entity in ("sensor.pve2_cpu_usage", "sensor.s25_ultra_storage", "sensor.example_500107862016",
+                   "sensor.nextcloud_cpu_load_last_15_minutes", "sensor.backup_2026_10_25_1230",
+                   # Nor is an address read from the middle of a word - "e:1:2:a:b:c" here.
+                   "sensor.zone_1_2_a_b_c"):
+        home = _status_home(make_home, [_status(entity, "Example thing", "31")])
+        assert entity in home.status("example thing", now=STATUS_NOW)["message"], entity
 
 
 @pytest.mark.parametrize("state", ["on", "21.5", "2026-10-25T10:00:00+00:00", "2026-10-25T10:00:00.123456+00:00",

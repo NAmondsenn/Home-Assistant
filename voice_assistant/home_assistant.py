@@ -60,8 +60,8 @@ import requests
 from voice_assistant import network
 from voice_assistant.clock import format_duration
 from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, Scripts, names_guarded,
-                                      runnables_named, sensitive, sensitive_words, split_words, target_refused,
-                                      why_not_run)
+                                      runnables_named, sensitive, sensitive_words, split_words, why_not_run,
+                                      why_target_refused)
 from voice_assistant.ha_registry import (HASS_AGENT_MAKER, PC_KINDS, HomeRegistry, HomeSocket, HomeSocketError,
                                          Snapshot)
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -307,10 +307,18 @@ IPV4_ADDRESS = re.compile(r"(?<!\d)\d{1,3}(\.\d{1,3}){3}(?!\d)")
 # An IPv4 address in an entity id, whose dots Home Assistant makes underscores - a Ping
 # entity for 10.0.0.1 is binary_sensor.10_0_0_1.
 IPV4_IN_ID = re.compile(r"(?<!\d)\d{1,3}(_\d{1,3}){3}(?!\d)")
-HARDWARE_ADDRESS = re.compile(
-    r"(?<![0-9a-f])([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
-    r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])",
-    re.IGNORECASE)
+_HARDWARE = (r"([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
+             r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])")
+HARDWARE_ADDRESS = re.compile(r"(?<![0-9a-f])" + _HARDWARE, re.IGNORECASE)
+# A hardware address in an entity id, read with its underscores as colons - run together,
+# sensor.ble_temperature_a4c1381234ab, or with the colons Home Assistant makes
+# underscores, sensor.ble_a4_c1_38_ab_12_cd - starting at a word, so the "e" of "zone" in
+# sensor.zone_1_2_a_b_c isn't one. And a GUID, run together or in its groups, whatever its
+# letters: the PC's network sensors are named after their adapter's, and a GUID tells one
+# machine's hardware from another's as an address does.
+HARDWARE_IN_ID = re.compile(r"(?<![0-9a-z])(" + _HARDWARE
+                            + r"|([0-9a-f]{32}|[0-9a-f]{8}(:[0-9a-f]{4}){3}:[0-9a-f]{12})(?![0-9a-z]))",
+                            re.IGNORECASE)
 # A run of hex digits and colons, each tried as an IPv6 address - "fe80::1" in "[fe80::1]".
 # A time, "12:30:45", isn't one.
 MAYBE_IPV6 = re.compile(r"[0-9a-f:]*:[0-9a-f:]*", re.IGNORECASE)
@@ -558,10 +566,12 @@ class HomeAssistant:
                     logger.info(f"Not sent to Assist, which reads it as {what} on {match.targets}: '{request}'",
                                 extra=TRANSCRIPT)
                     return not_understood
-                barred = [target for target in match.targets if target_refused(target, by_id.get(target), snapshot)]
+                barred = {target: why for target in match.targets
+                          if (why := why_target_refused(target, by_id.get(target), snapshot)) is not None}
                 if barred:
-                    logger.warning(f"Refused a Home Assistant request Assist would act on {barred} with: '{request}'",
-                                   extra=TRANSCRIPT)
+                    whys = "; ".join(f"{target} is {why}" for target, why in barred.items())
+                    logger.warning(f"Refused a Home Assistant request Assist would act on {list(barred)} ({whys}) "
+                                   f"with: '{request}'", extra=TRANSCRIPT)
                     return refused
             # A script or scene is only run once what it does has been checked - one Assist
             # would act on, and one the request names, as a light sentence can while the
@@ -572,7 +582,12 @@ class HomeAssistant:
             runs = [target for target in (match.targets if match else [])
                     if RUNNABLE.fullmatch(target) or _members(by_id.get(target)) is not None]
             runs += [entity for entity in runnables_named(request, states, snapshot) if entity not in runs]
-            if why_not_run(runs, states, snapshot, self._scripts(), self._too_deep):
+            # Every script it would run has its key looked up in one round, as the settings
+            # page's are.
+            scripts = self._scripts()
+            if snapshot is not None:
+                scripts.look_up([entity for entity in runs if entity.startswith("script.")])
+            if why_not_run(runs, states, snapshot, scripts, self._too_deep):
                 logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
                                f"can't be checked: '{request}'", extra=TRANSCRIPT)
                 return refused
@@ -749,16 +764,24 @@ class HomeAssistant:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self._failure_message(e)}
         snapshot = self._snapshot()
-        # Each script's key and configuration are read once a draw, however many others run it.
-        scripts = self._scripts()
-        routines = []
+        # Each script's key and configuration are read once a draw, however many others run
+        # it - and every script's key in one round, as the walk would only ask for one at a
+        # time - only those it would walk, as one whose name says it unlocks never is.
+        # Without the registry, none is checked, so none is looked up.
+        offered = []
         for state in states:
             entity = state.get("entity_id") or ""
             name = (state.get("attributes") or {}).get("friendly_name") or entity
+            if RUNNABLE.fullmatch(entity) and not sensitive(entity, name):
+                offered.append((entity, name))
+        scripts = self._scripts()
+        if snapshot is not None:
+            scripts.look_up([entity for entity, _ in offered if entity.startswith("script.")])
+        routines = []
+        for entity, name in offered:
             # Only what run() would run, so the page never offers a button which can't work -
             # and none without the registry, which has the key to each script's contents.
-            if (RUNNABLE.fullmatch(entity) and not sensitive(entity, name)
-                    and not self.works_guarded(entity, states, snapshot, scripts=scripts)):
+            if not self.works_guarded(entity, states, snapshot, scripts=scripts):
                 routines.append({"id": entity, "name": name, "kind": entity.split(".")[0]})
         return {"success": True,
                 "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
@@ -1468,33 +1491,39 @@ class HomeAssistant:
 
     def _scripts(self) -> Scripts:
         """How a check reads the scripts, each once - see ha_guard.Scripts."""
-        return Scripts(self._script_config, self._script_key)
+        return Scripts(self._script_config, self._script_keys)
 
-    def _script_key(self, entity_id: str) -> Optional[str]:
+    def _script_keys(self, entity_ids: List[str]) -> Dict[str, Optional[str]]:
         """
-        The key a script's entity id has in Home Assistant now - the registry's unique id
-        for it, and its key in the script editor - looked up afresh over the WebSocket, as
-        the registry's snapshot can be five minutes behind a rename. One round of about 20
-        ms, within the socket's own deadline.
+        The keys some scripts' entity ids have in Home Assistant now - the registry's unique
+        id for each, and its key in the script editor - looked up afresh over the WebSocket,
+        as the registry's snapshot can be five minutes behind a rename. All of them in one
+        round of about 20 ms, within the socket's own deadline - so with the WebSocket
+        stalled, a settings page draw waits that deadline once, not once a script.
 
         Args:
-            entity_id: e.g. "script.goodnight".
+            entity_ids: e.g. ["script.goodnight", "script.leaving"].
 
         Returns:
-            e.g. "goodnight", or None if Home Assistant doesn't answer in time, or the
-            registry hasn't got the script or has no key for it.
+            Each one's key, e.g. {"script.goodnight": "goodnight"} - or None for each if
+            Home Assistant doesn't answer in time or answers oddly, and for one the registry
+            hasn't got or has no key for.
         """
+        keys: Dict[str, Optional[str]] = dict.fromkeys(entity_ids)
         try:
-            entry, = self.socket.call([{"type": "config/entity_registry/get", "entity_id": entity_id}])
+            entries, = self.socket.call([{"type": "config/entity_registry/get_entries", "entity_ids": entity_ids}])
         except (HomeSocketError, ValueError) as e:
-            why = f"Home Assistant's registry wouldn't say which script it is now ({e})"
-        else:
+            for entity_id in entity_ids:
+                self._cant_see(entity_id, f"Home Assistant's registry wouldn't say which script it is now ({e})")
+            return keys
+        for entity_id in entity_ids:
+            entry = entries.get(entity_id) if isinstance(entries, dict) else None
             key = entry.get("unique_id") if isinstance(entry, dict) else None
             if isinstance(key, str) and key:
-                return key
-            why = "Home Assistant's registry has no key for it"
-        self._cant_see(entity_id, why)
-        return None
+                keys[entity_id] = key
+            else:
+                self._cant_see(entity_id, "Home Assistant's registry has no key for it")
+        return keys
 
     def _script_config(self, key: str, name: str) -> Optional[Dict]:
         """
@@ -1717,10 +1746,12 @@ def _private(entity: str, attributes: Dict, state: str, snapshot: Optional[Snaps
     if attributes.get("device_class") in NOT_STATUS_CLASSES:
         return True
     # A Ping entity is named after the host it pings, so its name and entity id are
-    # looked at as well as its state - and its area, which is a name too.
+    # looked at as well as its state - and its area, which is a name too. A BLE or Shelly
+    # sensor's id carries its device's hardware address, however plain its name - see
+    # HARDWARE_IN_ID.
     area = snapshot.area_name(entity) if snapshot else None
     if (any(_holds_address(text) for text in (state, str(attributes.get("friendly_name") or ""), area or ""))
-            or IPV4_IN_ID.search(entity)):
+            or IPV4_IN_ID.search(entity) or HARDWARE_IN_ID.search(entity.replace("_", ":"))):
         return True
     # Only a sensor's or a text entity's state can be free text - a light's is on or off,
     # whatever the device. A text entity holds whatever was typed into it, on any device.

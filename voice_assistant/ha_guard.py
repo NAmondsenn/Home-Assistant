@@ -93,6 +93,17 @@ PROXMOX = "proxmoxve"
 WORKS_GUARDED = "works something guarded"
 UNSEEN = "can't be seen"
 
+# Why Assist isn't asked to act on something, as the log says it. Something with no unique
+# id - a YAML template switch, a scene with no id, an old-style group - is never in the
+# registry, so it's refused for good, not only until the registry's next read: the log
+# says what would let it be worked. An old-style group can't take one, and is made a
+# group helper in the UI instead (see docs/troubleshooting.md). A new entity is told the
+# same for its first five minutes, as the two can't be told apart.
+NOT_IN_STATES = "not in Home Assistant's states"
+GUARDED_TARGET = "never worked by voice"
+UNREGISTERED = "not in Home Assistant's registry - give it a unique id to work it by voice"
+NO_REGISTRY = "not vouched for while Home Assistant's registry can't be read"
+
 # The domains whose actions, given a whole area, floor or label - or "all", for every
 # entity - could reach something guarded there: homeassistant's reach anything, a door is a
 # cover, the PC's shutdown and Proxmox's are buttons, Proxmox's switches stop the machines
@@ -297,14 +308,32 @@ def target_refused(entity_id: str, state: Optional[Dict], snapshot: Optional[Sna
         True for anything guarded, anything that wasn't there a moment ago to be checked,
         and anything which acts that the registry can't vouch for.
     """
+    return why_target_refused(entity_id, state, snapshot) is not None
+
+
+def why_target_refused(entity_id: str, state: Optional[Dict], snapshot: Optional[Snapshot]) -> Optional[str]:
+    """
+    Why Assist mustn't be asked to act on something, for the log - see target_refused.
+
+    Args:
+        entity_id, state, snapshot: As for target_refused.
+
+    Returns:
+        NOT_IN_STATES, GUARDED_TARGET, UNREGISTERED or NO_REGISTRY - or None if it may be
+        acted on.
+    """
     if state is None:
-        return True
+        return NOT_IN_STATES
     if guarded(entity_id, state.get("attributes") or {}, snapshot) is not None:
-        return True
+        return GUARDED_TARGET
     # Whatever Proxmox or HASS.Agent adds is in the states at once, but in the registry
     # only up to five minutes later - and either can act through a switch, an update or a
     # light as well as a button. Only a sensor's or a binary sensor's never acts.
-    return entity_id.partition(".")[0] not in NOT_ACTING and (snapshot is None or snapshot.platform(entity_id) is None)
+    if entity_id.partition(".")[0] in NOT_ACTING:
+        return None
+    if snapshot is None:
+        return NO_REGISTRY
+    return UNREGISTERED if snapshot.platform(entity_id) is None else None
 
 
 def _worst(reasons: Iterable[Optional[str]]) -> Optional[str]:
@@ -399,21 +428,32 @@ class Scripts:
     it, and afresh for the next check.
     """
 
-    def __init__(self, read_config: Callable[[str, str], Optional[Dict]], key_of: Callable[[str], Optional[str]]):
+    def __init__(self, read_config: Callable[[str, str], Optional[Dict]],
+                 keys_of: Callable[[List[str]], Dict[str, Optional[str]]]):
         """
         Args:
             read_config: Reads a script's configuration by its key, given the script as
                 it's named for saying it can't be read, e.g. ("leaving", "script.leaving")
                 - or gives None if it can't be read. See
                 home_assistant.HomeAssistant._script_config.
-            key_of: Looks up the key a script's entity id has in Home Assistant now, or
-                gives None if that can't be told - see
-                home_assistant.HomeAssistant._script_key.
+            keys_of: Looks up the keys some scripts' entity ids have in Home Assistant
+                now, all at once - each None if it can't be told. See
+                home_assistant.HomeAssistant._script_keys.
         """
         self._read_config = read_config
-        self._key_of = key_of
+        self._keys_of = keys_of
         self._configs: Dict[str, Optional[Dict]] = {}
         self._keys: Dict[str, Optional[str]] = {}
+
+    def look_up(self, entity_ids: Iterable[str]):
+        """
+        Looks up the keys of these scripts' entity ids together, those not looked up
+        already - so a settings page draw asks once for every script, rather than once each.
+        """
+        wanted = list(dict.fromkeys(entity for entity in entity_ids if entity not in self._keys))
+        if wanted:
+            found = self._keys_of(wanted)
+            self._keys.update({entity: found.get(entity) for entity in wanted})
 
     def config(self, key: str, name: str) -> Optional[Dict]:
         """The configuration of the script of this key, or None if it can't be read."""
@@ -423,8 +463,7 @@ class Scripts:
 
     def key(self, entity_id: str) -> Optional[str]:
         """The key of the script with this entity id now, or None if it can't be told."""
-        if entity_id not in self._keys:
-            self._keys[entity_id] = self._key_of(entity_id)
+        self.look_up([entity_id])
         return self._keys[entity_id]
 
 
