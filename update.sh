@@ -43,6 +43,54 @@ if [ "$PULL" = true ]; then
 fi
 done_ "On $(as_user git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(as_user git -C "$PROJECT_DIRECTORY" log -1 --format='%h %s')"
 
+# Nova goes on running the code it started with until it restarts, so code just pulled
+# that doesn't get through the steps after the pull - a package install failing, or the
+# phone's session dropping mid-step - is taken back out, and a reboot starts what's
+# running now. Set up here, after any start again on the new code, as exec drops traps.
+# BEGIN take back
+take_back() {
+    local why="$1"
+    # The reset comes before any message, so a session that's gone loses only that.
+    if [ -z "${NOVA_UPDATED_FROM:-}" ]; then
+        # Run with --no-pull, on code checked out by hand, so there's nothing to go back to.
+        problem "${why} The code checked out is in place, but Nova is still running the code it started with until it next restarts:"
+    elif as_user git -C "$PROJECT_DIRECTORY" reset -q --keep "$NOVA_UPDATED_FROM"; then
+        # --keep refuses, rather than throws away, local changes to the files it would move.
+        problem "${why} The new code has been taken back out, so Nova goes on running the code it had before, even once it restarts:"
+    else
+        problem "${why} The new code couldn't be taken back out, so check out ${NOVA_UPDATED_FROM} before Nova next restarts:"
+    fi
+}
+
+watch_steps() {
+    steps_done=false
+    trap failed_after_pull EXIT
+    # With no trap of their own, a dropped session's hangup or a Ctrl+C would end bash
+    # with the EXIT trap seeing $? at 0, as if the steps had all gone through.
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+}
+
+steps_finished() {
+    steps_done=true
+    trap - EXIT HUP INT TERM
+}
+
+failed_after_pull() {
+    local status=$?
+    if [ "$steps_done" = true ]; then
+        return
+    fi
+    # Ignored, by git too, so a second Ctrl+C can't cut the reset short half-way.
+    trap '' HUP INT TERM
+    take_back "A step after fetching the new code failed - Nova is still running the code it had before."
+    problem "Python packages it installed stay installed, so put right what failed and run this again soon - until then the old code may not start with them."
+    exit $(( status == 0 ? 1 : status ))
+}
+# END take back
+watch_steps
+
 # An install from before roles has none saved yet, so what decide_role worked out is.
 run_steps save_role install_python_packages download_models
 
@@ -100,18 +148,12 @@ except Exception as e:
     else
         why="The new code won't start on this machine, whatever the settings - fix that, then run this again."
     fi
-    if [ -z "${NOVA_UPDATED_FROM:-}" ]; then
-        # Run with --no-pull, on code checked out by hand, so there's nothing to go back to.
-        problem "${why} The new code is in place, but Nova is still running the old code until it next restarts:"
-    elif as_user git -C "$PROJECT_DIRECTORY" reset -q --keep "$NOVA_UPDATED_FROM"; then
-        problem "${why} The new code has been taken back out, so Nova goes on running the code it had before, even once it restarts:"
-    else
-        problem "${why} The new code couldn't be taken back out, so check out ${NOVA_UPDATED_FROM} before Nova next restarts:"
-    fi
+    take_back "$why"
     echo "$output" | tail -n 5 >&2
     return 1
 }
 # END settings check
+steps_finished
 settings_check || exit 1
 
 step "Restarting"

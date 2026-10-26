@@ -7,6 +7,7 @@ mistake in the install's file is caught rather than ignored.
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -311,6 +312,15 @@ def test_update_checks_the_settings_before_stopping_nova():
     assert check_at < text.index("\nstop_service\n")
 
 
+# What update.sh has from setup.sh, stood in for so its blocks run on their own.
+UPDATE_STAND_INS = 'problem() { echo "PROBLEM $*" >&2; }\nas_user() { "$@"; }\n'
+
+
+def _update_block(text, name):
+    """The part of update.sh's text between its "# BEGIN name" and "# END name" lines."""
+    return text[text.index(f"# BEGIN {name}"):text.index(f"# END {name}")]
+
+
 def _run_update_check(tmp_path, own, python=None, project=None, updated_from=None):
     """
     Runs update.sh's own check block against a scratch config, as the Pi's user would -
@@ -318,10 +328,10 @@ def _run_update_check(tmp_path, own, python=None, project=None, updated_from=Non
     """
     root = Path(__file__).parent.parent
     text = (root / "update.sh").read_text()
-    block = text[text.index("# BEGIN settings check"):text.index("# END settings check")]
+    # The take-back block first, as settings_check calls its take_back.
+    block = _update_block(text, "take back") + _update_block(text, "settings check")
     (tmp_path / "config.yaml").write_text(own)
-    script = ('problem() { echo "PROBLEM $*" >&2; }\nas_user() { "$@"; }\n' + block
-              + "settings_check\necho \"status $?\"\n")
+    script = (UPDATE_STAND_INS + block + "settings_check\necho \"status $?\"\n")
     env = {**os.environ, "NOVA_CONFIG": str(tmp_path), "PROJECT_DIRECTORY": str(project or root),
            "PYTHON": python or sys.executable,
            # The code checked is this one's, wherever the project is.
@@ -395,6 +405,113 @@ def test_an_update_whose_settings_are_good_keeps_the_new_code(tmp_path):
     clone, before, git = _updated_clone(tmp_path)
     passed = _run_update_check(tmp_path, "thresholds:\n  silence_duration: 1\n", project=clone, updated_from=before)
     assert "status 0" in passed.stdout and (clone / "version").read_text() == "after\n"
+
+
+def _run_steps(tmp_path, step, project, updated_from=None, wait_for=None):
+    """
+    Runs update.sh's take-back block around one step, as update.sh runs its steps after
+    the pull - in the project given, a scratch clone, and as just updated from the commit
+    given.
+
+    Args:
+        tmp_path: The test's own scratch folder.
+        step: The shell command standing in for update.sh's steps.
+        project: The scratch clone the steps run in.
+        updated_from: The commit the clone was updated from, if it was pulled.
+        wait_for: A line to wait for on stdout, to signal the steps mid-way; with it,
+            the script is started in a process group of its own and returned running.
+
+    Returns:
+        The finished run, or with wait_for, the running process, its line read.
+    """
+    text = (Path(__file__).parent.parent / "update.sh").read_text()
+    script = ("set -euo pipefail\n" + UPDATE_STAND_INS + _update_block(text, "take back")
+              + f"watch_steps\n{step}\nsteps_finished\necho finished\n")
+    env = {**os.environ, "PROJECT_DIRECTORY": str(project)}
+    env.pop("NOVA_UPDATED_FROM", None)
+    if updated_from:
+        env["NOVA_UPDATED_FROM"] = updated_from
+    if wait_for is None:
+        return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, cwd=tmp_path)
+    # A session of its own, so its process group is this script and its step alone -
+    # the one group the test may signal.
+    proc = subprocess.Popen(["bash", "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, cwd=tmp_path, start_new_session=True)
+    try:
+        assert proc.stdout.readline().strip() == wait_for
+    except BaseException:
+        _end_group(proc)
+        raise
+    return proc
+
+
+def _end_group(proc):
+    """Kills the process group the test started, only while its leader is unreaped and so still ours."""
+    if proc.poll() is None:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+
+
+def test_a_failed_step_after_the_pull_takes_the_new_code_back_out(tmp_path):
+    # A package install or a model download failing leaves Nova running the old code,
+    # so a reboot must start that too, not the new code it never checked.
+    clone, before, git = _updated_clone(tmp_path)
+    failed = _run_steps(tmp_path, "false", clone, updated_from=before)
+
+    assert failed.returncode != 0 and "finished" not in failed.stdout
+    assert "A step after fetching the new code failed" in failed.stderr and "taken back out" in failed.stderr
+    assert git("rev-parse", "HEAD") == before and (clone / "version").read_text() == "before\n"
+    # Still on its branch, so the next update pulls the code again.
+    assert git("symbolic-ref", "--short", "HEAD") == "main"
+
+
+def test_a_failed_step_with_no_pull_leaves_the_code_as_it_is(tmp_path):
+    # Run with --no-pull, on code checked out by hand, so there's nothing to go back to.
+    clone, before, git = _updated_clone(tmp_path)
+    after = git("rev-parse", "HEAD")
+    failed = _run_steps(tmp_path, "false", clone)
+
+    assert failed.returncode != 0
+    assert "A step after fetching the new code failed" in failed.stderr and "is in place" in failed.stderr
+    assert git("rev-parse", "HEAD") == after
+
+
+@pytest.mark.parametrize("sig, status", [(signal.SIGHUP, 129), (signal.SIGINT, 130), (signal.SIGTERM, 143)],
+                         ids=["hangup", "interrupt", "terminate"])
+def test_an_update_cut_off_mid_step_takes_the_new_code_back_out(tmp_path, sig, status):
+    # The likeliest failure: the phone's session dropping mid-step. A dropped terminal
+    # signals its whole group, and bash waits for the step in the foreground before it
+    # runs a trap, so signalling bash alone would only wait out the sleep.
+    clone, before, git = _updated_clone(tmp_path)
+    proc = _run_steps(tmp_path, "bash -c 'echo started; sleep 30'", clone, updated_from=before, wait_for="started")
+    try:
+        assert os.getpgid(proc.pid) == proc.pid
+        os.killpg(proc.pid, sig)
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        _end_group(proc)
+
+    assert proc.returncode == status and "finished" not in stdout
+    assert "taken back out" in stderr
+    assert git("rev-parse", "HEAD") == before
+
+
+def test_steps_that_finish_leave_the_new_code_in(tmp_path):
+    clone, before, git = _updated_clone(tmp_path)
+    finished = _run_steps(tmp_path, "true", clone, updated_from=before)
+
+    assert finished.returncode == 0 and "finished" in finished.stdout
+    assert "PROBLEM" not in finished.stderr and (clone / "version").read_text() == "after\n"
+
+
+def test_the_trap_covers_the_steps_and_not_the_settings_check():
+    # After any start again on the new code, as exec drops the traps; and finished before
+    # the settings check, which says its own piece when it takes the code back out.
+    text = (Path(__file__).parent.parent / "update.sh").read_text()
+    assert text.index('done_ "On') < text.index("# BEGIN take back") < text.index("# BEGIN settings check")
+    # With the newline, as the comment at the top names run_steps too.
+    assert text.index("\nwatch_steps\n") < text.index("\nrun_steps ")
+    assert text.index("\nsteps_finished\n") < text.index("\nsettings_check || exit 1\n")
 
 
 def test_update_says_what_it_updated_from_when_it_starts_again_on_the_new_code():
