@@ -382,7 +382,20 @@ class Brain:
                 unused.append(("logging", "log_transcripts"))
         if ("voice", "speed") in changes and not self._change_speed(changes[("voice", "speed")]):
             unused.append(("voice", "speed"))
+        if ("thresholds", "recording_timeout") in changes:
+            self._send_states()
         return unused
+
+    def _send_states(self):
+        """Has every session connected send its satellite its state again."""
+        with self._lock:
+            sessions = list(self.sessions.values())
+        for session in sessions:
+            try:
+                session.send_state()
+            except Exception:
+                logger.exception(f"The {session.satellite.name} satellite couldn't be sent the longest request, "
+                                 "so it keeps the old one until it reconnects")
 
     def _change_speed(self, speed: float) -> bool:
         """

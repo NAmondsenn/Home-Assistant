@@ -1686,6 +1686,19 @@ def test_hear_it_is_said_on_the_satellite_looked_after(files, monkeypatch):
         page.stop()
 
 
+def test_longest_request_is_on_the_page_from_5_to_30(files):
+    page = _page()
+    (shown,) = [setting for setting in page.state()["settings"] if setting["key"] == "thresholds.recording_timeout"]
+    assert shown["label"] == "Longest request, in seconds" and shown["value"] == 15.0
+    assert (shown["min"], shown["max"], shown["whole"]) == (5, 30, False)
+    assert page.save_settings({"thresholds.recording_timeout": 4}, LOGIN) == {
+        "success": False, "message": "Longest request, in seconds should be from 5 to 30."}
+    assert not (files / "config.yaml").exists()
+
+    assert page.save_settings({"thresholds.recording_timeout": 25}, LOGIN)["success"]
+    assert yaml.safe_load((files / "config.yaml").read_text())["thresholds"]["recording_timeout"] == 25
+
+
 def test_hear_it_refuses_a_speed_out_of_range(files):
     page = _page()
     for speed in (2, 0.5, "fast", float("inf"), True, None):

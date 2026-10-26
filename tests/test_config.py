@@ -238,6 +238,7 @@ IN_AND_OUT = {
     ("ntfy", "restarts"): (["home-lab_1", ""], ["home lab", "a/b"]),
     ("ntfy", "alerts"): ([["home-lab_1", "b"], []], [["home lab"], ["a/b"], [""], "homelab"]),
     ("thresholds", "silence_duration"): ([0.2, 3, 1], [0.19, 3.1, True]),
+    ("thresholds", "recording_timeout"): ([5, 30, 15, 7.5], [4, 30.1, True, 0, -1]),
     ("conversation", "history_max_age"): ([0, 3600, 300], [-1, 3601, 1.5]),
     ("mqtt", "host"): (["192.168.1.20", "ha.local", ""], ["http://ha.local", "ha local"]),
     ("mqtt", "port"): ([1, 1883, 65535], [0, 65536, 1883.5]),

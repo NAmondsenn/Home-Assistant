@@ -676,6 +676,19 @@ def test_closing_lets_go_of_the_device_the_music_and_the_satellites_sounds_once_
 
 # Each satellite's own
 
+def test_the_session_sends_its_satellite_the_longest_request(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.send_state()
+    assert wait_for(lambda: pi.messages("state"))
+    assert pi.messages("state")[-1]["longest_request"] == 15.0
+
+    # Read as it is sent, so a save reaches it with no restart.
+    brain.config.apply({("thresholds", "recording_timeout"): 22.0})
+    session.send_state()
+    assert wait_for(lambda: len(pi.messages("state")) == 2)
+    assert pi.messages("state")[-1]["longest_request"] == 22.0
+
 def test_mute_is_kept_per_satellite_and_sent_to_it(brain, connect, make_session):
     bedroom, bedroom_pi = connect("bedroom", "bedroom-pi")
     kitchen, kitchen_pi = connect("kitchen", "kitchen-pi")

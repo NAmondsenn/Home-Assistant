@@ -61,6 +61,7 @@ LIMITS: Dict[Tuple[str, str], Limit] = {
     ("ntfy", "restarts"): Limit("topic"),
     ("ntfy", "alerts"): Limit("topics"),
     ("thresholds", "silence_duration"): Limit("number", 0.2, 3),
+    ("thresholds", "recording_timeout"): Limit("number", 5, 30, False),
     ("conversation", "history_max_age"): Limit("number", 0, 3600, True),
     ("mqtt", "host"): Limit("host"),
     ("mqtt", "port"): Limit("number", 1, 65535, True),

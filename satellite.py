@@ -14,6 +14,7 @@ and answers the wake word with the recorded "I can't reach the server".
 
 import itertools
 import logging
+import math
 import os
 import queue
 import signal
@@ -46,9 +47,14 @@ RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
 # user as they speak, and can tell the moment they've stopped.
 PIECE_SECONDS = 0.1
 
-# The most of one recording which is sent, in seconds, whatever the brain says - so a
-# brain which never says the user has stopped can't keep the microphone open.
+# The most of one recording which is sent, in seconds, until the brain says how long
+# one may be - so a brain which never says the user has stopped can't keep the
+# microphone open.
 LIMIT_SECONDS = 10
+
+# The most of one recording which is sent, in seconds, whatever the brain says - so a
+# setting of 90 on the brain can't keep the microphone open for a minute and a half.
+MOST_SECONDS = 30
 
 # How often the alarm copy is checked for what's due while the brain is away, and how
 # often the brain is told how far the music has got, in seconds.
@@ -148,6 +154,9 @@ class Satellite:
         # What the brain last sent, for while it can't be reached - see fallback.py.
         self.alarms = AlarmCopy()
         self.state = StateCopy()
+        # The most seconds one recording may last - 10 until the brain says,
+        # as it does whenever it connects. Not saved, as the brain owns it.
+        self.longest_request: float = LIMIT_SECONDS
         self.phrase = Phrase()
         self.ringer = FallbackRinger(self.speaker, self.sounds_folder, self.alarms, self.state)
         # The brain owns the mute, but a satellite which was muted when the brain went
@@ -350,7 +359,7 @@ class Satellite:
             connection.
         """
         reader = self.microphone.listen(start=start)
-        limit = LIMIT_SECONDS * RATE
+        limit = round(self.longest_request * RATE)
         sizes = itertools.chain([pre_roll] if pre_roll else [], itertools.repeat(round(PIECE_SECONDS * RATE)))
         sent = 0
         try:
@@ -502,6 +511,11 @@ class Satellite:
 
     def _take_state(self, message: Dict, payload: bytes):
         self.state.update(message)
+        longest = message.get("longest_request")
+        # Anything else is left alone, so an old or confused brain can't make a
+        # recording of no length or one which never ends: "15" as text, True, NaN, 0.
+        if isinstance(longest, (int, float)) and not isinstance(longest, bool) and 0 < longest < math.inf:
+            self.longest_request = min(longest, MOST_SECONDS)
         self.wake.set_muted(self.state.muted)
 
     def _away_settled(self, message: Dict, payload: bytes):

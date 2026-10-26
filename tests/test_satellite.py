@@ -360,7 +360,59 @@ def test_the_recording_stops_when_the_brain_says(brain, make):
     assert brain.messages("audio_end") == []
 
 
-def test_the_recording_stops_after_10_seconds_whatever_the_brain_says(brain, make):
+def test_the_satellite_records_for_as_long_as_the_brain_says(brain, make):
+    made = make()
+    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, longest_request=15)
+    assert wait_for(lambda: made.longest_request == 15)
+    made.wake.say()
+    assert wait_for(lambda: brain.messages("audio_end"), seconds=10)
+
+    assert brain.messages("audio_end") == [{"type": "audio_end", "reason": "limit"}]
+    assert sum(len(piece) for piece in brain.recordings()) == 15 * RATE
+    # Each message still carries no more than the protocol allows.
+    assert all(len(payload) <= protocol.MAX_AUDIO for message, payload in brain.received)
+
+
+def test_the_satellites_own_most_is_thirty_seconds(brain, make):
+    made = make()
+    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, longest_request=90)
+    assert wait_for(lambda: made.longest_request == 30)
+    made.wake.say()
+    assert wait_for(lambda: brain.messages("audio_end"), seconds=15)
+
+    assert sum(len(piece) for piece in brain.recordings()) == 30 * RATE
+
+
+@pytest.mark.parametrize("sent", [{}, {"longest_request": "15"}, {"longest_request": True},
+                                  {"longest_request": float("nan")}, {"longest_request": float("inf")},
+                                  {"longest_request": 0}, {"longest_request": -5}, {"longest_request": None}],
+                         ids=["none", "text", "bool", "nan", "inf", "zero", "negative", "null"])
+def test_an_old_brain_leaves_the_satellite_at_ten_seconds(brain, make, sent):
+    made = make()
+    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    brain.say("state", volumes={"general": 0.5}, muted=True, **sent)
+    assert wait_for(lambda: made.wake.muted is True)
+
+    assert made.longest_request == 10
+    # And a good one afterwards still counts, so the bad one didn't wedge the state.
+    brain.say("state", volumes={}, muted=False, longest_request=12)
+    assert wait_for(lambda: made.longest_request == 12)
+    brain.say("state", volumes={}, muted=False, **sent)
+    assert wait_for(lambda: made.wake.muted is False)
+    assert made.longest_request == 12
+
+
+def test_an_old_satellite_ignores_the_longest_request(tmp_path):
+    copy = StateCopy(str(tmp_path / "state.json"))
+    copy.update({"volumes": {"general": 0.5}, "muted": True, "longest_request": 20})
+
+    assert copy.volume("general") == 0.5 and copy.muted is True
+    assert StateCopy(str(tmp_path / "state.json")).volume("general") == 0.5
+
+
+def test_the_recording_stops_after_10_seconds_until_the_brain_says_otherwise(brain, make):
     made = make()
     assert wait_for(lambda: brain.hellos and made.wake.listening)
     made.wake.say()

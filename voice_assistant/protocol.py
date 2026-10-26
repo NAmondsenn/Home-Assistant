@@ -29,7 +29,7 @@ and what the brain sends a satellite:
     stop  {"kinds": [...]|null} or {"id": ...}  (whole kinds of sound, or one playback)
     silence  {"kind": ...}
     allow  {"kind": ...}
-    state  {"volumes": {"general": ..., "alarm": ..., "music": ...}, "muted": ...}
+    state  {"volumes": {"general": ..., "alarm": ..., "music": ...}, "muted": ..., "longest_request"?: seconds}
     alarms  {"entries": [{"id": ..., "due": ..., "kind": ..., "sound": ...}]}
     phrase  {"rate": ...}  (payload)
     away_settled  (once the brain has saved what away said)

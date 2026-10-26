@@ -141,7 +141,8 @@ class FakeSession:
         self.stopped = 0
 
     def send_state(self):
-        return self.satellite.set_state({"general": 0.5, "alarm": 0.8, "music": 0.4}, False)
+        longest = self.brain.config.section("thresholds").get("recording_timeout", 15.0)
+        return self.satellite.set_state({"general": 0.5, "alarm": 0.8, "music": 0.4}, False, longest)
 
     def run(self):
         while self.satellite.connected and not self.closed.is_set():
@@ -356,7 +357,7 @@ def test_a_satellite_which_connects_gets_its_state_alarms_and_phrase(brain, conn
     assert [message["type"] for message, _ in satellite.received] == ["state", "alarms", "phrase", "away_settled"]
     # Its volumes and mute, as its session has them.
     assert satellite.messages("state")[0] == {"type": "state", "volumes": {"general": 0.5, "alarm": 0.8, "music": 0.4},
-                                             "muted": False}
+                                             "muted": False, "longest_request": 15.0}
     # Its own timers, and nobody else's, to ring while it can't reach the brain.
     entries = satellite.messages("alarms")[0]["entries"]
     assert entries == brain.clock.copy_for("bedroom") and len(entries) == 1
@@ -1907,6 +1908,21 @@ def test_a_phone_topic_set_on_the_page_gets_battery_warnings_straight_away(make_
     assert brain.apply_settings({("ntfy", "phone"): ""}) == []
     assert brain.batteries._send("It's low.", "Battery low") is False
     assert len(posted) == 1
+
+
+def test_the_brain_sends_each_satellite_its_longest_request(brain, connect):
+    serving(brain)
+    bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen")
+    # As each connects.
+    assert wait_for(lambda: bedroom.messages("state") and kitchen.messages("state"))
+    assert bedroom.messages("state")[0]["longest_request"] == 15.0
+
+    # And to each connected when it's saved, with no restart.
+    assert brain.apply_settings({("thresholds", "recording_timeout"): 20.0}) == []
+    assert wait_for(lambda: len(bedroom.messages("state")) == len(kitchen.messages("state")) == 2)
+    assert bedroom.messages("state")[1]["longest_request"] == kitchen.messages("state")[1]["longest_request"] == 20.0
 
 
 def test_the_cant_reach_phrase_is_made_again_at_the_new_speed(brain, connect):

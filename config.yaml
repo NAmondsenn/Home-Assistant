@@ -130,8 +130,10 @@ thresholds:
   speech_timeout: 3.0
   follow_up_timeout: 6.0
   max_follow_ups: 3
-  # Hard cap on a single recording.
-  recording_timeout: 10.0
+  # The longest one request may last, in seconds, from the wake word to the end of what
+  # you say. Each satellite is told it, but never records for more than 30 seconds
+  # whatever it is set to.
+  recording_timeout: 15.0
   # Minimum confidence required to consider a wake word detected.
   wake_word_confidence: 0.5
 

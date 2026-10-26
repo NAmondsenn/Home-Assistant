@@ -267,13 +267,15 @@ class Session:
         """
         Sends the satellite its volumes and its mute, which the brain owns: whenever
         either changes, and as it connects. It mutes its wake word by them, and rings
-        by them while it can't reach the brain.
+        by them while it can't reach the brain. With them goes the longest request,
+        which isn't the satellite's to keep but is sent here so a save on the settings
+        page can reach it in the same way - see Brain.apply_settings.
 
         Returns:
             Whether it was sent.
         """
         volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
-        return self.satellite.set_state(volumes, self._muted)
+        return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0))
 
     # Running
 
@@ -467,7 +469,7 @@ class Session:
                 feed, self.speech_detector, listen_from=before, keep_before=before / RATE,
                 silence_duration=thresholds.get("silence_duration", 0.6),
                 speech_timeout=speech_timeout,
-                timeout=thresholds.get("recording_timeout", 10.0),
+                timeout=thresholds.get("recording_timeout", 15.0),
                 timeline=timeline, heard=listening.add)
         except BaseException:
             # Otherwise it would wait on for the rest of a recording which isn't coming.

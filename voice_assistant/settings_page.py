@@ -90,6 +90,7 @@ EDITABLE = [
     ("ntfy", "quiet_from", "Night starts at", "now"),
     ("ntfy", "quiet_until", "Night ends at", "now"),
     ("thresholds", "silence_duration", "Seconds of quiet which end what you're saying", "now"),
+    ("thresholds", "recording_timeout", "Longest request, in seconds", "now"),
     ("logging", "log_transcripts", "Keep what's said in the logs", "now"),
     ("sounds", "listening_enabled", "The blip when Nova's listening", "now"),
     ("sounds", "chime_enabled", "The chime for done", "now"),
