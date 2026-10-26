@@ -65,20 +65,24 @@ class SatelliteCopies:
                          if other is not alarm and on(other, to_satellite) and same_alarm(alarm, other, occurrence)),
                         None)
 
-        def answered(entry: Dict, dropped_ids: Set[int]) -> bool:
-            # A ringing alarm is a copy made as it came due, and a repeating one's
-            # stored copy moves on then - so the other satellite's stored copy past
-            # this occurrence has had it already: rung, ringing or skipped. Rung
-            # there, a one-off leaves no trace to match, but doubles only come from
-            # older files, and only for the quarter of an hour it rings.
+        def answered(entry: Dict) -> bool:
+            # The other satellite's own copy of a repeating alarm notes the occurrence
+            # it last moved on from there - rung, dismissed or skipped - so this one
+            # has been had there already. Only being due past it isn't enough: the
+            # same alarm set there just after this one came due is too, and never rang.
+            # A ringing one-off has already left the store, and two ringing at once are
+            # caught by doubled.
+            #
+            # Accepted: after a brain restart, a satellite removed while its copy rings,
+            # before the other has said it rang its own, rings once more there. That's
+            # the safe side.
             alarm = entry["timer"]
             # Timers are numbered apart from alarms.
             if "hour" not in alarm:
                 return False
-            if alarm["id"] in dropped_ids:
-                return True
             return bool(alarm["repeat"]) and any(
-                on(other, to_satellite) and same_alarm(alarm, other, False) and other["due_at"] > alarm["due_at"]
+                on(other, to_satellite) and same_alarm(alarm, other, False)
+                and int(other.get("moved_on_from", 0)) == int(alarm["due_at"])
                 for other in self._alarms.values())
 
         with self._changing():
@@ -87,18 +91,23 @@ class SatelliteCopies:
             ringing = [entry for entry in self._ringing if on(entry["timer"], from_satellite)]
             missed = [item for item in self._missed if on(item, from_satellite)]
 
+            # Worked out before the stored copies are merged below, which would change
+            # what answered sees.
+            dropped_ringing = [entry for entry in ringing
+                               if doubled(entry["timer"], [other["timer"] for other in self._ringing])
+                               or answered(entry)]
+
             # Each doubled one is let go, with what of it is ringing or missed - the
-            # other's copy kept, as the later skip of the two.
+            # other's copy kept, as the later skip of the two, and with it the
+            # occurrence that one moved on from.
             dropped = []
             for alarm in alarms:
                 kept = stored_twice(alarm)
                 if kept is not None:
+                    if alarm["due_at"] > kept["due_at"] and "moved_on_from" in alarm:
+                        kept["moved_on_from"] = alarm["moved_on_from"]
                     kept["due_at"] = max(kept["due_at"], alarm["due_at"])
                     dropped.append(alarm)
-            dropped_ids = {alarm["id"] for alarm in dropped}
-            dropped_ringing = [entry for entry in ringing
-                               if doubled(entry["timer"], [other["timer"] for other in self._ringing])
-                               or answered(entry, dropped_ids)]
             dropped_missed = [item for item in missed if doubled(item, self._missed)]
             for alarm in dropped:
                 del self._alarms[alarm["id"]]
@@ -240,7 +249,19 @@ class SatelliteCopies:
                     if not alarm["repeat"]:
                         del self._alarms[alarm["id"]]
                         break
+                    alarm["moved_on_from"] = alarm["due_at"]
                     alarm["due_at"] = self._following(alarm, alarm["due_at"])
+
+            # One the brain missed, being off as it came due, was moved on by
+            # _load_alarms, so the loop above never sees it - but it rang there, from
+            # the satellite's copy, so it's noted as answered there all the same.
+            for item in self._missed:
+                # Timers are numbered apart from alarms.
+                alarm = self._alarms.get(item["id"]) if "hour" in item else None
+                if (alarm is not None and alarm["repeat"] and alarm["due_at"] > item["due_at"]
+                        and reported(item, rang | dismissed | ringing)):
+                    alarm["moved_on_from"] = item["due_at"]
+                    moved += 1
 
             # Stopped before it rings out, so no reminder of it goes to the phone
             # either (see _end_ringing).

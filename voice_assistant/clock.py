@@ -29,6 +29,7 @@ clock_requests.py (ClockRequests), the last part Clock builds on.
 
 import os
 import logging
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -438,8 +439,16 @@ class Clock(ClockRequests, Ringing, SatelliteCopies, ClockWords):
 
             # None for one set before there were satellites - see move_satellite.
             satellite = alarm.get("satellite")
+            moved_on_from = alarm.get("moved_on_from")
             alarm = {"id": alarm_id, "hour": hour, "minute": minute, "repeat": repeat, "due_at": due_at,
                      "satellite": str(satellite) if satellite else None}
+            # The occurrence it last rang on its own satellite - see move_satellite. Left
+            # out if it's unreadable - NaN included, which json reads - so the alarm
+            # itself still loads. Moving it past one missed below doesn't change it, as
+            # the brain didn't ring that one; apply_away notes it if the satellite did.
+            if (isinstance(moved_on_from, (int, float)) and not isinstance(moved_on_from, bool)
+                    and math.isfinite(moved_on_from)):
+                alarm["moved_on_from"] = moved_on_from
 
             if due_at <= now:
                 overdue += 1
@@ -656,6 +665,7 @@ class Clock(ClockRequests, Ringing, SatelliteCopies, ClockWords):
                 if alarm["due_at"] <= now:
                     started.append(self._ringing_entry({**alarm, "kind": "alarm"}, "alarm", now))
                     if alarm.get("repeat"):
+                        alarm["moved_on_from"] = alarm["due_at"]
                         alarm["due_at"] = self._following(alarm, alarm["due_at"])
                     else:
                         del self._alarms[alarm_id]

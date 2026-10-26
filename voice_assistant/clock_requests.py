@@ -629,6 +629,7 @@ class ClockRequests:
                                    f"skip it just for today, or stop it repeating altogether?"}
 
             if alarm["repeat"] and scope == "today":
+                alarm["moved_on_from"] = alarm["due_at"]
                 alarm["due_at"] = self._following(alarm, alarm["due_at"])
                 self._save_alarms()
                 return {"success": True, "message": f"Skipped today's {self._describe_alarm(alarm)}."}
