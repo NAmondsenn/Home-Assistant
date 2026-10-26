@@ -25,7 +25,7 @@ from typing import Callable, Dict, Iterator, List, Optional
 
 import numpy as np
 
-from voice_assistant import paths, storage, watchdog
+from voice_assistant import paths, protocol, storage, watchdog
 from voice_assistant.config import Config, ConfigError
 from voice_assistant.echo import make_echo_canceller
 from voice_assistant.fallback import AlarmCopy, FallbackRinger, Phrase, StateCopy
@@ -112,6 +112,28 @@ def _pieces(waiting: queue.Queue) -> Iterator[np.ndarray]:
         yield piece
 
 
+def _speaker(device_name) -> Optional[str]:
+    """
+    The Spotify speaker to say in the hello, if the brain can take it.
+
+    Args:
+        device_name: spotify.device_name from the settings, which a hand edit can make
+            anything - an unquoted 2026-10-26 is a date to YAML.
+
+    Returns:
+        It, if it's text of 1 to protocol.MAX_SPEAKER characters, else None - so the
+        brain falls back to its own speaker name. A date can't be sent at all, and
+        would stop the satellite ever connecting.
+    """
+    if not device_name:
+        return None
+    if isinstance(device_name, str) and len(device_name) <= protocol.MAX_SPEAKER:
+        return device_name
+    logger.warning(f"spotify.device_name isn't text of up to {protocol.MAX_SPEAKER} characters, "
+                   f"so the brain plays Spotify on its own speaker name: {ascii(device_name)[:80]}")
+    return None
+
+
 class Satellite:
     """One Pi's microphone and speaker, for a brain elsewhere."""
 
@@ -136,7 +158,7 @@ class Satellite:
         self.sample_rate = audio_config.get("sample_rate", 48000)
         # The name its setup gave raspotify, said to the brain as it connects so the
         # brain plays this satellite's Spotify here - changed with the setup, on the Pi.
-        self.spotify_speaker = config.section("spotify").get("device_name") or None
+        self.spotify_speaker = _speaker(config.section("spotify").get("device_name"))
         # Seconds of audio from just before the wake word was detected which are sent
         # first, so "Hey Nova what time is it", said in one breath, isn't cut short. The
         # brain is told how much with each wake, so this is the only setting for it.

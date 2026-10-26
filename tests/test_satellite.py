@@ -6,6 +6,7 @@ fakes in place of the microphone, speaker and wake word, so nothing is opened or
 loaded. Needs numpy installed (as it is on the Pi), and is skipped anywhere it isn't.
 """
 
+import datetime
 import json
 import os
 import queue
@@ -680,6 +681,22 @@ def test_the_satellite_tells_the_brain_its_spotify_speaker(brain, make):
     make(spotify={"device_name": "Bedroom Pi"})
     assert wait_for(lambda: brain.hellos)
     assert brain.hellos[0]["speaker"] == "Bedroom Pi"
+
+
+@pytest.mark.parametrize("device_name", [datetime.date(2026, 10, 26), {"Bedroom Pi"}, 7, "x" * 65],
+                         ids=["date", "set", "number", "too-long"])
+def test_a_speaker_the_brain_cant_take_is_left_out(brain, make, caplog, device_name):
+    # A hand edit such as an unquoted device_name: 2026-10-26, which YAML reads as a
+    # date - which would stop the hello being sent at all, and so stop every connect.
+    with caplog.at_level("WARNING", logger="satellite"):
+        made = make(spotify={"device_name": device_name})
+    assert wait_for(lambda: brain.hellos)
+
+    assert brain.hellos[0]["speaker"] is None
+    assert made.spotify_speaker is None
+    assert len([record for record in caplog.records if "device_name" in record.getMessage()]) == 1
+    # Up to 64 characters is sent as it is.
+    assert make(name="kitchen", spotify={"device_name": "x" * 64}).spotify_speaker == "x" * 64
 
 
 def ringing_as_the_brain_comes_back(brain, make, tmp_path):
