@@ -15,7 +15,7 @@ SETUP = Path(__file__).parent.parent / "setup.sh"
 PASSWORD = "Abc_def-0123456789xyz"
 
 
-def run_setup(tmp_path, command, stdin="", role="satellite"):
+def run_setup(tmp_path, command, stdin="", role="satellite", restart_fails=False, as_root=False):
     """
     Runs one of setup.sh's steps, sourced so its main flow doesn't run, against a
     scratch config folder and home, with a systemctl which only notes what it was
@@ -26,6 +26,8 @@ def run_setup(tmp_path, command, stdin="", role="satellite"):
         command: The step to run, e.g. "new_password".
         stdin: What's typed in.
         role: NOVA_SETUP_ROLE, "satellite" or "brain".
+        restart_fails: Whether the stand-in systemctl fails, as a restart can.
+        as_root: Whether a stand-in id says the user is root.
 
     Returns:
         The finished process, with its output as text.
@@ -33,8 +35,14 @@ def run_setup(tmp_path, command, stdin="", role="satellite"):
     bin_directory = tmp_path / "bin"
     bin_directory.mkdir(exist_ok=True)
     systemctl = bin_directory / "systemctl"
-    systemctl.write_text(f'#!/bin/bash\necho "$*" >> "{tmp_path / "systemctl.log"}"\n')
+    systemctl.write_text(f'#!/bin/bash\necho "$*" >> "{tmp_path / "systemctl.log"}"\n'
+                         + ("exit 1\n" if restart_fails else ""))
     systemctl.chmod(0o755)
+    if as_root:
+        # id is a program rather than a builtin, so one earlier on PATH is the one used.
+        stand_in = bin_directory / "id"
+        stand_in.write_text('#!/bin/bash\n[ "$1" = -u ] && echo 0 || exec /usr/bin/id "$@"\n')
+        stand_in.chmod(0o755)
     env = dict(os.environ, PATH=f"{bin_directory}:{os.environ['PATH']}", HOME=str(tmp_path),
                NOVA_CONFIG=str(tmp_path / "config"), NOVA_SETUP_ROLE=role)
     return subprocess.run(["bash", "-c", f'source "{SETUP}"; {command}'], input=stdin, env=env,
@@ -96,6 +104,53 @@ def test_new_password_refuses_a_short_one(tmp_path):
         assert sorted(path.name for path in env.parent.iterdir()) == [".env"]
 
 
+def test_new_password_takes_one_of_exactly_16_characters(tmp_path):
+    env = write_env(tmp_path, "NOVA_BACKEND_TOKEN=old\n")
+
+    result = run_setup(tmp_path, "new_password", "Abc_def-01234567\n")
+
+    assert result.returncode == 0, result.stderr
+    assert env.read_text() == "NOVA_BACKEND_TOKEN=Abc_def-01234567\n"
+
+
+def test_new_password_says_so_if_the_restart_fails(tmp_path):
+    env = write_env(tmp_path, "NOVA_BACKEND_TOKEN=old\n")
+
+    result = run_setup(tmp_path, "new_password", PASSWORD + "\n", restart_fails=True)
+
+    assert result.returncode == 1
+    assert "Saved, but the satellite didn't restart" in result.stderr
+    # Still saved, so only the restart is left to do.
+    assert env.read_text() == f"NOVA_BACKEND_TOKEN={PASSWORD}\n"
+    assert restarts(tmp_path) == ["--user restart voice-assistant"]
+
+
+def test_new_password_is_used_on_its_own(tmp_path):
+    env = write_env(tmp_path, "NOVA_BACKEND_TOKEN=old\n")
+
+    result = run_setup(tmp_path, "main --new-password --yes", PASSWORD + "\n")
+
+    assert result.returncode == 1
+    assert "used on its own" in result.stderr
+    assert env.read_text() == "NOVA_BACKEND_TOKEN=old\n"
+    assert restarts(tmp_path) == []
+    # And on its own, it's the same as the step itself.
+    alone = run_setup(tmp_path, "main --new-password", PASSWORD + "\n")
+    assert alone.returncode == 0, alone.stderr
+    assert env.read_text() == f"NOVA_BACKEND_TOKEN={PASSWORD}\n"
+
+
+def test_new_password_isnt_run_as_root(tmp_path):
+    env = write_env(tmp_path, "NOVA_BACKEND_TOKEN=old\n")
+
+    result = run_setup(tmp_path, "new_password", PASSWORD + "\n", as_root=True)
+
+    assert result.returncode == 1
+    assert "without sudo" in result.stderr
+    assert env.read_text() == "NOVA_BACKEND_TOKEN=old\n"
+    assert restarts(tmp_path) == []
+
+
 def test_new_password_trims_a_pasted_carriage_return(tmp_path):
     env = write_env(tmp_path, "NOVA_BACKEND_TOKEN=old\n")
 
@@ -139,6 +194,8 @@ def test_new_password_needs_a_set_up_satellite(tmp_path):
 
 
 def test_the_password_isnt_echoed(tmp_path):
+    # This checks only what the script itself prints. Typed with no terminal, as here,
+    # read never echoes, so whether -s is still on read can't be told from it.
     write_env(tmp_path, "NOVA_BACKEND_TOKEN=old\n")
 
     result = run_setup(tmp_path, "new_password", PASSWORD + "\n")
