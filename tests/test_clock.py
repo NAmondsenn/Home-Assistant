@@ -1641,6 +1641,51 @@ def test_a_moved_alarm_the_default_rang_while_the_brain_was_off_doesnt_ring_agai
     assert not any(entry["kind"] == "alarm" for entry in clock._ringing)
 
 
+def _two_copies_merged(make_clock, tmp_path, kitchen, bedroom):
+    """
+    The same daily 7am on the kitchen and the bedroom, given as each copy's own fields,
+    merged as the kitchen is removed - and the bedroom's copy, which is kept, read back
+    after a restart.
+    """
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "satellite": "bedroom", **bedroom},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "satellite": "kitchen", **kitchen}]}))
+    make_clock().move_satellite("kitchen", "bedroom")
+    alarms = make_clock()._alarms
+    assert sorted(alarms) == [1]
+    return alarms[1]
+
+
+def test_a_merged_alarm_keeps_the_occurrence_the_later_copy_moved_on_from(make_clock, tmp_path):
+    # Today's 7am was dismissed on the kitchen, so its copy is due tomorrow. The bedroom's,
+    # kept, takes that on with the occurrence it moved on from - so today's, ringing on
+    # the bedroom when it's moved there, is known to have been had.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    tomorrow = clock._next_occurrence(7, 0, "daily", after=today + 60)
+
+    kept = _two_copies_merged(make_clock, tmp_path, kitchen={"due_at": tomorrow, "moved_on_from": today},
+                              bedroom={"due_at": today})
+
+    assert kept["due_at"] == tomorrow and kept["moved_on_from"] == today
+
+
+def test_a_merged_alarm_due_when_the_kept_one_is_keeps_its_own_occurrence(make_clock, tmp_path):
+    # Both due tomorrow: the kept copy is as far on, so what it moved on from stands -
+    # and one the removed copy had, with no later skip behind it, isn't taken on.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    tomorrow = clock._next_occurrence(7, 0, "daily", after=today + 60)
+
+    kept = _two_copies_merged(make_clock, tmp_path, kitchen={"due_at": tomorrow, "moved_on_from": today - 86400},
+                              bedroom={"due_at": tomorrow, "moved_on_from": today})
+    assert kept["due_at"] == tomorrow and kept["moved_on_from"] == today
+
+    kept = _two_copies_merged(make_clock, tmp_path, kitchen={"due_at": tomorrow, "moved_on_from": today},
+                              bedroom={"due_at": tomorrow})
+    assert kept["due_at"] == tomorrow and "moved_on_from" not in kept
+
+
 def test_an_alarm_dismissed_while_away_notes_the_occurrence_it_moved_on_from(make_clock):
     clock = make_clock()
     clock.set_alarm(7, 0, repeat="daily", satellite="bedroom")

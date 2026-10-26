@@ -216,7 +216,11 @@ class SatelliteCopies:
         brain missed, being off as it came due, isn't rung again if it had stopped
         ringing there - but one still ringing there, which the satellite stops as it
         reaches the brain, starts ringing here. None of them is said to have been
-        missed afterwards, since each rang where it was meant to.
+        missed afterwards, since each rang where it was meant to. A repeating one
+        missed that way had already moved on as the brain started, but is still
+        noted as having had that occurrence on the satellite, as a dismissed one is -
+        so the same alarm, moved over later from another satellite, doesn't ring it
+        again.
 
         Args:
             satellite: The satellite reporting.
