@@ -6,6 +6,9 @@ ever pressed on a real machine. The Wake-on-LAN buttons' ids are made up: a real
 the PC's hardware address.
 """
 
+import json
+
+import pytest
 import requests
 
 from voice_assistant.choices import ChoiceStore
@@ -152,7 +155,8 @@ def test_with_several_wake_buttons_the_chosen_one_is_pressed(tmp_path):
     snapshot = _snapshot(_pc(), wake=("button.wake_desk_pc", "button.wake_nas"))
     power, home = _power(tmp_path, snapshot, on=False)
     assert power.act("on") == {"success": False,
-                               "message": "I don't know which Wake-on-LAN button wakes your PC yet."}
+                               "message": "I don't know which Wake-on-LAN button wakes your PC yet. "
+                                          "Choose it on the settings page, under Calendars and lists."}
     assert home.pressed == []
 
     power.choices.change(lambda state: state["wake"].update(desk="button.wake_desk_pc"))
@@ -216,3 +220,106 @@ def test_a_press_that_never_reached_home_assistant_says_so(tmp_path):
     home.fails = requests.ReadTimeout("read timed out")
     assert power.act("lock") == {"success": False, "message": (
         "Home Assistant didn't answer in time, so I can't tell whether your PC heard.")}
+
+
+def test_the_pcs_choice_is_only_offered_with_more_than_one_of_either(tmp_path):
+    # Named by their friendly names - the entity ids hold hardware addresses.
+    def named(home):
+        for state in home.states:
+            if state["entity_id"].startswith("button.wake_"):
+                state["attributes"] = {"friendly_name": state["entity_id"][len("button.wake_"):].replace("_", " ").title()}
+
+    power, home = _power(tmp_path, _snapshot(_pc()))
+    named(home)
+    assert power.overview() == {"pcs": [{"device": "desk", "name": "Desk PC", "wake": "button.wake_desk_pc"}],
+                                "buttons": [{"id": "button.wake_desk_pc", "name": "Desk Pc"}]}
+
+    snapshot = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"}, "sensor.study_cpu"),
+                         wake=("button.wake_desk_pc", "button.wake_nas"))
+    power, home = _power(tmp_path, snapshot, on=False)
+    named(home)
+    shown = power.overview()
+    assert [(pc["device"], pc["wake"]) for pc in shown["pcs"]] == [("desk", None), ("study", None)]
+    assert [button["name"] for button in shown["buttons"]] == ["Desk Pc", "Nas"]
+
+    assert power.act("on", "desk")["success"] is False
+    power.choose_wake("desk", "button.wake_desk_pc")
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+    # It is used at the next "turn on the desk PC".
+    assert power.act("on", "desk") == {"success": True, "message": "Turning your PC on."}
+    assert home.pressed == ["button.wake_desk_pc"]
+    assert [pc["wake"] for pc in power.overview()["pcs"]] == ["button.wake_desk_pc", None]
+
+    # Only a HASS.Agent PC, and a Wake-on-LAN button, which Home Assistant has.
+    for device, button in (("made_up", "button.wake_nas"), ("desk", "button.made_up"),
+                           ("desk", "button.desk_off"), ("", "")):
+        with pytest.raises(ValueError, match="Home Assistant isn't showing that PC or button just now."):
+            power.choose_wake(device, button)
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+
+
+def test_without_a_snapshot_the_pcs_choice_offers_nothing_and_takes_nothing(tmp_path):
+    power, _ = _power(tmp_path, None)
+    assert power.overview() == {"pcs": [], "buttons": []}
+    with pytest.raises(ValueError):
+        power.choose_wake("desk", "button.wake_desk_pc")
+
+
+def _two_pcs(tmp_path):
+    snapshot = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"}, "sensor.study_cpu"),
+                         wake=("button.wake_desk_pc", "button.wake_study_pc"))
+    return _power(tmp_path, snapshot, on=False)
+
+
+def test_a_button_chosen_for_one_pc_is_taken_off_any_other(tmp_path):
+    # One button wakes one machine, or "turn on the study PC" would wake the desk PC. Chosen
+    # the wrong way round, refusing would leave neither PC able to be put right.
+    power, home = _two_pcs(tmp_path)
+    assert power.choose_wake("desk", "button.wake_study_pc") == []
+    assert power.choose_wake("study", "button.wake_desk_pc") == []
+
+    assert power.choose_wake("desk", "button.wake_desk_pc") == ["Study PC"]
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+    assert power.act("on", "study")["success"] is False and home.pressed == []
+    assert power.choose_wake("study", "button.wake_study_pc") == []
+    # Chosen again for the same PC, nothing's taken from anywhere.
+    assert power.choose_wake("study", "button.wake_study_pc") == []
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc", "study": "button.wake_study_pc"}
+
+    assert power.act("on", "study") == {"success": True, "message": "Turning your PC on."}
+    assert home.pressed == ["button.wake_study_pc"]
+
+
+def test_a_button_on_a_pc_home_assistant_no_longer_shows_is_taken_off_it_unnamed(tmp_path):
+    power, _ = _two_pcs(tmp_path)
+    power.choices.change(lambda state: state["wake"].update(gone="button.wake_desk_pc"))
+    assert power.choose_wake("desk", "button.wake_desk_pc") == []
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+
+
+@pytest.mark.parametrize("edited", [["button.wake_desk_pc"], "button.wake_desk_pc", None, 3])
+def test_a_hand_edited_pcs_file_is_taken_as_no_choices(tmp_path, edited):
+    # A "wake" which isn't a dict raised, dropping the page's connection.
+    (tmp_path / "pcs.json").write_text(json.dumps({"wake": edited}))
+    power, home = _two_pcs(tmp_path)
+    assert [pc["wake"] for pc in power.overview()["pcs"]] == [None, None]
+    assert power.act("on", "desk")["success"] is False and home.pressed == []
+
+    assert power.choose_wake("desk", "button.wake_desk_pc") == []
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+    assert power.act("on", "desk") == {"success": True, "message": "Turning your PC on."}
+
+
+def test_a_button_chosen_from_a_stale_read_and_gone_since_is_never_pressed(tmp_path):
+    # Read for the page, then removed from Home Assistant before the choice is saved.
+    power, home = _two_pcs(tmp_path)
+    seen = power.overview()
+    home.snapshot = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"}, "sensor.study_cpu"),
+                              wake=("button.wake_study_pc", "button.wake_tv"))
+    home.states = _states(home.snapshot, on=False)
+    power.choose_wake("desk", "button.wake_desk_pc", seen)
+    assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
+
+    assert power.act("on", "desk")["success"] is False
+    assert [pc["wake"] for pc in power.overview()["pcs"]] == [None, None]
+    assert home.pressed == []

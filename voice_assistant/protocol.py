@@ -29,7 +29,7 @@ and what the brain sends a satellite:
     stop  {"kinds": [...]|null} or {"id": ...}  (whole kinds of sound, or one playback)
     silence  {"kind": ...}
     allow  {"kind": ...}
-    state  {"volumes": {"general": ..., "alarm": ..., "music": ...}, "muted": ...}
+    state  {"volumes": {"general": ..., "alarm": ..., "music": ...}, "muted": ..., "longest_request"?: seconds}
     alarms  {"entries": [{"id": ..., "due": ..., "kind": ..., "sound": ...}]}
     phrase  {"rate": ...}  (payload)
     away_settled  (once the brain has saved what away said)
@@ -38,7 +38,7 @@ and what the brain sends a satellite:
 The handshake comes first, and proves the satellite's password to the brain and the
 brain's to the satellite, without the password itself ever being sent:
 
-    hello  {name, hostname, sample_rate, unclean, nonce}    (satellite)
+    hello  {name, hostname, sample_rate, unclean, nonce, speaker?}    (satellite)
     challenge  {nonce, proof}    (brain; or refused, and the connection is closed)
     proof  {proof}    (satellite, once the brain's proof is right)
     ready, or refused    (brain)
@@ -46,14 +46,21 @@ brain's to the satellite, without the password itself ever being sent:
 
 import hmac
 import json
+import logging
 import secrets
+import unicodedata
 from typing import BinaryIO, Callable, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # The longest a line of JSON may be, so neither side can be kept reading for ever.
 MAX_LINE = 4096
 
 # The most audio one message may carry - 10 seconds of it.
 MAX_AUDIO = 10 * 16000 * 2
+
+# The longest Spotify speaker name a hello may carry, e.g. "Bedroom Pi".
+MAX_SPEAKER = 64
 
 
 class ProtocolError(Exception):
@@ -145,7 +152,8 @@ def _expect(stream: BinaryIO, kind: str, *fields: str) -> Dict:
     return message
 
 
-def greet(stream: BinaryIO, name: str, hostname: str, password: str, sample_rate: int, unclean: bool):
+def greet(stream: BinaryIO, name: str, hostname: str, password: str, sample_rate: int, unclean: bool,
+          speaker: Optional[str] = None):
     """
     The satellite's side of the handshake.
 
@@ -156,6 +164,8 @@ def greet(stream: BinaryIO, name: str, hostname: str, password: str, sample_rate
         password: Its password.
         sample_rate: What its speaker plays at.
         unclean: Whether it restarted without being asked to.
+        speaker: The Spotify Connect speaker it plays Spotify on, e.g. "Bedroom Pi" -
+            left out of the hello if None.
 
     Raises:
         Refused: The brain refused it, or couldn't prove it knows the password - in
@@ -163,8 +173,10 @@ def greet(stream: BinaryIO, name: str, hostname: str, password: str, sample_rate
         ProtocolError, ConnectionError: As receive does.
     """
     nonce = secrets.token_hex(16)
+    # Only when there is one, so the hello is just what it was before speakers were said.
+    extra = {"speaker": speaker} if speaker is not None else {}
     send(stream, "hello", name=name, hostname=hostname, sample_rate=sample_rate,
-         unclean=unclean, nonce=nonce)
+         unclean=unclean, nonce=nonce, **extra)
     challenge = _expect(stream, "challenge", "nonce", "proof")
     expected = proof(password, "brain", nonce, challenge["nonce"])
     if not hmac.compare_digest(expected, challenge["proof"]):
@@ -182,7 +194,8 @@ def admit(stream: BinaryIO, password_for: Callable[[str], Optional[str]]) -> Dic
         password_for: Looks a satellite's password up by name - None if unknown.
 
     Returns:
-        The hello's name, hostname, sample_rate and unclean.
+        The hello's name, hostname, sample_rate and unclean, and its speaker - None if
+        it doesn't say one, as a satellite from before speakers were said doesn't.
 
     Raises:
         Refused: The satellite is unknown or got the password wrong. It has been told so.
@@ -210,4 +223,28 @@ def admit(stream: BinaryIO, password_for: Callable[[str], Optional[str]]) -> Dic
         send(stream, "refused")
         raise Refused(f"{name} got the password wrong")
     send(stream, "ready")
-    return {"name": name, "hostname": hostname, "sample_rate": sample_rate, "unclean": unclean}
+    speaker = _speaker(hello.get("speaker"))
+    if speaker is None and "speaker" in hello:
+        logger.warning(f"{name} said a Spotify speaker which can't be one, so plays on the brain's "
+                       f"own speaker name: {ascii(hello['speaker'])[:80]}")
+    return {"name": name, "hostname": hostname, "sample_rate": sample_rate, "unclean": unclean,
+            "speaker": speaker}
+
+
+def _speaker(said) -> Optional[str]:
+    """
+    The Spotify speaker a hello says, if it makes sense as one - else None, so a
+    satellite is never kept out by what's only an extra, which is shown on the page.
+
+    Args:
+        said: The hello's speaker, which may be anything at all.
+
+    Returns:
+        It, if it's text of 1 to MAX_SPEAKER characters with no control characters in
+        it - a newline, say - else None.
+    """
+    if not isinstance(said, str) or not 1 <= len(said) <= MAX_SPEAKER:
+        return None
+    if any(unicodedata.category(character).startswith("C") for character in said):
+        return None
+    return said

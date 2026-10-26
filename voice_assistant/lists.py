@@ -226,6 +226,43 @@ class Lists:
                 return found
         return lists[0] if len(lists) == 1 else None
 
+    def overview(self) -> List[Dict]:
+        """
+        Every list Home Assistant has, for the settings page.
+
+        Returns:
+            Each of todo_lists, with "main": whether it's the one meant when none is named.
+            A chosen list which has gone is still kept, but todo or the only list is main
+            meanwhile - as _main says - and the chosen one is again when it's back.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its states can't be read.
+        """
+        found = self.home.todo_lists()
+        main = self._main(found)
+        return [{**each, "main": main is not None and each["id"] == main["id"]} for each in found]
+
+    def choose_main(self, list_id: str, seen: Optional[List[Dict]] = None):
+        """
+        Chooses the list meant when none is named, from the next request.
+
+        Args:
+            list_id: The list's entity id, which Home Assistant has to be showing.
+            seen: What overview gave just before, if the caller read it already - so it can
+                read without holding a lock the save needs.
+
+        Raises:
+            ValueError: If Home Assistant isn't showing that list.
+            OSError: If the choice can't be saved.
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
+        if seen is None:
+            seen = self.overview()
+        if not any(each["id"] == list_id for each in seen):
+            raise ValueError("Home Assistant isn't showing that list just now.")
+        self.choices.change(lambda state: state.update(main=list_id))
+
     def find(self, said: Optional[str]) -> Tuple[Optional[Dict], Optional[str]]:
         """
         The list meant by what was said.

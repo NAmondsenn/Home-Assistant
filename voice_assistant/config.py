@@ -15,8 +15,11 @@ word, leaving the default quietly in force.
 
 import difflib
 import logging
+import math
 import os
-from typing import Any, Dict, List, Optional, Tuple
+import re
+import threading
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import yaml
 
@@ -35,6 +38,40 @@ CHOICES = {("music", "player"): ("navidrome", "spotify")}
 MARKS = {("batteries", "mobile_marks"): 1, ("batteries", "other_marks"): 2}
 POSITIVE = {("batteries", "check_every"), ("batteries", "stale_after")}
 
+
+class Limit(NamedTuple):
+    """What a setting may be: its form, and for a number, its range."""
+    form: str  # "number", "time", "address", "topic", "topics" or "host".
+    low: Optional[float] = None
+    high: Optional[float] = None
+    whole: bool = False
+
+
+# Design 0009's table: what each setting on the settings page may hold, so a value which
+# would silently do nothing (a silence of 30 seconds, a quiet hour of "11pm") is refused
+# when it's saved, and at start, instead of being found out later.
+LIMITS: Dict[Tuple[str, str], Limit] = {
+    ("ntfy", "quiet_from"): Limit("time"),
+    ("ntfy", "quiet_until"): Limit("time"),
+    ("navidrome", "url"): Limit("address"),
+    ("home_assistant", "url"): Limit("address"),
+    ("ntfy", "url"): Limit("address"),
+    ("ntfy", "phone"): Limit("topic"),
+    ("ntfy", "reminders"): Limit("topic"),
+    ("ntfy", "restarts"): Limit("topic"),
+    ("ntfy", "alerts"): Limit("topics"),
+    ("thresholds", "silence_duration"): Limit("number", 0.2, 3),
+    ("thresholds", "recording_timeout"): Limit("number", 5, 30, False),
+    ("conversation", "history_max_age"): Limit("number", 0, 3600, True),
+    ("mqtt", "host"): Limit("host"),
+    ("mqtt", "port"): Limit("number", 1, 65535, True),
+    ("voice", "speed"): Limit("number", 0.75, 1.5),
+}
+
+_TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
+_TOPIC = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_HOST = re.compile(r"[A-Za-z0-9.:-]*")
+
 # Sections an install's file may still have from when the Pi heard for itself, before
 # the brain did - see docs/decisions/0006. Nothing reads them now, but a Pi's own
 # settings often have them, and refusing them stopped the satellite and the brain both
@@ -48,6 +85,8 @@ RETIRED = ("speech_to_text", "moonshine", "whisper")
 # so it's let through, and a section holding only these, with a warning saying so.
 REMOVED: Dict[Tuple[str, str], str] = {
     ("weather", "location"): "the weather is Home Assistant's own, for its home location",
+    ("home_assistant", "calendars"): "every calendar in Google's own list is read now",
+    ("home_assistant", "activities"): "activities are your calendars in Google now",
 }
 
 
@@ -113,6 +152,72 @@ def marks_problem(marks: Any, count: int, who: str) -> Optional[str]:
     if len(set(marks)) != len(marks):
         return "The two marks must be different."
     return None
+
+
+def limit_problem(section: str, name: str, value: Any) -> Optional[str]:
+    """
+    Says whether a setting makes sense - the one rule for config.yaml's start and the
+    settings page's saving alike.
+
+    Args:
+        section: The setting's section, e.g. "thresholds".
+        name: The setting, e.g. "silence_duration".
+        value: What it holds.
+
+    Returns:
+        The end of a sentence, e.g. "should be from 0.2 to 3", or None if it is fine
+        or has no limit.
+    """
+    limit = LIMITS.get((section, name))
+    if limit is None:
+        return None
+    if limit.form == "number":
+        if limit.whole:
+            message = f"should be a whole number from {limit.low:g} to {limit.high:g}"
+        else:
+            message = f"should be from {limit.low:g} to {limit.high:g}"
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return message
+        # json.loads (the settings page's) and YAML both accept infinity and NaN, which int()
+        # raises on. Only a float is tested: isfinite() raises on an int too big for a float.
+        if (isinstance(value, float) and not math.isfinite(value)) or (limit.whole and value != int(value)):
+            return message
+        return None if limit.low <= value <= limit.high else message
+    if limit.form == "time":
+        ok = isinstance(value, str) and _TIME.fullmatch(value)
+        return None if ok else "should be a time of day, from 00:00 to 23:59"
+    if limit.form == "address":
+        ok = isinstance(value, str) and (value == "" or re.match(r"https?://.", value))
+        return None if ok else "should be an address starting http:// or https://"
+    if limit.form in ("topic", "topics"):
+        topics = value if limit.form == "topics" else [value]
+        ok = isinstance(topics, list) and all(
+            isinstance(topic, str) and (_TOPIC.fullmatch(topic) or (limit.form == "topic" and topic == ""))
+            for topic in topics)
+        return None if ok else "should be an ntfy topic: letters, digits, hyphens and underscores"
+    ok = isinstance(value, str) and _HOST.fullmatch(value)
+    return None if ok else "should be a host name or address, without http://"
+
+
+def clashes(data: Dict) -> List[Tuple[str, str]]:
+    """
+    The settings which need each other, and are missing one - checked when the settings
+    page saves, not at start, so a file which worked before still starts.
+
+    Args:
+        data: Every setting, by section.
+
+    Returns:
+        Each as (the setting to name, the sentence), e.g.
+        [("ntfy.url", "ntfy's topics need its server.")].
+    """
+    found = []
+    music, navidrome, ntfy = data.get("music") or {}, data.get("navidrome") or {}, data.get("ntfy") or {}
+    if str(music.get("player", "")).lower() == "navidrome" and not navidrome.get("url"):
+        found.append(("navidrome.url", "Navidrome as the player needs Navidrome's address."))
+    if any(ntfy.get(name) for name in ("alerts", "phone", "reminders", "restarts")) and not ntfy.get("url"):
+        found.append(("ntfy.url", "ntfy's topics need its server."))
+    return found
 
 
 def removed(settings: Dict) -> List[Tuple[str, str]]:
@@ -181,6 +286,12 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
             if name not in known:
                 raise ConfigError(f"{path}: '{section}.{name}' isn't a setting.{_guess(name, known)}")
             default = known[name]
+            # YAML reads an unquoted 23:00 as the number 1380, so a time is told what's wrong
+            # with it as a time, not as "words, in quotes".
+            if (section, name) in LIMITS and LIMITS[(section, name)].form == "time" \
+                    and value is not None and not isinstance(value, str):
+                raise ConfigError(f"{path}: '{section}.{name}' {limit_problem(section, name, value)}, "
+                                  f"not {value!r} - write it in quotes, like \"23:00\"")
             if default is not None and value is not None and _kind(value) != _kind(default):
                 raise ConfigError(f"{path}: '{section}.{name}' should be {_kind(default)}, not {value!r}")
             if (section, name) in BETWEEN_0_AND_1 and value is not None and not 0 <= value <= 1:
@@ -193,6 +304,9 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
                     raise ConfigError(problem if problem.startswith(setting) else f"{setting}: {problem}")
             if (section, name) in POSITIVE and not (isinstance(value, (int, float)) and value > 0):
                 raise ConfigError(f"{path}: '{section}.{name}' should be a number above 0, not {value!r}")
+            problem = limit_problem(section, name, value) if value is not None else None
+            if problem:
+                raise ConfigError(f"{path}: '{section}.{name}' {problem}, not {value!r}")
             choices = CHOICES.get((section, name))
             if choices and str(value).lower() not in choices:
                 raise ConfigError(f"{path}: '{section}.{name}' should be one of {', '.join(choices)}, not {value!r}")
@@ -200,7 +314,10 @@ def check(settings: Dict, defaults: Dict, path: str) -> List[str]:
 
 
 class Config:
-    """The settings, read once at startup. section() gives one part of them."""
+    """
+    The settings, read once at startup and changed by the settings page as Nova runs.
+    section() gives one part of them.
+    """
 
     def __init__(self, path: str = None, defaults: str = None, quiet: bool = False):
         """
@@ -217,6 +334,8 @@ class Config:
         """
         self.defaults_path = defaults or paths.DEFAULTS_FILE
         self.path = os.path.expanduser(path or paths.CONFIG_FILE)
+        # Held while a change is made, so two at once can't each lose the other's - see apply.
+        self._applying = threading.Lock()
 
         if not os.path.exists(self.defaults_path):
             raise FileNotFoundError(f"Config file not found at {self.defaults_path}")
@@ -253,5 +372,26 @@ class Config:
         Returns a specific section of the config such as 'audio' or 'llm' as a dict.
         Returns an empty dict if the section doesn't exist, so callers can fall back
         to their own defaults via .get() rather than crashing on optional sections.
+        It's the settings as they are now - one read before a change keeps the old ones.
         """
         return self.data.get(name, {})
+
+    def apply(self, changes: Dict[Tuple[str, str], Any]):
+        """
+        Changes settings as Nova runs - the settings page's, once they're saved.
+
+        Every satellite's session reads the settings on its own thread while the page
+        changes them on another, so nothing already given out is changed: each section
+        changed is a new dict, in a copy of them all which is swapped in with one
+        assignment. A reader sees all of a change or none of it - never a silence of
+        1.2 seconds with the rest of the old thresholds half replaced.
+
+        Args:
+            changes: Each setting, as (section, name), to its new value, e.g.
+                {("thresholds", "silence_duration"): 1.2}.
+        """
+        with self._applying:
+            data = dict(self.data)
+            for (section, name), value in changes.items():
+                data[section] = {**data.get(section, {}), name: value}
+            self.data = data

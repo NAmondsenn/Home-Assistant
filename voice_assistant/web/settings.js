@@ -23,11 +23,23 @@ const HOME_EVERY = 15000;
 // The batteries change slowly, and every look asks Home Assistant, so once a minute.
 const BATTERIES_EVERY = 60000;
 
+// The calendars' sign-in changes only when it's done here or removed in Google, and
+// Nova reads Google's list of them every five minutes at most, so once a minute too.
+const CALENDARS_EVERY = 60000;
+
+// What Home Assistant has to choose from changes when something is added to it, and every
+// look asks it, so once a minute too.
+const HOME_CHOICES_EVERY = 60000;
+
 // The least time between volume changes sent while a slider's dragged, in
 // milliseconds - often enough for the beep to keep up with the finger, without
 // asking for every step - and between a light's, which take Home Assistant longer.
 const VOLUME_EVERY = 180;
 const LIGHT_EVERY = 250;
+
+// How long Undo is offered once something's removed, in milliseconds. Nova keeps what
+// was removed a little longer - see voice_assistant/undo.py.
+const UNDO_SHOWN = 10000;
 
 // The colours offered as swatches on a light which can be set to one, as a hue in
 // degrees and a saturation in percent.
@@ -49,6 +61,13 @@ const COOL_WHITE = [214, 230, 255];
 // How many playlists are offered before the rest are tucked behind a button.
 const MOST_PLAYLISTS = 12;
 
+// How many of the recent problems are shown, each cut to two lines, before "Show all" -
+// enough to see whether anything's wrong without scrolling past eight on a phone.
+const FEWEST_PROBLEMS = 3;
+
+// Said in the Music section when there's no player and Nova doesn't say why.
+const NO_PLAYER = "Nova has no music player set up. Choose one in Settings, under Music.";
+
 // What Nova's doing, in words. While it waits, it's waiting for its wake word, which
 // /api/state says.
 const DOING = { listening: "Listening", thinking: "Thinking", speaking: "Speaking", offline: "Can't reach Nova" };
@@ -62,13 +81,18 @@ const VOLUMES = {
 // The settings, grouped by what they're for. One that's under none of these goes
 // under Other, so a new setting turns up on the page without it changing.
 const GROUPS = [
-  ["Weather", ["weather."]],
   ["Music", ["music.", "navidrome.", "spotify."]],
-  ["Home", ["home_assistant."]],
+  ["Voice", ["voice."]],
+  ["Sounds", ["sounds."]],
+  ["Claude", ["web_search.", "conversation."]],
+  ["Home", ["home_assistant.", "mqtt."]],
   ["Notifications", ["ntfy."]],
   ["Listening", ["thresholds."]],
   ["Privacy", ["logging."]],
 ];
+
+// The night's two settings - quiet hours, which there are none of while they're the same.
+const NIGHT = ["ntfy.quiet_from", "ntfy.quiet_until"];
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -100,11 +124,28 @@ let music = null;
 let musicAt = 0;
 let allPlaylists = false;
 
+// The recent problems, newest first, as /api/state last said - and whether all of them are
+// shown, whole.
+let recentProblems = [];
+let allProblems = false;
+
 // What /api/home last said.
 let home = null;
 
 // What /api/batteries last said.
 let batteries = null;
+
+// What /api/calendars said last.
+let calendars = null;
+
+// What /api/home-choices said last.
+let homeChoices = null;
+
+// Whether the save bar offers to restart Nova rather than to save - once a save has
+// something which waits for a restart, while nothing else is waiting to be saved - and
+// what that save said, which names what waits.
+let offerRestart = false;
+let restartSaid = "";
 
 // Making things
 
@@ -232,6 +273,7 @@ function tick() {
 
 // Talking to Nova
 
+// Says how a change went, for a few seconds.
 function toast(message, ok) {
   const shown = document.getElementById("toast");
   shown.textContent = message;
@@ -239,6 +281,34 @@ function toast(message, ok) {
   shown.classList.add("show");
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => shown.classList.remove("show"), 4000);
+}
+
+// Says something was removed, with Undo, which sends back the token Nova answered
+// with. Each removal has a toast of its own, stacked above the one for everything
+// else, so a second removal doesn't take away the first's Undo. It goes once it's
+// worked, or after UNDO_SHOWN - one refused, as it would clash with an alarm set
+// since, can be tried again meanwhile.
+function undoToast(message, token) {
+  const shown = element("div", message, "toast undoable");
+  shown.setAttribute("role", "status");
+  const button = element("button", "Undo", "button quiet");
+  button.type = "button";
+  let timer;
+  const gone = () => {
+    clearTimeout(timer);
+    shown.remove();
+  };
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const result = await change("/api/undo", { token });
+    if (result.success) gone();
+    else button.disabled = false;
+  });
+  shown.append(button);
+  document.getElementById("undos").append(shown);
+  // Shown a frame after it's in the page, so it can fade in as the other toast does.
+  requestAnimationFrame(() => shown.classList.add("show"));
+  timer = setTimeout(gone, UNDO_SHOWN);
 }
 
 // A path which asks after the chosen satellite, if there is one.
@@ -267,7 +337,9 @@ async function change(path, body, reload = load) {
   } catch (error) {
     result = { success: false, message: "Couldn't reach Nova." };
   }
-  toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
+  const message = result.message || (result.success ? "Done." : "That didn't work.");
+  if (result.undo) undoToast(message, result.undo);
+  else toast(message, result.success);
   await reload();
   return result;
 }
@@ -297,22 +369,36 @@ async function load() {
   drawIfChanged("settings", state.settings, showSettings);
   showSettingsProblem(state.settings_problem);
   document.getElementById("restart").hidden = !state.restart_needed;
+  // Restarted since, or the saved settings put back as they're running.
+  if (offerRestart && !state.restart_needed) {
+    offerRestart = false;
+    countChanges();
+  }
 }
 
 async function live() {
   let now = "offline";
+  let stoppable = false;
   try {
     const response = await fetch(forChosen("/api/live"));
-    if (response.ok) now = (await response.json()).activity;
+    if (response.ok) {
+      const said = await response.json();
+      now = said.activity;
+      stoppable = Boolean(said.stoppable);
+    }
   } catch (error) {
     // Out of reach, then.
   }
+  // Stop is there only while there's something to stop, on any satellite.
+  document.getElementById("stop").hidden = !stoppable;
   // Back after a restart, or being out of reach - so anything else may have changed too.
   if (activity === "offline" && now !== "offline") {
     load();
     loadMusic();
     loadHome();
     loadBatteries();
+    loadCalendars();
+    loadHomeChoices();
   }
   activity = now;
   showActivity();
@@ -392,7 +478,15 @@ function showStatus(status) {
     notifications(status.ntfy),
   ].map(tile));
 
-  const problems = status.problems.map((problem) => {
+  recentProblems = status.problems;
+  showProblems();
+}
+
+// The latest few problems, each cut to two lines, or all of them whole. "Show all" is
+// offered while any are left out or cut short - so one long problem can still be read.
+function showProblems() {
+  const shown = allProblems ? recentProblems : recentProblems.slice(0, FEWEST_PROBLEMS);
+  const problems = shown.map((problem) => {
     const serious = problem.level !== "warning";
     const row = element("li");
     const what = element("span", undefined, "what");
@@ -402,23 +496,69 @@ function showStatus(status) {
     row.append(dot(serious ? "bad" : "warning"), what, when);
     return row;
   });
-  document.getElementById("problems").replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
+  const list = document.getElementById("problems");
+  list.replaceChildren(...(problems.length ? problems : [emptyRow("No problems lately.", "good")]));
+  // Measured as they'd be cut, even while all are shown, so that once nothing's left out
+  // or cut short any more there's no "Show fewer" that would change nothing.
+  list.classList.add("clamped");
+  const cut = [...list.querySelectorAll(".what")].some((what) => what.scrollHeight > what.clientHeight);
+  if (recentProblems.length <= FEWEST_PROBLEMS && !cut) allProblems = false;
+  list.classList.toggle("clamped", !allProblems);
+  const all = document.getElementById("problems-all");
+  all.hidden = !allProblems && recentProblems.length <= FEWEST_PROBLEMS && !cut;
+  all.textContent = allProblems ? "Show fewer" : "Show all";
+  all.setAttribute("aria-expanded", String(allProblems));
 }
 
-// Each satellite, and whether it's connected - with a choice of which to look after
-// below, when there's more than one.
+// Each satellite, which is the default, and whether it's connected - with a way to
+// give it a new password, and a choice of which to look after below, when there's
+// more than one.
 function showSatellites(state) {
   const rows = satellites.map((satellite) => {
     const row = element("li");
     const what = element("span", undefined, "what");
-    what.append(satellite.name, element("span",
+    what.append(satellite.name);
+    // What belongs to no satellite - ntfy's alerts, say - goes to this one.
+    if (satellite.default) what.append(element("span", "Default", "badge"));
+    what.append(element("span",
       satellite.connected ? (DOING[satellite.activity] || (satellite.muted ? "Microphone muted" : "Listening for its wake word"))
         : "Not connected", "detail"));
-    row.append(dot(satellite.connected ? "good" : "off"), what);
+    if (satellite.spotify_speaker) what.append(element("span", `Spotify plays on ${satellite.spotify_speaker}`, "detail"));
+    const actions = element("span", undefined, "actions");
+    if (!satellite.default) {
+      const makeDefault = element("button", "Make default", "button quiet");
+      makeDefault.type = "button";
+      makeDefault.setAttribute("aria-label", `Make ${satellite.name} the default`);
+      makeDefault.addEventListener("click", () => change("/api/satellites/default", { name: satellite.name }));
+      actions.append(makeDefault);
+    }
+    const renew = element("button", "New password", "button quiet");
+    renew.type = "button";
+    renew.setAttribute("aria-label", `Give ${satellite.name} a new password`);
+    renew.addEventListener("click", () => newPassword(satellite.name));
+    const remove = element("button", "Remove", "button quiet danger");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `Remove ${satellite.name}`);
+    remove.addEventListener("click", () => removeSatellite(satellite));
+    actions.append(renew, remove);
+    row.append(dot(satellite.connected ? "good" : "off"), what, actions);
     return row;
   });
-  drawIfChanged("satellites", satellites, () => document.getElementById("satellites").replaceChildren(
-    ...(rows.length ? rows : [emptyRow("No satellites have been added.")])));
+  // A broken satellites file is said as that, not taken for there being none.
+  const none = state.satellites_unreadable
+    ? "The satellites' file can't be read, so they can't be shown or changed - see the brain's log."
+    : "No satellites have been added.";
+  drawIfChanged("satellites", [satellites, none], () => document.getElementById("satellites").replaceChildren(
+    ...(rows.length ? rows : [emptyRow(none)])));
+
+  // With more than one, the one looked after is named at the top, and over the sections
+  // which are its own: "Nova · bedroom", "Sound · bedroom". The dot's held to the name, so
+  // a line too narrow for both breaks before it, not after.
+  const whose = satellites.length > 1 && state.satellite ? ` ·\u00a0${state.satellite}` : "";
+  for (const shown of document.querySelectorAll(".whose")) {
+    shown.textContent = whose;
+    shown.hidden = !whose;
+  }
 
   const choice = document.getElementById("satellite-choice");
   choice.hidden = satellites.length < 2;
@@ -431,6 +571,71 @@ function showSatellites(state) {
       return chip;
     }));
   });
+
+  // The routine editor's "Runs on" too, while it's open, as satellites come and go -
+  // keeping the choice made if it's still offered. Closed, it's drawn as it opens.
+  drawIfChanged("runs-on", satellites.map((satellite) => [satellite.name, satellite.default]), () => {
+    if (document.getElementById("routine-editor").hidden) return false;
+    showRunsOn(document.getElementById("routine-satellite").value);
+  });
+}
+
+// Gives a satellite a new password, once the user's sure - it's let go until its
+// setup has the new one.
+async function newPassword(name) {
+  if (!confirm(`Give ${name} a new password? It stops working until it has the new one.`)) return;
+  const result = await change("/api/satellites/password", { name });
+  if (result.success && result.password) showPassword(name, result.password, false);
+}
+
+// Removes a satellite, once the user's sure - asked with what happens to what was
+// its, from what the page knows: where its timers and alarms go, whether the default
+// moves, and whether it's away with a copy of its alarms nothing here can empty.
+// Asked from Nova's state afresh, not the last look's, which can be twenty seconds
+// old - long enough to have shut the Pi down since. Gone in the moment between,
+// Nova's answer says it still has its copy.
+async function removeSatellite(shown) {
+  const name = shown.name;
+  await load();
+  const satellite = satellites.find((other) => other.name === name);
+  if (!satellite) return;
+  const others = satellites.filter((other) => other.name !== name);
+  const next = satellite.default ? others[0]?.name : satellites.find((other) => other.default)?.name;
+  let question = `Remove ${name}? It's let go now, and can't connect again until it's added again.`;
+  question += next
+    ? ` Its timers and alarms move to ${next}, and routines that ran on it run there instead.`
+    : " Its timers and alarms go to the next satellite added.";
+  if (satellite.default && next) question += ` ${next} becomes the default.`;
+  if (!satellite.connected) {
+    question += " It still has a copy of its alarms for the next week. If it's switched on before then, it'll ring"
+      + " them too, so wipe it or connect it first.";
+  }
+  if (!confirm(question)) return;
+  // Looking after it, the page goes back to the default.
+  await change("/api/satellites/remove", { name }, async () => (chosen === name ? choose(null) : load()));
+}
+
+// A satellite's password, just made. It's put straight into the panel's text and
+// kept nowhere else once this returns - in no variable, nor anything the browser
+// keeps - and closing the panel takes it off the page.
+function showPassword(name, password, added) {
+  document.getElementById("password-about").textContent = added
+    ? `The ${name} satellite's password, shown only this once:`
+    : `The ${name} satellite's new password, shown only this once:`;
+  document.getElementById("password-text").textContent = password;
+  document.getElementById("password-how").replaceChildren(...(added
+    ? ["Type this into setup.sh on the Pi."]
+    : ["On the Pi, run ", element("code", "bash setup.sh --new-password"), " and type it in - or, on a Pi not yet updated, put it after ",
+       element("code", "NOVA_BACKEND_TOKEN="), " in ", element("code", "~/.config/nova/.env"), " and restart the satellite."]));
+  const copy = document.getElementById("password-copy");
+  copy.textContent = "Copy";
+  document.getElementById("password-panel").hidden = false;
+  copy.focus();
+}
+
+function closePassword() {
+  document.getElementById("password-text").textContent = "";
+  document.getElementById("password-panel").hidden = true;
 }
 
 // Looks after another satellite, showing what's its own from the start.
@@ -585,8 +790,11 @@ async function loadMusic() {
 }
 
 function showMusic() {
+  showSpotify();
   document.getElementById("music").hidden = !music.available;
-  document.getElementById("music-missing").hidden = music.available;
+  const missing = document.getElementById("music-missing");
+  missing.hidden = music.available;
+  missing.textContent = music.why || NO_PLAYER;
   if (!music.available) return;
   const now = music.now;
   document.getElementById("track").textContent = now ? now.track : "Nothing playing";
@@ -650,6 +858,279 @@ function showPlaylists(playlists) {
     chips.push(more);
   }
   document.getElementById("playlists").replaceChildren(...chips);
+}
+
+// Signing in to Spotify
+
+// Whether Nova's signed in to Spotify - shown with every satellite away too, as the
+// sign-in is the brain's, for them all.
+function showSpotify() {
+  showSignIn("spotify", "Spotify", music.spotify);
+}
+
+// A sign-in's panel - "spotify" or "google" - shown only when Nova can sign in there,
+// with whether it is.
+function showSignIn(service, name, state) {
+  document.getElementById(service).hidden = !state;
+  if (!state) return;
+  document.getElementById(`${service}-said`).hidden = !state.signed_in;
+  document.getElementById(`${service}-start`).textContent = state.signed_in ? "Sign in again" : `Sign in to ${name}`;
+}
+
+// Opens the service's page in a tab of its own. The tab's made in the click itself, as a
+// phone's Safari blocks one opened once anything's been waited for, and sent there once
+// Nova says where - or, if the browser refused it, the address is a link to tap.
+async function startSignIn(service) {
+  const tab = window.open("", "_blank");
+  // So the service's page can't reach back and send this one somewhere else.
+  if (tab) tab.opener = null;
+  let result;
+  try {
+    result = await send(`/api/${service}/start`, {});
+  } catch (error) {
+    result = { success: false, message: "Couldn't reach Nova." };
+  }
+  if (!result.success || !String(result.url).startsWith("https://")) {
+    if (tab) tab.close();
+    toast(result.message || "That didn't work.", false);
+    return;
+  }
+  // The tab could have been closed while Nova was asked.
+  const opened = Boolean(tab && !tab.closed);
+  document.getElementById(`${service}-link`).href = result.url;
+  document.getElementById(`${service}-link-note`).hidden = opened;
+  if (opened) tab.location = result.url;
+  document.getElementById(`${service}-finish`).hidden = false;
+}
+
+// Finishes a sign-in with the address pasted, then shows the part of the page it's in.
+async function finishSignIn(service, reload) {
+  const address = document.getElementById(`${service}-address`);
+  if (!address.value.trim()) return;
+  await change(`/api/${service}/finish`, { address: address.value }, reload);
+  // Used up whatever the answer, so another try starts afresh.
+  address.value = "";
+  document.getElementById(`${service}-finish`).hidden = true;
+  document.getElementById(`${service}-link-note`).hidden = true;
+}
+
+// Calendars and lists
+
+async function loadCalendars() {
+  try {
+    const response = await fetch("/api/calendars");
+    if (!response.ok) return;
+    calendars = await response.json();
+  } catch (error) {
+    return;
+  }
+  showCalendars();
+}
+
+// Until Google's keys are set, the section says so, and offers no sign-in. Once signed
+// in, it has each calendar and where new events go - or why it hasn't: Google out of
+// reach, or no longer taking the sign-in, when the sign-in's button is offered again.
+function showCalendars() {
+  const missing = document.getElementById("calendars-missing");
+  missing.hidden = calendars.available;
+  missing.textContent = calendars.available ? "" : calendars.message;
+  showSignIn("google", "Google", calendars.available ? calendars : null);
+
+  const list = document.getElementById("calendars");
+  const newEvents = document.getElementById("new-events");
+  const signedIn = Boolean(calendars.available && calendars.signed_in);
+  list.hidden = !calendars.available || (!signedIn && !calendars.message);
+  newEvents.hidden = !signedIn || Boolean(calendars.message);
+  if (list.hidden) return;
+  if (calendars.message) {
+    drawIfChanged("calendars", calendars.message, () => list.replaceChildren(emptyRow(calendars.message)));
+    return;
+  }
+  drawIfChanged("calendars", calendars.calendars, () => {
+    list.replaceChildren(...(calendars.calendars.length ? calendars.calendars.map(calendarRow) : [emptyRow("Google has no calendars for you.")]));
+  });
+  const writable = calendars.calendars.filter((each) => each.writable);
+  newEvents.hidden = !writable.length;
+  drawIfChanged("new-events", [writable, calendars.new_events], () => {
+    const select = document.getElementById("new-events-calendar");
+    select.replaceChildren(...writable.map((each) => {
+      const option = element("option", each.name || "Your calendar");
+      option.value = each.id;
+      return option;
+    }));
+    // With no primary in Google's list, new events still go to Google's own primary.
+    if (!calendars.new_events) {
+      const primary = element("option", "Your main calendar");
+      primary.value = "";
+      primary.disabled = true;
+      select.prepend(primary);
+    }
+    select.value = calendars.new_events || "";
+  });
+}
+
+// Sends a change to a calendar's choices. As for the batteries, the rows are drawn again
+// whatever the data says, as a switch which failed to save is still showing what wasn't saved.
+function changeCalendar(path, body) {
+  return change(path, body, () => {
+    delete drawn.calendars;
+    delete drawn["new-events"];
+    return loadCalendars();
+  });
+}
+
+// A calendar: its name, by Google's own, and a switch each for what's on and for being
+// an activity. The ids are by its place in the list, as a calendar's own id can be an
+// email address.
+function calendarRow(calendar, index) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", calendar.name || "No name", "name"));
+  if (calendar.primary) what.append(element("span", "Your own", "sub"));
+  else if (!calendar.writable) what.append(element("span", "Nova can read it, but not add to it", "sub"));
+  if (calendar.activity === null) what.append(element("span", "Can't be an activity - it has no name, or one listed before it has the same name", "sub"));
+  top.append(icon("i-calendar"), what);
+  row.append(top);
+
+  const choose = (label, key, checked) => {
+    const id = `calendar-${key}-${index}`;
+    const field = element("div", undefined, "choice");
+    const name = element("label", label);
+    name.htmlFor = id;
+    const box = element("input");
+    // Null for an activity it can't be, which is off, and can't be switched on.
+    Object.assign(box, { type: "checkbox", id, checked: checked === true, disabled: checked === null });
+    box.setAttribute("role", "switch");
+    box.addEventListener("change", () => changeCalendar("/api/calendars", { id: calendar.id, [key]: box.checked }));
+    field.append(name, box);
+    return field;
+  };
+  row.append(choose("In what's on", "whats_on", calendar.whats_on));
+  row.append(choose("An activity", "activity", calendar.activity));
+  return row;
+}
+
+// Asks the page's other choices of Home Assistant: the main list, the weather and the PCs.
+async function loadHomeChoices() {
+  try {
+    const response = await fetch("/api/home-choices");
+    if (!response.ok) return;
+    homeChoices = await response.json();
+  } catch (error) {
+    return;
+  }
+  showHomeChoices();
+}
+
+// The lists and how each device is sent to, as rows; the weather and the PCs as choices,
+// only when Nova's told there is one. Without Home Assistant, only why not.
+function showHomeChoices() {
+  const missing = document.getElementById("home-choices-missing");
+  missing.hidden = homeChoices.available;
+  missing.textContent = homeChoices.available ? "" : homeChoices.message;
+  const lists = document.getElementById("lists");
+  const sending = document.getElementById("sending");
+  document.getElementById("lists-title").hidden = lists.hidden = !homeChoices.available;
+  document.getElementById("sending-title").hidden = sending.hidden = !homeChoices.available || !homeChoices.sending.length;
+  document.getElementById("weather-choice").hidden = !homeChoices.available || !homeChoices.weather;
+  document.getElementById("pcs-choice").hidden = !homeChoices.available || !homeChoices.pcs;
+  if (!homeChoices.available) return;
+
+  drawIfChanged("lists", homeChoices.lists, () => {
+    lists.replaceChildren(...(homeChoices.lists.length ? homeChoices.lists.map(listRow) : [emptyRow("Home Assistant has no to-do lists.")]));
+  });
+  drawIfChanged("sending", homeChoices.sending, () => {
+    sending.replaceChildren(...homeChoices.sending.map(sendingRow));
+  });
+  drawIfChanged("weather", homeChoices.weather, () => {
+    if (!homeChoices.weather) return;
+    const select = document.getElementById("weather-entity");
+    select.replaceChildren(...homeChoices.weather.map((each) => {
+      const option = element("option", each.name);
+      option.value = each.id;
+      return option;
+    }));
+    const chosen = homeChoices.weather.find((each) => each.chosen);
+    select.value = chosen ? chosen.id : "";
+  });
+  drawIfChanged("pcs", homeChoices.pcs, () => {
+    if (!homeChoices.pcs) return;
+    document.getElementById("pcs-choice").replaceChildren(...homeChoices.pcs.pcs.map(pcWakeChoice));
+  });
+}
+
+// Sends a choice. As for the calendars, what's shown is drawn again whatever the data says,
+// as a choice which failed to save is still showing what wasn't saved.
+function changeHomeChoice(path, body) {
+  return change(path, body, () => {
+    for (const part of ["lists", "weather", "pcs"]) delete drawn[part];
+    return loadHomeChoices();
+  });
+}
+
+// A to-do list: its name, how many things are still to do on it, its other names, and
+// either a mark that it's the main one or a way to make it so.
+function listRow(found) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", found.name, "name"));
+  const parts = [];
+  if (found.count !== null) parts.push(`${found.count} ${found.count === 1 ? "thing" : "things"} to do`);
+  if (found.aliases.length) parts.push(`Also: ${found.aliases.join(", ")}`);
+  if (parts.length) what.append(element("span", parts.join(" - "), "sub"));
+  top.append(icon("i-routine"), what);
+  row.append(top);
+  if (found.main) {
+    what.append(element("span", "Main list", "sub"));
+  } else {
+    const make = element("button", "Make main", "button quiet");
+    make.type = "button";
+    // Said by a screen reader, which otherwise hears only "Make main" for every list.
+    make.setAttribute("aria-label", `Make ${found.name} the main list`);
+    make.addEventListener("click", () => changeHomeChoice("/api/lists/main", { id: found.id }));
+    row.append(make);
+  }
+  return row;
+}
+
+// A device Nova can send to, and how: nothing to choose.
+function sendingRow(device) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", undefined, "what");
+  what.append(element("span", device.name, "name"), element("span", device.how, "sub"));
+  top.append(icon("i-bell"), what);
+  row.append(top);
+  return row;
+}
+
+// Which Wake-on-LAN button wakes one PC, from all Home Assistant has.
+function pcWakeChoice(pc, index) {
+  const field = element("div", undefined, "field");
+  const id = `pc-wake-${index}`;
+  const label = element("label", `Wake ${pc.name} with`);
+  label.htmlFor = id;
+  const wrap = element("span", undefined, "select");
+  const select = element("select");
+  select.id = id;
+  if (!pc.wake) {
+    const none = element("option", "Choose a button");
+    none.value = "";
+    none.disabled = true;
+    select.append(none);
+  }
+  for (const button of homeChoices.pcs.buttons) {
+    const option = element("option", button.name);
+    option.value = button.id;
+    select.append(option);
+  }
+  select.value = pc.wake || "";
+  select.addEventListener("change", () => changeHomeChoice("/api/pcs/wake", { device: pc.device, button: select.value }));
+  wrap.append(select, icon("i-chevron"));
+  field.append(label, wrap);
+  return field;
 }
 
 // Asks the music to do something, then shows what it's doing now - saying how it went
@@ -1016,10 +1497,25 @@ function openEditor(routine) {
   document.getElementById("routine-at").value = routine ? routine.at : "";
   document.getElementById("routine-repeat").value = routine ? routine.repeat : "daily";
   document.getElementById("routine-steps").value = routine ? routine.steps.join("\n") : "";
+  showRunsOn(routine ? routine.satellite || "" : "");
   document.getElementById("delete-routine").hidden = !routine;
   document.getElementById("new-routine").hidden = true;
   document.getElementById("routine-editor").hidden = false;
   document.getElementById("routine-name").focus();
+}
+
+// The editor's "Runs on", from the satellites the brain lets in - the default first, as
+// "", which is what a routine keeps while it has no satellite of its own. Saving sends
+// the choice, so a routine saved on the page keeps the satellite it had.
+function showRunsOn(chosen) {
+  const field = document.getElementById("routine-satellite-field");
+  field.hidden = satellites.length < 2;
+  const fallback = satellites.find((satellite) => satellite.default);
+  const options = [new Option(fallback ? `The default (${fallback.name})` : "The default", ""),
+                   ...satellites.map((satellite) => new Option(satellite.name, satellite.name))];
+  document.getElementById("routine-satellite").replaceChildren(...options);
+  // A satellite since removed is no longer offered, so it starts at the default.
+  document.getElementById("routine-satellite").value = satellites.some((satellite) => satellite.name === chosen) ? chosen : "";
 }
 
 function closeEditor() {
@@ -1037,13 +1533,19 @@ function showRoutines(routines) {
     start.type = "button";
     start.setAttribute("aria-label", `${scene ? "Set" : "Start"} ${routine.name}`);
     start.addEventListener("click", async () => {
+      // A script can do a lot at once, so it's asked about first - and only a yes sends
+      // confirmed, without which the brain won't run it. A scene is one tap.
+      if (!scene && !confirm(`Run ${routine.name}?`)) return;
       start.disabled = true;
-      await change("/api/run", { id: routine.id });
+      await change("/api/run", scene ? { id: routine.id } : { id: routine.id, confirmed: true });
       start.disabled = false;
       // A scene changes the lights, and Home Assistant takes a moment to say so.
       setTimeout(loadHome, 900);
     });
-    row.append(icon(scene ? "i-scene" : "i-routine"), element("span", routine.name, "what"), start);
+    row.append(icon(scene ? "i-scene" : "i-routine"), element("span", routine.name, "what"));
+    // Exposed to Assist, as the registry says at this draw, so Nova runs it when asked aloud.
+    if (!scene && routine.by_voice) row.append(element("span", "By voice", "when"));
+    row.append(start);
     return row;
   });
   document.getElementById("ha-routines").replaceChildren(
@@ -1174,18 +1676,35 @@ function showSettings(settings) {
   }
   document.getElementById("setting-groups").replaceChildren(...rows);
   countChanges();
+  showNight();
 }
 
+// A setting, with when it's used under its label: "Used straight away".
 function settingField(setting) {
   const id = `setting-${setting.key}`;
   const field = element("div", undefined, setting.kind === "yes/no" ? "field switch" : "field");
+  const about = element("span", undefined, "about");
   const label = element("label", setting.label);
   label.htmlFor = id;
+  const used = element("span", setting.used, "detail");
+  used.id = `${id}-used`;
+  about.append(label, used);
   const input = setting.choices ? choiceInput(setting) : valueInput(setting);
   input.id = id;
   input.name = setting.key;
-  input.dataset.saved = valueOf(input);
-  field.append(label, setting.choices ? selectBox(input) : input);
+  // The slider moves a speed between its steps to the nearest - 1.12 typed into the
+  // file becoming 1.1 - so it's what's saved that it's compared with, and the moved one
+  // shows as a change rather than as what the file says.
+  input.dataset.saved = input.type === "range" ? String(setting.value) : valueOf(input);
+  input.setAttribute("aria-describedby", used.id);
+  field.append(about, setting.choices ? selectBox(input) : input.type === "range" ? speedControl(input) : input);
+  // Under the second of the night's two, so it's said once.
+  if (setting.key === NIGHT[1]) {
+    const none = element("span", "No quiet hours", "detail night");
+    none.id = `${id}-night`;
+    none.hidden = true;
+    field.append(none);
+  }
   return field;
 }
 
@@ -1209,15 +1728,72 @@ function valueInput(setting) {
     input.checked = Boolean(setting.value);
     return input;
   }
-  input.type = setting.kind === "number" ? "number" : "text";
-  if (setting.kind === "number") {
-    input.step = "any";
-    input.inputMode = "decimal";
+  if (setting.form === "number") {
+    // Its range before its value, which would otherwise be rounded to the browser's
+    // own whole steps from 0 to 100 - 1.25 becoming 1.
+    Object.assign(input, { type: setting.key === "voice.speed" ? "range" : "number", min: setting.min,
+                           max: setting.max, step: setting.whole ? 1 : 0.05 });
+    if (input.type === "number") input.inputMode = setting.whole ? "numeric" : "decimal";
+  } else if (setting.form === "time") {
+    input.type = "time";
+  } else if (setting.form === "address") {
+    input.type = "url";
+    input.inputMode = "url";
+  } else {
+    input.type = setting.kind === "number" ? "number" : "text";
+    if (setting.kind === "number") {
+      input.step = "any";
+      input.inputMode = "decimal";
+    }
   }
   input.value = Array.isArray(setting.value) ? setting.value.join(", ") : setting.value ?? "";
   input.autocomplete = "off";
   input.spellcheck = false;
   return input;
+}
+
+// The speaking speed's slider, with how fast it is beside it, and a button to hear it
+// said at that speed before it's saved.
+function speedControl(slider) {
+  const made = element("div", undefined, "speed");
+  const output = element("output", undefined, "value");
+  output.setAttribute("for", slider.id);
+  const show = () => {
+    // "1.0 times" rather than "1 times", and "1.25 times" as it is.
+    const speed = Number(slider.value);
+    output.textContent = `${Number.isInteger(speed) ? speed.toFixed(1) : speed} times`;
+    slider.style.setProperty("--level", `${((speed - slider.min) / (slider.max - slider.min)) * 100}%`);
+  };
+  show();
+  slider.addEventListener("input", show);
+  const hear = element("button", "Hear it", "button quiet");
+  hear.type = "button";
+  hear.setAttribute("aria-label", "Hear it at this speed");
+  hear.addEventListener("click", async () => {
+    // Only one at a time - Nova says it's busy to another while one's being said.
+    hear.disabled = true;
+    let result;
+    try {
+      result = await send("/api/voice/hear", { speed: Number(slider.value) });
+    } catch (error) {
+      result = { success: false, message: "Couldn't reach Nova." };
+    }
+    hear.disabled = false;
+    toast(result.message || (result.success ? "Done." : "That didn't work."), result.success);
+  });
+  made.append(slider, output, hear);
+  return made;
+}
+
+// Says under the night's second setting when there are no quiet hours, as the two are
+// the same - and only then reads it out with it, as a description is read even hidden.
+// The first has no note of its own, so keeps just when it's used.
+function showNight() {
+  const [from, until] = NIGHT.map((key) => document.getElementById(`setting-${key}`));
+  if (!from || !until) return;
+  const none = from.value === until.value;
+  document.getElementById(`${until.id}-night`).hidden = !none;
+  until.setAttribute("aria-describedby", none ? `${until.id}-used ${until.id}-night` : `${until.id}-used`);
 }
 
 // A select with the page's own arrow, the browser's being hidden so it matches the fields.
@@ -1239,9 +1815,17 @@ function countChanges() {
     input.closest(".field").classList.toggle("changed", differs);
     return differs;
   });
-  document.getElementById("unsaved").textContent =
-    changed.length ? `${counted(changed.length, "change", "changes")} not saved yet.` : "Nothing's changed yet.";
-  document.getElementById("save-settings").disabled = !changed.length;
+  // Anything more to save goes before the restart, which then uses it too - and once
+  // it's changed back, the restart is offered again.
+  const restarting = offerRestart && !changed.length;
+  const unsaved = document.getElementById("unsaved");
+  unsaved.classList.remove("bad");
+  unsaved.textContent = changed.length ? `${counted(changed.length, "change", "changes")} not saved yet.`
+    : restarting ? restartSaid : "Nothing's changed yet.";
+  const save = document.getElementById("save-settings");
+  save.disabled = !changed.length;
+  save.hidden = restarting;
+  document.getElementById("restart-now").hidden = !restarting;
   return changed;
 }
 
@@ -1336,8 +1920,35 @@ function seeded(seed) {
   };
 }
 
+// Keeps the toasts, and a field tabbed to, clear of the save bar, as tall as it's drawn -
+// a long save error, or an iPhone's home bar under it, makes it taller. Its height goes to
+// --save-bar through the CSSOM, which the page's CSP lets through where a style attribute
+// wouldn't be. The toasts are lifted only while the bar's on screen, and its corners are
+// rounded only where it ends the form, not while it's stuck to the screen's bottom.
+function followSaveBar() {
+  const bar = document.querySelector(".save-bar");
+  const page = document.documentElement;
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(() => page.style.setProperty("--save-bar", `${bar.offsetHeight}px`)).observe(bar);
+  }
+  if (!("IntersectionObserver" in window)) {
+    // Lifted all the time, as it can't be told when the bar's in view.
+    page.classList.add("save-bar-shown");
+    return;
+  }
+  // The screen less its bottom pixel, so a bar stuck to the bottom is never wholly in it,
+  // while one ending the form, above the bottom, is.
+  new IntersectionObserver((entries) => {
+    // The newest, should several have queued up.
+    const seen = entries[entries.length - 1];
+    page.classList.toggle("save-bar-shown", seen.isIntersecting);
+    bar.classList.toggle("stuck", seen.isIntersecting && seen.intersectionRatio < 1);
+  }, { rootMargin: "0px 0px -1px 0px", threshold: [0, 1] }).observe(bar);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   drawSky();
+  followSaveBar();
   let resized = null;
   window.addEventListener("resize", () => {
     clearTimeout(resized);
@@ -1346,8 +1957,12 @@ document.addEventListener("DOMContentLoaded", () => {
   tick();
 
   const settings = document.getElementById("settings");
-  settings.addEventListener("input", countChanges);
-  settings.addEventListener("change", countChanges);
+  for (const happened of ["input", "change"]) {
+    settings.addEventListener(happened, () => {
+      countChanges();
+      showNight();
+    });
+  }
   settings.addEventListener("submit", async (event) => {
     event.preventDefault();
     const changed = countChanges();
@@ -1357,8 +1972,50 @@ document.addEventListener("DOMContentLoaded", () => {
     const result = await change("/api/settings", { changes });
     if (result.success) {
       for (const input of changed) input.dataset.saved = valueOf(input);
+      offerRestart = Boolean(result.restart_needed);
+      restartSaid = result.message || "Saved. Some of it is used once Nova restarts.";
       countChanges();
+    } else {
+      // In the save bar too, where it's still in view once the toast has gone.
+      const unsaved = document.getElementById("unsaved");
+      unsaved.textContent = result.message || "That didn't work.";
+      unsaved.classList.add("bad");
     }
+  });
+
+  document.getElementById("add-satellite").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const field = document.getElementById("satellite-name");
+    const name = field.value.trim();
+    if (!name) return;
+    const result = await change("/api/satellites/add", { name });
+    if (result.success && result.password) {
+      field.value = "";
+      showPassword(name, result.password, true);
+    }
+  });
+  // Copied from the panel's own text, the only place it's kept. Without the clipboard
+  // - which a browser only offers over HTTPS - it's selected, to be copied from there.
+  const copy = document.getElementById("password-copy");
+  copy.addEventListener("click", async () => {
+    const shown = document.getElementById("password-text");
+    try {
+      await navigator.clipboard.writeText(shown.textContent);
+      copy.textContent = "Copied";
+    } catch (error) {
+      const range = document.createRange();
+      range.selectNodeContents(shown);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      toast("Couldn't copy it, so it's selected - copy it from there.", false);
+    }
+  });
+  document.getElementById("password-close").addEventListener("click", closePassword);
+
+  document.getElementById("problems-all").addEventListener("click", () => {
+    allProblems = !allProblems;
+    showProblems();
   });
 
   document.getElementById("add-alarm").addEventListener("submit", async (event) => {
@@ -1368,8 +2025,18 @@ document.addEventListener("DOMContentLoaded", () => {
     if (result.success) form.reset();
   });
 
-  document.getElementById("restart-button").addEventListener("click", () => {
+  const restart = () => {
     if (confirm("Restart Nova now? It takes about half a minute.")) change("/api/restart");
+  };
+  document.getElementById("restart-button").addEventListener("click", restart);
+  document.getElementById("restart-now").addEventListener("click", restart);
+
+  // Gone as it's pressed, so it can't be pressed twice - back at the quick check
+  // straight after if anything's still ringing.
+  const stop = document.getElementById("stop");
+  stop.addEventListener("click", () => {
+    stop.hidden = true;
+    change("/api/stop", {}, live);
   });
 
   // Put back as Nova last had it if the change didn't work - even with Nova out of
@@ -1386,6 +2053,20 @@ document.addEventListener("DOMContentLoaded", () => {
     playMusic({ action: music && music.now && music.now.playing ? "pause" : "play" }));
   document.getElementById("previous").addEventListener("click", () => playMusic({ action: "previous" }));
   document.getElementById("next").addEventListener("click", () => playMusic({ action: "skip" }));
+  document.getElementById("spotify-start").addEventListener("click", () => startSignIn("spotify"));
+  document.getElementById("spotify-finish").addEventListener("submit", (event) => {
+    event.preventDefault();
+    finishSignIn("spotify", loadMusic);
+  });
+  document.getElementById("google-start").addEventListener("click", () => startSignIn("google"));
+  document.getElementById("google-finish").addEventListener("submit", (event) => {
+    event.preventDefault();
+    finishSignIn("google", loadCalendars);
+  });
+  document.getElementById("new-events-calendar").addEventListener("change", (event) =>
+    changeCalendar("/api/calendars/new-events", { id: event.target.value }));
+  document.getElementById("weather-entity").addEventListener("change", (event) =>
+    changeHomeChoice("/api/weather", { id: event.target.value }));
   document.getElementById("play-something").addEventListener("submit", async (event) => {
     event.preventDefault();
     const query = event.target.query;
@@ -1399,8 +2080,17 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("routine-editor").addEventListener("submit", async (event) => {
     event.preventDefault();
     const field = (id) => document.getElementById(id).value;
+    // With the choice hidden, a routine is saved as it was - not dropped to the default.
+    // That's one satellite at most, so a satellite since removed goes to the default,
+    // where Nova moves its routines anyway, rather than being refused with no choice
+    // shown to change it.
+    const kept = editing && satellites.some((satellite) => satellite.name === editing.satellite)
+      ? editing.satellite : "";
+    const runsOn = document.getElementById("routine-satellite-field").hidden && editing
+      ? kept : field("routine-satellite");
     const routine = { id: editing ? editing.id : undefined, name: field("routine-name"), phrases: field("routine-phrases"),
-                      at: field("routine-at"), repeat: field("routine-repeat"), steps: field("routine-steps") };
+                      at: field("routine-at"), repeat: field("routine-repeat"), steps: field("routine-steps"),
+                      satellite: runsOn };
     const result = await change("/api/routines", { routine });
     if (result.success) closeEditor();
   });
@@ -1415,6 +2105,8 @@ document.addEventListener("DOMContentLoaded", () => {
   every(MUSIC_EVERY, loadMusic);
   every(HOME_EVERY, loadHome);
   every(BATTERIES_EVERY, loadBatteries);
+  every(CALENDARS_EVERY, loadCalendars);
+  every(HOME_CHOICES_EVERY, loadHomeChoices);
   document.getElementById("also-send-box").addEventListener("change", (event) =>
     changeBattery("/api/batteries/also", { on: event.target.checked }));
 });

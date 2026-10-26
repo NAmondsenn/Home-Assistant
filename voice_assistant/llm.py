@@ -105,7 +105,10 @@ class LLMHandler:
         self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
         self.history = []
         # Seconds after which an exchange is forgotten once a new conversation starts - see forget_stale_history.
-        self.history_max_age = conversation_config.get("history_max_age", 300)
+        self._history_max_age = conversation_config.get("history_max_age", 300)
+        # Kept to read the settings at each use, so a change saved on the settings page
+        # is used by the next request, not only after a restart.
+        self.config = config
         self.assistant_name = assistant_name or assistant_config.get("name", "Assistant")
         # The tools the model is offered, in the API's format - see ActionExecutor.tool_schemas.
         self.tools = list(tools or [])
@@ -115,12 +118,26 @@ class LLMHandler:
 
         # Web search is opt-in per query rather than always on, so ordinary replies
         # aren't slowed down or billed by unnecessary searches.
-        self.web_search_enabled = web_search_config.get("enabled", True)
+        self._web_search_enabled = web_search_config.get("enabled", True)
         self.web_search_max_uses = web_search_config.get("max_uses", 3)
 
         logger.info(
             f"LLM initialised: {self.model_name} (max_tokens={self.max_tokens}, temperature={self.temperature}, "
             f"history_length={self.history_length}, web_search={self.web_search_enabled})")
+
+    @property
+    def history_max_age(self) -> float:
+        """Seconds an exchange is kept, as the settings are now."""
+        if not self.config:
+            return self._history_max_age
+        return self.config.section("conversation").get("history_max_age", self._history_max_age)
+
+    @property
+    def web_search_enabled(self) -> bool:
+        """Whether the model may be given a web search, as the settings are now."""
+        if not self.config:
+            return self._web_search_enabled
+        return self.config.section("web_search").get("enabled", self._web_search_enabled)
 
     def _asked_for_album(self, text: str) -> bool:
         """

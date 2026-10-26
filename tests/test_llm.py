@@ -488,3 +488,30 @@ def test_offline_several_things_are_added_as_one(llm, said, item, where):
 def test_offline_what_isnt_a_list_isnt_added_to_one(llm, said):
     llm.client = FakeClient(_error(anthropic.APIConnectionError))
     assert llm.process_query(said)["actions"] == []
+
+
+def test_web_search_is_switched_off_straight_away(make_config):
+    config = make_config(web_search={"enabled": True})
+    llm = LLMHandler(config=config, api_key=None)
+    llm.client = FakeClient([_reply("It's sunny."), _reply("It's sunny.")])
+    llm.process_query("search for the weather in Bristol")
+    config.apply({("web_search", "enabled"): False})
+    llm.process_query("search for the weather in Bristol")
+
+    first, second = llm.client.requests
+    assert "web_search" in [tool["name"] for tool in first["tools"]]
+    assert "web_search" not in [tool["name"] for tool in second.get("tools", [])]
+
+
+def test_a_shorter_thread_is_used_at_the_next_conversation(make_config):
+    config = make_config(conversation={"history_max_age": 300})
+    llm = LLMHandler(config=config, api_key=None)
+    llm.history = [{"user": "play that one", "assistant": "Which one?", "at": 900.0}]
+    config.apply({("conversation", "history_max_age"): 60})
+    llm.forget_stale_history(now=1000.0)
+    assert llm.history == []
+
+
+def test_without_a_config_the_constructors_values_are_used():
+    llm = LLMHandler(api_key=None)
+    assert llm.history_max_age == 300 and llm.web_search_enabled is True

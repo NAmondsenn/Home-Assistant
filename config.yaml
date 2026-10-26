@@ -111,6 +111,10 @@ web_search:
   enabled: true
   max_uses: 3
 
+voice:
+  # How fast Nova speaks, from 0.75 to 1.5. 1.0 is the voice's own pace.
+  speed: 1.0
+
 thresholds:
   # How long the user has to be quiet before the recording stops. Every bit of this is
   # waited out before Nova can answer, but too short and a pause mid-sentence ends it -
@@ -126,8 +130,10 @@ thresholds:
   speech_timeout: 3.0
   follow_up_timeout: 6.0
   max_follow_ups: 3
-  # Hard cap on a single recording.
-  recording_timeout: 10.0
+  # The longest one request may last, in seconds, from the wake word to the end of what
+  # you say. Each satellite is told it, but never records for more than 30 seconds
+  # whatever it is set to.
+  recording_timeout: 15.0
   # Minimum confidence required to consider a wake word detected.
   wake_word_confidence: 0.5
 
@@ -158,6 +164,8 @@ timers:
 
 sounds:
   chime_enabled: true
+  # The sound before an alert or a battery warning. What the clock rings - a timer,
+  # a reminder or an alarm - always has its sound, whatever this says.
   reminder_enabled: true
   # A short blip after the wake word (and before a follow-up answer) to say it's listening,
   # and the same blip backwards when it gave up without hearing anything.
@@ -176,20 +184,11 @@ home_assistant:
   # made by a Home Assistant user of its own who is an administrator - Home Assistant
   # only tells an administrator which room each device is in, which Nova's room and
   # Claude's lights need. An administrator's token can do anything in Home Assistant,
-  # so it's Nova's own code which keeps it to the lights, the calendar, and scripts and
-  # scenes run from the settings page, and never anything which locks, unlocks or
-  # opens. Assist, for the requests passed on in plain words, only reaches the devices
-  # exposed to it. See the README.
+  # so it's Nova's own code which keeps it to the lights, and scripts and scenes run
+  # from the settings page, and never anything which locks, unlocks or opens. Assist,
+  # for the requests passed on in plain words, only reaches the devices exposed to it.
+  # See the README.
   url: ""
-  # The calendars read for "what have I got on Thursday?", e.g. ["calendar.personal"].
-  # Left empty, every calendar Home Assistant has is read.
-  calendars: []
-  # The regular things in your life, and what they're called on the calendar, for
-  # "what time do I have work tomorrow?" or "when do I finish uni today?". An event with
-  # a word in its name starting with one of them counts - e.g. work: ["Shift"], or
-  # uni: ["CSC"] for course codes like CSC203.
-  activities:
-    work: ["work"]
 
 batteries:
   # Nova finds every device Home Assistant has a battery level for, and warns you once as

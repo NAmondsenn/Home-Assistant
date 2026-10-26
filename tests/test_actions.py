@@ -249,28 +249,101 @@ def test_offline_spotify_says_so_straight_away(make_executor, monkeypatch):
 
 
 def test_the_calendar_needs_a_day_it_can_read():
-    class FakeHome:
+    class FakeCalendar:
         def agenda(self, first, days):
             self.asked = (first.isoformat(), days)
             return {"success": True, "message": "You've got nothing on."}
 
-    home = FakeHome()
-    executor = ActionExecutor(home=home)
+    calendar = FakeCalendar()
+    executor = ActionExecutor(calendar=calendar)
     assert executor.execute(Action("get_calendar", {"start": "Thursday"})).ok is False
     executor.execute(Action("get_calendar", {"start": "2026-10-22", "days": 90}))
-    assert home.asked == ("2026-10-22", 14)
+    assert calendar.asked == ("2026-10-22", 14)
 
 
 def test_one_thing_is_looked_for_rather_than_reading_whole_days():
-    class FakeHome:
+    class FakeCalendar:
         def find(self, wanted, first):
             self.asked = (wanted, first.isoformat())
             return {"success": True, "message": "You've got Car MOT on Monday."}
 
-    home = FakeHome()
-    result = ActionExecutor(home=home).execute(
+    calendar = FakeCalendar()
+    result = ActionExecutor(calendar=calendar).execute(
         Action("get_calendar", {"start": "2026-10-20", "days": 14, "search": "MOT"}))
-    assert home.asked == ("MOT", "2026-10-20") and result.say == "You've got Car MOT on Monday."
+    assert calendar.asked == ("MOT", "2026-10-20") and result.say == "You've got Car MOT on Monday."
+
+
+def test_the_calendar_is_only_offered_once_google_is_set_up():
+    # It's Google's now, not Home Assistant's, so Home Assistant alone doesn't bring it.
+    class FakeHome:
+        pass
+
+    executor = ActionExecutor(home=FakeHome())
+    offered = [schema["name"] for schema in executor.tool_schemas()]
+    assert "get_calendar" not in offered and "get_activity" not in offered
+    for action in (Action("get_calendar", {"start": "2026-10-22"}), Action("get_activity", {"start": "2026-10-22"})):
+        result = executor.execute(action)
+        assert (result.ok, result.say) == (False, "The calendar isn't set up yet."), action.tool
+
+    class FakeCalendar:
+        def activity_calendars(self):
+            return {}
+
+    offered = {schema["name"]: schema for schema in ActionExecutor(calendar=FakeCalendar()).tool_schemas()}
+    assert "get_calendar" in offered and "get_activity" in offered
+    # With no activities yet, none are named.
+    assert "The user's activities" not in offered["get_activity"]["description"]
+
+
+def test_claude_is_never_told_a_calendar_named_by_an_address():
+    # A calendar shared by another person is named by their email address - made up here -
+    # which would otherwise go to Anthropic with every request, switched on as an activity.
+    class FakeCalendar:
+        def __init__(self, *calendars):
+            self.calendars = calendars
+
+        def activity_calendars(self):
+            return {word: {"id": f"calendar-{index}", "name": name, "primary": False, "writable": False}
+                    for index, (word, name) in enumerate(self.calendars)}
+
+    def told(*calendars):
+        schemas = ActionExecutor(calendar=FakeCalendar(*calendars)).tool_schemas()
+        return next(schema["description"] for schema in schemas if schema["name"] == "get_activity")
+
+    described = told(("work", "Work"), ("a shared calendar", "someone@example.com"))
+    assert described.endswith("The user's activities: Work.") and "example" not in described
+    described = told(("a shared calendar", "someone@example.com"))
+    assert "The user's activities" not in described and "example" not in described
+
+
+def test_add_to_calendar_is_only_offered_once_google_is_set_up():
+    executor = ActionExecutor()
+    assert "add_to_calendar" not in [schema["name"] for schema in executor.tool_schemas()]
+    result = executor.execute(Action("add_to_calendar", {"summary": "Dentist", "start": "2026-10-29 15:00"}))
+    assert (result.ok, result.say) == (False, "The calendar isn't set up yet.")
+
+    class FakeCalendar:
+        def activity_calendars(self):
+            return {}
+
+        def add(self, summary, start, end=None, all_day=None, calendar=None):
+            self.asked = (summary, start, end, all_day, calendar)
+            return {"success": True, "message": "Added Shift to Work, Saturday the 31st at 9 AM."}
+
+    calendar = FakeCalendar()
+    executor = ActionExecutor(calendar=calendar)
+    offered = {schema["name"]: schema for schema in executor.tool_schemas()}
+    assert offered["add_to_calendar"]["description"] == (
+        "Add an event to the user's Google calendar, for 'put the dentist on Thursday at 3'. start and end are "
+        "local 'YYYY-MM-DD HH:MM', or 'YYYY-MM-DD' for all day; leave end out for an hour. Give calendar only "
+        "when the user names one, e.g. 'work'. What was added is said for you, so just reply 'Okay.'")
+    assert offered["add_to_calendar"]["input_schema"]["required"] == ["summary", "start"]
+    assert set(offered["add_to_calendar"]["input_schema"]["properties"]) == {"summary", "start", "end", "all_day",
+                                                                           "calendar"}
+    result = executor.execute(Action("add_to_calendar", {"summary": "Shift", "start": "2026-10-31 09:00",
+                                                         "calendar": "work"}, from_model=True))
+    assert calendar.asked == ("Shift", "2026-10-31 09:00", None, None, "work")
+    assert (result.ok, result.say) == (True, "Added Shift to Work, Saturday the 31st at 9 AM.")
 
 
 def test_without_home_assistant_the_lights_say_so():
@@ -480,26 +553,28 @@ def test_a_light_which_cant_be_worked_is_told_in_homes_words():
     assert (result.ok, result.say) == (False, "Which room?")
 
 
-def test_an_activity_is_asked_of_home_assistant_for_the_days_given():
-    class FakeHome:
+def test_an_activity_is_asked_of_the_calendar_for_the_days_given():
+    class FakeCalendar:
         def activity(self, name, first, days):
             self.asked = (name, first.isoformat(), days)
             return {"success": True, "message": "You haven't got uni tomorrow."}
 
-    home = FakeHome()
-    result = ActionExecutor(home=home).execute(Action("get_activity", {"activity": "uni", "start": "2026-10-21"}))
-    assert home.asked == ("uni", "2026-10-21", 1) and result.say == "You haven't got uni tomorrow."
+    calendar = FakeCalendar()
+    result = ActionExecutor(calendar=calendar).execute(
+        Action("get_activity", {"activity": "uni", "start": "2026-10-21"}))
+    assert calendar.asked == ("uni", "2026-10-21", 1) and result.say == "You haven't got uni tomorrow."
 
 
 def test_the_next_times_are_looked_for_across_a_fortnight():
-    class FakeHome:
+    class FakeCalendar:
         def activity(self, name, first, days, count=None):
             self.asked = (name, first.isoformat(), days, count)
             return {"success": True, "message": "You're next at work tomorrow."}
 
-    home = FakeHome()
-    ActionExecutor(home=home).execute(Action("get_activity", {"activity": "work", "start": "2026-10-20", "count": 50}))
-    assert home.asked == ("work", "2026-10-20", 14, 10)
+    calendar = FakeCalendar()
+    ActionExecutor(calendar=calendar).execute(
+        Action("get_activity", {"activity": "work", "start": "2026-10-20", "count": 50}))
+    assert calendar.asked == ("work", "2026-10-20", 14, 10)
 
 
 # Notifications
@@ -532,6 +607,26 @@ def test_send_that_to_my_phone_sends_what_was_last_said_under_what_was_asked():
     assert (result.ok, result.confirm) == (True, "chime")
     assert ntfy.sent == [{"topic": "clipboard", "title": "What's the recipe for pancakes?",
                           "message": "Mix flour, eggs and milk, then fry them."}]
+
+
+class ClearedNtfy(FakeNtfy):
+    """An ntfy whose phone topic is cleared on the settings page just after it's first read."""
+
+    @property
+    def phone(self):
+        topics, self._topics = self._topics, [""]
+        return topics[0]
+
+    @phone.setter
+    def phone(self, topic):
+        self._topics = [topic]
+
+
+def test_the_phone_topic_is_read_once_for_each_send():
+    # So a topic cleared between checking it and sending to it is never sent to as "".
+    ntfy = ClearedNtfy()
+    ActionExecutor(ntfy=ntfy).execute(Action("send_to_phone", {"text": "Milk", "title": "Shopping"}))
+    assert [sent["topic"] for sent in ntfy.sent] == ["clipboard"]
 
 
 def test_claude_can_send_more_than_it_said():

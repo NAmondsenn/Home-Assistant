@@ -7,14 +7,20 @@ chosen time, and its saved files are redirected into a temporary folder, so noth
 here touches the real data/ folder or waits on a real clock.
 """
 
+import importlib
 import json
 import logging
+import os
+import pkgutil
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
 
 import pytest
 
+import voice_assistant
 from voice_assistant import clock as clock_module
 from voice_assistant.clock import (Clock, format_duration, parse_repeat, seconds_until, spoken_clock_time,
                                    _time_of_day_candidates)
@@ -843,6 +849,106 @@ def test_one_can_be_removed_by_its_id(make_clock):
     assert clock.remove("alarm", overview["alarms"][0]["id"])["success"] is False
 
 
+def test_undo_puts_back_the_same_alarm(make_clock):
+    told = []
+    clock = make_clock(on_change=lambda: told.append(len(clock.copy_for("bedroom"))))
+    clock.set_alarm(7, 0, repeat="weekdays", satellite="bedroom")
+    alarm_id = clock.overview()["alarms"][0]["id"]
+    before = dict(clock._alarms[alarm_id])
+
+    removed = clock.remove("alarm", alarm_id)["removed"]
+    assert removed == before and clock.overview()["alarms"] == []
+    # A copy, which nothing the clock does afterwards can change.
+    assert removed is not before
+
+    told.clear()
+    result = clock.put_back("alarm", removed)
+    assert result == {"success": True, "message": "Put back the 7:00 AM alarm, every weekday."}
+    assert clock._alarms[alarm_id] == before
+    # The satellite is sent its copy again, with the alarm in it.
+    assert len(told) == 1 and told[0] > 0
+    # Saved, so it's there after a restart too.
+    assert make_clock()._alarms[alarm_id] == before
+
+
+def test_undo_puts_back_the_same_timer_or_reminder(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="take the pizza out", satellite="kitchen")
+    clock.set_timer(300, satellite="bedroom")
+    for timer in clock.overview()["timers"]:
+        before = dict(clock._timers[timer["id"]])
+        removed = clock.remove("timer", timer["id"])["removed"]
+        assert clock.put_back("timer", removed)["success"]
+        assert clock._timers[timer["id"]] == before
+    # Put back a second time, the reminder would be two of the same name due in the
+    # same minute - so it clashes with itself, rather than being there twice.
+    result = clock.put_back("timer", removed)
+    assert not result["success"] and result["message"].startswith("You already have a take the pizza out reminder for ")
+    assert len(clock._timers) == 2
+
+
+def test_a_timer_whose_time_has_passed_isnt_put_back(make_clock):
+    passed = {"success": False, "message": "Its time has passed, so it isn't put back."}
+    clock = make_clock()
+    clock.set_timer(60, label="take the pizza out")
+    removed = clock.remove("timer", clock.overview()["timers"][0]["id"])["removed"]
+    assert clock.put_back("timer", removed, now=removed["due_at"] + 1) == passed
+
+    # A one-off alarm likewise, which would otherwise ring straight away.
+    clock.set_alarm(7, 0)
+    removed = clock.remove("alarm", clock.overview()["alarms"][0]["id"])["removed"]
+    assert clock.put_back("alarm", removed, now=removed["due_at"]) == passed
+    assert clock.overview() == {"timers": [], "alarms": []}
+    clock._tick(removed["due_at"] + 1)
+    assert clock.announced == []
+
+
+def test_a_repeating_alarm_comes_back_at_its_next_time(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, repeat="daily", satellite="bedroom")
+    removed = clock.remove("alarm", clock.overview()["alarms"][0]["id"])["removed"]
+    # Undone half a minute after it would have rung.
+    now = removed["due_at"] + 30
+    assert clock.put_back("alarm", removed, now=now)["success"]
+
+    due = datetime.fromtimestamp(clock._alarms[removed["id"]]["due_at"])
+    was = datetime.fromtimestamp(removed["due_at"])
+    assert (due.date(), due.hour, due.minute) == (was.date() + timedelta(days=1), 7, 0)
+    # So it doesn't ring now.
+    clock._tick(now)
+    assert clock.announced == []
+
+
+def test_an_alarm_clashing_with_one_set_since_isnt_put_back(make_clock, monkeypatch):
+    clock = make_clock()
+    clock.set_alarm(7, 0, repeat="weekdays")
+    removed = clock.remove("alarm", clock.overview()["alarms"][0]["id"])["removed"]
+    clock.set_alarm(7, 0, repeat="daily")
+    assert clock.put_back("alarm", removed) == {"success": False,
+                                                "message": "You already have a 7:00 AM alarm, every day."}
+    assert len(clock._alarms) == 1
+
+    # A timer likewise - set at the start of a minute, as in the test for two set at once.
+    start_of_minute = time.time() // 60 * 60
+    monkeypatch.setattr(clock_module.time, "time", lambda: start_of_minute)
+    clock.set_timer(600)
+    removed = clock.remove("timer", clock.overview()["timers"][0]["id"])["removed"]
+    clock.set_timer(601)
+    result = clock.put_back("timer", removed)
+    assert not result["success"] and result["message"].startswith("You already have a 10 minute and 1 second timer for ")
+    assert len(clock._timers) == 1
+
+
+def test_one_put_back_under_an_id_taken_since_gets_a_new_one(make_clock):
+    clock = make_clock()
+    clock.set_timer(600, label="feed the cat")
+    removed = clock.remove("timer", 1)["removed"]
+    # As it never is but by hand, as ids are never given twice.
+    clock._timers[1] = {**removed, "label": "something else"}
+    assert clock.put_back("timer", removed)["success"]
+    assert clock._timers[2] == {**removed, "id": 2} and clock._next_id == 3
+
+
 # Satellites
 
 def test_a_timer_rings_on_the_satellite_it_was_set_from(make_clock):
@@ -961,7 +1067,7 @@ def test_changes_are_told_to_on_change(make_clock, tmp_path):
     clock._tick(time.time() + 61)
     clock.dismiss()
     clock.set_timer(600)
-    clock.assign_unowned("bedroom")
+    clock.move_satellite(None, "bedroom")
     clock.apply_away("bedroom", rang=[], dismissed=[clock.copy_for("bedroom")[0]["id"]])
     assert len(told) == 10
 
@@ -969,7 +1075,7 @@ def test_changes_are_told_to_on_change(make_clock, tmp_path):
     clock.set_alarm(25, 0)
     clock.cancel_timer()
     clock.dismiss()
-    clock.assign_unowned("bedroom")
+    clock.move_satellite(None, "bedroom")
     clock.apply_away("bedroom", rang=[], dismissed=["timer-1@0"])
     assert len(told) == 10
     assert not any(locked for _, locked in told)
@@ -987,8 +1093,8 @@ def test_entries_from_before_satellites_are_given_to_the_default(make_clock, tmp
     assert [timer.get("id") for timer in json.loads((tmp_path / "timers.json").read_text())["timers"]] == [2, 3]
 
     clock.set_timer(1800, satellite="kitchen")
-    assert clock.assign_unowned("pi") == 3
-    assert clock.assign_unowned("pi") == 0
+    assert clock.move_satellite(None, "pi") == 3
+    assert clock.move_satellite(None, "pi") == 0
 
     restarted = make_clock()
     assert [timer["name"] for timer in restarted.overview("pi")["timers"]] == ["10 minute timer", "pizza reminder"]
@@ -1383,17 +1489,291 @@ def test_silencing_while_ringing_saves_and_tells_on_change(make_clock, tmp_path)
 def test_whats_ringing_or_missed_is_given_to_the_default_too(make_clock, tmp_path):
     clock = make_clock()
     _ring_a_timer(clock)
-    assert clock.assign_unowned("pi") == 1
+    assert clock.move_satellite(None, "pi") == 1
     assert [entry["kind"] for entry in clock.copy_for("pi")] == ["timer"]
 
     (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
         {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None}]}))
     restarted = make_clock()
-    assert restarted.assign_unowned("pi") == 1
+    assert restarted.move_satellite(None, "pi") == 1
     # Still given, through a restart before it's said.
     again = make_clock()
     again._tick(time.time())
     assert again.announced[0]["satellite"] == "pi"
+
+
+def test_moving_an_alarm_the_satellite_already_has_doesnt_double_it(make_clock, tmp_path):
+    # The same 7am weekday alarm on both, and both ringing: moved, the bedroom would
+    # ring it twice over.
+    clock = make_clock()
+    due = clock._next_occurrence(7, 0, "weekdays")
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 4, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "weekdays", "due_at": due, "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "weekdays", "due_at": due, "satellite": "kitchen"},
+        {"id": 3, "hour": 6, "minute": 30, "repeat": None, "due_at": due + 86400, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock._tick(due + 1)
+    assert len(clock._ringing) == 2
+
+    # The doubled alarm and its ringing are let go, and the 6:30 moves.
+    assert clock.move_satellite("kitchen", "bedroom") == 3
+    assert [alarm["name"] for alarm in clock.overview("bedroom")["alarms"]] == [
+        "7:00 AM alarm, every weekday", "6:30 AM alarm"]
+    assert len(clock._ringing) == 1 and clock._ringing[0]["timer"]["id"] == 1
+    assert len(make_clock().overview()["alarms"]) == 2
+
+
+def test_a_doubled_repeating_alarm_keeps_the_later_skip(make_clock, tmp_path):
+    # The same daily 7am on both, skipped just today on the kitchen's copy only - so
+    # its next occurrence is tomorrow's. Moved, it's still one alarm, and still skipped.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    tomorrow = clock._next_occurrence(7, 0, "daily", after=today + 60)
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 5, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "due_at": tomorrow, "satellite": "kitchen"},
+        # Two one-offs at 7am, today's and tomorrow's, are two alarms.
+        {"id": 3, "hour": 7, "minute": 0, "repeat": None, "due_at": today, "satellite": "bedroom"},
+        {"id": 4, "hour": 7, "minute": 0, "repeat": None, "due_at": tomorrow, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+
+    assert clock.move_satellite("kitchen", "bedroom") == 2
+    alarms = make_clock()._alarms
+    assert sorted(alarms) == [1, 3, 4]
+    assert alarms[1]["due_at"] == tomorrow and alarms[1]["satellite"] == "bedroom"
+
+    # Today only the one-off rings, and tomorrow the daily one and the other one-off.
+    clock._tick(today + 1)
+    assert [entry["timer"]["id"] for entry in clock._ringing] == [3]
+    clock.dismiss()
+    clock._tick(tomorrow + 1)
+    assert sorted(entry["timer"]["id"] for entry in clock._ringing) == [1, 4]
+    assert {entry["timer"]["satellite"] for entry in clock._ringing} == {"bedroom"}
+
+
+def test_a_moved_ringing_alarm_the_default_has_answered_doesnt_ring_again(make_clock, tmp_path):
+    # The same daily 7am on both, ringing on both. The bedroom's is answered, then the
+    # kitchen is removed while its copy still rings.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    # Timers are numbered apart from alarms, so one ringing can share the alarm's id.
+    clock.set_timer(60, satellite="kitchen")
+    clock.set_timer(120, satellite="kitchen")
+    clock._tick(today + 1)
+    assert len(clock._ringing) == 4
+    clock.dismiss(satellite="bedroom")
+
+    clock.move_satellite("kitchen", "bedroom")
+
+    assert sorted(entry["timer"]["id"] for entry in clock._ringing) == [1, 2]
+    assert not any(entry["kind"] == "alarm" for entry in clock._ringing)
+    assert {entry["timer"]["satellite"] for entry in clock._ringing} == {"bedroom"}
+    assert sorted(clock._alarms) == [1]
+
+
+def test_a_moved_ringing_alarm_rings_on_when_the_defaults_was_set_after_it_came_due(make_clock, tmp_path):
+    # The kitchen's daily 7am rings, and the same alarm was set on the bedroom just
+    # after it came due - so the bedroom's is due tomorrow, but never rang today.
+    # Removing the kitchen mid-ring mustn't silence the only alarm that rang.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily",
+         "due_at": clock._next_occurrence(7, 0, "daily", after=today + 60), "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock._tick(today + 1)
+
+    clock.move_satellite("kitchen", "bedroom")
+
+    alarms = [entry for entry in clock._ringing if entry["kind"] == "alarm"]
+    assert len(alarms) == 1 and alarms[0]["timer"]["satellite"] == "bedroom"
+    assert sorted(clock._alarms) == [1]
+
+
+def test_a_moved_ringing_alarm_the_default_skipped_today_doesnt_ring_again(make_clock, tmp_path):
+    # Today's 7am was skipped on the bedroom, so the kitchen's, moved there mid-ring,
+    # would bring back what was skipped.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    alarms = [{"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today, "satellite": "bedroom"}]
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": alarms}))
+    clock = make_clock()
+    assert clock.cancel_alarm("7am", scope="today")["success"]
+    data = json.loads((tmp_path / "alarms.json").read_text())
+    data["alarms"].append({"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "due_at": today,
+                           "satellite": "kitchen"})
+    data["next_id"] = 3
+    (tmp_path / "alarms.json").write_text(json.dumps(data))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    clock._tick(today + 1)
+
+    clock.move_satellite("kitchen", "bedroom")
+
+    assert not any(entry["kind"] == "alarm" for entry in clock._ringing)
+
+
+def test_a_moved_alarm_the_default_rang_while_the_brain_was_off_doesnt_ring_again(make_clock, tmp_path):
+    # The brain was off as both came due. The bedroom rang its own from its copy and
+    # it was dismissed there; the kitchen's was still ringing as it came back, so
+    # rings on here. Removing the kitchen mustn't ring the bedroom a second time.
+    now = time.time()
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": now - 30, "satellite": "bedroom"},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "due_at": now - 30, "satellite": "kitchen"}]}))
+    clock = make_clock()
+    clock.alarm_ring_duration = 0
+    bedroom, kitchen = f"alarm-1@{int(now - 30)}", f"alarm-2@{int(now - 30)}"
+    clock.apply_away("bedroom", rang=[bedroom], dismissed=[bedroom])
+    clock.apply_away("kitchen", rang=[kitchen], dismissed=[], ringing=[kitchen])
+    assert [entry["timer"]["id"] for entry in clock._ringing if entry["kind"] == "alarm"] == [2]
+
+    clock.move_satellite("kitchen", "bedroom")
+
+    assert not any(entry["kind"] == "alarm" for entry in clock._ringing)
+
+
+def _two_copies_merged(make_clock, tmp_path, kitchen, bedroom):
+    """
+    The same daily 7am on the kitchen and the bedroom, given as each copy's own fields,
+    merged as the kitchen is removed - and the bedroom's copy, which is kept, read back
+    after a restart.
+    """
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 3, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "satellite": "bedroom", **bedroom},
+        {"id": 2, "hour": 7, "minute": 0, "repeat": "daily", "satellite": "kitchen", **kitchen}]}))
+    make_clock().move_satellite("kitchen", "bedroom")
+    alarms = make_clock()._alarms
+    assert sorted(alarms) == [1]
+    return alarms[1]
+
+
+def test_a_merged_alarm_keeps_the_occurrence_the_later_copy_moved_on_from(make_clock, tmp_path):
+    # Today's 7am was dismissed on the kitchen, so its copy is due tomorrow. The bedroom's,
+    # kept, takes that on with the occurrence it moved on from - so today's, ringing on
+    # the bedroom when it's moved there, is known to have been had.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    tomorrow = clock._next_occurrence(7, 0, "daily", after=today + 60)
+
+    kept = _two_copies_merged(make_clock, tmp_path, kitchen={"due_at": tomorrow, "moved_on_from": today},
+                              bedroom={"due_at": today})
+
+    assert kept["due_at"] == tomorrow and kept["moved_on_from"] == today
+
+
+def test_a_merged_alarm_due_when_the_kept_one_is_keeps_its_own_occurrence(make_clock, tmp_path):
+    # Both due tomorrow: the kept copy is as far on, so what it moved on from stands -
+    # and one the removed copy had, with no later skip behind it, isn't taken on.
+    clock = make_clock()
+    today = clock._next_occurrence(7, 0, "daily")
+    tomorrow = clock._next_occurrence(7, 0, "daily", after=today + 60)
+
+    kept = _two_copies_merged(make_clock, tmp_path, kitchen={"due_at": tomorrow, "moved_on_from": today - 86400},
+                              bedroom={"due_at": tomorrow, "moved_on_from": today})
+    assert kept["due_at"] == tomorrow and kept["moved_on_from"] == today
+
+    kept = _two_copies_merged(make_clock, tmp_path, kitchen={"due_at": tomorrow, "moved_on_from": today},
+                              bedroom={"due_at": tomorrow})
+    assert kept["due_at"] == tomorrow and "moved_on_from" not in kept
+
+
+def test_an_alarm_dismissed_while_away_notes_the_occurrence_it_moved_on_from(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, repeat="daily", satellite="bedroom")
+    alarm = next(iter(clock._alarms.values()))
+    due = alarm["due_at"]
+    occurrence = f"alarm-{alarm['id']}@{int(due)}"
+
+    clock.apply_away("bedroom", rang=[occurrence], dismissed=[occurrence])
+
+    assert alarm["due_at"] > due and alarm["moved_on_from"] == due
+
+
+def test_the_occurrence_an_alarm_moved_on_from_survives_a_restart(make_clock):
+    clock = make_clock()
+    clock.set_alarm(7, 0, repeat="daily", satellite="bedroom")
+    alarm = next(iter(clock._alarms.values()))
+    due = alarm["due_at"]
+    occurrence = f"alarm-{alarm['id']}@{int(due)}"
+    clock.apply_away("bedroom", rang=[occurrence], dismissed=[occurrence])
+
+    assert make_clock()._alarms[alarm["id"]]["moved_on_from"] == due
+
+
+def test_an_unreadable_occurrence_an_alarm_moved_on_from_is_left_out(make_clock, tmp_path):
+    # Hand-edited or from a bad write: left out, so the alarm itself still loads.
+    clock = make_clock()
+    due = clock._next_occurrence(7, 0, "daily")
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 5, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": "daily", "due_at": due, "moved_on_from": "soon"},
+        {"id": 2, "hour": 8, "minute": 0, "repeat": "daily", "due_at": due + 3600, "moved_on_from": True},
+        {"id": 3, "hour": 9, "minute": 0, "repeat": "daily", "due_at": due + 7200, "moved_on_from": float("nan")},
+        {"id": 4, "hour": 10, "minute": 0, "repeat": "daily", "due_at": due + 10800}]}))
+
+    alarms = make_clock()._alarms
+
+    assert sorted(alarms) == [1, 2, 3, 4]
+    assert not any("moved_on_from" in alarm for alarm in alarms.values())
+
+
+def test_nothing_is_set_for_a_satellite_no_longer_let_in(make_clock):
+    # Removed as it was being set - from a turn still in flight, or the page.
+    clock = make_clock()
+    clock.let_in = lambda satellite: satellite != "kitchen"
+    gone = {"success": False, "message": "That satellite's gone, so it can't ring there."}
+
+    assert clock.set_alarm(7, 0, satellite="kitchen") == gone
+    assert clock.set_timer(600, satellite="kitchen") == gone
+    assert clock.set_timer(600, label="pizza", is_reminder=True, satellite="kitchen") == gone
+    assert clock.set_alarm(8, 0, satellite="bedroom")["success"]
+    item = clock.remove("alarm", next(iter(clock._alarms)))["removed"]
+    assert clock.put_back("alarm", dict(item, satellite="kitchen")) == gone
+    assert clock.overview() == {"timers": [], "alarms": []}
+    assert clock.set_alarm(7, 0)["success"] and clock.set_timer(600, satellite="bedroom")["success"]
+
+
+def test_move_satellite_moves_everything_of_one_satellite(make_clock, tmp_path):
+    # As a satellite is removed: what it was ringing, and what's waiting to be said as
+    # missed, go too, so nothing is left ringing nowhere.
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 3, "timers": [
+        {"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None, "satellite": "kitchen"},
+        {"id": 2, "due_at": time.time() + 600, "duration": 900, "label": None, "satellite": "bedroom"}]}))
+    # Away, so the missed one waits to be said.
+    clock = make_clock(can_hear=lambda satellite: False)
+    clock.set_timer(1200, satellite="kitchen")
+    clock.set_alarm(7, 0, repeat="weekdays", satellite="kitchen")
+    clock.set_timer(60, satellite="kitchen")
+    clock._tick(time.time() + 61)
+    assert clock.is_ringing(satellite="kitchen")
+
+    # The ringing timer, the missed one, the 20 minute timer and the alarm.
+    assert clock.move_satellite("kitchen", "bedroom") == 4
+    assert clock.move_satellite("kitchen", "bedroom") == 0
+    assert clock.satellites() == {"bedroom"}
+    assert not clock.is_ringing(satellite="kitchen") and clock.is_ringing(satellite="bedroom")
+    assert clock.copy_for("kitchen") == []
+    assert {entry["kind"] for entry in clock.copy_for("bedroom")} == {"timer", "alarm"}
+
+    restarted = make_clock()
+    assert restarted.overview("kitchen") == {"timers": [], "alarms": []}
+    assert len(restarted.overview("bedroom")["timers"]) == 3 and len(restarted.overview("bedroom")["alarms"]) == 1
+    restarted._tick(time.time())
+    assert restarted.announced and {said["satellite"] for said in restarted.announced} == {"bedroom"}
+
+    # With no satellite left, they wait on none for the next one added.
+    moved = restarted.move_satellite("bedroom", None)
+    assert moved >= 3 and restarted.satellites() == {None}
+    assert restarted.move_satellite(None, "hall") == moved
 
 
 def _ring_alarm_then_restart(make_clock, repeat):
@@ -1483,3 +1863,45 @@ def test_dismissing_a_ringing_alarm_means_a_restart_doesnt_report_it(make_clock)
     clock.dismiss()
 
     assert make_clock()._missed == []
+
+
+def _clock_parts():
+    """The names of the modules the clock is split into, each a voice_assistant.clock_* file."""
+    parts = [module.name for module in pkgutil.iter_modules(voice_assistant.__path__)
+             if module.name.startswith("clock_")]
+    # With none found, the pins which go through each part would pass having checked nothing.
+    assert parts, "no voice_assistant.clock_* modules found"
+    return parts
+
+
+def test_the_clock_keeps_every_name_it_is_imported_by():
+    for name in ("Clock", "format_duration", "spoken_clock_time", "parse_repeat", "seconds_until",
+                 "_time_of_day_candidates", "TIMERS_FILE", "ALARMS_FILE", "PLAUSIBLE_TIME_AFTER",
+                 "ALARM_START_LEVEL", "ALARM_SOUND", "storage", "time"):
+        assert hasattr(clock_module, name), name
+
+
+def test_the_clock_still_saves_where_the_tests_point_it():
+    # The tests patch the files on voice_assistant.clock, so whatever reads them has to live
+    # there - elsewhere it would read its own module's copy and write into the real data folder.
+    for name in ("_save", "_load", "_save_alarms", "_load_alarms"):
+        assert getattr(Clock, name).__module__ == "voice_assistant.clock", name
+
+
+def test_every_part_of_the_clock_logs_as_the_clock():
+    # So every line keeps the logger name it had before the clock was split up.
+    for name in _clock_parts():
+        module = importlib.import_module(f"voice_assistant.{name}")
+        if hasattr(module, "logger"):
+            assert module.logger.name == "voice_assistant.clock", name
+
+
+def test_each_part_of_the_clock_imports_on_its_own():
+    # A part which only works because clock.py imported something first would break the
+    # moment it was imported alone.
+    for name in _clock_parts():
+        # From the repo's root, wherever pytest was started, so the package is found.
+        result = subprocess.run([sys.executable, "-c", f"import voice_assistant.{name}"],
+                                capture_output=True, text=True,
+                                cwd=os.path.dirname(os.path.dirname(voice_assistant.__file__)))
+        assert result.returncode == 0, f"{name}: {result.stderr}"

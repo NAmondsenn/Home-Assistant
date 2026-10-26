@@ -20,7 +20,7 @@ from voice_assistant.text_to_speech import TextToSpeech
 FAKE_PIPER = f"""#!{sys.executable}
 import os, sys, time
 with open(os.environ["FAKE_PIPER_LOG"], "a") as log:
-    log.write("started\\n")
+    log.write("started " + " ".join(sys.argv[1:]) + "\\n")
 text = sys.stdin.readline().strip()
 if text == "fail":
     sys.stderr.write("voice file is broken")
@@ -33,7 +33,8 @@ for word in text.split():
 
 
 @pytest.fixture
-def tts(tmp_path, monkeypatch, make_config):
+def make_tts(tmp_path, monkeypatch, make_config):
+    """Makes TextToSpeech with a stand-in Piper, which logs each start with its arguments."""
     piper = tmp_path / "models" / "piper" / "piper"
     piper.parent.mkdir(parents=True)
     piper.write_text(FAKE_PIPER)
@@ -45,10 +46,24 @@ def tts(tmp_path, monkeypatch, make_config):
     monkeypatch.setenv("FAKE_PIPER_LOG", str(log))
     monkeypatch.setattr(text_to_speech.paths, "MODELS_DIR", str(tmp_path / "models"))
 
-    made = TextToSpeech(make_config())
-    made.started = lambda: log.read_text().count("started")
-    yield made
-    made.close()
+    made = []
+
+    def make(**sections):
+        made.append(TextToSpeech(make_config(**sections)))
+        made[-1].started = lambda: log.read_text().count("started")
+        # The --length_scale each Piper was started with, in the order they started.
+        made[-1].scales = lambda: [line.split("--length_scale ")[1].split()[0]
+                                   for line in log.read_text().splitlines()]
+        return made[-1]
+
+    yield make
+    for tts in made:
+        tts.close()
+
+
+@pytest.fixture
+def tts(make_tts):
+    return make_tts()
 
 
 def test_the_audio_comes_back_a_piece_at_a_time_at_the_voices_rate(tts):
@@ -82,7 +97,7 @@ def test_stopping_part_way_stops_piper(tts):
     # The reply is silenced part way when the user says the wake word over an announcement.
     taken = []
     take = tts._take_piper
-    tts._take_piper = lambda: taken.append(take()) or taken[-1]
+    tts._take_piper = lambda speed: taken.append(take(speed)) or taken[-1]
 
     pieces = tts.stream("slow one two three four five six")
     next(pieces)
@@ -122,6 +137,106 @@ def test_something_said_again_soon_comes_from_memory(tts):
     assert sum(len(piece) for piece in tts.stream("Your timer is done")) == 400
     time.sleep(0.3)
     assert tts.started() == before
+
+
+def wait_for(condition, seconds=5):
+    for _ in range(int(seconds / 0.005)):
+        if condition():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def test_piper_speaks_at_the_chosen_speed(make_tts):
+    # Piper's flag is how long each sound lasts, so a quarter faster is 0.8 of the length.
+    # Started twice: the warm-up, then the one left waiting.
+    tts = make_tts(voice={"speed": 1.25})
+    assert wait_for(lambda: len(tts.scales()) == 2)
+    assert tts.speed == 1.25 and tts.scales() == ["0.8", "0.8"]
+
+
+def test_a_new_speed_starts_the_next_piper_at_once(tts):
+    # So the next reply after a change on the page finds one loaded, rather than
+    # loading its voice then or being said at the old speed.
+    list(tts.stream("Your timer is done"))
+    assert wait_for(lambda: len(tts.scales()) == 3)
+    waiting = tts._waiting
+    assert tts._recent and tts.scales()[-1] == "1.0"
+
+    tts.set_speed(1.25)
+    assert waiting.poll() is not None
+    assert tts._waiting is not waiting and tts._waiting.poll() is None
+    assert wait_for(lambda: len(tts.scales()) == 4)
+    assert tts.scales()[-1] == "0.8" and not tts._recent
+
+    # The next reply takes it, starting nothing but the one to wait after it - and
+    # nothing at the old speed.
+    next_one = tts._waiting
+    assert sum(len(piece) for piece in tts.stream("one two")) == 200
+    assert next_one.poll() is not None
+    assert wait_for(lambda: len(tts.scales()) == 5)
+    time.sleep(0.1)
+    assert tts.scales()[3:] == ["0.8", "0.8"]
+
+
+def test_a_reply_under_way_at_the_old_speed_isnt_kept(tts):
+    # Kept, it would be said again at the old speed the next time a timer rang.
+    pieces = tts.stream("slow one two three")
+    next(pieces)
+    tts.set_speed(1.25)
+    list(pieces)
+    assert not tts._recent
+
+
+def test_hear_it_speaks_at_the_sliders_speed_without_changing_nova(tts):
+    # The page's "Hear it" plays the slider's speed before it's saved.
+    assert wait_for(lambda: tts._waiting is not None and len(tts.scales()) == 2)
+    waiting = tts._waiting
+    assert sum(len(piece) for piece in tts.stream("one two", speed=0.75)) == 200
+    assert tts.scales()[-1] == "1.3333"
+    assert tts.speed == 1.0 and tts._waiting is waiting and not tts._recent
+
+
+def test_hear_it_at_novas_own_speed_still_leaves_her_piper_and_what_shes_kept(tts):
+    # It mustn't take the Piper loaded for the next reply, nor push a timer's phrase
+    # out of the ones kept.
+    for number in range(text_to_speech.RECENT_PHRASES):
+        list(tts.stream(f"Timer {number} is done"))
+    assert wait_for(lambda: tts._waiting is not None and tts._waiting.poll() is None)
+    waiting, kept = tts._waiting, list(tts._recent)
+
+    assert sum(len(piece) for piece in tts.stream("one two", speed=1.0)) == 200
+    assert tts._waiting is waiting and waiting.poll() is None
+    assert list(tts._recent) == kept
+
+
+def test_a_piper_which_died_waiting_has_its_pipes_closed(tts):
+    # Not left for the garbage collector to close, whenever that is.
+    assert wait_for(lambda: tts._waiting is not None)
+    died = tts._waiting
+    died.kill()
+    died.wait()
+    list(tts.stream("one two"))
+    assert died.stdin.closed and died.stdout.closed and died.stderr.closed
+
+    assert wait_for(lambda: tts._waiting is not None)
+    died = tts._waiting
+    died.kill()
+    died.wait()
+    tts._prepare_next()
+    assert died.stdout.closed and tts._waiting is not died
+
+
+def test_nothing_is_left_waiting_once_closed(tts):
+    # A save racing Nova stopping would otherwise start a Piper nobody stops.
+    assert wait_for(lambda: tts._waiting is not None)
+    tts.close()
+    before = tts.started()
+    tts.set_speed(1.25)
+    list(tts.stream("one two"))
+    time.sleep(0.2)
+    assert tts._waiting is None and tts.started() == before + 1
+
 
 
 def test_a_failed_synthesis_says_nothing_and_doesnt_raise(tts, caplog):

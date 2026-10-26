@@ -9,7 +9,7 @@ or a reinstall loses none of it, and none of it can ever be committed by mistake
 
     ~/.config/nova/config.yaml   this install's settings, on top of the defaults
     ~/.config/nova/.env          keys and passwords
-    ~/.local/share/nova/         timers, alarms, volumes, the Spotify sign-in, logs
+    ~/.local/share/nova/         timers, alarms, volumes, the Spotify and Google sign-ins, logs
 
 NOVA_CONFIG and NOVA_DATA move those two folders - for a second copy, or the tests.
 The models stay in the repository's models/ folder, which Git ignores: they're
@@ -38,6 +38,7 @@ SECRETS_FILE = os.path.join(CONFIG_DIR, ".env")
 DATA_DIR = os.path.expanduser(os.environ.get("NOVA_DATA") or "~/.local/share/nova")
 LOGS_DIR = os.path.join(DATA_DIR, "logs")
 SPOTIFY_TOKEN_FILE = os.path.join(DATA_DIR, "spotify_token.json")
+GOOGLE_TOKEN_FILE = os.path.join(DATA_DIR, "google_token.json")
 
 
 def make_folders():

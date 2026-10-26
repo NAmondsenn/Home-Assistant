@@ -110,7 +110,9 @@ class Memory:
             what: Roughly how they put it, e.g. "that I work at Tesco".
 
         Returns:
-            Dict with 'success' and a 'message' to say.
+            Dict with 'success' and a 'message' to say - and once forgotten, 'forgotten'
+            (the fact) and 'at' (its place), for put_back. Callers which pass the result
+            on to Claude or a log must take both out.
         """
         wanted = _words(what or "")
         with self._lock:
@@ -129,7 +131,41 @@ class Memory:
                 return {"success": False, "message": "Sorry, I couldn't forget that."}
             self._facts = facts
         logger.info(f"Forgot: {forgotten}", extra=TRANSCRIPT)
-        return {"success": True, "message": f"Okay, I've forgotten that {forgotten[0].lower()}{forgotten[1:]}"}
+        return {
+            "success": True,
+            "message": f"Okay, I've forgotten that {forgotten[0].lower()}{forgotten[1:]}",
+            "forgotten": forgotten,
+            "at": best,
+        }
+
+    def put_back(self, fact: str, at: int) -> Dict:
+        """
+        Puts back a fact which was just forgotten, where it was.
+
+        Args:
+            fact: What forget gave back as 'forgotten'.
+            at: What it gave back as 'at'.
+
+        Returns:
+            Dict with 'success' and a 'message' to say.
+        """
+        with self._lock:
+            if _words(fact) in {_words(known) for known in self._facts}:
+                # Said again since, e.g. "remember that I work at Tesco" - twice would
+                # be read out twice.
+                return {"success": True, "message": "I already knew that."}
+            if len(self._facts) >= MOST_FACTS:
+                return {"success": False, "message": "My memory's full, so it can't be put back."}
+            place = max(0, min(at, len(self._facts)))
+            facts = self._facts[:place] + [fact] + self._facts[place:]
+            try:
+                self._save(facts)
+            except OSError as e:
+                logger.error(f"Couldn't save what I remember: {e}")
+                return {"success": False, "message": "Sorry, I couldn't put it back."}
+            self._facts = facts
+        logger.info(f"Put back: {fact}", extra=TRANSCRIPT)
+        return {"success": True, "message": "Put it back."}
 
     def forget_everything(self) -> Dict:
         """

@@ -62,7 +62,7 @@ def test_the_other_side_going_is_told_apart_from_a_bad_message():
         protocol.receive(io.BytesIO(b'{"type": "audio", "bytes": 4}\n\x01\x02'))
 
 
-def _handshake(satellite_password, brain_passwords, name="bedroom"):
+def _handshake(satellite_password, brain_passwords, name="bedroom", **speaker):
     """Runs both sides over a socket pair, returning what each gave or raised, and what the brain sent."""
     near, far = socket.socketpair()
     near.settimeout(5)
@@ -93,7 +93,7 @@ def _handshake(satellite_password, brain_passwords, name="bedroom"):
 
     threads = [
         threading.Thread(target=run, args=("satellite", lambda: protocol.greet(
-            satellite_stream, name, "home-assistant", satellite_password, 48000, False))),
+            satellite_stream, name, "home-assistant", satellite_password, 48000, False, **speaker))),
         threading.Thread(target=run, args=("brain", lambda: protocol.admit(Recording(), brain_passwords.get))),
     ]
     for thread in threads:
@@ -110,9 +110,87 @@ def test_the_handshake_admits_a_satellite_which_knows_its_password():
     outcome, sent = _handshake(PASSWORD, {"bedroom": PASSWORD})
 
     assert outcome["brain"] == {"name": "bedroom", "hostname": "home-assistant",
-                                "sample_rate": 48000, "unclean": False}
+                                "sample_rate": 48000, "unclean": False, "speaker": None}
     assert outcome["satellite"] is None
     assert sent == ["challenge", "ready"]
+
+
+def _admitted(**fields):
+    """
+    What admit gives back for a hello of the bedroom's with these fields as well, sent
+    by hand - for what no satellite of today's would send. The password is right.
+    """
+    near, far = socket.socketpair()
+    near.settimeout(5)
+    far.settimeout(5)
+    brain_stream, satellite_stream = far.makefile("rwb"), near.makefile("rwb")
+    outcome = {}
+
+    def brain():
+        try:
+            outcome["brain"] = protocol.admit(brain_stream, {"bedroom": PASSWORD}.get)
+        except Exception as e:
+            outcome["brain"] = e
+
+    thread = threading.Thread(target=brain)
+    thread.start()
+    nonce = "0" * 32
+    protocol.send(satellite_stream, "hello", name="bedroom", hostname="h", sample_rate=48000,
+                  unclean=False, nonce=nonce, **fields)
+    challenge, _ = protocol.receive(satellite_stream)
+    protocol.send(satellite_stream, "proof",
+                  proof=protocol.proof(PASSWORD, "satellite", challenge["nonce"], nonce))
+    assert protocol.receive(satellite_stream)[0]["type"] == "ready"
+    thread.join(5)
+    near.close()
+    far.close()
+    return outcome["brain"]
+
+
+def test_a_satellite_says_its_spotify_speaker():
+    outcome, sent = _handshake(PASSWORD, {"bedroom": PASSWORD}, speaker="Bedroom Pi")
+
+    assert outcome["brain"]["speaker"] == "Bedroom Pi"
+    assert outcome["satellite"] is None
+    assert sent == ["challenge", "ready"]
+
+
+def test_a_hello_without_a_speaker_still_connects():
+    # As an older satellite's has none - and one which doesn't make sense is only
+    # left out, never the reason a satellite can't connect.
+    assert _admitted()["speaker"] is None
+    for speaker in ("x" * 200, 7, "", None, True, ["Bedroom Pi"], "Bedroom\nPi", "Bedroom\x00Pi"):
+        assert _admitted(speaker=speaker) == {"name": "bedroom", "hostname": "h", "sample_rate": 48000,
+                                              "unclean": False, "speaker": None}
+    # Up to 64 characters, of any language.
+    assert _admitted(speaker="x" * 64)["speaker"] == "x" * 64
+    assert _admitted(speaker="Cuisine de Zoë")["speaker"] == "Cuisine de Zoë"
+
+
+def test_a_speaker_left_out_is_logged(caplog):
+    # So falling back to the brain's own speaker name can be told from the journal,
+    # not only heard as "I can't find the Voice-Assistant speaker" - shown as ascii()
+    # and cut short, so a hello can't write lines of its own into the journal.
+    with caplog.at_level("WARNING", logger="voice_assistant.protocol"):
+        _admitted(speaker="Bedroom\nPi" + "x" * 200)
+    (record,) = caplog.records
+    assert "Bedroom\\nPi" in record.getMessage() and "\n" not in record.getMessage()
+    assert "x" * 100 not in record.getMessage()
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="voice_assistant.protocol"):
+        _admitted()
+        _admitted(speaker="Bedroom Pi")
+    # Nothing for a hello without one, as an older satellite's, or a good one.
+    assert caplog.records == []
+
+
+def test_an_old_brain_ignores_the_speaker():
+    # A brain from before speakers were said lets in a satellite which says one, as
+    # admit has always let in a hello with fields it doesn't know - which this checks
+    # still holds, so either end can be updated first.
+    admitted = _admitted(speaker="Bedroom Pi", colour="blue")
+    assert admitted["name"] == "bedroom" and "colour" not in admitted
 
 
 def test_a_wrong_password_is_refused():

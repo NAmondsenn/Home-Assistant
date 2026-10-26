@@ -20,7 +20,7 @@ import re
 import threading
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 from voice_assistant import paths, storage
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -97,8 +97,8 @@ def _checked(given: Dict) -> Dict:
     if any(len(step) > LONGEST_STEP for step in steps):
         raise ValueError("One of those steps is too long.")
 
-    # The satellite it runs on at its time, by name - or None for the default one, the
-    # first added (see SatellitePasswords).
+    # The satellite it runs on at its time, by name - or None for the default one (see
+    # SatellitePasswords).
     satellite = str(given.get("satellite") or "").strip()
     if len(satellite) > LONGEST_NAME:
         raise ValueError("That satellite's name is too long.")
@@ -112,12 +112,18 @@ def _checked(given: Dict) -> Dict:
 class Routines:
     """The user's routines."""
 
-    def __init__(self, path: str = None):
+    def __init__(self, path: str = None, let_in: Optional[Callable[[str], bool]] = None):
         """
         Args:
             path: Where they're kept - routines.json in the data folder unless given.
+            let_in: Whether a satellite is still let in, or None to take every one
+                as let in. Asked under the routines' lock as one is saved, which a
+                satellite's removal takes to move its routines once it's gone from
+                the file (see forget_satellite) - so one saved for it as it's
+                removed is saved first and moved, or refused, never left on none.
         """
         self.path = path or ROUTINES_FILE
+        self.let_in = let_in
         self._lock = threading.Lock()
         self._routines: List[Dict] = self._load()
         # The day each one last ran by itself, so it runs once at its time, however
@@ -194,6 +200,57 @@ class Routines:
                 self._save_missed()
         return sorted(taken, key=lambda entry: entry["due_at"])
 
+    def forget_satellite(self, name: Optional[str], to_satellite: Optional[str] = None) -> int:
+        """
+        Runs each routine on a satellite which has been removed on the default one
+        instead, and moves those kept for it while it was away to the default - or,
+        with no satellite left, to none, for the next one added.
+
+        Args:
+            name: The satellite, by name - or None to give those kept for no
+                satellite to the next one added.
+            to_satellite: Where those kept for it go: the default, or None.
+
+        Returns:
+            How many routines now run on the default.
+        """
+        with self._lock:
+            moved = [routine for routine in self._routines if name and routine["satellite"] == name]
+            if moved:
+                routines = [dict(routine, satellite=None) if routine["satellite"] == name else routine
+                            for routine in self._routines]
+                try:
+                    storage.save_json(self.path, {"routines": routines}, indent=1)
+                except OSError as e:
+                    # Still run on the default until the brain restarts, and caught
+                    # again then - see Brain._give_out_orphans.
+                    logger.error(f"Couldn't save the routines moved off the {name} satellite: {e}")
+                self._routines = routines
+            kept = [entry for entry in self._missed if entry.get("satellite") == name]
+            if kept:
+                # As missed() keeps them: each routine once for a satellite, the
+                # later time it was missed counting.
+                latest: Dict = {}
+                for entry in ([entry for entry in self._missed if entry.get("satellite") != name]
+                              + [dict(entry, satellite=to_satellite) for entry in kept]):
+                    key = (entry.get("id"), entry.get("satellite"))
+                    if key not in latest or entry["due_at"] > latest[key]["due_at"]:
+                        latest[key] = entry
+                self._missed = list(latest.values())
+                self._save_missed()
+        if moved:
+            logger.info(f"{len(moved)} routine(s) which ran on the {name} satellite run on the default now")
+        return len(moved)
+
+    def missed_satellites(self) -> Set[Optional[str]]:
+        """
+        Returns:
+            Each satellite something is kept for, as it came due while it was away -
+            None for those kept for the next one added.
+        """
+        with self._lock:
+            return {entry.get("satellite") for entry in self._missed}
+
     def all(self) -> List[Dict]:
         """Every routine, by name."""
         with self._lock:
@@ -243,6 +300,9 @@ class Routines:
         except ValueError as e:
             return {"success": False, "message": str(e)}
         with self._lock:
+            satellite = routine["satellite"]
+            if satellite and self.let_in is not None and not self.let_in(satellite):
+                return {"success": False, "message": f"There's no satellite called {satellite}."}
             others = [other for other in self._routines if other["id"] != routine["id"]]
             if len(others) >= MOST_ROUTINES:
                 return {"success": False, "message": f"Nova keeps {MOST_ROUTINES} routines at most."}

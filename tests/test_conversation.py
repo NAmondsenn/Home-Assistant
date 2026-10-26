@@ -65,6 +65,8 @@ class FakeLLM:
         self.contexts, self.lights = [], []
         # What Claude reads before answering, and what it's told - see LLMHandler.process_query.
         self.to_read, self.read = [], []
+        # The tools it's offered, and those of them it only reads from - as each request found them.
+        self.tools, self.read_tools, self.offered = [], set(), []
 
     def forget_stale_history(self):
         pass
@@ -73,6 +75,7 @@ class FakeLLM:
         self.asked.append(text)
         self.contexts.append(context)
         self.lights.append(lights)
+        self.offered.append((list(self.tools), set(self.read_tools)))
         self.read += [read(action) for action in self.to_read]
         return self.replies.pop(0)
 
@@ -95,6 +98,12 @@ class FakeActions:
         self.run.append(action.tool)
         self.params.append(action.params)
         return self.results.get(action.tool, ActionResult(True, "Done."))
+
+    def tool_schemas(self):
+        return []
+
+    def read_tools(self):
+        return ["home_status"]
 
 
 class FakeHome:
@@ -148,6 +157,43 @@ def test_claude_reads_home_status_rather_than_it_being_said():
     assert (actions.run, actions.params) == (["home_status"], [{"about": "sunset"}])
     assert reply.say == "Sunset's at 5:52 PM."
     assert llm.recorded == [("when's sunset?", "Sunset's at 5:52 PM.")]
+
+
+class FakeCalendar:
+    """Stands in for GoogleCalendar: the activity calendars Google listed last."""
+
+    def __init__(self, *names):
+        self.names = list(names)
+
+    def activity_calendars(self):
+        return {name.lower(): {"id": f"calendar-{name.lower()}", "name": name, "primary": False, "writable": True}
+                for name in self.names}
+
+
+def test_claude_is_told_the_activities():
+    calendar = FakeCalendar("Uni", "Work")
+    actions = ActionExecutor(calendar=calendar)
+    llm = FakeLLM(_answer("Okay."), _answer("Okay."))
+    conversation = _conversation(llm=llm, actions=actions)
+
+    def told():
+        tools, read_tools = llm.offered[-1]
+        [activity] = [tool for tool in tools if tool["name"] == "get_activity"]
+        # The tools only read from are the same executor's, at the same time - so none is run as an action.
+        assert read_tools == set(actions.read_tools()) and "home_status" in read_tools
+        return activity
+
+    conversation.handle("when have I got gym")
+    activity = told()
+    assert activity["description"].endswith("The user's activities: Uni and Work.")
+    said = activity["input_schema"]["properties"]["activity"]["description"].lower()
+    assert "work" not in said and "uni" not in said
+
+    # A calendar added in Google is named from the next request - in order, so a list
+    # Google gives in another order doesn't change the tools, and the API's cache.
+    calendar.names.append("Gym")
+    conversation.handle("when have I got gym")
+    assert told()["description"].endswith("The user's activities: Gym, Uni and Work.")
 
 
 def test_a_local_command_never_reaches_claude():
@@ -681,3 +727,22 @@ def test_a_yes_to_more_than_the_pcs_question_presses_nothing(tmp_path, actions):
     assert reply.listen_again and reply.say.count("?") == 2
     conversation.handle("yes", follow_up=True)
     assert home.pressed == [] and llm.asked == ["shut it all down", "yes"]
+
+
+def test_the_chime_can_be_a_setting_read_at_each_answer():
+    # The session passes a function reading the running settings, so a save changes the next answer.
+    chime = [True]
+    conversation = _conversation(chime_enabled=lambda: chime[0])
+    assert conversation.chime_enabled is True
+    chime[0] = False
+    assert conversation.chime_enabled is False
+
+
+def test_the_done_chime_is_switched_off_straight_away():
+    chime = [True]
+    actions = FakeActions({"control_playback": ActionResult(True, "Paused", confirm="chime")})
+    intents = FakeIntents({"pause": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    conversation = _conversation(intents=intents, actions=actions, chime_enabled=lambda: chime[0])
+    assert conversation.handle("pause").sounds == [("success_chime.wav", "general")]
+    chime[0] = False
+    assert conversation.handle("pause").sounds == []

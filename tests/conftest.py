@@ -81,8 +81,14 @@ if _module_missing("spotipy"):
         def __init__(self, *args, **kwargs):
             self.kwargs = kwargs
 
+    class SpotifyOauthError(Exception):
+        def __init__(self, message, error=None, error_description=None, *args, **kwargs):
+            super().__init__(message)
+            self.error = error
+
     spotipy.Spotify = Spotify
     oauth2.SpotifyOAuth = SpotifyOAuth
+    oauth2.SpotifyOauthError = SpotifyOauthError
     spotipy.oauth2 = oauth2
     sys.modules["spotipy"] = spotipy
     sys.modules["spotipy.oauth2"] = oauth2
@@ -158,6 +164,13 @@ class FakeConfig:
 
     def section(self, name):
         return self.data.get(name, {})
+
+    def apply(self, changes):
+        """As Config.apply: the changes, each (section, name) to its value, swapped in whole."""
+        data = dict(self.data)
+        for (section, name), value in changes.items():
+            data[section] = {**data.get(section, {}), name: value}
+        self.data = data
 
 
 @pytest.fixture

@@ -19,7 +19,7 @@ come first.
 import logging
 import re
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from voice_assistant.actions import Action
 from voice_assistant.clock import spoken_clock_time
@@ -49,13 +49,14 @@ POLITE_END = r"(?: please| thanks| thank you)+$"
 LIGHT = r"(?:all )?(?:the |my )?(?:(?!and\b)[a-z']+ ){0,3}(?:lights?|lamps?)"
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-# The regular things asked about on the calendar - "what time do I have work?". What
-# each is called on the calendar is up to Home Assistant's settings; anything else is
-# left to Claude.
-ACTIVITIES = {"work": "work", "working": "work", "shift": "work", "shifts": "work", "uni": "uni",
-              "university": "uni", "college": "college", "school": "school", "lecture": "uni", "lectures": "uni",
-              "class": "uni", "classes": "uni"}
-ACTIVITY = r"(?P<activity>" + "|".join(ACTIVITIES) + ")"
+# Where the activity rules have the activity - "what time do I have work?". Each of the
+# user's calendars but their own is one, by its name, so the words are Google's, put in
+# here at each match - see LocalIntents._activity_rule. Until then, any words will do.
+ACTIVITY = r"(?P<activity>[a-z0-9' ]+?)"
+# The bare shapes before an activity - "when's sunset?", "am I at home?" - in which an
+# activity's first word alone is an everyday question, not "Sunset yoga" or "Home group",
+# unless a day follows.
+BARE_BEFORE_ACTIVITY = r"(?:when is|when's|am i)(?: at| in)? "
 
 # The devices a battery is asked about by - the kind words batteries.find knows. A
 # device with a name of its own ("the S25 Ultra") is left to Claude.
@@ -138,6 +139,27 @@ def not_a_list(said: Optional[str]) -> bool:
     return any(re.sub(r"s$", "", re.sub(r"'s$", "", word)) in NOT_A_LIST for word in (said or "").split())
 
 
+# A day or a time in what was said for a list - "put the dentist on Thursday at 3" is
+# the calendar, Claude's, not a list called "Thursday at 3". A list named after a day is
+# still one with "list" said: "my Monday jobs list".
+MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+          "november", "december"]
+HOURS_SAID = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|noon|midnight"
+WHEN_WORDS = re.compile(rf"\b(?:today|tonight|tomorrow|next week|(?:{'|'.join(WEEKDAYS)})s?|{'|'.join(MONTHS)}"
+                        rf"|at (?:\d+|{HOURS_SAID})|\d+(?: \d+)? ?(?:am|pm|a m|p m))\b")
+
+
+def names_a_day(said: Optional[str]) -> bool:
+    """
+    Whether a list's words hold a day or a time - and not the word "list" - e.g.
+    "thursday at 3" in "put the dentist on Thursday at 3".
+
+    Args:
+        said: The list as it was said, or None.
+    """
+    return bool(said) and not names_list(said) and WHEN_WORDS.search(said) is not None
+
+
 # A day asked about by name - anything less plain, like "next Thursday" (this week's
 # or next week's?), is left to Claude.
 DAY = r"(?P<day>today|tonight|tomorrow|this weekend|the weekend|" + "|".join(WEEKDAYS) + ")"
@@ -197,6 +219,11 @@ def calendar_days(day: Optional[str], today: date) -> Tuple[date, int]:
     return today + timedelta(days=(WEEKDAYS.index(day) - today.weekday()) % 7), 1
 
 
+def _tidied(text: str) -> str:
+    """Words as the rules see them: lower case, letters, digits and apostrophes, single-spaced."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9' ]", " ", text.lower())).strip()
+
+
 def _ordinal(day: int) -> str:
     """A day of the month as it's said, e.g. 4 -> "4th"."""
     suffix = "th" if 11 <= day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
@@ -206,7 +233,7 @@ def _ordinal(day: int) -> str:
 class LocalIntents:
     """Recognises the everyday commands handled without Claude."""
 
-    def __init__(self, clock=None, ntfy=None, home=None):
+    def __init__(self, clock=None, ntfy=None, home=None, activities: Optional[Callable[[], Dict[str, str]]] = None):
         """
         Args:
             clock: The Clock, to check there's exactly one timer before cancelling
@@ -216,10 +243,15 @@ class LocalIntents:
             home: Home Assistant - see home_assistant.py. Without it, nothing is taken
                 for one of Assist's own sentences, so "is the post office open?" is
                 Claude's rather than "Home Assistant isn't set up yet".
+            activities: Gives every word an activity is heard by, to the activity - see
+                GoogleCalendar.activity_words. Asked at each match, so a calendar added
+                in Google is heard from then on. Without it, the activity rules don't
+                match, and Claude has them.
         """
         self.clock = clock
         self.ntfy = ntfy
         self.home = home
+        self.activities = activities
         # The request as it was said, punctuation and all, while match looks at it - a
         # session's requests are matched one at a time. "Eggs, milk, bread" has commas,
         # which the rules never see.
@@ -274,14 +306,17 @@ class LocalIntents:
             (rf"do i have anything(?: on| planned)?(?: (?:on|for))? {DAY}", self._calendar),
             # Work, uni and the like, from the calendar - "what time do I have work
             # tomorrow?". Without a day, it's today.
-            (rf"(?:what time|when) (?:do i|am i|is)(?: have| start| finish| have to be at| got)? (?:at |in )?"
-             rf"{ACTIVITY}(?:(?: on| for)? {DAY})?", self._activity),
-            (rf"(?:am i|do i have|have i got) (?:at |in )?{ACTIVITY}(?:(?: on| for)? {DAY})?", self._activity),
+            # "When's gym tomorrow?" too.
+            (rf"(?:(?:what time|when) (?:do i|am i|is)(?: have| start| finish| have to be at| got)?|when's) "
+             rf"(?:at |in )?{ACTIVITY}(?:(?: on| for)? {DAY})?", self._activity_rule(self._activity)),
+            (rf"(?:am i|do i have|have i got) (?:at |in )?{ACTIVITY}(?:(?: on| for)? {DAY})?",
+             self._activity_rule(self._activity)),
             # When it's next - "when's my next shift?" is just the one, "what are my
             # next three shifts?" three.
-            (rf"when (?:do i|am i) next (?:have |at |in |got )?{ACTIVITY}", self._next_activity),
-            (rf"(?:when|what)(?:'s| is) my next {ACTIVITY}", self._next_activity),
-            (rf"(?:when|what)(?:'re| are) my next (?P<count>[a-z0-9]+) {ACTIVITY}", self._next_activity),
+            (rf"when (?:do i|am i) next (?:have |at |in |got )?{ACTIVITY}", self._activity_rule(self._next_activity)),
+            (rf"(?:when|what)(?:'s| is) my next {ACTIVITY}", self._activity_rule(self._next_activity)),
+            (rf"(?:when|what)(?:'re| are) my next (?P<count>[a-z0-9]+) {ACTIVITY}",
+             self._activity_rule(self._next_activity)),
             # Notifications - see ntfy.py.
             (r"(?:are there |have i got |do i have )?any (?:new )?notifications|what(?:'s| are) my notifications"
              r"|read (?:me )?my notifications", self._notifications),
@@ -353,8 +388,7 @@ class LocalIntents:
             A result shaped like LLMHandler.process_query's - a "response" and a list
             of "actions" - or None to leave the request to Claude.
         """
-        request = re.sub(r"[^a-z0-9' ]", " ", text.lower())
-        request = re.sub(r"\s+", " ", request).strip()
+        request = _tidied(text)
         request = re.sub(POLITE_END, "", re.sub(POLITE_START, "", request)).strip()
         self._said = text
 
@@ -446,11 +480,12 @@ class LocalIntents:
     def _listed(self, found, tool: str, item: Optional[str] = None, **params) -> Optional[Dict]:
         """
         A list's action - None without Home Assistant, for a thing which only points back, or
-        for list words naming one of Nova's own things or a device, or joining two requests.
+        for list words naming one of Nova's own things or a device, a day or a time, or
+        joining two requests.
         """
         said = found.groupdict().get("list")
         words = (said or "").split()
-        if (self.home is None or not_a_list(said) or {"and", "then", "plus"} & set(words)
+        if (self.home is None or not_a_list(said) or names_a_day(said) or {"and", "then", "plus"} & set(words)
                 or (item is not None and points_back(item))):
             return None
         if item is None:
@@ -494,16 +529,52 @@ class LocalIntents:
         first, days = calendar_days(found["day"], date.today())
         return self._result("Okay.", [Action("get_calendar", {"start": first.isoformat(), "days": days})])
 
-    def _activity(self, found) -> Dict:
+    def _activity_rule(self, handle: Callable) -> Callable:
+        """
+        An activity rule's handler, which matches the request again with the activities'
+        words in the rule's ACTIVITY - the request having already matched with any words
+        there, so a request of another shape never has the calendar's names asked for.
+        It's None, for Claude, without the calendar, or when none of its activities is there.
+        """
+        def matched(found) -> Optional[Dict]:
+            words = self._activity_words()
+            if not words:
+                return None
+            pattern = found.re.pattern.replace(ACTIVITY, "(?P<activity>" + "|".join(
+                re.escape(word) for word in sorted(words, key=len, reverse=True)) + ")")
+            again = re.fullmatch(pattern, found.string)
+            if not again:
+                return None
+            name = _tidied(words[again["activity"]]).split()
+            first_word_alone = len(name) > 1 and again["activity"] == name[0]
+            if (first_word_alone and not again.groupdict().get("day")
+                    and re.fullmatch(BARE_BEFORE_ACTIVITY, found.string[:again.start("activity")])):
+                return None
+            return handle(again, words)
+        return matched
+
+    def _activity_words(self) -> Dict[str, str]:
+        """
+        The words the activities are heard by, without those for Nova's own things - a
+        calendar called Timer or Music is Claude's to ask about, as Claude has both, so
+        it never takes over "when's my next timer?". See ACTIVITY.
+        """
+        if self.activities is None:
+            return {}
+        own = NOVAS_OWN | NOT_A_LIST
+        return {word: activity for word, activity in self.activities().items()
+                if word and not any(part in own or part.rstrip("s") in own for part in word.split())}
+
+    def _activity(self, found, words: Dict[str, str]) -> Dict:
         first, days = calendar_days(found["day"], date.today())
-        return self._result("Okay.", [Action("get_activity", {"activity": ACTIVITIES[found["activity"]],
+        return self._result("Okay.", [Action("get_activity", {"activity": words[found["activity"]],
                                                               "start": first.isoformat(), "days": days})])
 
-    def _next_activity(self, found) -> Optional[Dict]:
+    def _next_activity(self, found, words: Dict[str, str]) -> Optional[Dict]:
         count = _number(found.groupdict().get("count") or "one")
         if not count:
             return None
-        return self._result("Okay.", [Action("get_activity", {"activity": ACTIVITIES[found["activity"]],
+        return self._result("Okay.", [Action("get_activity", {"activity": words[found["activity"]],
                                                               "start": date.today().isoformat(), "count": count})])
 
     def _weather(self, found) -> Dict:

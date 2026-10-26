@@ -15,6 +15,7 @@ running mark and restart notice, its signals and shutdown, the watchdog, routine
 their time, and the reminder nobody answered sent to the user's phone.
 """
 
+import hmac
 import logging
 import os
 import queue
@@ -23,26 +24,27 @@ import socketserver
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from voice_assistant import paths, protocol, storage, watchdog
+from voice_assistant import logging_setup, paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock, spoken_clock_time
+from voice_assistant.google_calendar import READ_FAILURES, GoogleCalendar
 from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.lists import Lists
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.memory import Memory
-from voice_assistant.ntfy import Ntfy
+from voice_assistant.ntfy import RETOPIC, Ntfy
 from voice_assistant.pc import PCPower
 from voice_assistant.protocol import ProtocolError, Refused, admit
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.routines import Routines
 from voice_assistant.satellite_link import SOCKET_TIMEOUT, Stream
-from voice_assistant.satellite_passwords import SatellitePasswords
+from voice_assistant.satellite_passwords import SatellitePasswords, name_problem
 from voice_assistant.session import Session
 from voice_assistant.settings_page import SettingsPage
 from voice_assistant.text_to_speech import TextToSpeech
@@ -100,11 +102,12 @@ AWAY_WAIT = 2.0
 # watchdog.ALLOWANCE, 150 seconds, the same as main.py had on the Pi, whose watchdog
 # went quiet as soon as a turn hung, as the microphone was no longer read. That's more
 # than a turn legitimately goes between steps which count as moving - a web search
-# retried once (two lots of llm.search_timeout) after a recording of up to 10 seconds
-# - while a session between wake words, or playing a reply of any length, moves
-# several times a second. nova-backend.service's WatchdogSec=60 then restarts the brain
-# within a minute of the watchdog going quiet: three and a half minutes from a session
-# sticking, at most, which its satellite rides out, ringing from its copy.
+# retried once (two lots of llm.search_timeout) after a recording of up to 30 seconds,
+# the most a satellite sends whatever the brain says - while a session between wake
+# words, or playing a reply of any length, moves several times a second.
+# nova-backend.service's WatchdogSec=60 then restarts the brain within a minute of the
+# watchdog going quiet: three and a half minutes from a session sticking, at most,
+# which its satellite rides out, ringing from its copy.
 STOP_CHECK = 0.5
 
 # What a satellite says when it can't reach the brain, in the brain's own voice - see
@@ -163,7 +166,8 @@ class _Server(socketserver.ThreadingTCPServer):
         # Run between connections, every STOP_CHECK. Nothing in it may stop the brain
         # listening.
         try:
-            self.brain._shut_out_removed()
+            # Never waiting on a removal the page is handling - its look is enough.
+            self.brain._shut_out_removed(wait=False)
         except Exception:
             logger.exception("Couldn't check for satellites which have been removed")
         # The brain's main loop is still going, and so is every session, but for one
@@ -192,11 +196,20 @@ class Brain:
         self.name = config.section("assistant").get("name", "Assistant")
         # Where it listens. 0 is any free port, which this becomes once serve() is listening.
         self.port = config.section("backend").get("port", 10400)
-        # The satellites it lets in, in the order they were added - see default_satellite.
+        # The satellites it lets in, the default first - see default_satellite.
         self.passwords = SatellitePasswords()
-        # How the passwords' file looked when it was last read for who's still let in -
-        # see _shut_out_removed.
+        # How the passwords' file looked when it was last read for who's still let in,
+        # and the satellites it had then - see _shut_out_removed.
         self._passwords_seen = self._passwords_file()
+        try:
+            self._names_seen: List[str] = self.passwords.names(missing_ok=False)
+        except FileNotFoundError:
+            # A fresh brain's - the file is made as the first satellite is added.
+            logger.info("No satellites have been added yet")
+            self._names_seen = []
+        except Exception as e:
+            logger.error(f"Couldn't read the satellites' passwords: {e}")
+            self._names_seen = []
 
         # Each satellite's session, by its name, for as long as it's connected.
         self.sessions: Dict[str, Session] = {}
@@ -209,6 +222,13 @@ class Brain:
         # Held while a satellite's copy of the timers and alarms is made and sent, so
         # an older copy can't reach it after a newer one.
         self._sending_alarms = threading.Lock()
+        # Held while it's seen which satellites have been removed, and each is handled
+        # - by the server's poll and by remove_satellite alike, which may look at
+        # once - so one removal is never handled twice.
+        self._removing = threading.Lock()
+        # The same for the phrase, made again when the speaking speed changes - see
+        # apply_settings - so one at the old speed can't reach a satellite after it.
+        self._sending_phrase = threading.Lock()
         # The satellites connected which have said what happened while they were
         # away, so can be told what came due while the brain was off - see
         # Clock.can_hear, which reads it without the lock.
@@ -220,6 +240,9 @@ class Brain:
         self._restarts_told: Dict[str, float] = {}
         # Whether what rang on no satellite has been given to the default yet.
         self._unowned_given = False
+        # Whether each satellite removed had its copy of the alarms emptied, for
+        # remove_satellite to say - whichever look handled the removal.
+        self._emptied: Dict[str, bool] = {}
         self._server: Optional[_Server] = None
         self._stopped = threading.Event()
 
@@ -236,11 +259,17 @@ class Brain:
         # What the assistant knows about the user, learnt as they talk - see memory.py.
         self.memory = Memory()
         # The user's own routines - see routines.py.
-        self.routines = Routines()
+        self.routines = Routines(let_in=lambda satellite: not self._gone_from_file(satellite))
 
         # The user's own ntfy server, both ways: alerts said out loud as they arrive,
         # and things sent to their phone. None if it isn't set up - see ntfy.py.
         self.ntfy = Ntfy.from_config(config, os.getenv("NTFY_TOKEN"), on_alert=self._alert)
+        # With no ntfy there's still a night for the battery watcher to keep quiet in, read
+        # from the same settings and kept by the same function - see _make_battery_watcher.
+        # Kept, so a night changed on the settings page reaches it - see apply_settings.
+        ntfy_settings = config.section("ntfy")
+        self._night = Ntfy("", quiet_from=ntfy_settings.get("quiet_from", "23:00"),
+                           quiet_until=ntfy_settings.get("quiet_until", "07:00"))
 
         # Home Assistant, the brain's own client - for watching the batteries, and what
         # the satellites' sessions ask of it besides is theirs - or None until it's set
@@ -266,12 +295,16 @@ class Brain:
         # PC, for a home with several - see pc.py.
         self.pc = (PCPower(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "pcs.json"), {"wake": {}}))
                    if self.home else None)
+        # The user's calendars, read from Google itself rather than through Home Assistant,
+        # and shared by every session - or None until Google's keys are set. See
+        # google_calendar.py.
+        self.calendar: Optional[GoogleCalendar] = GoogleCalendar.from_env(config)
 
         # Every satellite's timers and alarms, rung on the satellite each was set from.
         # Started in run(), once what rings on no satellite has gone to the default.
         self.clock = Clock(on_timer_finished=self._announce, on_unanswered=self._unanswered,
                            on_change=self._send_alarms, can_hear=lambda satellite: satellite in self._caught_up,
-                           config=config, start=False)
+                           let_in=lambda satellite: not self._gone_from_file(satellite), config=config, start=False)
 
         # One Piper, and one Nemotron, which every session shares.
         self.tts = TextToSpeech(config)
@@ -290,29 +323,133 @@ class Brain:
 
         Returns:
             The watcher, set up from config.yaml's batteries section, and keeping ntfy's
-            quiet hours. With no ntfy there's still a night to keep quiet in, so its
-            hours are read from the same settings and kept by the same function.
+            quiet hours - or, with no ntfy, the brain's own night's.
         """
         settings = self.config.section("batteries")
         choices = BatteryChoices(os.path.join(paths.DATA_DIR, "batteries.json"),
                                  settings.get("mobile_marks", [5]), settings.get("other_marks", [15, 5]))
-        send = None
-        if self.ntfy and self.ntfy.phone:
-            def send(message: str, title: str) -> bool:
-                return self.ntfy.send(self.ntfy.phone, message, title=title)
-        ntfy_settings = self.config.section("ntfy")
-        quiet = (self.ntfy or Ntfy("", quiet_from=ntfy_settings.get("quiet_from", "23:00"),
-                                   quiet_until=ntfy_settings.get("quiet_until", "07:00"))).quiet
+
+        def send(message: str, title: str) -> bool:
+            # The phone's topic at each warning, so one set or cleared on the settings page
+            # is used from the next - with none, it's as if there were no ntfy.
+            phone = self.ntfy.phone if self.ntfy else ""
+            return bool(phone) and self.ntfy.send(phone, message, title=title)
+
+        quiet = (self.ntfy or self._night).quiet
         return BatteryWatcher(self.home, choices, say=self._say_battery, send=send, quiet=quiet,
                               check_every=settings.get("check_every", 60),
                               stale_after=settings.get("stale_after", 3600))
+
+    def apply_settings(self, changes: Dict[Tuple[str, str], Any]) -> List[Tuple[str, str]]:
+        """
+        Uses settings saved on the settings page straight away, with no restart. Each is
+        put in the running settings, which most parts read as they use them - a session's
+        silence, say. The parts which keep a copy of one are told.
+
+        Args:
+            changes: Each setting, as (section, name), to its new value - only those used
+                straight away, e.g. {("ntfy", "quiet_from"): "22:00"}.
+
+        Returns:
+            Those which a part couldn't be told of, so are only used once Nova restarts.
+            Each part's failure is logged.
+        """
+        self.config.apply(changes)
+        unused = []
+        ntfy_changes = [key for key in changes if key[0] == "ntfy" and key[1] in RETOPIC]
+        if ntfy_changes:
+            settings = self.config.section("ntfy")
+            # All five, as they are now - retopic falls back to ntfy's own night for a time which is missing.
+            told = [settings.get(name) or "" for name in RETOPIC]
+            for part in (self.ntfy, self._night):
+                if part is None:
+                    continue
+                try:
+                    part.retopic(*told)
+                except Exception:
+                    logger.exception("ntfy couldn't be told of the settings saved, so they're used once Nova restarts")
+                    unused += [key for key in ntfy_changes if key not in unused]
+            if self.ntfy is None:
+                # Nothing is sent to a topic until Nova restarts with an ntfy server to send
+                # through - one saved with its address, say. The night is used now, by the
+                # battery watcher.
+                unused += [key for key in ntfy_changes
+                           if key[1] not in ("quiet_from", "quiet_until") and key not in unused]
+        if ("logging", "log_transcripts") in changes:
+            try:
+                logging_setup.log_transcripts(changes[("logging", "log_transcripts")])
+            except Exception:
+                logger.exception("Keeping what's said in the logs couldn't be changed until Nova restarts")
+                unused.append(("logging", "log_transcripts"))
+        if ("voice", "speed") in changes and not self._change_speed(changes[("voice", "speed")]):
+            unused.append(("voice", "speed"))
+        if ("thresholds", "recording_timeout") in changes:
+            self._send_states()
+        return unused
+
+    def _send_states(self):
+        """Has every session connected send its satellite its state again."""
+        with self._lock:
+            sessions = list(self.sessions.values())
+        for session in sessions:
+            try:
+                session.send_state()
+            except Exception:
+                logger.exception(f"The {session.satellite.name} satellite couldn't be sent the longest request, "
+                                 "so it keeps the old one until it reconnects")
+
+    def _change_speed(self, speed: float) -> bool:
+        """
+        Has Piper speak at a new speed from the next reply, and makes the phrase each
+        satellite says while it can't reach the brain again at it, sending it to each
+        connected - so Nova sounds the same either way.
+
+        Args:
+            speed: How fast, e.g. 1.25.
+
+        Returns:
+            Whether Piper speaks at it now. Anything which went wrong is logged.
+        """
+        try:
+            self.tts.set_speed(speed)
+        except Exception:
+            # set_speed changes the speed before it stops the Piper left waiting at the
+            # old one, so it can fail with the new speed already in use.
+            if self.tts.speed != speed:
+                logger.exception("Piper couldn't be told of the new speaking speed, so it's used once Nova restarts")
+                return False
+            logger.exception("Piper speaks at the new speed, but something went wrong getting it ready")
+        try:
+            self._send_phrase()
+        except Exception:
+            logger.exception("The phrase for when the server can't be reached couldn't be made again, "
+                             "so it stays at the old speaking speed")
+        return True
+
+    def _send_phrase(self):
+        """Makes the phrase again at Piper's speed, and sends it to each satellite connected."""
+        # Made before the lock is taken, as Piper takes a moment over it.
+        phrase = self._make_phrase()
+        if phrase is None:
+            # The old one is better than none - for a satellite connecting later too.
+            logger.warning("The phrase for when the server can't be reached stays at the old speaking speed")
+            return
+        # Which are connected is seen with the lock held, so one just connecting either
+        # is sent it here or is caught up after, with it - see _catch_up.
+        with self._sending_phrase:
+            self.phrase = phrase
+            with self._lock:
+                satellites = [session.satellite for session in self.sessions.values()]
+            for satellite in satellites:
+                if satellite.connected:
+                    satellite.send_phrase(*phrase)
 
     # The satellites
 
     def satellites(self) -> List[str]:
         """
         Returns:
-            Every satellite which may connect, in the order they were added - connected or not.
+            Every satellite which may connect, the default first - connected or not.
         """
         return self.passwords.names()
 
@@ -322,10 +459,96 @@ class Brain:
         doesn't say, and what rang before there were satellites.
 
         Returns:
-            The first satellite added, or None if there are none.
+            The first in the passwords' file - the first added, unless another has
+            been made the default - or None if there are none.
         """
         names = self.passwords.names()
         return names[0] if names else None
+
+    def add_satellite(self, name: str) -> str:
+        """
+        Lets a new satellite in, as the settings page asks - at its first try, as its
+        password is read afresh as each satellite connects.
+
+        Args:
+            name: Its Pi's machine name, e.g. "bedroom".
+
+        Returns:
+            Its password, made up here, for the page to show once.
+
+        Raises:
+            ValueError: If the name isn't a machine name, or is already there.
+        """
+        problem = name_problem(name)
+        if problem:
+            raise ValueError(problem)
+        return self.passwords.add(name)
+
+    def renew_password(self, name: str) -> str:
+        """
+        Gives a satellite a new password, as the settings page asks, and lets it go if
+        it's connected - so it's refused until its setup has the new one. Its alarms,
+        routines and volumes are kept, as they're by its name.
+
+        Args:
+            name: The satellite.
+
+        Returns:
+            The new password, for the page to show once.
+
+        Raises:
+            ValueError: If there's no such satellite.
+        """
+        password = self.passwords.renew(name)
+        # After it's saved, never before - see _start_session, which lets go of one
+        # whose session is made after this looks.
+        with self._lock:
+            session = self.sessions.get(name)
+        if session is not None:
+            logger.info(f"The {name} satellite has a new password, so it's let go until its setup has it")
+            # Saved by now, so the old one is refused: the new one is given however
+            # letting go goes, or the satellite couldn't connect until given another.
+            self._let_go(session)
+        return password
+
+    def remove_satellite(self, name: str) -> Optional[bool]:
+        """
+        Stops letting a satellite in, as the settings page asks, and handles it
+        straight away rather than at the server's next look - see _on_removed.
+
+        Args:
+            name: The satellite.
+
+        Returns:
+            Whether its copy of the alarms was emptied - False if it wasn't
+            connected, or couldn't be sent the empty one, so it still rings them
+            if it's switched on within the week. None if there was none to remove.
+        """
+        # One from a removal before, by the command line, isn't this one's.
+        with self._lock:
+            self._emptied.pop(name, None)
+        if not self.passwords.remove(name):
+            return None
+        # Handled by this look, or by the server's poll before it - which this
+        # waits for.
+        self._shut_out_removed()
+        with self._lock:
+            return self._emptied.pop(name, False)
+
+    def make_default(self, name: str):
+        """
+        Makes a satellite the default, as the settings page asks. ntfy's alerts,
+        the spoken warnings and routines without a satellite go to it from then on,
+        as each asks default_satellite as it goes.
+
+        Args:
+            name: The satellite.
+
+        Raises:
+            ValueError: If there's no such satellite.
+        """
+        self.passwords.make_default(name)
+        logger.info(f"The {name} satellite is the default now")
 
     def last_moved(self) -> float:
         """
@@ -352,6 +575,36 @@ class Brain:
         with self._lock:
             session = self.sessions.get(name) if name else None
         return session if session is not None and session.satellite.connected else None
+
+    def _stoppable_sessions(self) -> List[Tuple[str, Session]]:
+        """
+        Returns:
+            Each connected satellite with something ringing on it, or its Nova
+            talking, and its session - the default first.
+        """
+        found = []
+        for name in self.satellites():
+            session = self.session_for(name)
+            if session is not None and (self.clock.is_ringing(satellite=name) or session.activity == "speaking"):
+                found.append((name, session))
+        return found
+
+    def stoppable(self) -> bool:
+        """Whether the settings page's Stop has anything to stop, on any satellite."""
+        return bool(self._stoppable_sessions())
+
+    def stop_everywhere(self) -> List[str]:
+        """
+        The settings page's Stop: Home Assistant's, on every satellite with something
+        to stop - see Session.stop_what_rings_and_speaks.
+
+        Returns:
+            The names of the satellites stopped.
+        """
+        stopped = self._stoppable_sessions()
+        for _, session in stopped:
+            session.stop_what_rings_and_speaks()
+        return [name for name, _ in stopped]
 
     def serve(self):
         """
@@ -400,9 +653,10 @@ class Brain:
         stream = Stream(sock)
         # The satellite says hello as it connects - see _catch_up.
         hello_at = time.monotonic()
-        hello = self._admit(stream, address)
-        if hello is None:
+        admitted = self._admit(stream, address)
+        if admitted is None:
             return
+        hello, password = admitted
         name = hello["name"]
         logger.info(f"The {name} satellite connected")
         if hello["unclean"]:
@@ -414,7 +668,7 @@ class Brain:
         reading.start()
         session = None
         try:
-            session = self._start_session(satellite)
+            session = self._start_session(satellite, password)
             if session is not None and self._catch_up(session, hello_at):
                 session.run()
         except Exception:
@@ -427,18 +681,22 @@ class Brain:
                 self._forget(session)
         logger.info(f"The {name} satellite went")
 
-    def _admit(self, stream: Stream, address: str) -> Optional[Dict]:
+    def _admit(self, stream: Stream, address: str) -> Optional[Tuple[Dict, str]]:
         """
         The brain's side of the handshake - see protocol.admit.
 
         Returns:
-            The satellite's hello, or None if it wasn't let in.
+            The satellite's hello and the password it proved, or None if it wasn't let in.
         """
         named: List[str] = []
+        # The password as it was read, for _start_session to tell whether it has
+        # changed since - only ever compared, never logged.
+        read: List[Optional[str]] = []
 
         def password_for(name: str) -> Optional[str]:
             named.append(name)
-            return self.passwords.get(name)
+            read.append(self.passwords.get(name))
+            return read[-1]
 
         try:
             hello = admit(stream, password_for)
@@ -462,7 +720,7 @@ class Brain:
             return None
         with self._lock:
             self._why_turned_away.pop(hello["name"], None)
-        return hello
+        return hello, read[-1]
 
     def _passwords_file(self) -> Optional[Tuple[int, int, int]]:
         """
@@ -478,28 +736,95 @@ class Brain:
             return None
         return found.st_ino, found.st_mtime_ns, found.st_size
 
-    def _shut_out_removed(self):
+    def _shut_out_removed(self, wait: bool = True):
         """
-        Lets go of any satellite connected which has been removed since, with
-        remove-satellite - run by itself, so the brain only hears of it through the
-        file. A password is only proved as a satellite connects, so a satellite
+        Handles each satellite removed since the passwords' file was last looked at -
+        on the settings page, or with remove-satellite run by itself, which the brain
+        only hears of through the file. See _on_removed, the one place either is
+        handled. A password is only proved as a satellite connects, so a satellite
         removed otherwise stayed for as long as it stayed connected.
+
+        Args:
+            wait: Whether to wait for a look already under way. The server's poll
+                doesn't, as it must never stop the brain listening: the look under
+                way sees the file as it is, and the poll looks again next time.
         """
-        now = self._passwords_file()
-        if now == self._passwords_seen:
+        if not self._removing.acquire(blocking=wait):
             return
-        # Noted first, so a file which can't be read is said once, not every check.
-        self._passwords_seen = now
         try:
-            names = set(self.passwords.names())
-        except Exception as e:
-            logger.error(f"Couldn't read the satellites' passwords to see which are still let in: {e}")
-            return
+            now = self._passwords_file()
+            if now == self._passwords_seen:
+                return
+            # Noted first, so a file which can't be read is said once, not every check.
+            self._passwords_seen = now
+            try:
+                # A missing file is never every satellite removed - see _gone_from_file.
+                names = self.passwords.names(missing_ok=False)
+            except Exception as e:
+                logger.error(f"Couldn't read the satellites' passwords to see which are still let in: {e}")
+                return
+            with self._lock:
+                connected = list(self.sessions)
+            # Those connected too, for one added and removed again between two looks.
+            gone = [name for name in dict.fromkeys(self._names_seen + connected) if name not in names]
+            self._names_seen = names
+            for name in gone:
+                try:
+                    self._on_removed(name, names)
+                except Exception:
+                    logger.exception(f"Couldn't finish handling the {name} satellite's removal")
+        finally:
+            self._removing.release()
+
+    def _on_removed(self, name: str, names: List[str]):
+        """
+        Handles a satellite which has been removed, whether it's connected or not. Its
+        timers, alarms and routines go to the default, so nothing rings nowhere - or
+        stay on none with no satellite left, for the next added. Its volumes and mute
+        stay in the data folder, so added again it has them back.
+
+        Args:
+            name: The satellite.
+            names: The satellites still let in, as the removal was read - the first
+                is the default. Never read again here: a file gone missing since
+                would read as none, and what was the satellite's would ring nowhere.
+        """
+        # Out of sessions first, so neither a change on the clock nor the hourly
+        # resend can send it its real copy after the empty one - see _send_alarms_to.
         with self._lock:
-            removed = [session for name, session in self.sessions.items() if name not in names]
-        for session in removed:
-            logger.info(f"The {session.satellite.name} satellite was removed, so it's let go")
+            session = self.sessions.pop(name, None)
+            self._caught_up.discard(name)
+        emptied = False
+        if session is not None:
+            logger.info(f"The {name} satellite was removed, so it's let go")
+            # Emptied before it's let go, so it never rings its old alarms from its
+            # copy - as it would once it couldn't reach the brain, for a week.
+            with self._sending_alarms:
+                emptied = session.satellite.connected and session.satellite.send_alarms([])
+            self._let_go(session)
+        with self._lock:
+            self._emptied[name] = emptied
+        if not emptied:
+            logger.warning(f"The {name} satellite was removed while it wasn't connected, so it still has a copy "
+                           f"of its alarms for the next week, and rings them if it's switched on before then")
+        default = names[0] if names else None
+        if default is None:
+            with self._lock:
+                self._unowned_given = False
+        self.clock.move_satellite(name, default)
+        self.routines.forget_satellite(name, default)
+
+    def _let_go(self, session: Session):
+        """
+        Ends a satellite's session and lets the satellite go - the connection even if
+        ending the session fails, which is logged.
+        """
+        name = session.satellite.name
+        try:
             session.close()
+        except Exception:
+            logger.exception(f"Couldn't let go of the {name} satellite's session properly")
+        finally:
             session.satellite.close()
 
     def _turned_away(self, name: str, why: str):
@@ -510,14 +835,18 @@ class Brain:
             self._why_turned_away[name] = why
         logger.warning(why)
 
-    def _start_session(self, satellite: RemoteSatellite) -> Optional[Session]:
+    def _start_session(self, satellite: RemoteSatellite, password: Optional[str] = None) -> Optional[Session]:
         """
         Makes a satellite's session, in place of any it had - from a connection which
         went without the brain noticing yet, say.
 
+        Args:
+            satellite: The satellite, just let in.
+            password: The password it proved, or None not to check it's still its own.
+
         Returns:
-            The session, or None if the brain is stopping or the satellite was removed
-            as it connected.
+            The session, or None if the brain is stopping or the satellite was removed,
+            or given a new password, as it connected.
         """
         name = satellite.name
         with self._connecting:
@@ -528,16 +857,15 @@ class Brain:
                 logger.info(f"The {name} satellite connected again, so its last connection is let go")
                 # Before the new session is made, since both would be the same device
                 # in Home Assistant, connecting with the same MQTT client id.
-                old.close()
-                old.satellite.close()
-            self._give_out_unowned()
+                self._let_go(old)
+            self._give_out_orphans()
             session = Session(self, satellite)
             with self._lock:
                 stopped = self._stopped.is_set()
                 if not stopped:
                     self.sessions[name] = session
         if stopped:
-            session.close()
+            self._let_go(session)
             return None
 
         # Checked once it's registered, never before: remove-satellite is only seen
@@ -545,23 +873,46 @@ class Brain:
         # sessions as it reads it. A removal before this is seen here; one after it is
         # seen there, as the session is in sessions by then - so whichever way round
         # the two threads run, a satellite removed while its session was being made
-        # can't stay.
-        if self._removed(name):
-            logger.info(f"The {name} satellite was removed as it connected, so it's let go")
-            session.close()
+        # can't stay. The same goes for a new password, which renew_password saves
+        # before it looks in sessions.
+        if self._removed(name, password):
+            logger.info(f"The {name} satellite was removed, or given a new password, as it connected, so it's let go")
+            if self._gone_from_file(name):
+                # Removed rather than given a new password, and online a moment ago
+                # - so the page's question said nothing of its copy - which
+                # _on_removed found no session to empty. It proved itself on this
+                # connection, so it's emptied here.
+                with self._sending_alarms:
+                    if satellite.connected:
+                        satellite.send_alarms([])
+            self._let_go(session)
             self._forget(session)
             return None
         return session
 
-    def _removed(self, name: str) -> bool:
+    def _removed(self, name: str, password: Optional[str] = None) -> bool:
         """
-        Whether a satellite has had its password removed. One which can't be told,
-        because the file can't be read, is taken to be let in, as _shut_out_removed does.
+        Whether a satellite has had its password removed - or, given the one it proved,
+        changed. One which can't be told, because the file can't be read, is taken to
+        be let in, as _shut_out_removed does.
         """
         try:
+            if password is not None:
+                return not hmac.compare_digest((self.passwords.get(name) or "").encode(), password.encode())
             return name not in self.passwords.names()
         except Exception as e:
             logger.error(f"Couldn't read the satellites' passwords to see if the {name} satellite is still let in: {e}")
+            return False
+
+    def _gone_from_file(self, name: str) -> bool:
+        """
+        Whether a satellite is missing from the passwords' file. A file which is
+        missing, or can't be read, says nothing either way, so never counts - that
+        would be every satellite removed at once.
+        """
+        try:
+            return name not in self.passwords.names(missing_ok=False)
+        except Exception:
             return False
 
     def _catch_up(self, session: Session, hello_at: float) -> bool:
@@ -583,8 +934,9 @@ class Brain:
         # while it was away would come back unmuted.
         session.send_state()
         self._send_alarms_to(satellite)
-        if self.phrase is not None:
-            satellite.send_phrase(*self.phrase)
+        with self._sending_phrase:
+            if self.phrase is not None:
+                satellite.send_phrase(*self.phrase)
         # What rang and what was dismissed on it while it couldn't reach the brain, so
         # nothing dismissed there rings again here, nor is said to have been missed -
         # and what it was still ringing, which rings on here.
@@ -616,22 +968,70 @@ class Brain:
             del self.sessions[name]
             self._caught_up.discard(name)
 
-    def _give_out_unowned(self):
+    def _give_out_orphans(self):
         """
-        Gives everything which rings on no satellite - set before there were any, when
-        the Pi was all of Nova - to the default satellite, once there is one. Only
-        once, as nothing set since rings on none.
+        Gives whatever rings on no satellite, or on one no longer let in, to the
+        default - or leaves it on none with no satellite yet, for the first added.
+        On none is what was set before there were satellites, when the Pi was all of
+        Nova, and the last satellite's once it's removed. On one no longer let in is
+        what was a satellite's removed while the brain was down - with
+        remove-satellite run with it stopped, or across an update - which
+        _on_removed never saw. That one's routines run on the default too, and those
+        kept for it while it was away go there.
+
+        Run as the brain starts, and as each satellite connects - holding _removing,
+        so it never reads which satellites there are part way through a removal,
+        and gives what's on none to the one being removed.
         """
-        default = self.default_satellite()
-        with self._lock:
-            if self._unowned_given or default is None:
+        with self._removing:
+            try:
+                # A missing file is never every satellite removed - see _gone_from_file.
+                names = self.passwords.names(missing_ok=False)
+            except FileNotFoundError:
+                # Only as it starts, as no satellite can connect with no file. A
+                # fresh brain has none - but one with alarms on a satellite was
+                # likely given the wrong config folder.
+                if any(self.clock.satellites()):
+                    logger.warning(f"There's no {self.passwords.path}, but there are alarms or timers for "
+                                   f"satellites - is the config folder the right one?")
+                else:
+                    logger.info("No satellites have been added yet")
                 return
-            self._unowned_given = True
-        self.clock.assign_unowned(default)
+            except Exception as e:
+                logger.error(f"Couldn't read the satellites' passwords to see what belongs to none: {e}")
+                return
+            default = names[0] if names else None
+            with self._lock:
+                unowned = default is not None and not self._unowned_given
+                if unowned:
+                    self._unowned_given = True
+            if unowned:
+                self.clock.move_satellite(None, default)
+                self.routines.forget_satellite(None, default)
+            orphans = self.clock.satellites() | self.routines.missed_satellites()
+            orphans |= {routine["satellite"] for routine in self.routines.all()}
+            for name in sorted(orphan for orphan in orphans if orphan and orphan not in names):
+                logger.warning(f"The {name} satellite was removed while the brain was down, so it still has a copy "
+                               f"of its alarms for the next week, and rings them if it's switched on before then - "
+                               f"what was its goes to {default or 'the next satellite added'}")
+                if default is None:
+                    with self._lock:
+                        self._unowned_given = False
+                self.clock.move_satellite(name, default)
+                self.routines.forget_satellite(name, default)
 
     def _send_alarms_to(self, satellite: RemoteSatellite):
-        """Sends a satellite its copy of the timers and alarms which ring on it."""
+        """
+        Sends a satellite its copy of the timers and alarms which ring on it - unless
+        it's no longer the one connected by its name. A copy made just before it was
+        removed would otherwise reach it after its empty one (see _on_removed), and
+        it would ring that for a week.
+        """
         with self._sending_alarms:
+            with self._lock:
+                session = self.sessions.get(satellite.name)
+            if session is None or session.satellite is not satellite:
+                return
             satellite.send_alarms(self.clock.copy_for(satellite.name))
 
     def _send_alarms(self):
@@ -678,11 +1078,12 @@ class Brain:
 
         Args:
             satellite: Where it rings - or None for the default satellite.
-            message, sound, boost, still_wanted, playback: As Session.announce has them.
+            message, sound, boost, still_wanted, playback: As Session.announce has them. Whatever the
+            clock says is ringing, so its sound is never switched off.
         """
         session = self.session_for(satellite)
         if session is not None:
-            session.announce(message, sound, boost, still_wanted=still_wanted, **playback)
+            session.announce(message, sound, boost, still_wanted=still_wanted, ringing=True, **playback)
 
     def _alert(self, alert) -> bool:
         """
@@ -745,9 +1146,11 @@ class Brain:
             kind: "clock" for a timer or reminder, "alarm" for an alarm.
             satellite: Where it rang - the phone is the same for every satellite.
         """
-        if self.ntfy and self.ntfy.reminders and kind == "clock" and timer.get("label"):
+        # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
+        topic = self.ntfy.reminders if self.ntfy else ""
+        if topic and kind == "clock" and timer.get("label"):
             label = timer["label"]
-            self.ntfy.send_soon(self.ntfy.reminders, label[:1].upper() + label[1:], title="Reminder nobody answered")
+            self.ntfy.send_soon(topic, label[:1].upper() + label[1:], title="Reminder nobody answered")
 
     def run_routine(self, routine) -> bool:
         """
@@ -832,14 +1235,15 @@ class Brain:
 
     def _tell_restarted(self, satellite: str):
         """Tells the user's phone a satellite didn't stop properly last time - once in a while, at most."""
-        if not (self.ntfy and self.ntfy.restarts):
+        topic = self.ntfy.restarts if self.ntfy else ""
+        if not topic:
             return
         with self._lock:
             if time.time() - self._restarts_told.get(satellite, 0) < RESTART_NOTICE_GAP:
                 return
             self._restarts_told[satellite] = time.time()
         logger.warning(f"The {satellite} satellite didn't stop properly, so telling the user's phone")
-        self.ntfy.send_soon(self.ntfy.restarts,
+        self.ntfy.send_soon(topic,
                             f"{self.name}'s {satellite} satellite stopped unexpectedly, and has started again.",
                             title=f"{self.name}'s {satellite} satellite restarted")
 
@@ -854,10 +1258,10 @@ class Brain:
             # Half written as the power went, most likely - which is a restart too.
             last = {}
         told_at = (last or {}).get("told_at", 0)
-        if (last is not None and self.ntfy and self.ntfy.restarts
-                and time.time() - told_at >= RESTART_NOTICE_GAP):
+        topic = self.ntfy.restarts if self.ntfy else ""
+        if last is not None and topic and time.time() - told_at >= RESTART_NOTICE_GAP:
             logger.warning("The last run didn't stop properly, so telling the user's phone")
-            self.ntfy.send_soon(self.ntfy.restarts, f"{self.name} stopped unexpectedly, and has started again.",
+            self.ntfy.send_soon(topic, f"{self.name} stopped unexpectedly, and has started again.",
                                 title=f"{self.name} restarted")
             told_at = time.time()
         try:
@@ -874,7 +1278,7 @@ class Brain:
         # Tells systemd it has started, and from here on that it's still working.
         watchdog.start()
         self._note_start()
-        self._give_out_unowned()
+        self._give_out_orphans()
         self.clock.start()
         # Alerts are only said from now on, once there's everything to say them with.
         if self.ntfy:
@@ -887,6 +1291,8 @@ class Brain:
             self.batteries.start()
         if self.registry:
             self.registry.start()
+        if self.calendar:
+            threading.Thread(target=self._read_calendars, daemon=True, name="calendars").start()
         logger.info(f"{self.name}'s brain is ready")
 
         # However listening ends - a stop signal, stop() or something unexpected -
@@ -895,6 +1301,18 @@ class Brain:
             self.serve()
         finally:
             self._clean_up()
+
+    def _read_calendars(self):
+        """
+        Reads Google's list of the calendars once, as the brain starts, so the activities -
+        their names - are heard before anything's asked. A failure is only logged: the
+        list is read again when the calendar is next asked about.
+        """
+        try:
+            self.calendar.calendars()
+        except READ_FAILURES as e:
+            # Only the kind of failure - a requests error names the address, with a calendar's id in it.
+            logger.warning(f"Couldn't read the calendars from Google yet: {type(e).__name__}")
 
     def restart(self) -> str:
         """

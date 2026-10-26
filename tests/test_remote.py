@@ -298,6 +298,18 @@ def test_state_alarms_the_phrase_and_restarts_reach_the_satellite(pair):
                              ({"type": "restart"}, b"")]
 
 
+def test_the_longest_request_goes_with_the_state_only_when_given(pair):
+    satellite, fake, serving = pair
+    volumes = {"general": 0.5, "alarm": 1.0, "music": 0.3}
+
+    satellite.set_state(volumes, False)
+    satellite.set_state(volumes, False, 20.0)
+
+    assert wait_for(lambda: len(fake.received) == 2)
+    assert fake.received == [({"type": "state", "volumes": volumes, "muted": False}, b""),
+                             ({"type": "state", "volumes": volumes, "muted": False, "longest_request": 20.0}, b"")]
+
+
 def test_audio_too_long_for_the_satellite_isnt_sent(pair):
     satellite, fake, serving = pair
     # The satellite would drop the connection over it.

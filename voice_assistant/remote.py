@@ -427,11 +427,15 @@ class RemoteSatellite:
                 satellite_link's Stream makes of a socket with a timeout. Its reads
                 wake at each timeout, for serve() to notice a satellite gone quiet, and
                 no send blocks for longer.
-            hello: What admit returned - the satellite's name, hostname and sample_rate.
+            hello: What admit returned - the satellite's name, hostname, sample_rate and
+                speaker.
         """
         self.name = hello["name"]
         self.hostname = hello["hostname"]
         self.sample_rate = hello["sample_rate"]
+        # The Spotify speaker it plays on, e.g. "Bedroom Pi" - None from a satellite
+        # which doesn't say, so plays on the brain's spotify.device_name.
+        self.speaker_name: Optional[str] = hello.get("speaker")
         self.speaker = RemoteSpeaker(self.send, self.sample_rate)
         # Each wake word heard, in order: {"talked_over": whether a reply was playing,
         # "pre_roll": how many samples of the feed are from before the wake word - or
@@ -526,7 +530,7 @@ class RemoteSatellite:
     def listen(self) -> AudioFeed:
         """
         Has the satellite send what the user says from now - their answer to Nova's
-        question - until stop_listening(), or its 10 second limit.
+        question - until stop_listening(), or the longest a request may be.
 
         Returns:
             A feed of it. Already ended if the satellite isn't connected.
@@ -544,7 +548,7 @@ class RemoteSatellite:
         self._end_feed()
         self.send("stop_listening")
 
-    def set_state(self, volumes: Dict[str, float], muted: bool) -> bool:
+    def set_state(self, volumes: Dict[str, float], muted: bool, longest_request: Optional[float] = None) -> bool:
         """
         Sends the satellite its volumes and its mute, which the brain owns - for it to
         mute its wake word by, and ring its alarms by while it can't reach the brain.
@@ -553,11 +557,14 @@ class RemoteSatellite:
             volumes: Each category's volume from 0 to 1, by name - "general",
                 "alarm" and "music".
             muted: Whether it's muted.
+            longest_request: The most seconds of one recording it should send, or None
+                to leave it as it is - an older satellite ignores it.
 
         Returns:
             Whether it was sent.
         """
-        return self.send("state", volumes=volumes, muted=muted)
+        fields = {} if longest_request is None else {"longest_request": longest_request}
+        return self.send("state", volumes=volumes, muted=muted, **fields)
 
     def send_alarms(self, entries: List[Dict]) -> bool:
         """

@@ -51,7 +51,7 @@ def means_liked_songs(name: str) -> bool:
                for liked in LIKED_SONGS_NAMES)
 
 
-def make_player(config, speaker, volume):
+def make_player(config, speaker, volume, spotify_speaker: Optional[str] = None):
     """
     The music player music.player in config.yaml names.
 
@@ -59,13 +59,19 @@ def make_player(config, speaker, volume):
         config: Configs loaded from config.yaml.
         speaker: The Speaker, which Navidrome plays through.
         volume: The VolumeControl, which keeps Navidrome's volume.
+        spotify_speaker: The Spotify Connect speaker Spotify plays on, as the
+            satellite said - None for spotify.device_name.
 
     Returns:
         The player, or None if it isn't set up - the assistant carries on without music.
     """
-    choice = (config.section("music").get("player") or "spotify").strip().lower()
+    choice = _chosen(config)
     if choice not in PLAYERS:
         logger.warning(f"music.player is '{choice}', which isn't one of {', '.join(PLAYERS)} - no music")
+        return None
+    missing = _missing(config, choice)
+    if missing:
+        logger.warning(f"There's no music: {missing}")
         return None
 
     try:
@@ -73,10 +79,65 @@ def make_player(config, speaker, volume):
             from voice_assistant.navidrome import NavidromePlayer
             return NavidromePlayer.from_config(config, os.getenv("NAVIDROME_PASSWORD"), speaker, volume)
         from voice_assistant.spotify_controller import SpotifyController
-        return SpotifyController(config=config)
+        return SpotifyController(config=config, device_name=spotify_speaker)
     except Exception as e:
         logger.warning(f"Couldn't set up {choice}, so there's no music: {e}")
         return None
+
+
+def why_no_player(config) -> str:
+    """
+    Why make_player gave no player, as the settings page tells the user - the first
+    thing it can see is missing, else a pointer to the log.
+
+    Args:
+        config: Configs loaded from config.yaml, as make_player had them.
+
+    Returns:
+        A sentence saying what to do, or where to look.
+    """
+    choice = _chosen(config)
+    if choice not in PLAYERS:
+        # Which make_player logged - so it isn't either one's to be blamed.
+        return "Nova's music player isn't Navidrome or Spotify. Choose one in Settings, under Music."
+    name = "Spotify" if choice == "spotify" else "Navidrome"
+    return _missing(config, choice) or f"Nova couldn't set up {name} - Recent problems, in Status, says why."
+
+
+def _chosen(config) -> str:
+    """The player music.player names - Spotify when none is."""
+    return (config.section("music").get("player") or "spotify").strip().lower()
+
+
+def _missing(config, choice: str) -> Optional[str]:
+    """
+    The first thing the chosen player needs which isn't set, as the page says it.
+
+    make_player checks these before making the player, and why_no_player says them,
+    so the two can't drift apart - a player which hasn't got one is never made, and
+    the page never blames the log for it.
+
+    Args:
+        config: Configs loaded from config.yaml.
+        choice: "navidrome" or "spotify".
+
+    Returns:
+        A sentence saying what's missing and where it goes, or None if nothing is.
+    """
+    if choice == "spotify":
+        if not os.getenv("SPOTIFY_CLIENT_ID") or not os.getenv("SPOTIFY_CLIENT_SECRET"):
+            return "Spotify's client ID and secret aren't set. Add them under Keys, then restart Nova."
+        if not os.getenv("SPOTIFY_REDIRECT_URI"):
+            return "SPOTIFY_REDIRECT_URI isn't set. setup.sh puts it in Nova's .env - add it there, then restart Nova."
+        return None
+    settings = config.section("navidrome")
+    if not (settings.get("url") or "").strip():
+        return "Navidrome's address isn't set. Add it in Settings, under Music."
+    if not (settings.get("username") or "").strip():
+        return "Navidrome's user isn't set. Add it in Settings, under Music."
+    if not os.getenv("NAVIDROME_PASSWORD"):
+        return "Navidrome's password isn't set. Add it under Keys, then restart Nova."
+    return None
 
 
 class MusicHold:

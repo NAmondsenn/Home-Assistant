@@ -27,6 +27,7 @@ import requests
 from voice_assistant import network
 from voice_assistant.batteries import HOME_FAILURES, find, said
 from voice_assistant.devices import AppDevice, ring_call, said_as, where
+from voice_assistant.google_calendar import named_by_address
 from voice_assistant.home_assistant import CANT_REACH, HomeAssistant, NotAllowed
 from voice_assistant.lists import NO_ANSWER, names_list
 
@@ -48,6 +49,7 @@ UNAVAILABLE = {
     "batteries": "Battery levels need Home Assistant.",
     "lists": "Lists need Home Assistant.",
     "pc": "Your PC needs Home Assistant.",
+    "calendar": "The calendar isn't set up yet.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -243,15 +245,14 @@ class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
     def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
-                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None):
+                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None, calendar=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
             clock: Clock instance, for timers, reminders and alarms.
             volume: VolumeControl instance, for the assistant's own volumes.
             weather: Weather instance, for the forecast.
-            home: HomeAssistant instance, for the lights and the calendar, or None
-                if it isn't set up.
+            home: HomeAssistant instance, for the lights, or None if it isn't set up.
             memory: Memory instance, for what the assistant knows about the user.
             ntfy: Ntfy instance, for the user's notifications, or None if it isn't
                 set up.
@@ -262,6 +263,8 @@ class ActionExecutor:
             lists: Lists, for Home Assistant's to-do lists, or None if Home Assistant
                 isn't set up.
             pc: PCPower, for turning the PC on and off, or None if Home Assistant isn't
+                set up.
+            calendar: GoogleCalendar, for the user's calendars, or None if Google isn't
                 set up.
         """
         self.music = music
@@ -275,6 +278,7 @@ class ActionExecutor:
         self.batteries = batteries
         self.lists = lists
         self.pc = pc
+        self.calendar = calendar
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -291,11 +295,25 @@ class ActionExecutor:
         those which are only for the local commands and the offline fallback.
         """
         return [{"name": name,
-                 "description": method.tool["description"],
+                 "description": method.tool["description"] + (self._activities_told() if name == "get_activity" else ""),
                  "input_schema": {"type": "object", "properties": method.tool["parameters"],
                                   "required": method.tool["required"]}}
                 for name, method in self.tools().items()
                 if method.tool["for_model"] and self._available(method)]
+
+    def _activities_told(self) -> str:
+        """
+        The user's activities, named as Google has them, to end get_activity's description -
+        " The user's activities: Uni and Work." - or nothing while there are none. In order,
+        so a list Google gives in another order doesn't change the tools, and the API's cache.
+        One named by an email address, switched on as an activity, is never told - a person's
+        calendar shared with the user is named by their address.
+        """
+        names = sorted((calendar["name"].strip() for calendar in self.calendar.activity_calendars().values()
+                        if not named_by_address(calendar)), key=str.lower)
+        if not names:
+            return ""
+        return f" The user's activities: {names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]}."
 
     @classmethod
     def private_tools(cls) -> List[str]:
@@ -948,7 +966,7 @@ class ActionExecutor:
         "thing on it, for 'when's my MOT?', 'when am I next seeing Sam?' or 'is the "
         "dentist soon?' - give what to search for, and today as the first day, rather "
         "than reading whole days. What's on is read out to the user, so just reply 'Okay.'",
-        needs="home",
+        needs="calendar",
         required=["start"],
         start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
         days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day."},
@@ -961,22 +979,23 @@ class ActionExecutor:
     )
     def get_calendar(self, start: Optional[str] = None, days: Optional[int] = None, search: Optional[str] = None):
         if search and search.strip():
-            return self._calendar_days(start, None, lambda first, days: self.home.find(search, first))
-        return self._calendar_days(start, days, self.home.agenda)
+            return self._calendar_days(start, None, lambda first, days: self.calendar.find(search, first))
+        return self._calendar_days(start, days, self.calendar.agenda)
 
     @tool(
-        "When the user has something regular on their calendar - work, uni and the like - "
-        "for 'what time do I have work tomorrow?', 'am I working on Saturday?', 'when do I "
-        "finish uni today?', 'what shifts have I got this week?' - or when they next have "
-        "it, for 'when's my next shift?' or 'what are my next three lectures?'. Give the "
-        "activity, the first day, worked out from today's date (today, for 'next'), and "
-        "how many days, or for 'next', how many times. The times are read out to the user, "
-        "so just reply 'Okay.'",
-        needs="home",
+        "When the user has one of their activities - each of their calendars but their own "
+        "is one, by its name - for 'what time do I have work tomorrow?', 'am I working on "
+        "Saturday?', 'when do I finish uni today?', 'what shifts have I got this week?' - "
+        "or when they next have it, for 'when's my next shift?' or 'what are my next three "
+        "lectures?'. Give the activity, the first day, worked out from today's date (today, "
+        "for 'next'), and how many days, or for 'next', how many times. The times are read "
+        "out to the user, so just reply 'Okay.'",
+        needs="calendar",
         required=["activity", "start"],
         activity={
             "type": "string",
-            "description": "One word for it, as the user said it: 'work' (also for shifts or working), 'uni'.",
+            "description": ("Which of the user's activities - named at the end of this tool's description - "
+                            "as they said it."),
         },
         start={"type": "string", "description": "The first day, as YYYY-MM-DD."},
         days={"type": "integer", "description": "How many days from it, 1 to 14. Leave out for one day, or for 'next'."},
@@ -990,10 +1009,27 @@ class ActionExecutor:
                      count: Optional[int] = None):
         if count:
             # Looked for across the next fortnight, and only the first few said.
-            return self._calendar_days(start, MOST_CALENDAR_DAYS, lambda first, days: self.home.activity(
-                activity or "work", first, days, count=max(1, min(int(count), MOST_NEXT))))
+            return self._calendar_days(start, MOST_CALENDAR_DAYS, lambda first, days: self.calendar.activity(
+                activity or "", first, days, count=max(1, min(int(count), MOST_NEXT))))
         return self._calendar_days(start, days,
-                                   lambda first, days: self.home.activity(activity or "work", first, days))
+                                   lambda first, days: self.calendar.activity(activity or "", first, days))
+
+    @tool(
+        "Add an event to the user's Google calendar, for 'put the dentist on Thursday at 3'. start and end are "
+        "local 'YYYY-MM-DD HH:MM', or 'YYYY-MM-DD' for all day; leave end out for an hour. Give calendar only "
+        "when the user names one, e.g. 'work'. What was added is said for you, so just reply 'Okay.'",
+        needs="calendar",
+        required=["summary", "start"],
+        summary={"type": "string", "description": "What the event is, as it'd be written on the calendar, e.g. "
+                                                  "'Dentist'."},
+        start={"type": "string", "description": "When it starts, worked out from today's date."},
+        end={"type": "string", "description": "When it ends, only when the user said - an end day is included."},
+        all_day={"type": "boolean", "description": "Whether it's all day. Leave out for a day without a time."},
+        calendar={"type": "string", "description": "The calendar the user named, as they said it."},
+    )
+    def add_to_calendar(self, summary: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None,
+                        all_day: Optional[bool] = None, calendar: Optional[str] = None):
+        return self.calendar.add(summary or "", start or "", end=end, all_day=all_day, calendar=calendar)
 
     @staticmethod
     def _calendar_days(start: Optional[str], days: Optional[int], read) -> Dict:
@@ -1164,7 +1200,10 @@ class ActionExecutor:
         fact={"type": "string", "description": "What to forget, roughly as the user put it."},
     )
     def forget(self, fact: Optional[str] = None):
-        return self.memory.forget(fact)
+        # What was forgotten, and where, are for the settings page's Undo. Left in, they'd
+        # go back to Claude as the tool's answer, and into the history and the logs.
+        result = self.memory.forget(fact)
+        return {key: value for key, value in result.items() if key not in ("forgotten", "at")}
 
     @tool(
         "Forget everything remembered about the user - only when they clearly ask for "
@@ -1367,7 +1406,9 @@ class ActionExecutor:
         others = [app_device for app_device in found if not app_device.phone]
         if by_ntfy and self.ntfy is None:
             return {"success": False, "message": UNAVAILABLE["ntfy"]}
-        if by_ntfy and not self.ntfy.phone:
+        # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
+        phone = self.ntfy.phone if by_ntfy else ""
+        if by_ntfy and not phone:
             return {"success": False, "message": "There's nowhere set up to send things to your phone."}
         if not text:
             if self.last_answer is None:
@@ -1378,7 +1419,7 @@ class ActionExecutor:
 
         sent, failed = [], []
         if by_ntfy:
-            if self.ntfy.send(self.ntfy.phone, text, title=title):
+            if self.ntfy.send(phone, text, title=title):
                 sent.append("phone")
             else:
                 failed.append("I couldn't reach your notifications.")

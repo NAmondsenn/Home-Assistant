@@ -326,7 +326,7 @@ def world(tmp_path, monkeypatch, make_config):
     monkeypatch.setattr(brain_module, "_speech_to_text", lambda config: nemotron)
     monkeypatch.setattr(session_module, "LLMHandler", lambda **kwargs: claude)
     monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: None)
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
 
     # The Pi's devices, and what it keeps.
     monkeypatch.setenv("NOVA_BACKEND_TOKEN", PASSWORD)

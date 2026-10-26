@@ -34,6 +34,9 @@
   /* Corners get tighter as things get smaller, and buttons are round. */
   --panel-round: 18px;
   --field-round: 10px;
+  /* How far up the toasts sit: clear of an iPhone's home bar - and, while the save bar
+     is on screen, above it (see html.save-bar-shown below). */
+  --toasts-at: max(24px, env(safe-area-inset-bottom));
   color-scheme: dark;
 }
 
@@ -48,7 +51,14 @@
 html {
   min-height: 100%;
   background: var(--deep) linear-gradient(180deg, var(--night), var(--deep)) no-repeat;
+  /* So a field tabbed to isn't left under the save bar - --save-bar is its height as
+     drawn, set by followSaveBar in settings.js, and the guess is a line's worth until then. */
+  scroll-padding-bottom: calc(var(--save-bar, 84px) + 12px);
 }
+
+/* The save bar is on screen, so the toasts go above it, however tall it is - a long
+   save error takes three lines on a phone. */
+html.save-bar-shown { --toasts-at: calc(var(--save-bar, 84px) + 12px); }
 
 body {
   margin: 0;
@@ -74,7 +84,7 @@ body {
 .page {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 32px max(32px, env(safe-area-inset-right)) 72px max(32px, env(safe-area-inset-left));
+  padding: max(32px, env(safe-area-inset-top)) max(32px, env(safe-area-inset-right)) 72px max(32px, env(safe-area-inset-left));
 }
 
 /* The top of the page: Nova and what it's doing, and the time */
@@ -92,6 +102,19 @@ body {
   align-items: center;
   gap: 18px;
   min-width: 0;
+}
+
+.identity > div { min-width: 0; }
+
+.masthead .name { overflow-wrap: anywhere; }
+
+/* The satellite looked after, beside Nova's name - smaller and quieter, and going
+   under it where there's no room, so the time keeps its place on a phone. */
+.masthead .whose {
+  color: var(--dusk);
+  font-weight: 300;
+  font-size: 0.45em;
+  letter-spacing: 0;
 }
 
 .masthead .name,
@@ -121,6 +144,22 @@ body {
 }
 
 .date .short { display: none; }
+
+/* Stop, while something rings or Nova's talking - bright, and big enough for a thumb. */
+.masthead .stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 12px 28px;
+  font-size: 16px;
+}
+
+.masthead .stop .icon {
+  width: 16px;
+  height: 16px;
+}
 
 /* Nova's star, the one bright thing on the page */
 
@@ -252,6 +291,11 @@ body {
 
 .notice p { margin: 0; }
 
+.notice .button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 /* The sections - four across on a laptop, two on a tablet and one on a phone, with
    the bigger ones the whole way across */
 
@@ -290,6 +334,15 @@ body {
   height: 21px;
   color: var(--starlight);
 }
+
+/* A heading's words, with the satellite they're for - "Sound · bedroom" - wrapping
+   rather than pushing the column wider. */
+.heading .title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.heading .whose { color: var(--dusk); }
 
 .subheading {
   margin: 24px 0 10px;
@@ -462,6 +515,21 @@ body {
 
 .problems li > .dot { margin-top: 7px; }
 
+/* Cut to two lines until "Show all" - still read out whole. */
+.problems.clamped .what {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+#problems-all {
+  min-width: 44px;
+  min-height: 44px;
+  margin-top: 10px;
+}
+
 /* Buttons and fields */
 
 :focus-visible {
@@ -573,8 +641,11 @@ textarea {
 
 option { background: #10162e; }
 
+/* One column no wider than the field's own - so a long calendar's name in a list to
+   choose from can't push it wider. */
 .field {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   min-width: 0;
 }
@@ -823,15 +894,62 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   gap: 12px;
 }
 
-/* A setting changed but not saved yet, marked with a little of Nova's light. */
-.field.changed > label { color: var(--starlight); }
+/* A setting's label, with when it's used under it. */
+.field .about {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
 
+.field .detail {
+  color: var(--dusk);
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+/* The speaking speed's slider, how fast it is, and its "Hear it" - the button going
+   under the slider where there's no room beside it, as on a phone. */
+.speed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.speed input { flex: 1 1 140px; min-width: 0; }
+
+.speed output {
+  color: var(--dusk);
+  font-size: 13px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed .button { padding: 7px 16px; font-size: 13px; }
+
+/* A setting changed but not saved yet, marked with a little of Nova's light. */
+.field.changed label { color: var(--starlight); }
+
+/* Kept at the bottom of the screen while the settings are in view, so a change made
+   half-way down a phone's long page is saved, or Nova restarted, there and then. It's
+   solid - the glass, over the bottom of the sky - as the fields scroll by under it,
+   and clear of an iPhone's home bar. */
 .save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 14px 16px 14px 20px;
+  padding: 14px 16px max(14px, env(safe-area-inset-bottom)) 20px;
   border-top: 1px solid var(--hairline);
+  border-radius: 0 0 var(--panel-round) var(--panel-round);
+  background: var(--deep) linear-gradient(var(--glass), var(--glass));
+}
+
+.save-bar .button {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .save-bar p {
@@ -839,6 +957,13 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   color: var(--dusk);
   font-size: 14px;
 }
+
+/* Stuck to the screen's bottom, mid-form, its rounded corners would show the fields
+   scrolling by behind them - they're only for where it ends the form. */
+.save-bar.stuck { border-radius: 0; }
+
+/* Why a save didn't work, said here too as it stays in view. */
+.save-bar p.bad { color: var(--ember); }
 
 .note {
   margin: 0;
@@ -990,6 +1115,65 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   padding: 10px;
 }
 
+/* Signing in to Spotify, under the music. */
+.sign-in {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 14px 16px;
+}
+
+.sign-in p { margin: 0; }
+
+.sign-in .entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sign-in .about { flex: 1; }
+
+.sign-in .finish {
+  display: grid;
+  gap: 8px;
+}
+
+.sign-in .finish input {
+  flex: 1;
+  min-width: 0;
+}
+
+.sign-in .how {
+  color: var(--dusk);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.sign-in a { color: var(--starlight); }
+
+.sign-in .button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Google's, in Calendars and lists, comes straight under the heading. */
+.sign-in.first { margin-top: 0; }
+
+/* The calendars under it are rows as the batteries are, then where new events go. */
+.calendars,
+.new-events { margin-top: 10px; }
+
+.new-events { padding: 14px 16px; }
+
+/* The lists, how each device is sent to, and the weather and PCs, under the calendars. */
+.lists,
+.sending,
+.home-choice { margin-top: 10px; }
+
+.home-choice { padding: 14px 16px; }
+
+.pcs { display: grid; gap: 14px; }
+
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -999,6 +1183,102 @@ input[type="range"]:focus-visible::-moz-range-thumb {
 /* Which satellite to look after, under the list of them. */
 #satellite-choice {
   margin-top: 10px;
+}
+
+#satellite-choice .button { min-height: 44px; }
+
+/* Each satellite: its name, whether it's the default, what it's doing, and ways to
+   make it the default, give it a new password or remove it - at least 44px tall for
+   a thumb, wrapping on a phone. */
+.satellites .detail {
+  display: block;
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.satellites .badge {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--field-edge);
+  color: var(--dusk);
+  font-size: 12px;
+}
+
+/* The buttons go under the name where there's no room beside it - on a phone, and in a
+   laptop's column - rather than squeezing the name to a letter a line. */
+.satellites li { flex-wrap: wrap; }
+
+.satellites .what { flex: 1 1 160px; }
+
+.satellites .actions {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.satellites .button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* The new satellite's name has the row to itself, so its example isn't cut short, and
+   its button goes the width of the panel under it. */
+#add-satellite { flex-wrap: wrap; }
+
+#add-satellite input { flex: 1 1 240px; }
+
+#add-satellite .button {
+  flex: 1 0 auto;
+  min-height: 44px;
+}
+
+/* A satellite's password, shown once. */
+.password {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 14px 16px;
+}
+
+.password p { margin: 0; }
+
+.password .entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.password .secret {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--field-edge);
+  border-radius: var(--field-round);
+  background: var(--field);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.password .how {
+  color: var(--dusk);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.password code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--moon);
+}
+
+.password .button {
+  min-width: 44px;
+  min-height: 44px;
+  justify-self: start;
 }
 
 .chips .button[aria-pressed="true"] {
@@ -1204,6 +1484,7 @@ input[type="range"].warmth::-moz-range-progress { background: transparent; }
 }
 
 .batteries .button {
+  min-width: 44px;
   min-height: 44px;
   justify-self: start;
 }
@@ -1213,12 +1494,15 @@ input[type="range"].warmth::-moz-range-progress { background: transparent; }
    to peek up from the bottom of a phone's screen. */
 .toast {
   position: fixed;
-  bottom: max(24px, env(safe-area-inset-bottom));
+  bottom: var(--toasts-at);
   left: 50%;
   z-index: 10;
   display: flex;
   align-items: center;
   gap: 10px;
+  /* As wide as what it says, up to the screen's width - left at the middle, it was
+     otherwise no wider than half a phone's. */
+  width: max-content;
   max-width: calc(100% - 32px);
   padding: 11px 20px 11px 16px;
   border: 1px solid var(--glass-edge);
@@ -1245,6 +1529,45 @@ input[type="range"].warmth::-moz-range-progress { background: transparent; }
 
 .toast.bad::before { background: var(--ember); }
 
+/* What was just removed, each with its Undo, stacked above the toast for everything
+   else - newest at the bottom. Only an Undo's own toast takes a tap, as otherwise the
+   stack would catch those meant for what's under it. */
+.undos {
+  position: fixed;
+  bottom: calc(var(--toasts-at) + 60px);
+  left: 50%;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.undos .toast {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  max-width: 100%;
+  padding-top: 6px;
+  padding-right: 6px;
+  padding-bottom: 6px;
+  transform: none;
+}
+
+.undos .toast.show {
+  transform: none;
+  pointer-events: auto;
+}
+
+.toast .button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .toast.show {
   opacity: 1;
   visibility: visible;
@@ -1256,14 +1579,27 @@ input[type="range"].warmth::-moz-range-progress { background: transparent; }
 }
 
 @media (max-width: 719px) {
-  .page { padding: 20px max(16px, env(safe-area-inset-right)) 56px max(16px, env(safe-area-inset-left)); }
+  .page { padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 56px max(16px, env(safe-area-inset-left)); }
 
   .masthead {
+    flex-wrap: wrap;
     gap: 12px;
     margin-bottom: 32px;
   }
 
-  .identity { gap: 12px; }
+  /* A row of its own under Nova and the time, which leave it no room beside them. */
+  .masthead .stop {
+    order: 1;
+    flex: 1 0 100%;
+  }
+
+  /* Whatever's left beside the time, rather than as wide as "Nova · living-room" -
+     which would push the time onto a line of its own. */
+  .identity {
+    flex: 1 1 0;
+    gap: 12px;
+  }
+
   .star { --size: 56px; }
   .masthead .name { font-size: 44px; }
   .masthead .time { font-size: 34px; }

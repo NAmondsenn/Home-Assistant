@@ -38,6 +38,25 @@ def test_a_routine_keeps_the_satellite_it_runs_on(routines):
     assert dinner["routine"]["satellite"] == "kitchen"
 
 
+def test_a_routine_on_a_satellite_no_longer_let_in_isnt_kept(tmp_path):
+    # Removed as it was being saved. Checked under the routines' own lock, which the
+    # removal's move takes - so it's saved first and moved, or refused.
+    checked = []
+
+    def let_in(satellite):
+        checked.append(routines._lock.locked())
+        return satellite != "kitchen"
+
+    routines = Routines(path=str(tmp_path / "routines.json"), let_in=let_in)
+    assert routines.save({**MORNING, "satellite": "kitchen"}) == {
+        "success": False, "message": "There's no satellite called kitchen."}
+    assert routines.all() == []
+    assert routines.save({**MORNING, "satellite": "bedroom"})["success"]
+    # The default's is never refused.
+    assert routines.save({**MORNING, "name": "Dinner", "phrases": "dinner"})["success"]
+    assert checked == [True, True]
+
+
 def test_changing_a_routine_keeps_it_one_routine(routines):
     routine = routines.save(MORNING)["routine"]
     changed = routines.save({**routine, "steps": ["what's the weather"]})
@@ -110,6 +129,45 @@ def test_a_routine_missed_while_its_satellite_was_away_is_kept_until_its_back(ro
                                                  "satellite": "bedroom", "due_at": 1_800_086_400.0}]
     assert restarted.take_missed("bedroom") == []
     assert Routines(path=str(tmp_path / "routines.json")).take_missed("bedroom") == []
+
+
+def test_forget_satellite_runs_its_routines_on_the_default(routines, tmp_path):
+    # Its satellite removed, a routine runs on the default instead of nowhere.
+    dinner = routines.save({**MORNING, "name": "Dinner", "phrases": "dinner", "satellite": "kitchen"})["routine"]
+    morning = routines.save({**MORNING, "satellite": "bedroom"})["routine"]
+
+    assert routines.forget_satellite("kitchen") == 1
+    assert routines.forget_satellite("kitchen") == 0
+    assert routines.get(dinner["id"])["satellite"] is None and routines.get(morning["id"])["satellite"] == "bedroom"
+    assert Routines(path=str(tmp_path / "routines.json")).get(dinner["id"])["satellite"] is None
+
+
+def test_the_routines_kept_for_a_forgotten_satellite_move_with_the_rest(routines, tmp_path):
+    # Run on the default once it's back, as the routine itself now is.
+    routine = routines.save({**MORNING, "satellite": "kitchen"})["routine"]
+    routines.missed(routine, "kitchen", 1_800_000_000.0)
+    routines.missed(routine, "bedroom", 1_799_990_000.0)
+    other = routines.save({**MORNING, "name": "Bins", "phrases": "bins"})["routine"]
+    routines.missed(other, "kitchen", 1_800_000_000.0)
+    assert routines.missed_satellites() == {"kitchen", "bedroom"}
+
+    routines.forget_satellite("kitchen", "bedroom")
+
+    restarted = Routines(path=str(tmp_path / "routines.json"))
+    assert restarted.missed_satellites() == {"bedroom"}
+    # Each once, the later time it was missed counting.
+    assert sorted((entry["name"], entry["due_at"]) for entry in restarted.take_missed("bedroom")) == [
+        ("Bins", 1_800_000_000.0), ("Good morning", 1_800_000_000.0)]
+
+
+def test_routines_kept_with_no_satellite_left_wait_for_the_next(routines):
+    routine = routines.save(MORNING)["routine"]
+    routines.missed(routine, "kitchen", 1_800_000_000.0)
+
+    routines.forget_satellite("kitchen", None)
+    assert routines.missed_satellites() == {None}
+    routines.forget_satellite(None, "hall")
+    assert [entry["satellite"] for entry in routines.take_missed("hall")] == ["hall"]
 
 
 def test_a_routine_is_deleted(routines):

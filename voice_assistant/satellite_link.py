@@ -118,7 +118,7 @@ class SatelliteLink:
 
     def __init__(self, address: str, name: str, hostname: str, password: str, sample_rate: int,
                  unclean: bool, on_message: Callable[[Dict, bytes], None],
-                 on_connected: Callable[[bool], None]):
+                 on_connected: Callable[[bool], None], speaker: Optional[str] = None):
         """
         Args:
             address: The brain's "name:port" on the tailnet - backend.address in config.yaml.
@@ -130,6 +130,8 @@ class SatelliteLink:
                 hello says so - the brain has heard it by the time of any reconnect.
             on_message: Called with each message from the brain and its audio, if any.
             on_connected: Called with True or False each time the connection changes.
+            speaker: The Spotify Connect speaker this satellite plays Spotify on, e.g.
+                "Bedroom Pi", said in every hello - or None, for the brain's own.
         """
         host, _, port = address.rpartition(":")
         self.address = (host, int(port))
@@ -137,6 +139,7 @@ class SatelliteLink:
         self.hostname = hostname
         self.password = password
         self.sample_rate = sample_rate
+        self.speaker = speaker
         self._unclean = unclean
         self._on_message = on_message
         self._on_connected = on_connected
@@ -267,7 +270,8 @@ class SatelliteLink:
         sock = socket.create_connection(self.address, timeout=SOCKET_TIMEOUT)
         stream = Stream(sock)
         try:
-            greet(stream, self.name, self.hostname, self.password, self.sample_rate, self._unclean)
+            greet(stream, self.name, self.hostname, self.password, self.sample_rate, self._unclean,
+                  self.speaker)
         except BaseException:
             sock.close()
             raise

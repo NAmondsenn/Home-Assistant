@@ -24,6 +24,66 @@ for argument in "$@"; do
     esac
 done
 
+# Nova goes on running the code it started with until it restarts, so code just pulled
+# that doesn't get through the steps after the pull and the settings check - a package
+# install failing, or the phone's session dropping mid-step - is taken back out, and a
+# reboot starts what's running now.
+# BEGIN take back
+take_back() {
+    local why="$1"
+    # The reset comes before any message, so a session that's gone loses only that.
+    if [ -z "${NOVA_UPDATED_FROM:-}" ]; then
+        # Run with --no-pull, on code checked out by hand, so there's nothing to go back to.
+        problem "${why} The code checked out is in place, but Nova is still running the code it started with until it next restarts:"
+    elif as_user git -C "$PROJECT_DIRECTORY" reset -q --keep "$NOVA_UPDATED_FROM"; then
+        # --keep refuses, rather than throws away, local changes to the files it would move.
+        problem "${why} The new code has been taken back out, so Nova goes on running the code it had before, even once it restarts:"
+    else
+        problem "${why} The new code couldn't be taken back out, so check out ${NOVA_UPDATED_FROM} before Nova next restarts:"
+    fi
+}
+
+watch_steps() {
+    steps_done=false
+    trap failed_after_pull EXIT
+    # With no trap of their own, a dropped session's hangup or a Ctrl+C would end bash
+    # with the EXIT trap seeing $? at 0, as if the steps had all gone through.
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+}
+
+steps_finished() {
+    steps_done=true
+    trap - EXIT HUP INT TERM
+}
+
+failed_after_pull() {
+    local status=$?
+    if [ "$steps_done" = true ]; then
+        return
+    fi
+    # Ignored, by git too, so a second Ctrl+C can't cut the reset short half-way.
+    trap '' HUP INT TERM
+    # Only an update that fetched new code has new code to take back, or old code its
+    # packages might not suit.
+    if [ -n "${NOVA_UPDATED_FROM:-}" ]; then
+        take_back "A step after fetching the new code failed - Nova is still running the code it had before."
+        problem "Python packages it installed stay installed, so put right what failed and run this again soon - until then the old code may not start with them."
+    else
+        take_back "A step of the update failed - put right what failed, then run this again."
+    fi
+    exit $(( status == 0 ? 1 : status ))
+}
+# END take back
+
+# The run started again on the new code is watched from here, so even a role file it
+# can't read leaves the code it fetched for nothing. The run before can't be - exec drops
+# traps - and any other run has fetched nothing yet, so is watched from its steps.
+if [ "$PULL" = false ] && [ -n "${NOVA_UPDATED_FROM:-}" ]; then
+    watch_steps
+fi
+
 decide_role
 echo "Updating Nova's ${ROLE} in ${PROJECT_DIRECTORY}"
 step "Code"
@@ -35,11 +95,15 @@ if [ "$PULL" = true ]; then
     # This script and setup.sh's steps were read before the pull, so any new steps
     # the update brings - a new model to fetch, say - would be missed. So once there's
     # new code, it starts again on that.
+    # And with where it was before, to go back to if the new code is refused.
     if [ "$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" != "$before" ]; then
+        export NOVA_UPDATED_FROM="$before"
         exec bash "${PROJECT_DIRECTORY}/update.sh" --no-pull
     fi
 fi
 done_ "On $(as_user git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(as_user git -C "$PROJECT_DIRECTORY" log -1 --format='%h %s')"
+
+watch_steps
 
 # An install from before roles has none saved yet, so what decide_role worked out is.
 run_steps save_role install_python_packages download_models
@@ -64,6 +128,55 @@ else
     service_is_active() { systemctl --user is-active -q "$SERVICE_NAME"; }
     show_log() { journalctl --user-unit "$SERVICE_NAME" -n "$1" --no-pager -o cat; }
 fi
+
+# The new code reads the settings as it starts, so a setting it refuses is found out
+# here, while the old version is still running, rather than after it has been stopped.
+# Exit 1 from the check is the settings, 2 is the code itself (a missing package, say).
+# Code just pulled is then taken back out, so whatever restarts Nova next - the page's
+# Restart now, the watchdog, a power cut - starts the code it's running now, not the
+# code refused.
+# BEGIN settings check
+settings_check() {
+    local output status=0 why
+    output=$(cd "$PROJECT_DIRECTORY" && as_user "$PYTHON" -c '
+import sys
+try:
+    from voice_assistant.config import Config, ConfigError
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+    sys.exit(2)
+try:
+    Config()
+except ConfigError as e:
+    print(e)
+    sys.exit(1)
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+    sys.exit(2)
+' 2>&1) || status=$?
+    if [ "$status" = 0 ]; then
+        return 0
+    fi
+    if [ "$status" = 1 ]; then
+        why="Nova's settings won't start the new code - put them right, then run this again."
+    else
+        why="The new code won't start on this machine, whatever the settings - fix that, then run this again."
+    fi
+    # This takes the code back and says so itself, so the watch over the steps stands
+    # down first rather than doing both a second time - with a hangup or Ctrl+C ignored,
+    # by git too, as the watch's own take-back has, so neither cuts the reset short.
+    # They're ignored before the watch's traps go, not after as with steps_finished,
+    # which would leave a moment when a hangup ends the run with nothing taken back.
+    trap '' HUP INT TERM
+    steps_done=true
+    trap - EXIT
+    take_back "$why"
+    echo "$output" | tail -n 5 >&2
+    return 1
+}
+# END settings check
+settings_check || exit 1
+steps_finished
 
 step "Restarting"
 stop_service

@@ -261,3 +261,36 @@ def test_words_naming_no_list_go_to_claude(make_lists):
     # ...but a list asked for by name is still one Nova hasn't got, and "my list" is still a list.
     assert "not_understood" not in lists.read("my garden list")
     assert lists.tick_off("cheese", "my list") == {"success": False, "message": "I can't see cheese on your lists."}
+
+
+def test_each_list_comes_with_its_count_other_names_and_whether_its_main(make_lists):
+    lists = make_lists([{**_list("Shopping list", aliases=["groceries"]), "count": 3}, _list("todo")])
+    lists.choices.change(lambda state: state.update(main="todo.shopping_list"))
+    assert lists.overview() == [
+        {"id": "todo.shopping_list", "name": "Shopping list", "count": 3, "aliases": ["groceries"], "main": True},
+        {"id": "todo.todo", "name": "todo", "count": 0, "aliases": [], "main": False}]
+    # With none chosen, it's todo - as "add milk to my list" would find it.
+    lists.choices.change(lambda state: state.update(main=None))
+    assert [found["main"] for found in lists.overview()] == [False, True]
+
+
+def test_only_a_list_home_assistant_has_can_be_the_main_one(make_lists):
+    lists = make_lists()
+    lists.choose_main("todo.notepad")
+    assert lists.choices.get("main") == "todo.notepad" and lists.main()["name"] == "notepad"
+    # A list which isn't there, or isn't a list, is refused and the choice is kept.
+    for made_up in ("todo.made_up", "light.kitchen", ""):
+        with pytest.raises(ValueError, match="Home Assistant isn't showing that list just now."):
+            lists.choose_main(made_up)
+    assert lists.choices.get("main") == "todo.notepad"
+
+
+def test_a_choice_for_something_gone_is_kept_for_its_return(make_lists):
+    lists = make_lists()
+    lists.choose_main("todo.shopping_list")
+    gone = lists.home.lists
+    lists.home.lists = [found for found in gone if found["id"] != "todo.shopping_list"]
+    assert [found["name"] for found in lists.overview() if found["main"]] == ["todo"]
+    assert lists.choices.get("main") == "todo.shopping_list"
+    lists.home.lists = gone
+    assert [found["name"] for found in lists.overview() if found["main"]] == ["Shopping list"]

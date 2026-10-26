@@ -30,7 +30,7 @@ from voice_assistant import paths
 from voice_assistant.brain import RESTART_EXIT_STATUS, Brain
 from voice_assistant.config import Config
 from voice_assistant.logging_setup import log_transcripts, setup_logging
-from voice_assistant.satellite_passwords import SatellitePasswords
+from voice_assistant.satellite_passwords import SatellitePasswords, name_problem
 
 
 def manage_satellites(argv: List[str]):
@@ -41,8 +41,8 @@ def manage_satellites(argv: List[str]):
         argv: add-satellite NAME [--password-stdin], or remove-satellite NAME.
 
     Raises:
-        SystemExit: If the arguments are wrong, or the name is already there, or the
-            password given is too short.
+        SystemExit: If the arguments are wrong, or the name isn't a machine name or is
+            already there, or the password given is too short.
     """
     parser = argparse.ArgumentParser(prog="backend.py")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -59,6 +59,10 @@ def manage_satellites(argv: List[str]):
             sys.exit(f"There is no satellite called {args.name}")
         print(f"Removed {args.name}")
         return
+    # The page's own rule - see Brain.add_satellite.
+    problem = name_problem(args.name)
+    if problem:
+        sys.exit(problem)
     given = sys.stdin.readline().strip() if args.password_stdin else None
     try:
         password = passwords.add(args.name, given)

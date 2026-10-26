@@ -24,10 +24,11 @@ aplay -l && arecord -l
 The satellite says "Sorry, I can't reach my server right now" when it can't reach the brain - for the wake word, or when the brain goes part way through a request. Until it can, it still rings the timers and alarms from its own copy, and the wake word stops them.
 
 - **The satellite's log says `Can't connect to the brain at nova (...)`** - check the brain is running (`systemctl status nova-backend`, on the brain, as root), that Tailscale passes port 10400 on to it (`tailscale serve status`, on the brain, as root - see the README for the `tailscale serve` command), and the brain's address in the satellite's `~/.config/nova/config.yaml` (`backend.address`, `nova:10400`).
-- **The brain's log says `Refused a satellite: No satellite called ...`** - the brain doesn't know it. It's known by the satellite's machine's name, unless `backend.satellite` in the satellite's settings gives another: on the brain, `runuser -u nova -- venv/bin/python backend.py add-satellite NAME`, and put the password it prints in the satellite's `~/.config/nova/.env`, as `NOVA_BACKEND_TOKEN=...`. Then restart the satellite: `systemctl --user restart voice-assistant`.
-- **The brain's log says the satellite `hung up part way through the handshake`** - most likely its password isn't the one the brain has for it. Make it a new one on the brain, with `remove-satellite NAME` and then `add-satellite NAME`, run as above, and put that in the satellite's `.env`.
-- **The satellite won't start at all, and its log says it `needs its brain's address ... and its password`** - setup was left without the password. Add it as above.
-- **A satellite removed on the brain** is let go straight away, and turned away from then on - `remove-satellite` is how one is shut out.
+- **The brain's log says `Refused a satellite: No satellite called ...`** - the brain doesn't know it. It's known by the satellite's machine's name, unless `backend.satellite` in the satellite's settings gives another: add it by that name on the settings page, under Satellites (or on the brain, `runuser -u nova -- venv/bin/python backend.py add-satellite NAME`). Then, on the satellite, run `bash setup.sh --new-password` from its clone and type in the password it was given - it saves it and restarts the satellite.
+- **The brain's log says the satellite `hung up part way through the handshake`** - most likely its password isn't the one the brain has for it. Give it a new one on the settings page, under Satellites > New password, then run `bash setup.sh --new-password` on the satellite and type it in. Don't use `remove-satellite` and then `add-satellite` for this: removing it moves its timers, alarms and routines to the default satellite, and empties its copy if it's connected, and adding it again doesn't bring them back.
+- **A satellite is turned away after New password** - that's expected until it has the new one: the brain lets it go as the password changes, and its log says it `hung up part way through the handshake` from then on. Run `bash setup.sh --new-password` on it, as above. If it's still turned away, the password was cut short or mistyped as it was copied - `setup.sh` refuses one which is too short or has anything in it the page's passwords never have, but can't tell one wrong letter. Press New password again and type in the one it shows. On a Pi whose clone is from before `--new-password`, update it first (`bash update.sh`), or put the password after `NOVA_BACKEND_TOKEN=` in its `~/.config/nova/.env` and run `systemctl --user restart voice-assistant`.
+- **The satellite won't start at all, and its log says it `needs its brain's address ... and its password`** - setup was left without the password. Give it one as above, with `bash setup.sh --new-password`.
+- **A satellite removed on the brain** is let go straight away, and turned away from then on - Remove on the settings page, or `remove-satellite`, is how one is shut out. Its timers, alarms and routines go to the default satellite.
 
 ## Nova doesn't make a sound
 
@@ -71,7 +72,7 @@ The brain decides when you've stopped, so these are its settings, in its `~/.con
 
 - **Cut off mid-sentence** - raise `thresholds.silence_duration`, or lower `thresholds.vad_threshold`.
 - **Keeps listening after I've finished** - usually because something in the room sounds like speech, such as a TV. Raise `thresholds.vad_threshold`.
-- The brain's log shows `Speech detected` and `Silence detected after ...s` for each recording, and its `latency.jsonl`, in `~/.local/share/nova/logs`, has the timings. Whatever happens, the satellite stops sending after 10 seconds.
+- The brain's log shows `Speech detected` and `Silence detected after ...s` for each recording, and its `latency.jsonl`, in `~/.local/share/nova/logs`, has the timings. Whatever happens, the satellite stops sending after the longest a request may be: `thresholds.recording_timeout`, Longest request on the settings page, 15 seconds unless changed, from 5 to 30. A satellite never sends more than 30 seconds, and one not yet updated stops at 10.
 
 ## Nova mishears, or answers something nobody said
 
@@ -86,10 +87,10 @@ The brain plays Navidrome's music to the satellite, and drives Spotify, so these
 - **"I can't reach Navidrome right now"** - check Navidrome is running, and that its address in the brain's `~/.config/nova/config.yaml` opens from the brain: `curl -I http://navidrome.local:4533`.
 - **"Navidrome didn't accept my password"** - check `NAVIDROME_PASSWORD` in the brain's `~/.config/nova/.env` against the Navidrome user named in `navidrome.username`.
 - **A song is skipped straight away** - the brain's log says `Couldn't play '...'` with ffmpeg's reason. Usually a file Navidrome can't convert to MP3; check its transcoding settings.
-- **"Spotify needs signing in again on the server"** - run the sign-in again, on the brain: `runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller`.
+- **"Spotify needs signing in again on the settings page"** - sign in again on the settings page, under Music - or, without the page, on the brain: `runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller`.
 - **"I can't find the ... speaker"** - raspotify, on the satellite, isn't running, or its name doesn't match `spotify.device_name` in the brain's settings. Check `systemctl status raspotify` on the satellite. It's restarted every night anyway (`raspotify-restart.timer`), since its connection can drop silently.
 
-## The lights or the calendar don't work
+## The lights don't work
 
 On the brain, which talks to Home Assistant for every satellite:
 
@@ -98,8 +99,6 @@ On the brain, which talks to Home Assistant for every satellite:
 - **"Home Assistant didn't accept my token"** - the token has been deleted or mistyped. Make a new one for Nova's Home Assistant user.
 - **"Sorry, I am not aware of any area called ..."** - that's Home Assistant's own answer. Check the light is exposed to Assist (Settings > Voice assistants > Expose), and what it and its area are called there.
 - **"The lights" means the wrong room** - each satellite's lights are those of the area its device is in, in Home Assistant. Check the satellite's Nova device is in the right one.
-- **The calendar says nothing's on** - check the calendar shows events in Home Assistant itself, and, if `home_assistant.calendars` is set, that it's listed there.
-
 ### A switch, media player, script or scene doesn't work
 
 Nova's own commands come first, so a request using one of their words - timer, alarm, music, volume, notifications, microphone and the like - goes to Claude, not to Assist. So does one with a word that points back ("it", "that", "the other one"), a delay ("in five minutes", "at six"), or two things joined with "and", "then" or "plus". Two things with only a comma between them do reach Assist, where what it would act on is still checked. Otherwise, the brain's log says what happened to it:
@@ -109,18 +108,30 @@ Nova's own commands come first, so a request using one of their words - timer, a
 - **`Refused a Home Assistant request ...`** or **`Refused a sensitive Home Assistant request`** - its words are for locking, unlocking or opening something, or it names, or would work, a lock, door, gate, window, valve, alarm panel, anything of Proxmox or one of the PC's HASS.Agent commands, or a script, scene or group that does - or something which acts that isn't in Home Assistant's registry. A new one is refused until the registry's next read, up to five minutes after it's added; one with no unique id - a YAML template or command_line switch, a scene with no id - is refused until it has one (`unique_id` in its YAML, or made in the UI). An old-style `group.*` can't take a unique id, so make it a group helper in the UI instead (Settings > Devices & services > Helpers > Group). The log line names the target as `not in Home Assistant's registry - give it a unique id to work it by voice` in both cases, so for one added in the last five minutes, wait for the registry's next read first. That's on purpose. A question about one, such as "is the garage door open?", goes to Claude instead.
 - **`Can't see what ... does`** - Home Assistant can't show that script's contents, usually because it's written in YAML outside `scripts.yaml`, so it isn't run. Move it into `scripts.yaml`, or make it in the script editor. If it says the registry wouldn't say which script it is now, Home Assistant's WebSocket didn't answer in time, and it's tried again next time.
 
+## The calendar doesn't work
+
+On the brain, which reads the calendars from Google itself for every satellite - not through Home Assistant. See the README's "Google Calendar".
+
+- **"The calendar isn't set up yet"** - `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` isn't in the brain's `~/.config/nova/.env` (or under Keys on the settings page), or the brain hasn't restarted since. Its log says `The calendar is off until ...` at startup, and the settings page's Calendars and lists says the keys are needed.
+- **"I need signing in to Google again"**, or the settings page's Calendars and lists says Nova needs signing in to Google again - Nova hasn't signed in yet, or the sign-in was removed in your Google account, or the OAuth client was deleted or its secret made anew in Google Cloud. Sign in again on the settings page, under Calendars and lists. If the client changed, put its new id and secret under Keys first, and restart the brain. A client left in Testing rather than In production ends the sign-in after a week.
+- **"I can't reach Google's calendar right now"** - the brain can't reach Google, or Google answered with an error. With no network at all, it's said straight away. The brain's log says `Couldn't read the calendar:` and the kind of failure, with no calendar's id.
+- **The sign-in says Google didn't let Nova do something** - a box on Google's page was left unticked. Sign in again, with every box ticked.
+- **The sign-in says Google refused it, with a code such as `redirect_uri_mismatch`** - the OAuth client in Google Cloud isn't set up as the README says: it needs to be of type Desktop app, with the Google Calendar API switched on. Fix it there, then start the sign-in again.
+- **"I haven't got a calendar called ..."**, or an activity is said wrongly - each calendar but your own, Google's own (holidays, birthdays) and one named by an email address (a person's own, shared with you) is an activity, by its name: "when's gym tomorrow?" needs a calendar called Gym. Switch one on or off on the settings page, under Calendars and lists - it's used from the next question, with no restart. A calendar named like one of Nova's own things - Timer, Music - is Claude's to answer, not a local command.
+- **The calendar says nothing's on** - check the event shows in Google Calendar itself, on a calendar in your account's list, and that its calendar is "In what's on" on the settings page. A calendar added there turns up within five minutes. `home_assistant.calendars` isn't used any more - the brain's log says so at startup, and it can be deleted.
+
 ## A battery warning didn't come
 
 On the brain, which watches the batteries for every satellite:
 
-- **Nothing is watched without Home Assistant** - "Battery levels need Home Assistant" means `home_assistant.url` or `HA_TOKEN` isn't set up on the brain - see "The lights or the calendar don't work" above. Its log says `Home Assistant didn't answer, so batteries aren't being watched` once while it can't be reached, and `Home Assistant answers again` when it can.
+- **Nothing is watched without Home Assistant** - "Battery levels need Home Assistant" means `home_assistant.url` or `HA_TOKEN` isn't set up on the brain - see "The lights don't work" above. Its log says `Home Assistant didn't answer, so batteries aren't being watched` once while it can't be reached, and `Home Assistant answers again` when it can.
 - **Nova says it can't reach Home Assistant, but it's running** - batteries need an administrator's `HA_TOKEN`, as Home Assistant only answers templates for one. The brain's log says `Home Assistant won't tell Nova what's in which room`. Make Nova's user an administrator.
 - **The device isn't there** - ask "battery levels". A device is only found if Home Assistant has a battery sensor for it which reads in percent, and it isn't unavailable.
 - **It's only on the phone, or only said out loud** - a warning is said out loud only while you're home (Home Assistant's person) and outside `ntfy.quiet_from` to `ntfy.quiet_until`; otherwise it goes to `ntfy.phone`. The phone's own warning isn't sent to itself. With no ntfy, or a failed send, it's said instead - and held until the quiet hours end if it came in them, then said only if it's still true.
 - **The device's warnings are off** - on the settings page's Batteries section, each device has a "Warn me" switch. Turned off, it warns about nothing, though "battery levels" still tells its level.
 - **It wasn't sent to the phone** - each device also has "Send to my phone". It's off for the phone itself, which warns you on its own, and on for everything else. The settings page also has one switch for whether a warning that was said out loud is sent as well.
 - **A mark already warned** - each mark warns once as the level falls. It starts again once the device has charged, or its level is 10 points above its highest mark. What has warned is kept in `batteries.json` in the brain's `~/.local/share/nova`.
-- **Nothing is said out loud** - the default satellite (the first added) has to be connected. The brain's log says `A battery warning wasn't said, as the default satellite isn't connected`.
+- **Nothing is said out loud** - the default satellite (the first added, unless another is made the default on the settings page) has to be connected. The brain's log says `A battery warning wasn't said, as the default satellite isn't connected`.
 
 ## A timer or alarm didn't go off
 
@@ -139,7 +150,7 @@ The weather is Home Assistant's own - Met's forecast, for its home location - so
 - **"Home Assistant hasn't got a weather forecast."** It has no weather entity. Add the Met.no integration in Home Assistant (Settings > Devices & services), which forecasts for the home location set in Settings > System > General.
 - **"Home Assistant's forecast isn't available right now."** The weather entity is unavailable - most often because Home Assistant can't reach Met, so check its internet. Home Assistant's log says why.
 - **"That's Home Assistant's forecast from 5 hours ago."** Home Assistant last heard from Met over three hours ago. Its log says why it hasn't since.
-- **The forecast is for somewhere else.** With more than one weather entity, Nova uses the first by entity id.
+- **The forecast is for somewhere else.** With more than one weather entity, Nova uses the first by entity id until you choose one: choose it on the settings page, under Calendars and lists ("Weather from").
 - **The log warns `'weather.location' is no longer used`.** The weather no longer needs a place in Nova's settings: delete it from the brain's `~/.config/nova/config.yaml` - and the `weather:` line above it, though a `weather:` left on its own is only warned about too.
 
 ## Nova won't start after a settings change

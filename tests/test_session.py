@@ -14,6 +14,7 @@ import socket
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,10 +24,12 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("soxr")
 
 from voice_assistant import clock as clock_module
-from voice_assistant import ha_device, paths, protocol, satellite_link
+from voice_assistant import ha_device, music, paths, protocol, satellite_link, spotify_controller
 from voice_assistant import session as session_module
 from voice_assistant.actions import Action
+from voice_assistant.brain import Brain
 from voice_assistant.clock import Clock
+from voice_assistant.config import Config
 from voice_assistant.conversation import Reply
 from voice_assistant.navidrome import NavidromePlayer
 from voice_assistant.recording import RATE, AudioFeed
@@ -164,9 +167,12 @@ class FakePiper:
 
     def __init__(self):
         self.said = []
+        # The speed each was said at, None for Nova's own.
+        self.speeds = []
 
-    def stream(self, message, on_start=None):
+    def stream(self, message, on_start=None, speed=None):
         self.said.append(message)
+        self.speeds.append(speed)
 
         def pieces():
             if on_start:
@@ -227,12 +233,12 @@ def brain(tmp_path, monkeypatch, make_config):
     # Speech told apart by how loud it is, which the made-up recordings here are made for.
     monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
     # No music, unless a test gives some.
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: None)
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
     config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"})
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
-                           batteries=None, lists=None, pc=None, registry=None, tts=FakePiper(), stt=FakeSpeechToText(),
-                           sounds_folder=Path(paths.SOUNDS_DIR))
+                           batteries=None, lists=None, pc=None, registry=None, calendar=None, tts=FakePiper(),
+                           stt=FakeSpeechToText(), sounds_folder=Path(paths.SOUNDS_DIR))
 
 
 @pytest.fixture
@@ -240,11 +246,11 @@ def connect():
     """Connects fake Pis, each a satellite the brain has just let in, and lets them all go after the test."""
     made = []
 
-    def connect(name="bedroom", hostname="bedroom-pi.local"):
+    def connect(name="bedroom", hostname="bedroom-pi.local", speaker=None):
         ours, theirs = socket.socketpair()
         # Short, so the brain's reading wakes often to check on the satellite.
         ours.settimeout(0.05)
-        hello = {"name": name, "hostname": hostname, "sample_rate": 48000, "unclean": False}
+        hello = {"name": name, "hostname": hostname, "sample_rate": 48000, "unclean": False, "speaker": speaker}
         satellite = RemoteSatellite(satellite_link.Stream(ours), hello)
         pi = Pi(theirs)
         threading.Thread(target=satellite.serve, daemon=True).start()
@@ -670,6 +676,20 @@ def test_closing_lets_go_of_the_device_the_music_and_the_satellites_sounds_once_
 
 # Each satellite's own
 
+def test_the_session_sends_its_satellite_the_longest_request(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.send_state()
+    assert wait_for(lambda: pi.messages("state"))
+    assert pi.messages("state")[-1]["longest_request"] == 15.0
+
+    # Read as it is sent, so a save reaches it with no restart.
+    brain.config.apply({("thresholds", "recording_timeout"): 22.0})
+    session.send_state()
+    assert wait_for(lambda: len(pi.messages("state")) == 2)
+    assert pi.messages("state")[-1]["longest_request"] == 22.0
+
+
 def test_mute_is_kept_per_satellite_and_sent_to_it(brain, connect, make_session):
     bedroom, bedroom_pi = connect("bedroom", "bedroom-pi")
     kitchen, kitchen_pi = connect("kitchen", "kitchen-pi")
@@ -804,6 +824,72 @@ def test_a_volume_beep_from_the_settings_page_stops_the_last_one(make_session):
     assert played[0].stopped and not played[1].stopped
 
 
+def test_hear_it_is_said_at_the_speed_given_unless_nova_is_in_a_conversation(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    assert session.hear_voice(1.25)
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert brain.tts.said == [session_module.HEAR_IT] and brain.tts.speeds == [1.25]
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["reply"]
+    # Nothing is listened for after it, as it isn't a question.
+    assert not pi.messages("listen")
+
+    session._idle.clear()
+    assert not session.hear_voice(1.0)
+    assert brain.tts.said == [session_module.HEAR_IT]
+
+
+def test_hear_it_isnt_said_over_an_announcement(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    # Held playing, as a satellite part way through it would be.
+    pi.held = {1}
+    threading.Thread(target=session.announce, args=("Your phone's battery is down to 5%.",), daemon=True).start()
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert not session.hear_voice(1.25)
+    assert session_module.HEAR_IT not in brain.tts.said
+
+
+def test_hear_it_isnt_said_over_a_routine(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = SimpleNamespace(start=lambda: None, run_routine=lambda routine: Reply(say="It's sunny."))
+    pi.held = {1}
+    threading.Thread(target=session.run_routine, args=({"name": "Good morning", "steps": []},), daemon=True).start()
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert not session.hear_voice(1.25)
+    assert session_module.HEAR_IT not in brain.tts.said
+
+
+def test_hear_it_isnt_said_over_anything_ringing(brain, connect, make_session, monkeypatch):
+    # Least of all an alarm, between its bursts as much as during them.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    ringing = ["kitchen"]
+    monkeypatch.setattr(brain.clock, "is_ringing", lambda satellite=None: satellite in ringing)
+    assert session.hear_voice(1.25)
+    assert wait_for(lambda: pi.messages("stream_end"))
+
+    ringing.append("bedroom")
+    assert not session.hear_voice(1.25)
+    assert brain.tts.said == [session_module.HEAR_IT]
+
+
+def test_hear_it_isnt_said_over_the_last_one(brain, connect, make_session):
+    # Pressed again while it's still being said.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    pi.held = {1}
+    assert session.hear_voice(1.25)
+    assert wait_for(lambda: pi.messages("stream_end"))
+    assert not session.hear_voice(1.0)
+
+    pi.say("played", id=pi.messages("play_stream")[0]["id"])
+    assert wait_for(lambda: session._last_hearing.done)
+    assert session.hear_voice(1.0)
+    assert brain.tts.speeds == [1.25, 1.0]
+
+
 def test_what_nova_is_doing_is_kept_for_the_settings_page(brain, make_session, monkeypatch):
     session = make_session()
     seen = {}
@@ -823,6 +909,26 @@ def test_what_nova_is_doing_is_kept_for_the_settings_page(brain, make_session, m
     session._handle_interaction(AudioFeed(), timeline=FakeTimeline())
 
     assert seen == {"recording": "listening", "working out the words": "thinking"}
+
+
+def test_a_session_started_before_the_save_uses_the_new_value(brain, connect, make_session, monkeypatch, tmp_path):
+    # The silence setting is tuned by trying, so a save on the settings page reaches every
+    # satellite already connected, at its next recording - not a copy kept from its start.
+    brain.config = Config(path=str(tmp_path / "config.yaml"))
+    sessions = [make_session(connect("bedroom")[0]), make_session(connect("kitchen", "kitchen-pi.local")[0])]
+    durations = []
+
+    def record_until_silence(source, detector, heard=None, **kwargs):
+        durations.append(kwargs["silence_duration"])
+        return np.zeros(480, np.float32)
+
+    monkeypatch.setattr(session_module, "record_until_silence", record_until_silence)
+    Brain.apply_settings(brain, {("thresholds", "silence_duration"): 1.2})
+    for session in sessions:
+        session.conversation = ScriptedConversation(Reply())
+        session._handle_interaction(AudioFeed(), timeline=FakeTimeline())
+
+    assert durations == [1.2, 1.2]
 
 
 # The satellite's device in Home Assistant
@@ -929,6 +1035,51 @@ def test_stop_silences_what_rings_and_what_nova_is_saying(brain, make_session):
     assert happened == [("stopped", ["reply", "announcement"])]
 
 
+def test_home_assistants_stop_is_the_same_code(make_session):
+    # The settings page's Stop goes through stop_what_rings_and_speaks too, so the two
+    # can never drift apart.
+    session = make_session()
+    assert session._device_controls().stop == session.stop_what_rings_and_speaks
+
+
+def test_stop_never_deletes_a_repeating_alarm(brain, make_session):
+    # A daily alarm stopped as it rings has only this morning's silenced - it rings
+    # again the next day, as saying "stop" leaves it.
+    session = make_session()
+    clock = brain.clock
+    clock.alarm_ring_duration = 0
+    clock.set_alarm(7, 0, "daily", satellite="bedroom")
+    [alarm] = clock._alarms.values()
+    # The 7am before the next one, which has just come due.
+    ringing = datetime.fromtimestamp(alarm["due_at"]) - timedelta(days=1)
+    alarm["due_at"] = ringing.timestamp()
+    clock._tick(time.time())
+    assert clock.is_ringing(satellite="bedroom")
+
+    session.stop_what_rings_and_speaks()
+
+    assert not clock.is_ringing()
+    [kept] = clock.overview()["alarms"]
+    assert kept["id"] == alarm["id"]
+    assert datetime.fromtimestamp(kept["due_at"]) == ringing + timedelta(days=1)
+
+
+def test_stop_leaves_the_music_playing(brain, make_session):
+    # Stop is for what rings and what Nova says - pressed while a song plays under an
+    # announcement, the song carries on.
+    session = make_session()
+    stopped = []
+    session.speaker = SimpleNamespace(stop=lambda kinds: stopped.append(list(kinds)), close=lambda: None)
+    brain.clock.set_timer(60, satellite="bedroom")
+    brain.clock._tick(time.time() + 61)
+    session.activity = "speaking"
+
+    session.stop_what_rings_and_speaks()
+
+    assert stopped == [["reply", "announcement"]]
+    assert not brain.clock.is_ringing()
+
+
 def test_the_device_is_looked_up_until_found_then_now_and_then(make_session):
     # Often until Home Assistant has taken in the device's announcement, then now and
     # then, in case the user has moved it to another room.
@@ -970,11 +1121,37 @@ def test_a_session_closed_before_it_runs_never_starts_its_device(connect, make_s
     assert not any(thread.name.startswith("ha-device-lookup") for thread in threading.enumerate())
 
 
+@pytest.fixture
+def spotify(monkeypatch):
+    """Spotify as each session's player, with its keys set and never signed in, so nothing goes to Spotify."""
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
+    monkeypatch.setattr(spotify_controller, "spotify_oauth", lambda **kwargs: None)
+    monkeypatch.setattr(spotify_controller.SpotifyController, "_authenticate", lambda self: False)
+    monkeypatch.setattr(session_module, "make_player", music.make_player)
+
+
+def test_each_session_plays_on_its_own_satellites_speaker(brain, connect, make_session, spotify):
+    bedroom = make_session(connect("bedroom", speaker="Bedroom Pi")[0])
+    kitchen = make_session(connect("kitchen", speaker="Kitchen Pi")[0])
+
+    assert isinstance(bedroom.music_player, spotify_controller.SpotifyController)
+    assert bedroom.music_player.device_name == "Bedroom Pi"
+    assert kitchen.music_player.device_name == "Kitchen Pi"
+
+
+def test_a_satellite_that_doesnt_say_uses_the_brains_name(brain, connect, make_session, spotify):
+    # As one from before satellites said - which plays where every satellite did then.
+    brain.config.apply({("spotify", "device_name"): "Living Room"})
+    assert make_session(connect("bedroom")[0]).music_player.device_name == "Living Room"
+
+
 def test_closing_a_session_ends_every_thread_it_started(connect, make_session, monkeypatch):
     # A satellite which connects again gets a new session, and the old one's threads
     # held the whole of it - Navidrome's waited for something to play for ever.
     satellite, pi = connect()
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: NavidromePlayer(
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: NavidromePlayer(
         "http://navidrome.local:4533", "nova", "secret", speaker, volume))
     before = set(threading.enumerate())
     session = make_session(satellite)
@@ -1020,6 +1197,15 @@ def test_a_sessions_actions_read_batteries_from_the_brains_watcher(brain, make_s
     # One watcher for the brain, so a spoken answer and a warning are the same reading.
     brain.batteries = object()
     assert make_session().actions.batteries is brain.batteries
+
+
+def test_a_sessions_actions_read_the_brains_calendar(brain, make_session):
+    # One Google calendar for the brain, rather than one for each satellite - and its
+    # activities are what the local rules hear.
+    words = {"gym": "gym", "gyms": "gym"}
+    brain.calendar = SimpleNamespace(activity_words=lambda: words, activity_calendars=dict)
+    session = make_session()
+    assert session.actions.calendar is brain.calendar and session.intents.activities() is words
 
 
 def _the_brain_says(session, message):
@@ -1097,6 +1283,54 @@ def test_a_stop_during_a_battery_warning_still_counts_as_said(connect, make_sess
         Brain._say_battery(brain, "Your phone's battery is down to 5%.")), daemon=True)
     saying.start()
     assert wait_for(lambda: pi.messages("stream_end"))
-    session._stop_from_home_assistant()
+    session.stop_what_rings_and_speaks()
     saying.join(10)
     assert results == [True]
+
+
+# Settings saved while a session is already running
+
+def test_the_listening_blip_is_switched_off_straight_away(brain, connect, make_session):
+    # Made before the save, as every satellite's session is when the settings page is used.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.config.apply({("sounds", "listening_enabled"): False})
+    feed = AudioFeed()
+    feed.feed(np.zeros(4 * RATE, np.int16))
+
+    session._handle_interaction(feed, timeline=FakeTimeline())
+    # Neither the blip nor its falling twin for not hearing anything.
+    assert pi.messages("play_sound") == []
+
+
+def test_the_done_chime_is_switched_off_straight_away(brain, connect, make_session, monkeypatch):
+    session = make_session(connect()[0])
+    # Something ringing which "stop" dismisses, confirmed by the chime.
+    monkeypatch.setattr(session.conversation.clock, "is_ringing", lambda satellite=None: True)
+    monkeypatch.setattr(session.conversation.clock, "dismiss", lambda satellite=None: {"message": "Okay, stopped."})
+    assert session.conversation.handle("stop").sounds == [("success_chime.wav", "general")]
+
+    brain.config.apply({("sounds", "chime_enabled"): False})
+    assert session.conversation.handle("stop").sounds == []
+
+
+def test_the_reminder_sound_is_switched_off_straight_away(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.config.apply({("sounds", "reminder_enabled"): False})
+
+    assert session.announce("Your reminder: take the bins out.") is True
+    assert pi.messages("play_sound") == [] and len(pi.messages("play_stream")) == 1
+
+
+@pytest.mark.parametrize("sound, start", [("alarm_sound.wav", 4.0), ("timer_beep.wav", 0.0),
+                                           ("announcement_sound.wav", 0.0)],
+                         ids=["an alarm's later burst", "a timer's beep", "a labelled timer's reminder"])
+def test_the_reminder_sound_switch_never_silences_what_the_clock_rings(brain, connect, make_session, sound, start):
+    # A wake-up alarm which rang silently after its first line would be a missed wake-up.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.config.apply({("sounds", "reminder_enabled"): False})
+
+    session.announce(None, sound, boost=True, start=start, length=2.0, ringing=True)
+    assert [message["name"] for message in pi.messages("play_sound")] == [sound]

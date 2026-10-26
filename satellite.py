@@ -14,6 +14,7 @@ and answers the wake word with the recorded "I can't reach the server".
 
 import itertools
 import logging
+import math
 import os
 import queue
 import signal
@@ -24,7 +25,7 @@ from typing import Callable, Dict, Iterator, List, Optional
 
 import numpy as np
 
-from voice_assistant import paths, storage, watchdog
+from voice_assistant import paths, protocol, storage, watchdog
 from voice_assistant.config import Config, ConfigError
 from voice_assistant.echo import make_echo_canceller
 from voice_assistant.fallback import AlarmCopy, FallbackRinger, Phrase, StateCopy
@@ -46,9 +47,14 @@ RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
 # user as they speak, and can tell the moment they've stopped.
 PIECE_SECONDS = 0.1
 
-# The most of one recording which is sent, in seconds, whatever the brain says - so a
-# brain which never says the user has stopped can't keep the microphone open.
+# The most of one recording which is sent, in seconds, until the brain says how long
+# one may be - so a brain which never says the user has stopped can't keep the
+# microphone open.
 LIMIT_SECONDS = 10
+
+# The most of one recording which is sent, in seconds, whatever the brain says - so a
+# setting of 90 on the brain can't keep the microphone open for a minute and a half.
+MOST_SECONDS = 30
 
 # How often the alarm copy is checked for what's due while the brain is away, and how
 # often the brain is told how far the music has got, in seconds.
@@ -106,6 +112,28 @@ def _pieces(waiting: queue.Queue) -> Iterator[np.ndarray]:
         yield piece
 
 
+def _speaker(device_name) -> Optional[str]:
+    """
+    The Spotify speaker to say in the hello, if the brain can take it.
+
+    Args:
+        device_name: spotify.device_name from the settings, which a hand edit can make
+            anything - an unquoted 2026-10-26 is a date to YAML.
+
+    Returns:
+        It, if it's text of 1 to protocol.MAX_SPEAKER characters, else None - so the
+        brain falls back to its own speaker name. A date can't be sent at all, and
+        would stop the satellite ever connecting.
+    """
+    if not device_name:
+        return None
+    if isinstance(device_name, str) and len(device_name) <= protocol.MAX_SPEAKER:
+        return device_name
+    logger.warning(f"spotify.device_name isn't text of up to {protocol.MAX_SPEAKER} characters, "
+                   f"so the brain plays Spotify on its own speaker name: {ascii(device_name)[:80]}")
+    return None
+
+
 class Satellite:
     """One Pi's microphone and speaker, for a brain elsewhere."""
 
@@ -128,6 +156,9 @@ class Satellite:
         self.hostname = socket.gethostname()
         self.name = backend_config.get("satellite") or self.hostname
         self.sample_rate = audio_config.get("sample_rate", 48000)
+        # The name its setup gave raspotify, said to the brain as it connects so the
+        # brain plays this satellite's Spotify here - changed with the setup, on the Pi.
+        self.spotify_speaker = _speaker(config.section("spotify").get("device_name"))
         # Seconds of audio from just before the wake word was detected which are sent
         # first, so "Hey Nova what time is it", said in one breath, isn't cut short. The
         # brain is told how much with each wake, so this is the only setting for it.
@@ -145,6 +176,9 @@ class Satellite:
         # What the brain last sent, for while it can't be reached - see fallback.py.
         self.alarms = AlarmCopy()
         self.state = StateCopy()
+        # The most seconds one recording may last - 10 until the brain says,
+        # as it does whenever it connects. Not saved, as the brain owns it.
+        self.longest_request: float = LIMIT_SECONDS
         self.phrase = Phrase()
         self.ringer = FallbackRinger(self.speaker, self.sounds_folder, self.alarms, self.state)
         # The brain owns the mute, but a satellite which was muted when the brain went
@@ -211,7 +245,8 @@ class Satellite:
             # Before the brain is reached, so it's told what still rings, and takes it over.
             self.ringer.resume(time.time())
             self.link = SatelliteLink(self.address, self.name, self.hostname, self.password, self.sample_rate,
-                                      self._note_start(), self._on_message, self._on_connected)
+                                      self._note_start(), self._on_message, self._on_connected,
+                                      speaker=self.spotify_speaker)
             self.link.start()
             threading.Thread(target=self._ring_when_due, daemon=True, name="fallback").start()
             logger.info(f"Satellite '{self.name}' ready, for its brain at {self.address}")
@@ -346,7 +381,7 @@ class Satellite:
             connection.
         """
         reader = self.microphone.listen(start=start)
-        limit = LIMIT_SECONDS * RATE
+        limit = round(self.longest_request * RATE)
         sizes = itertools.chain([pre_roll] if pre_roll else [], itertools.repeat(round(PIECE_SECONDS * RATE)))
         sent = 0
         try:
@@ -361,7 +396,11 @@ class Satellite:
                 sent += len(audio)
                 if sent >= limit:
                     with self._lock:
-                        self._turn_open = True
+                        # Unless the brain said the user had stopped while this last
+                        # piece was being sent - when it opened the turn itself, and
+                        # may have ended it since, with nothing to say.
+                        if not stopped.is_set():
+                            self._turn_open = True
                     self.link.send("audio_end", reason="limit")
                     return "limit"
         except BaseException:
@@ -498,6 +537,12 @@ class Satellite:
 
     def _take_state(self, message: Dict, payload: bytes):
         self.state.update(message)
+        longest = message.get("longest_request")
+        # Anything else is left alone, so an old or confused brain can't make a
+        # recording of no length or one which never ends: "15" as text, True, NaN, 0,
+        # or 1e-9, which is no audio at all. The brain's own setting is at least 5.
+        if isinstance(longest, (int, float)) and not isinstance(longest, bool) and 1 <= longest < math.inf:
+            self.longest_request = min(longest, MOST_SECONDS)
         self.wake.set_muted(self.state.muted)
 
     def _away_settled(self, message: Dict, payload: bytes):

@@ -68,6 +68,10 @@ PLAYBACK_CHECK = 0.1
 DEVICE_LOOKUP = 30
 DEVICE_LOOKUP_FOUND = 300
 
+# What the settings page's "Hear it" says, at the speed on its slider. Always this,
+# so the page can never have Nova say anything else.
+HEAR_IT = "This is how fast I'll talk."
+
 
 def _kept_for(what: str, satellite: str) -> str:
     """
@@ -99,12 +103,6 @@ class Session:
         # see strip_wake_word.
         self.wake_word = assistant_config.get("wake_word", DEFAULT_WAKE_WORD)
 
-        # The assistant's own sound effects, which the satellite keeps and plays by name.
-        sounds_config = config.section("sounds")
-        self.chime_enabled = sounds_config.get("chime_enabled", True)
-        self.reminder_sound_enabled = sounds_config.get("reminder_enabled", True)
-        self.listening_sound_enabled = sounds_config.get("listening_enabled", True)
-
         # How long each stage of every interaction took, one line per interaction,
         # for scripts/latency_report.py to summarise.
         self.latency_file = os.path.join(paths.LOGS_DIR, "latency.jsonl")
@@ -128,6 +126,10 @@ class Session:
         # so dragging a slider doesn't pile them up - see boop.
         self._last_boop = None
         self._boop_lock = threading.Lock()
+        # The last "Hear it" the settings page played, so another isn't said over it -
+        # see hear_voice.
+        self._last_hearing = None
+        self._hearing_lock = threading.Lock()
         # Set once the session is closed, which ends run() - see close.
         self._closed = threading.Event()
         self._closing = threading.Lock()
@@ -161,26 +163,29 @@ class Session:
                                     on_change=self.send_state)
 
         # Navidrome or Spotify, whichever music.player says - or None, and the
-        # assistant carries on without music. See music.py.
-        self.music_player = make_player(config, self.speaker, self.volume)
+        # assistant carries on without music. See music.py. Spotify plays on the
+        # satellite's own speaker, if it said one as it connected.
+        self.music_player = make_player(config, self.speaker, self.volume, spotify_speaker=satellite.speaker_name)
 
         # Keeps the music paused while there's something to say - see MusicHold.
         self.music = MusicHold(self.music_player, online=online)
 
-        # Home Assistant, for the lights and the calendar - None until it's set up. One
-        # for each session, since it keeps the room its satellite is in.
+        # Home Assistant, for the lights - None until it's set up. One for each session,
+        # since it keeps the room its satellite is in.
         self.home = HomeAssistant.from_config(config, os.getenv("HA_TOKEN"), registry=brain.registry)
 
-        # Everything the assistant can do for the user - see actions.py. The lights and
-        # the calendar are only there once Home Assistant is set up, and timers and
-        # alarms ring on the satellite they were set from.
+        # Everything the assistant can do for the user - see actions.py. The lights are
+        # only there once Home Assistant is set up, and the calendar once Google is, and
+        # timers and alarms ring on the satellite they were set from.
         self.actions = ActionExecutor(music=self.music_player, clock=brain.clock, volume=self.volume,
                                       weather=brain.weather, home=self.home, memory=brain.memory,
                                       ntfy=brain.ntfy, satellite=satellite.name, batteries=brain.batteries,
-                                      lists=brain.lists, pc=brain.pc)
+                                      lists=brain.lists, pc=brain.pc, calendar=brain.calendar)
 
-        # The everyday commands handled without Claude - see intents.py.
-        self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home)
+        # The everyday commands handled without Claude - see intents.py. The activities are
+        # the calendars' names, so "when's gym tomorrow?" is heard once there's a Gym calendar.
+        self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home,
+                                    activities=brain.calendar.activity_words if brain.calendar else None)
 
         # The satellite as a device of its own in Home Assistant, over MQTT, or None
         # until mqtt.host is set - see ha_device.py. It's named after the satellite's
@@ -197,11 +202,33 @@ class Session:
 
         # How each thing the user says is answered - everything between hearing it and
         # saying the reply. See conversation.py.
-        self.thresholds = config.section("thresholds")
         self.conversation = Conversation(brain.clock, self.intents, self.llm, self.actions, self.music,
-                                         chime_enabled=self.chime_enabled,
+                                         chime_enabled=lambda: self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
                                          routines=brain.routines, satellite=satellite.name)
+
+    @property
+    def thresholds(self) -> Dict:
+        """
+        config.yaml's thresholds as they are now - read at each recording, so a silence
+        changed on the settings page is used from the next, on a session already started.
+        """
+        return self.brain.config.section("thresholds")
+
+    @property
+    def chime_enabled(self) -> bool:
+        """Whether a success is confirmed with the chime, as the settings are now."""
+        return self.brain.config.section("sounds").get("chime_enabled", True)
+
+    @property
+    def reminder_sound_enabled(self) -> bool:
+        """Whether a reminder is announced with its sound, as the settings are now."""
+        return self.brain.config.section("sounds").get("reminder_enabled", True)
+
+    @property
+    def listening_sound_enabled(self) -> bool:
+        """Whether the blip says Nova's listening, as the settings are now."""
+        return self.brain.config.section("sounds").get("listening_enabled", True)
 
     # The satellite's mute and volumes
 
@@ -240,13 +267,15 @@ class Session:
         """
         Sends the satellite its volumes and its mute, which the brain owns: whenever
         either changes, and as it connects. It mutes its wake word by them, and rings
-        by them while it can't reach the brain.
+        by them while it can't reach the brain. With them goes the longest request,
+        which isn't the satellite's to keep but is sent here so a save on the settings
+        page can reach it in the same way - see Brain.apply_settings.
 
         Returns:
             Whether it was sent.
         """
         volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
-        return self.satellite.set_state(volumes, self._muted)
+        return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0))
 
     # Running
 
@@ -402,11 +431,13 @@ class Session:
         # A throwaway one when none is given, so the marks below never need checking for.
         timeline = timeline or Timeline()
 
-        speech_timeout = self.thresholds.get("speech_timeout", 3.0)
+        # Read once, so the whole of a recording is by the same settings.
+        thresholds = self.thresholds
+        speech_timeout = thresholds.get("speech_timeout", 3.0)
         if follow_up:
             # Answering a question takes a moment's thought, so there's more time to
             # start talking than when the user has just said the wake word.
-            speech_timeout = self.thresholds.get("follow_up_timeout", speech_timeout * 2)
+            speech_timeout = thresholds.get("follow_up_timeout", speech_timeout * 2)
 
         self.activity = "listening"
 
@@ -436,9 +467,9 @@ class Session:
         try:
             audio_data = record_until_silence(
                 feed, self.speech_detector, listen_from=before, keep_before=before / RATE,
-                silence_duration=self.thresholds.get("silence_duration", 0.6),
+                silence_duration=thresholds.get("silence_duration", 0.6),
                 speech_timeout=speech_timeout,
-                timeout=self.thresholds.get("recording_timeout", 10.0),
+                timeout=thresholds.get("recording_timeout", 15.0),
                 timeline=timeline, heard=listening.add)
         except BaseException:
             # Otherwise it would wait on for the rest of a recording which isn't coming.
@@ -666,7 +697,7 @@ class Session:
     # What goes off by itself
 
     def announce(self, message, sound="announcement_sound.wav", boost=False, still_wanted=None,
-                 start=0.0, length=None, level=1.0):
+                 start=0.0, length=None, level=1.0, ringing=False):
         """
         Speaks a message which the user has scheduled, e.g. a timer, on the satellite -
         what the brain's clock calls for the timers and alarms set from it, and what
@@ -690,6 +721,10 @@ class Session:
             length: Seconds of the sound to play, or None for all of it.
             level: How loud the sound plays, as a share of the volume - an alarm
                    builds up from quiet. The message itself is always at full volume.
+            ringing: True for what the clock rings - a timer, a reminder or an alarm -
+                     whose sound is never switched off. Otherwise the sound before an
+                     alert or a battery warning goes if sounds.reminder_enabled is off:
+                     an alarm silenced by a sound switch would be a missed wake-up.
 
         Returns:
             Whether it was said - not if still_wanted turned False first, or it failed, or
@@ -702,6 +737,8 @@ class Session:
         # The music is held from now, before waiting for any conversation to finish,
         # so it doesn't come back in the gap between the two.
         self.music.hold()
+        if not ringing and not self.reminder_sound_enabled:
+            sound = None
         try:
             with self._announcing:
                 return self._announce_in_turn(message, sound, boost, still_wanted, start, length, level)
@@ -728,7 +765,7 @@ class Session:
                            else f"\n{self.assistant_name}: [{sound}]")
 
             # A sound first, so the user knows the assistant is about to speak.
-            if sound and self.reminder_sound_enabled:
+            if sound:
                 chimed = self._play_announcement(self.speaker.play_file(
                     str(self.brain.sounds_folder / sound), volume=volume * level, kind="announcement",
                     start=start, length=length), still_wanted)
@@ -880,6 +917,31 @@ class Session:
                 self._last_boop.stop()
             self._last_boop = self.speaker.play_file(str(self.brain.sounds_folder / "volume_beep.wav"), volume=level)
 
+    def hear_voice(self, speed: float) -> bool:
+        """
+        Says HEAR_IT on the satellite at a speed, for the settings page's "Hear it" -
+        played as a reply is, but with nothing listened for after it, and not waited
+        for, as the page is.
+
+        Args:
+            speed: How fast, e.g. 1.25 - the slider's, saved or not.
+
+        Returns:
+            Whether it's being said - False while the satellite is saying anything else,
+            which it would talk over: a conversation, an announcement or a routine,
+            something ringing - never an alarm - or the last "Hear it".
+        """
+        with self._hearing_lock:
+            hearing = self._last_hearing
+            if (not self._idle.is_set() or self._announcing.locked()
+                    or self.brain.clock.is_ringing(satellite=self.satellite.name)
+                    or (hearing is not None and not hearing.done)):
+                return False
+            tts = self.brain.tts
+            self._last_hearing = self.speaker.play_stream(tts.stream(HEAR_IT, speed=speed), tts.sample_rate,
+                                                          volume=self.volume.get("general"))
+            return True
+
     def _device_controls(self) -> DeviceControls:
         """What Home Assistant sees and does of the satellite - see ha_device.py."""
         return DeviceControls(
@@ -892,12 +954,16 @@ class Session:
             backend=lambda: self.brain.stt.loaded,
             muted=lambda: self.muted,
             set_muted=self.set_muted,
-            stop=self._stop_from_home_assistant,
+            stop=self.stop_what_rings_and_speaks,
             restart=self.satellite.restart,
             speak=self._speak_from_home_assistant)
 
-    def _stop_from_home_assistant(self):
-        """Home Assistant's Stop: silences anything ringing on the satellite, and stops Nova talking."""
+    def stop_what_rings_and_speaks(self):
+        """
+        Stop, from Home Assistant or the settings page: silences anything ringing on
+        the satellite, and stops Nova talking. What rings is dismissed, never deleted,
+        so a repeating alarm rings again tomorrow - and the music plays on.
+        """
         if self.brain.clock.is_ringing(satellite=self.satellite.name):
             self.brain.clock.dismiss(satellite=self.satellite.name)
         self.speaker.stop(["reply", "announcement"])
