@@ -8,7 +8,7 @@ Run through this on the Pi whenever a branch is put on it, before relying on it.
 git fetch && git switch <branch> && bash update.sh
 ```
 
-`update.sh` brings the branch up to date, installs `requirements.lock`, fetches any new models, rewrites the service file and restarts Nova, then shows the end of the log. It should end with `Nova ready!` and `Listening for 'Hey Nova'...`, with no errors above. To go back, switch to the previous branch or tag and run it again.
+`update.sh` brings the branch up to date, installs `requirements.lock`, fetches any new models, rewrites the service file and restarts Nova, then shows the end of the log. It should end with `Satellite '<name>' ready, for its brain at ...` and `Listening for 'Hey Nova'...`, with no errors above. To go back, switch to the previous branch or tag and run it again.
 
 ## Hearing you
 
@@ -57,13 +57,28 @@ With Navidrome (`music.player: navidrome`), and again with Spotify if you still 
 
 ## Leaving it running
 
-For a soak test, leave it running as normal for a few days, with this in another terminal, and use it as you would anyway:
+For a soak test, leave it running as normal for a few days, with one monitor on each machine, and use Nova as you would anyway. Each one needs to be somewhere which outlives the terminal (`tmux` or `nohup`).
+
+On the Pi, from the repo:
 
 ```bash
 venv/bin/python scripts/soak_monitor.py --hours 72
 ```
 
-It samples the assistant's memory, CPU, restarts and log size every 10 minutes into `soak.csv` in `~/.local/share/nova/logs`, and says at the end whether anything grew that shouldn't have. Afterwards, the speaker shouldn't have run dry, nor the microphone overflowed - this should find nothing:
+On the brain, as `nova` with its own home and its venv's Python, from the repo:
+
+```bash
+sudo -u nova -H venv/bin/python scripts/soak_monitor.py --hours 72 --brain
+```
+
+The brain's monitor refuses to start under any other home, since it would find an empty logs folder and report no errors. Neither counts errors logged before it started.
+
+Do the brain's own checks before the monitors start, so they don't show as restarts or a changed process in the readings:
+
+- Restart it (`sudo systemctl restart nova-backend`) and check it comes back.
+- Check the satellite rings from its copy while the brain is stopped. Set a one-minute timer, and about 20 seconds before it's due `sudo kill -STOP $(systemctl show -p MainPID --value nova-backend)`. The Pi rings it from its copy (its log says "Lost the brain" after 15 seconds of silence). Send `kill -CONT` to the same process 30 seconds after the stop. Never leave it stopped for longer: `nova-backend.service` has `WatchdogSec=60`, so a minute's stop is a restart.
+
+Each monitor samples its service's memory, CPU, open files, restarts, errors and log size every 10 minutes into `soak.csv` in its logs folder (`~/.local/share/nova/logs` on the Pi), and says at the end whether anything grew that shouldn't have. Afterwards, the speaker shouldn't have run dry, nor the microphone overflowed - this should find nothing:
 
 ```bash
 journalctl --user-unit voice-assistant | grep -E "ran dry|overflowed"

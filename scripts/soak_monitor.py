@@ -7,8 +7,10 @@ restart in the night, shows up rather than going unnoticed.
 
 Run on the Pi alongside the assistant's service, and use the assistant as normal:
     venv/bin/python scripts/soak_monitor.py --hours 72
+Run on the brain too, as the service's own user with its own home, so the logs folder is its:
+    sudo -u nova -H venv/bin/python scripts/soak_monitor.py --hours 72 --brain
 It samples every 10 minutes into soak.csv in the logs folder, and says at the end (or on Ctrl+C)
-whether anything grew that shouldn't have.
+whether anything grew that shouldn't have, or any errors were logged.
 """
 
 import argparse
@@ -18,7 +20,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 # Add the project root, so the package - and with it the logs folder - is found no
 # matter where it's run from.
@@ -26,21 +28,36 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from voice_assistant.paths import LOGS_DIR as LOGS_DIRECTORY  # noqa: E402
 
-SERVICE = "voice-assistant"
+
+
+class Target(NamedTuple):
+    """What a monitor watches: the service, whether systemd runs it per user, and its main log."""
+
+    service: str
+    user_scope: bool
+    log: str
+
+
+TARGETS = {
+    "satellite": Target("voice-assistant", True, "smart_assistant.log"),
+    "brain": Target("nova-backend", False, "backend.log"),
+}
 FIELDS = ["time", "pid", "rss_mb", "cpu_percent", "threads", "open_files", "restarts",
-          "log_mb", "interactions", "temperature_c"]
+          "log_mb", "interactions", "errors", "temperature_c"]
 
 # Growth over the whole run worth pointing out. Memory settling in over the first
 # hour or so is normal; steady growth after that is a leak.
 RSS_GROWTH_MB = 50
 THREAD_GROWTH = 10
+# Open files should stay level; a few dozen more over three days is a handle nothing closes.
+FILE_GROWTH = 20
 
 
-def _systemctl(prop: str) -> Optional[str]:
-    """One property of the assistant's user service, e.g. MainPID."""
+def _systemctl(prop: str, target: Target) -> Optional[str]:
+    """One property of the watched service, e.g. MainPID."""
+    command = ["systemctl"] + (["--user"] if target.user_scope else []) + ["show", "-p", prop, "--value", target.service]
     try:
-        result = subprocess.run(["systemctl", "--user", "show", "-p", prop, "--value", SERVICE],
-                                capture_output=True, text=True, timeout=10)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
         return result.stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return None
@@ -78,17 +95,51 @@ def _count_lines(path: str) -> int:
         return 0
 
 
-def sample(previous: Optional[Dict]) -> Dict:
+def count_errors(log: str, since: datetime) -> int:
+    """
+    How many errors a log has recorded since a moment, counting its three rotated files too.
+
+    Args:
+        log: The log's file name in the logs folder, e.g. backend.log.
+        since: Only lines stamped at or after this are counted.
+
+    Returns:
+        The number of ERROR and CRITICAL lines.
+    """
+    count = 0
+    for suffix in ("", ".1", ".2", ".3"):
+        try:
+            with open(os.path.join(LOGS_DIRECTORY, log + suffix), errors="replace") as f:
+                for line in f:
+                    if " - ERROR - " not in line and " - CRITICAL - " not in line:
+                        continue
+                    try:
+                        stamp = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        # A traceback's line, or a message's second one, has no timestamp of its own.
+                        continue
+                    if stamp >= since:
+                        count += 1
+        except OSError:
+            continue
+    return count
+
+
+def sample(previous: Optional[Dict], target: Target, since: datetime) -> Dict:
     """
     One reading of how the assistant is doing.
 
     Args:
         previous: The last reading, to work out CPU use since then.
+        target: The service being watched.
+        since: When the errors to count began - the monitor's start, then the last reading.
     """
-    row = {"time": datetime.now().isoformat(timespec="seconds")}
-    pid = int(_systemctl("MainPID") or 0)
+    now = datetime.now()
+    # Kept as a datetime, not written to the CSV, so the next reading counts from exactly here.
+    row = {"time": now.isoformat(timespec="seconds"), "_when": now}
+    pid = int(_systemctl("MainPID", target) or 0)
     row["pid"] = pid or ""
-    row["restarts"] = _systemctl("NRestarts") or ""
+    row["restarts"] = _systemctl("NRestarts", target) or ""
 
     if pid:
         with open(f"/proc/{pid}/status") as f:
@@ -100,9 +151,12 @@ def sample(previous: Optional[Dict]) -> Dict:
             row["cpu_percent"] = round(100 * (cpu - previous["_cpu"]) / elapsed, 1)
         row["_cpu"], row["_at"] = cpu, time.monotonic()
 
-    log = os.path.join(LOGS_DIRECTORY, "smart_assistant.log")
+    log = os.path.join(LOGS_DIRECTORY, target.log)
     row["log_mb"] = round(os.path.getsize(log) / 1_000_000, 2) if os.path.exists(log) else 0
-    row["interactions"] = _count_lines(os.path.join(LOGS_DIRECTORY, "latency.jsonl"))
+    # It rotates, so the older file counts too or the total would drop at each rotation.
+    row["interactions"] = sum(_count_lines(os.path.join(LOGS_DIRECTORY, name))
+                              for name in ("latency.jsonl", "latency.jsonl.1"))
+    row["errors"] = count_errors(target.log, since)
     try:
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
             row["temperature_c"] = round(int(f.read()) / 1000, 1)
@@ -111,12 +165,14 @@ def sample(previous: Optional[Dict]) -> Dict:
     return row
 
 
-def summarise(rows: List[Dict]) -> List[str]:
+def summarise(rows: List[Dict], brain: bool = False) -> List[str]:
     """
     What's worth knowing about a run - the lines to print at the end.
 
     Args:
         rows: The readings, oldest first.
+        brain: Whether the brain was watched. Only the satellite writes latency.jsonl, so
+            its interactions are left out for the brain.
     """
     running = [row for row in rows if row.get("pid")]
     if not running:
@@ -124,8 +180,10 @@ def summarise(rows: List[Dict]) -> List[str]:
 
     first, last = running[0], running[-1]
     hours = (datetime.fromisoformat(last["time"]) - datetime.fromisoformat(first["time"])).total_seconds() / 3600
-    lines = [f"{len(rows)} readings over {hours:.1f} hours, "
-             f"{int(last['interactions']) - int(first['interactions'])} interactions."]
+    summary = f"{len(rows)} readings over {hours:.1f} hours"
+    if not brain:
+        summary += f", {int(last['interactions']) - int(first['interactions'])} interactions"
+    lines = [summary + "."]
     warnings = []
 
     rss = [float(row["rss_mb"]) for row in running if row.get("rss_mb") not in (None, "")]
@@ -142,6 +200,17 @@ def summarise(rows: List[Dict]) -> List[str]:
     threads = [int(row["threads"]) for row in running if row.get("threads") not in (None, "")]
     if threads and threads[-1] - threads[0] > THREAD_GROWTH:
         warnings.append(f"Threads went from {threads[0]} to {threads[-1]} - something isn't finishing.")
+
+    open_files = [int(row["open_files"]) for row in running if row.get("open_files") not in (None, "")]
+    if open_files and open_files[-1] - open_files[0] > FILE_GROWTH:
+        warnings.append(f"Open files went from {open_files[0]} to {open_files[-1]} - something isn't being closed.")
+
+    # An older soak.csv has no errors column, so only the readings which have one are counted.
+    errors = [int(row["errors"]) for row in rows if str(row.get("errors", "")).isdigit()]
+    if errors:
+        lines.append(f"Errors: {sum(errors)} logged, at most {max(errors)} between two readings.")
+        if sum(errors):
+            warnings.append(f"{sum(errors)} errors logged - read them in the log.")
 
     restarts = [int(row["restarts"]) for row in rows if str(row.get("restarts", "")).isdigit()]
     if restarts and restarts[-1] > restarts[0]:
@@ -160,19 +229,29 @@ def main():
     parser.add_argument("--hours", type=float, default=72, help="how long to watch for (default 72)")
     parser.add_argument("--minutes", type=float, default=10, help="time between readings (default 10)")
     parser.add_argument("--out", default=os.path.join(LOGS_DIRECTORY, "soak.csv"), help="where to write the readings")
+    parser.add_argument("--brain", action="store_true", help="watch the brain's service instead of the satellite's")
     args = parser.parse_args()
+    target = TARGETS["brain" if args.brain else "satellite"]
+
+    # With the wrong HOME the logs folder would be an empty new one, and the monitor would
+    # report no errors for a service which is logging plenty elsewhere.
+    if not os.path.exists(os.path.join(LOGS_DIRECTORY, target.log)):
+        print(f"No {target.log} in {LOGS_DIRECTORY} - run this as the service's own user, "
+              "with its own home (sudo -u nova -H on the brain).")
+        sys.exit(1)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     rows, previous = [], None
+    started = datetime.now()
     end = time.monotonic() + args.hours * 3600
-    print(f"Watching {SERVICE} for {args.hours:g} hours, every {args.minutes:g} minutes, into {args.out}")
+    print(f"Watching {target.service} for {args.hours:g} hours, every {args.minutes:g} minutes, into {args.out}")
 
     try:
         with open(args.out, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
             writer.writeheader()
             while True:
-                previous = sample(previous)
+                previous = sample(previous, target, previous["_when"] if previous else started)
                 rows.append(previous)
                 writer.writerow(previous)
                 f.flush()
@@ -183,7 +262,7 @@ def main():
         print("\nStopped early.")
 
     print()
-    for line in summarise(rows):
+    for line in summarise(rows, brain=args.brain):
         print(line)
 
 
