@@ -57,7 +57,7 @@ def make_controller(monkeypatch, make_config):
     monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
     monkeypatch.setattr(spotify_controller.spotipy, "Spotify", FakeSpotify)
 
-    def factory(cached=None, refreshed=None):
+    def factory(cached=None, refreshed=None, **device_name):
         oauth = FakeOAuth(cached, refreshed)
 
         def make_oauth(**kwargs):
@@ -65,7 +65,8 @@ def make_controller(monkeypatch, make_config):
             return oauth
 
         monkeypatch.setattr(spotify_controller, "SpotifyOAuth", make_oauth)
-        controller = spotify_controller.SpotifyController(config=make_config(spotify={"device_name": "Kitchen"}))
+        controller = spotify_controller.SpotifyController(config=make_config(spotify={"device_name": "Kitchen"}),
+                                                          **device_name)
         controller.oauth = oauth
         return controller
 
@@ -106,6 +107,14 @@ def test_spotipys_own_sign_in_keeps_the_time_limit(monkeypatch, make_config, tmp
     monkeypatch.setattr(spotify_controller.spotipy, "Spotify", FakeSpotify)
     controller = spotify_controller.SpotifyController(config=make_config(spotify={"device_name": "Kitchen"}))
     assert controller.sp_oauth.requests_timeout == spotify_controller.REQUEST_TIMEOUT
+
+
+def test_the_controller_plays_on_its_satellites_speaker(make_controller):
+    # The name a satellite said as it connected, over the brain's own spotify.device_name.
+    assert make_controller(cached=SAVED, device_name="Bedroom Pi").device_name == "Bedroom Pi"
+    # From a satellite which doesn't say, the brain's own - as before satellites said.
+    assert make_controller(cached=SAVED, device_name=None).device_name == "Kitchen"
+    assert make_controller(cached=SAVED).device_name == "Kitchen"
 
 
 def test_starting_up_doesnt_go_over_the_network(make_controller):

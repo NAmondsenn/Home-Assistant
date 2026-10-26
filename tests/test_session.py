@@ -24,7 +24,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("soxr")
 
 from voice_assistant import clock as clock_module
-from voice_assistant import ha_device, paths, protocol, satellite_link
+from voice_assistant import ha_device, music, paths, protocol, satellite_link, spotify_controller
 from voice_assistant import session as session_module
 from voice_assistant.actions import Action
 from voice_assistant.brain import Brain
@@ -233,7 +233,7 @@ def brain(tmp_path, monkeypatch, make_config):
     # Speech told apart by how loud it is, which the made-up recordings here are made for.
     monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
     # No music, unless a test gives some.
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: None)
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
     config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"})
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
@@ -246,11 +246,11 @@ def connect():
     """Connects fake Pis, each a satellite the brain has just let in, and lets them all go after the test."""
     made = []
 
-    def connect(name="bedroom", hostname="bedroom-pi.local"):
+    def connect(name="bedroom", hostname="bedroom-pi.local", speaker=None):
         ours, theirs = socket.socketpair()
         # Short, so the brain's reading wakes often to check on the satellite.
         ours.settimeout(0.05)
-        hello = {"name": name, "hostname": hostname, "sample_rate": 48000, "unclean": False}
+        hello = {"name": name, "hostname": hostname, "sample_rate": 48000, "unclean": False, "speaker": speaker}
         satellite = RemoteSatellite(satellite_link.Stream(ours), hello)
         pi = Pi(theirs)
         threading.Thread(target=satellite.serve, daemon=True).start()
@@ -1107,11 +1107,37 @@ def test_a_session_closed_before_it_runs_never_starts_its_device(connect, make_s
     assert not any(thread.name.startswith("ha-device-lookup") for thread in threading.enumerate())
 
 
+@pytest.fixture
+def spotify(monkeypatch):
+    """Spotify as each session's player, with its keys set and never signed in, so nothing goes to Spotify."""
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
+    monkeypatch.setattr(spotify_controller, "spotify_oauth", lambda **kwargs: None)
+    monkeypatch.setattr(spotify_controller.SpotifyController, "_authenticate", lambda self: False)
+    monkeypatch.setattr(session_module, "make_player", music.make_player)
+
+
+def test_each_session_plays_on_its_own_satellites_speaker(brain, connect, make_session, spotify):
+    bedroom = make_session(connect("bedroom", speaker="Bedroom Pi")[0])
+    kitchen = make_session(connect("kitchen", speaker="Kitchen Pi")[0])
+
+    assert isinstance(bedroom.music_player, spotify_controller.SpotifyController)
+    assert bedroom.music_player.device_name == "Bedroom Pi"
+    assert kitchen.music_player.device_name == "Kitchen Pi"
+
+
+def test_a_satellite_that_doesnt_say_uses_the_brains_name(brain, connect, make_session, spotify):
+    # As one from before satellites said - which plays where every satellite did then.
+    brain.config.apply({("spotify", "device_name"): "Living Room"})
+    assert make_session(connect("bedroom")[0]).music_player.device_name == "Living Room"
+
+
 def test_closing_a_session_ends_every_thread_it_started(connect, make_session, monkeypatch):
     # A satellite which connects again gets a new session, and the old one's threads
     # held the whole of it - Navidrome's waited for something to play for ever.
     satellite, pi = connect()
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: NavidromePlayer(
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: NavidromePlayer(
         "http://navidrome.local:4533", "nova", "secret", speaker, volume))
     before = set(threading.enumerate())
     session = make_session(satellite)

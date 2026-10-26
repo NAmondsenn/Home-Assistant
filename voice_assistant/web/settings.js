@@ -523,6 +523,7 @@ function showSatellites(state) {
     what.append(element("span",
       satellite.connected ? (DOING[satellite.activity] || (satellite.muted ? "Microphone muted" : "Listening for its wake word"))
         : "Not connected", "detail"));
+    if (satellite.spotify_speaker) what.append(element("span", `Spotify plays on ${satellite.spotify_speaker}`, "detail"));
     const actions = element("span", undefined, "actions");
     if (!satellite.default) {
       const makeDefault = element("button", "Make default", "button quiet");

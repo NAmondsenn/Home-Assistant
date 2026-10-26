@@ -298,9 +298,9 @@ def make(tmp_path, monkeypatch, make_config):
         thread.start()
         running.append((made, thread))
 
-    def make(name="bedroom", start=True):
+    def make(name="bedroom", start=True, **sections):
         config = make_config(audio={"sample_rate": 48000, "pre_roll": 0.3},
-                             backend={"address": "nova:10400", "satellite": name})
+                             backend={"address": "nova:10400", "satellite": name}, **sections)
         made = satellite.Satellite(config)
         made.latency_file = str(tmp_path / "latency.jsonl")
         # Filled with the exit code once run() ends.
@@ -619,7 +619,15 @@ def test_the_away_report_is_sent_on_connecting(brain, make, tmp_path):
     assert brain.messages("away") == [{"type": "away", "rang": ["alarm-1@1729587600"], "dismissed": [],
                                        "ringing": ["alarm-1@1729587600"]}]
     assert brain.hellos == [{"name": "bedroom", "hostname": socket.gethostname(), "sample_rate": 48000,
-                             "unclean": True}]
+                             "unclean": True, "speaker": None}]
+
+
+def test_the_satellite_tells_the_brain_its_spotify_speaker(brain, make):
+    # The name its setup gave raspotify, from its own settings - so the brain plays
+    # its Spotify there, rather than on the brain's own speaker name.
+    make(spotify={"device_name": "Bedroom Pi"})
+    assert wait_for(lambda: brain.hellos)
+    assert brain.hellos[0]["speaker"] == "Bedroom Pi"
 
 
 def ringing_as_the_brain_comes_back(brain, make, tmp_path):

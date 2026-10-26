@@ -427,11 +427,15 @@ class RemoteSatellite:
                 satellite_link's Stream makes of a socket with a timeout. Its reads
                 wake at each timeout, for serve() to notice a satellite gone quiet, and
                 no send blocks for longer.
-            hello: What admit returned - the satellite's name, hostname and sample_rate.
+            hello: What admit returned - the satellite's name, hostname, sample_rate and
+                speaker.
         """
         self.name = hello["name"]
         self.hostname = hello["hostname"]
         self.sample_rate = hello["sample_rate"]
+        # The Spotify speaker it plays on, e.g. "Bedroom Pi" - None from a satellite
+        # which doesn't say, so plays on the brain's spotify.device_name.
+        self.speaker_name: Optional[str] = hello.get("speaker")
         self.speaker = RemoteSpeaker(self.send, self.sample_rate)
         # Each wake word heard, in order: {"talked_over": whether a reply was playing,
         # "pre_roll": how many samples of the feed are from before the wake word - or

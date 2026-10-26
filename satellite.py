@@ -128,6 +128,9 @@ class Satellite:
         self.hostname = socket.gethostname()
         self.name = backend_config.get("satellite") or self.hostname
         self.sample_rate = audio_config.get("sample_rate", 48000)
+        # The name its setup gave raspotify, said to the brain as it connects so the
+        # brain plays this satellite's Spotify here - changed with the setup, on the Pi.
+        self.spotify_speaker = config.section("spotify").get("device_name") or None
         # Seconds of audio from just before the wake word was detected which are sent
         # first, so "Hey Nova what time is it", said in one breath, isn't cut short. The
         # brain is told how much with each wake, so this is the only setting for it.
@@ -211,7 +214,8 @@ class Satellite:
             # Before the brain is reached, so it's told what still rings, and takes it over.
             self.ringer.resume(time.time())
             self.link = SatelliteLink(self.address, self.name, self.hostname, self.password, self.sample_rate,
-                                      self._note_start(), self._on_message, self._on_connected)
+                                      self._note_start(), self._on_message, self._on_connected,
+                                      speaker=self.spotify_speaker)
             self.link.start()
             threading.Thread(target=self._ring_when_due, daemon=True, name="fallback").start()
             logger.info(f"Satellite '{self.name}' ready, for its brain at {self.address}")

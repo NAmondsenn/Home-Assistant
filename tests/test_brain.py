@@ -1266,7 +1266,7 @@ def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect
     # The real session this time, with speech told apart by how loud it is.
     monkeypatch.setattr(brain_module, "Session", session_module.Session)
     monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: None)
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
     serving(brain)
     satellite = connect(brain)
     first = connected(brain)
@@ -1314,7 +1314,7 @@ def test_a_satellite_replaced_while_catching_up_leaves_no_device_behind(brain, c
 
     monkeypatch.setattr(brain_module, "Session", session_module.Session)
     monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume: None)
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
     monkeypatch.setattr(session_module, "NovaDevice", SimpleNamespace(from_config=make_device))
     monkeypatch.setattr(brain_module, "AWAY_WAIT", 0.5)
     serving(brain)

@@ -180,8 +180,10 @@ class FakeHome:
 class FakeSession:
     """Stands in for one connected satellite's session: its volumes, music, lights and mute."""
 
-    def __init__(self, music=None, actions=None, home=None, activity="idle"):
+    def __init__(self, music=None, actions=None, home=None, activity="idle", speaker=None):
         self.volume = FakeVolume()
+        # The Spotify speaker its satellite said as it connected - None for one which didn't.
+        self.satellite = SimpleNamespace(speaker_name=speaker)
         self.music_player, self.actions, self.home = music, actions, home
         self.activity = activity
         self.muted = False
@@ -1342,6 +1344,8 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b'"/api/undo"' in body and b'getElementById("undos")' in body
         assert b'"/api/satellites/add"' in body and b'"/api/satellites/password"' in body
         assert b'"/api/satellites/remove"' in body and b'"/api/satellites/default"' in body
+        # The speaker a satellite says it plays Spotify on is put on the page only as text.
+        assert b'element("span", `Spotify plays on ${satellite.spotify_speaker}`, "detail")' in body
         # No longer than the name rule lets a name be.
         assert b'id="satellite-name"' in _ask(served, "/")[2] and b'maxlength="63"' in _ask(served, "/")[2]
         # The password is only ever put on the page as text.
@@ -1701,11 +1705,24 @@ def test_the_page_lists_each_satellite(files):
     state = page.state()
 
     assert state["satellites"] == [
-        {"name": "bedroom", "connected": True, "activity": "speaking", "muted": False, "default": True},
-        {"name": "kitchen", "connected": True, "activity": "idle", "muted": True, "default": False},
-        {"name": "garage", "connected": False, "activity": "idle", "muted": False, "default": False}]
+        {"name": "bedroom", "connected": True, "activity": "speaking", "muted": False, "default": True,
+         "spotify_speaker": "Voice-Assistant"},
+        {"name": "kitchen", "connected": True, "activity": "idle", "muted": True, "default": False,
+         "spotify_speaker": "Voice-Assistant"},
+        {"name": "garage", "connected": False, "activity": "idle", "muted": False, "default": False,
+         "spotify_speaker": None}]
     # What's shown below is the default's, unless another is asked for.
     assert state["muted"] is False and page.state("kitchen")["muted"] is True
+
+
+def test_the_satellites_list_shows_each_speaker(files, make_config):
+    # The kitchen's is its own; the bedroom's an older satellite's, which doesn't say,
+    # so plays on the brain's; and the garage isn't connected, so plays on none.
+    sessions = {"bedroom": FakeSession(), "kitchen": FakeSession(speaker="Kitchen Pi")}
+    page = _page(sessions=sessions, known=["bedroom", "kitchen", "garage"],
+                 config=make_config(spotify={"device_name": "Living Room"}))
+    assert [(each["name"], each["spotify_speaker"]) for each in page.state()["satellites"]] == [
+        ("bedroom", "Living Room"), ("kitchen", "Kitchen Pi"), ("garage", None)]
 
 
 def test_the_default_satellite_is_marked(files):
@@ -1773,7 +1790,8 @@ def test_alarms_and_routines_work_with_no_satellite(files):
     assert state["clock"]["timers"] and state["memories"] == [] and state["routines"][0]["name"] == "Good morning"
     assert state["volumes"] == {} and state["muted"] is False
     assert state["satellites"] == [
-        {"name": "bedroom", "connected": False, "activity": "idle", "muted": False, "default": True}]
+        {"name": "bedroom", "connected": False, "activity": "idle", "muted": False, "default": True,
+         "spotify_speaker": None}]
     # Without any satellite added at all, too.
     assert _page(sessions={}, known=[]).state()["satellites"] == []
 

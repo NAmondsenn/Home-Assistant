@@ -163,8 +163,9 @@ class Session:
                                     on_change=self.send_state)
 
         # Navidrome or Spotify, whichever music.player says - or None, and the
-        # assistant carries on without music. See music.py.
-        self.music_player = make_player(config, self.speaker, self.volume)
+        # assistant carries on without music. See music.py. Spotify plays on the
+        # satellite's own speaker, if it said one as it connected.
+        self.music_player = make_player(config, self.speaker, self.volume, spotify_speaker=satellite.speaker_name)
 
         # Keeps the music paused while there's something to say - see MusicHold.
         self.music = MusicHold(self.music_player, online=online)

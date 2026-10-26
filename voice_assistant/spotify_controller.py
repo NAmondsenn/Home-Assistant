@@ -235,6 +235,17 @@ class _RefreshingAuth:
         return token_info if as_dict else token_info["access_token"]
 
 
+def brains_speaker(config) -> str:
+    """
+    The Connect device spotify.device_name names - which a satellite that doesn't say
+    its own plays on, as every satellite did before they said.
+
+    Args:
+        config: Configs loaded from config.yaml, or None for the default.
+    """
+    return (config.section("spotify") if config else {}).get("device_name", "Voice-Assistant")
+
+
 class SpotifyController:
     """Controls Spotify playback, preferring this machine's own Connect device."""
 
@@ -243,16 +254,16 @@ class SpotifyController:
     # Every command goes through Spotify's servers - see ActionExecutor._music_offline.
     needs_internet = True
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, device_name: Optional[str] = None):
         """
         Args:
             config: Configs loaded from config.yaml. Used for the Connect device
                     name and the pause-while-speaking setting. Optional, so the
                     controller can still be used standalone for testing.
+            device_name: The Connect device to play on, as its satellite said - None
+                    for spotify.device_name.
         """
-        # Pulls the spotify section from config.yaml.
-        spotify_config = config.section("spotify") if config else {}
-        self.device_name = spotify_config.get("device_name", "Voice-Assistant")
+        self.device_name = device_name or brains_speaker(config)
         # Kept to read pause_while_speaking at each use - see the property below.
         self.config = config
 

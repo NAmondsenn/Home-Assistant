@@ -97,11 +97,11 @@ def quick(monkeypatch):
 def make():
     made = []
 
-    def make(address, password=PASSWORD, unclean=True):
+    def make(address, password=PASSWORD, unclean=True, **speaker):
         events, messages = [], []
         link = SatelliteLink(address, "bedroom", "pi", password, 48000, unclean,
                              lambda message, payload: messages.append((message["type"], payload)),
-                             events.append)
+                             events.append, **speaker)
         made.append(link)
         return link, events, messages
 
@@ -117,12 +117,22 @@ def brain():
     brain.close()
 
 
+def test_the_link_says_its_spotify_speaker_each_time_it_connects(brain, make):
+    link, events, messages = make(brain.address, speaker="Bedroom Pi")
+    link.start()
+    assert wait_for(lambda: len(brain.hellos) == 1)
+    brain.drop_everyone()
+    assert wait_for(lambda: len(brain.hellos) == 2)
+    assert [hello["speaker"] for hello in brain.hellos] == ["Bedroom Pi", "Bedroom Pi"]
+
+
 def test_the_link_connects_and_reports_it(brain, make):
     link, events, messages = make(brain.address)
     link.start()
     assert wait_for(lambda: events == [True] and len(brain.hellos) == 1)
     assert link.connected
-    assert brain.hellos == [{"name": "bedroom", "hostname": "pi", "sample_rate": 48000, "unclean": True}]
+    assert brain.hellos == [{"name": "bedroom", "hostname": "pi", "sample_rate": 48000, "unclean": True,
+                             "speaker": None}]
 
     brain.say("listen")
     brain.say("phrase", rate=22050)

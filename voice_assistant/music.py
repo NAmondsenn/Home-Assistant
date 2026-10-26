@@ -51,7 +51,7 @@ def means_liked_songs(name: str) -> bool:
                for liked in LIKED_SONGS_NAMES)
 
 
-def make_player(config, speaker, volume):
+def make_player(config, speaker, volume, spotify_speaker: Optional[str] = None):
     """
     The music player music.player in config.yaml names.
 
@@ -59,6 +59,8 @@ def make_player(config, speaker, volume):
         config: Configs loaded from config.yaml.
         speaker: The Speaker, which Navidrome plays through.
         volume: The VolumeControl, which keeps Navidrome's volume.
+        spotify_speaker: The Spotify Connect speaker Spotify plays on, as the
+            satellite said - None for spotify.device_name.
 
     Returns:
         The player, or None if it isn't set up - the assistant carries on without music.
@@ -77,7 +79,7 @@ def make_player(config, speaker, volume):
             from voice_assistant.navidrome import NavidromePlayer
             return NavidromePlayer.from_config(config, os.getenv("NAVIDROME_PASSWORD"), speaker, volume)
         from voice_assistant.spotify_controller import SpotifyController
-        return SpotifyController(config=config)
+        return SpotifyController(config=config, device_name=spotify_speaker)
     except Exception as e:
         logger.warning(f"Couldn't set up {choice}, so there's no music: {e}")
         return None
