@@ -29,7 +29,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from voice_assistant.paths import LOGS_DIR as LOGS_DIRECTORY  # noqa: E402
 
 
-
 class Target(NamedTuple):
     """What a monitor watches: the service, whether systemd runs it per user, and its main log."""
 
@@ -95,13 +94,16 @@ def _count_lines(path: str) -> int:
         return 0
 
 
-def count_errors(log: str, since: datetime) -> int:
+def count_errors(log: str, since: datetime, until: datetime) -> int:
     """
-    How many errors a log has recorded since a moment, counting its three rotated files too.
+    How many errors a log has recorded between two moments, counting its three rotated
+    files too.
 
     Args:
         log: The log's file name in the logs folder, e.g. backend.log.
         since: Only lines stamped at or after this are counted.
+        until: Only lines stamped before this are counted. A line stamped that very
+            second is the next reading's, which counts from it.
 
     Returns:
         The number of ERROR and CRITICAL lines.
@@ -118,7 +120,7 @@ def count_errors(log: str, since: datetime) -> int:
                     except ValueError:
                         # A traceback's line, or a message's second one, has no timestamp of its own.
                         continue
-                    if stamp >= since:
+                    if since <= stamp < until:
                         count += 1
         except OSError:
             continue
@@ -134,7 +136,9 @@ def sample(previous: Optional[Dict], target: Target, since: datetime) -> Dict:
         target: The service being watched.
         since: When the errors to count began - the monitor's start, then the last reading.
     """
-    now = datetime.now()
+    # Cut to the second, as the log's own stamps are, so an error logged in the second
+    # a reading is taken is counted by exactly one of the two readings either side.
+    now = datetime.now().replace(microsecond=0)
     # Kept as a datetime, not written to the CSV, so the next reading counts from exactly here.
     row = {"time": now.isoformat(timespec="seconds"), "_when": now}
     pid = int(_systemctl("MainPID", target) or 0)
@@ -165,7 +169,7 @@ def sample(previous: Optional[Dict], target: Target, since: datetime) -> Dict:
     # It rotates, so the older file counts too or the total would drop at each rotation.
     row["interactions"] = sum(_count_lines(os.path.join(LOGS_DIRECTORY, name))
                               for name in ("latency.jsonl", "latency.jsonl.1"))
-    row["errors"] = count_errors(target.log, since)
+    row["errors"] = count_errors(target.log, since, now)
     try:
         with open("/sys/class/thermal/thermal_zone0/temp") as f:
             row["temperature_c"] = round(int(f.read()) / 1000, 1)
@@ -251,7 +255,7 @@ def main():
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     rows, previous = [], None
-    started = datetime.now()
+    started = datetime.now().replace(microsecond=0)
     end = time.monotonic() + args.hours * 3600
     print(f"Watching {target.service} for {args.hours:g} hours, every {args.minutes:g} minutes, into {args.out}")
 
