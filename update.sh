@@ -105,7 +105,6 @@ done_ "On $(as_user git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at 
 
 watch_steps
 
-
 # An install from before roles has none saved yet, so what decide_role worked out is.
 run_steps save_role install_python_packages download_models
 
@@ -166,8 +165,11 @@ except Exception as e:
     # This takes the code back and says so itself, so the watch over the steps stands
     # down first rather than doing both a second time - with a hangup or Ctrl+C ignored,
     # by git too, as the watch's own take-back has, so neither cuts the reset short.
-    steps_finished
+    # They're ignored before the watch's traps go, not after as with steps_finished,
+    # which would leave a moment when a hangup ends the run with nothing taken back.
     trap '' HUP INT TERM
+    steps_done=true
+    trap - EXIT
     take_back "$why"
     echo "$output" | tail -n 5 >&2
     return 1

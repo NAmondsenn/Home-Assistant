@@ -542,6 +542,15 @@ def test_settings_refused_while_watched_are_taken_back_and_said_once(tmp_path):
     assert git("rev-parse", "HEAD") == before
 
 
+def test_the_settings_check_never_leaves_a_hangup_unwatched_before_its_take_back():
+    # Standing the watch down puts the signals back to bash's own, which ends the run
+    # with nothing taken back - so they're ignored before the watch's traps go, not after.
+    block = _update_block((Path(__file__).parent.parent / "update.sh").read_text(), "settings check")
+    refused = block[block.index('    if [ "$status" = 1 ]; then'):block.index("    take_back ")]
+    assert "\n    steps_finished\n" not in refused
+    assert refused.index("trap '' HUP INT TERM") < refused.index("steps_done=true") < refused.index("trap - EXIT")
+
+
 def test_steps_that_finish_leave_the_new_code_in(tmp_path):
     clone, before, git = _updated_clone(tmp_path)
     finished = _run_steps(tmp_path, "true", clone, updated_from=before)
