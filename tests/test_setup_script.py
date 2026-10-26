@@ -15,7 +15,14 @@ SETUP = Path(__file__).parent.parent / "setup.sh"
 PASSWORD = "Abc_def-0123456789xyz"
 
 
-def run_setup(tmp_path, command, stdin="", role="satellite", restart_fails=False, as_root=False):
+# Programs which would change the machine the tests run on. run_setup shadows each, so a
+# step which reaches one - as main would, if --new-password stopped being caught - runs
+# a stand-in which notes the call and fails, rather than a real install.
+INSTALLERS = ["sudo", "apt-get", "pip", "pip3", "curl", "wget"]
+
+
+def run_setup(tmp_path, command, stdin="", role="satellite", restart_fails=False, as_root=False,
+              script=SETUP):
     """
     Runs one of setup.sh's steps, sourced so its main flow doesn't run, against a
     scratch config folder and home, with a systemctl which only notes what it was
@@ -28,6 +35,7 @@ def run_setup(tmp_path, command, stdin="", role="satellite", restart_fails=False
         role: NOVA_SETUP_ROLE, "satellite" or "brain".
         restart_fails: Whether the stand-in systemctl fails, as a restart can.
         as_root: Whether a stand-in id says the user is root.
+        script: The setup.sh to source, which a test may swap for a broken copy.
 
     Returns:
         The finished process, with its output as text.
@@ -38,6 +46,10 @@ def run_setup(tmp_path, command, stdin="", role="satellite", restart_fails=False
     systemctl.write_text(f'#!/bin/bash\necho "$*" >> "{tmp_path / "systemctl.log"}"\n'
                          + ("exit 1\n" if restart_fails else ""))
     systemctl.chmod(0o755)
+    for name in INSTALLERS:
+        stand_in = bin_directory / name
+        stand_in.write_text(f'#!/bin/bash\necho "{name} $*" >> "{tmp_path / "installers.log"}"\nexit 1\n')
+        stand_in.chmod(0o755)
     if as_root:
         # id is a program rather than a builtin, so one earlier on PATH is the one used.
         stand_in = bin_directory / "id"
@@ -45,7 +57,7 @@ def run_setup(tmp_path, command, stdin="", role="satellite", restart_fails=False
         stand_in.chmod(0o755)
     env = dict(os.environ, PATH=f"{bin_directory}:{os.environ['PATH']}", HOME=str(tmp_path),
                NOVA_CONFIG=str(tmp_path / "config"), NOVA_SETUP_ROLE=role)
-    return subprocess.run(["bash", "-c", f'source "{SETUP}"; {command}'], input=stdin, env=env,
+    return subprocess.run(["bash", "-c", f'source "{script}"; {command}'], input=stdin, env=env,
                           capture_output=True, text=True)
 
 
@@ -138,6 +150,27 @@ def test_new_password_is_used_on_its_own(tmp_path):
     alone = run_setup(tmp_path, "main --new-password", PASSWORD + "\n")
     assert alone.returncode == 0, alone.stderr
     assert env.read_text() == f"NOVA_BACKEND_TOKEN={PASSWORD}\n"
+
+
+def test_a_broken_new_password_never_reaches_the_install(tmp_path):
+    write_env(tmp_path, "NOVA_BACKEND_TOKEN=old\n")
+    # A copy in which main no longer catches --new-password, so it falls through to the
+    # install steps as an option nobody handled would.
+    source = SETUP.read_text()
+    broken = source.replace("--new-password) renewing=true ;;", "--new-password) renewing=false ;;")
+    assert broken != source
+    script = tmp_path / "broken-setup.sh"
+    script.write_text(broken)
+
+    result = run_setup(tmp_path, "main --new-password", PASSWORD + "\n", script=script)
+
+    # It did fall through, and only the stand-ins answered: with none on PATH this would
+    # be a real sudo or apt-get on the machine running the tests.
+    log = tmp_path / "installers.log"
+    assert log.exists(), result.stdout + result.stderr
+    assert {line.split()[0] for line in log.read_text().splitlines()} <= set(INSTALLERS)
+    assert result.returncode != 0
+    assert restarts(tmp_path) == []
 
 
 def test_new_password_isnt_run_as_root(tmp_path):
