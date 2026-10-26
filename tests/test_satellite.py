@@ -45,6 +45,14 @@ def wait_for(condition, seconds=5):
     return False
 
 
+def connected(made):
+    """
+    Whether the satellite has the brain - not just whether the brain has its hello,
+    which comes first. A wake word said in between is sent nowhere, and gets the phrase.
+    """
+    return made.link is not None and made.link.connected
+
+
 class FakeBrain:
     """Admits the satellite over a socketpair, and keeps everything it sends but pings."""
 
@@ -323,7 +331,7 @@ def entry(due):
 
 def test_the_wake_word_sends_the_pre_roll_then_the_recording(brain, make, tmp_path):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     heard_at = made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 3)
     brain.say("stop_listening")
@@ -348,7 +356,7 @@ def test_the_wake_word_sends_the_pre_roll_then_the_recording(brain, make, tmp_pa
 
 def test_the_recording_stops_when_the_brain_says(brain, make):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 3)
     brain.say("stop_listening")
@@ -363,7 +371,7 @@ def test_the_recording_stops_when_the_brain_says(brain, make):
 
 def test_the_satellite_records_for_as_long_as_the_brain_says(brain, make):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     brain.say("state", volumes={}, muted=False, longest_request=15)
     assert wait_for(lambda: made.longest_request == 15)
     made.wake.say()
@@ -377,7 +385,7 @@ def test_the_satellite_records_for_as_long_as_the_brain_says(brain, make):
 
 def test_the_satellites_own_most_is_thirty_seconds(brain, make):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     brain.say("state", volumes={}, muted=False, longest_request=90)
     assert wait_for(lambda: made.longest_request == 30)
     made.wake.say()
@@ -393,7 +401,7 @@ def test_the_satellites_own_most_is_thirty_seconds(brain, make):
                          ids=["none", "text", "bool", "nan", "inf", "zero", "tiny", "half", "negative", "null"])
 def test_an_old_brain_leaves_the_satellite_at_ten_seconds(brain, make, sent):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     brain.say("state", volumes={"general": 0.5}, muted=True, **sent)
     assert wait_for(lambda: made.wake.muted is True)
 
@@ -416,7 +424,7 @@ def test_an_old_satellite_ignores_the_longest_request(tmp_path):
 
 def test_the_recording_stops_after_10_seconds_until_the_brain_says_otherwise(brain, make):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     made.wake.say()
     assert wait_for(lambda: brain.messages("audio_end"))
 
@@ -429,7 +437,7 @@ def test_the_recording_stops_after_10_seconds_until_the_brain_says_otherwise(bra
 
 def test_a_dropped_connection_mid_recording_says_the_phrase(brain, make):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 2)
     brain.drop()
@@ -458,7 +466,7 @@ def noting_when_the_brain_is_forgotten(made):
 def test_losing_the_brain_after_the_recording_says_the_phrase(brain, make):
     # The brain had heard the user, and went before it answered - which was silence.
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 2)
     brain.say("stop_listening")
@@ -472,7 +480,7 @@ def test_losing_the_brain_after_the_recording_says_the_phrase(brain, make):
 def test_losing_the_brain_once_it_has_answered_says_nothing(brain, make):
     made = make()
     forgotten = noting_when_the_brain_is_forgotten(made)
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 2)
     brain.say("stop_listening")
@@ -488,7 +496,7 @@ def test_losing_the_brain_once_it_has_answered_says_nothing(brain, make):
 def test_losing_the_brain_during_a_follow_up_says_the_phrase_once(brain, make):
     made = make()
     forgotten = noting_when_the_brain_is_forgotten(made)
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 2)
     brain.say("stop_listening")
@@ -506,7 +514,7 @@ def test_losing_the_brain_during_a_follow_up_says_the_phrase_once(brain, make):
 
 def test_the_wake_word_over_a_reply_stops_it_and_says_so(brain, make):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     brain.say("play_stream", id="music-1", rate=44100, channels=2, volume=0.5, kind="music", paused=False)
     brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=0.8, kind="reply", paused=False)
     brain.say("stream_audio", np.array([1, 2, 3], np.int16).tobytes(), id="reply-1")
@@ -530,7 +538,7 @@ def test_the_brain_asking_to_hear_an_answer_during_a_wake_sends_nothing_more(bra
     # gets: sent again as a follow-up, it was 10 seconds of nobody talking, while the
     # wake word went unheard.
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 3)
     brain.say("listen")
@@ -545,7 +553,7 @@ def test_the_brain_asking_to_hear_an_answer_during_a_wake_sends_nothing_more(bra
 
 def test_a_wake_while_streaming_starts_nothing_new(brain, make):
     made = make()
-    assert wait_for(lambda: brain.hellos and made.wake.listening)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
     heard_at = made.wake.say()
     assert wait_for(lambda: len(brain.recordings()) >= 2)
     assert not made.wake.listening
