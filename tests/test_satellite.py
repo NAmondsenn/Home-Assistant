@@ -388,8 +388,9 @@ def test_the_satellites_own_most_is_thirty_seconds(brain, make):
 
 @pytest.mark.parametrize("sent", [{}, {"longest_request": "15"}, {"longest_request": True},
                                   {"longest_request": float("nan")}, {"longest_request": float("inf")},
-                                  {"longest_request": 0}, {"longest_request": -5}, {"longest_request": None}],
-                         ids=["none", "text", "bool", "nan", "inf", "zero", "negative", "null"])
+                                  {"longest_request": 0}, {"longest_request": 1e-9}, {"longest_request": 0.5},
+                                  {"longest_request": -5}, {"longest_request": None}],
+                         ids=["none", "text", "bool", "nan", "inf", "zero", "tiny", "half", "negative", "null"])
 def test_an_old_brain_leaves_the_satellite_at_ten_seconds(brain, make, sent):
     made = make()
     assert wait_for(lambda: brain.hellos and made.wake.listening)

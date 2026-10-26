@@ -689,6 +689,7 @@ def test_the_session_sends_its_satellite_the_longest_request(brain, connect, mak
     assert wait_for(lambda: len(pi.messages("state")) == 2)
     assert pi.messages("state")[-1]["longest_request"] == 22.0
 
+
 def test_mute_is_kept_per_satellite_and_sent_to_it(brain, connect, make_session):
     bedroom, bedroom_pi = connect("bedroom", "bedroom-pi")
     kitchen, kitchen_pi = connect("kitchen", "kitchen-pi")

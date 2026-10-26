@@ -535,8 +535,9 @@ class Satellite:
         self.state.update(message)
         longest = message.get("longest_request")
         # Anything else is left alone, so an old or confused brain can't make a
-        # recording of no length or one which never ends: "15" as text, True, NaN, 0.
-        if isinstance(longest, (int, float)) and not isinstance(longest, bool) and 0 < longest < math.inf:
+        # recording of no length or one which never ends: "15" as text, True, NaN, 0,
+        # or 1e-9, which is no audio at all. The brain's own setting is at least 5.
+        if isinstance(longest, (int, float)) and not isinstance(longest, bool) and 1 <= longest < math.inf:
             self.longest_request = min(longest, MOST_SECONDS)
         self.wake.set_muted(self.state.muted)
 
