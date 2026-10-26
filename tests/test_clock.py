@@ -7,14 +7,19 @@ chosen time, and its saved files are redirected into a temporary folder, so noth
 here touches the real data/ folder or waits on a real clock.
 """
 
+import importlib
 import json
 import logging
+import pkgutil
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
 
 import pytest
 
+import voice_assistant
 from voice_assistant import clock as clock_module
 from voice_assistant.clock import (Clock, format_duration, parse_repeat, seconds_until, spoken_clock_time,
                                    _time_of_day_candidates)
@@ -1709,3 +1714,40 @@ def test_dismissing_a_ringing_alarm_means_a_restart_doesnt_report_it(make_clock)
     clock.dismiss()
 
     assert make_clock()._missed == []
+
+
+def _clock_parts():
+    """The names of the modules the clock is split into, each a voice_assistant.clock_* file."""
+    return [module.name for module in pkgutil.iter_modules(voice_assistant.__path__)
+            if module.name.startswith("clock_")]
+
+
+def test_the_clock_keeps_every_name_it_is_imported_by():
+    for name in ("Clock", "format_duration", "spoken_clock_time", "parse_repeat", "seconds_until",
+                 "_time_of_day_candidates", "TIMERS_FILE", "ALARMS_FILE", "PLAUSIBLE_TIME_AFTER",
+                 "ALARM_START_LEVEL", "ALARM_SOUND", "storage", "time"):
+        assert hasattr(clock_module, name), name
+
+
+def test_the_clock_still_saves_where_the_tests_point_it():
+    # The tests patch the files on voice_assistant.clock, so whatever reads them has to live
+    # there - elsewhere it would read its own module's copy and write into the real data folder.
+    for name in ("_save", "_load", "_save_alarms", "_load_alarms"):
+        assert getattr(Clock, name).__module__ == "voice_assistant.clock", name
+
+
+def test_every_part_of_the_clock_logs_as_the_clock():
+    # So every line keeps the logger name it had before the clock was split up.
+    for name in _clock_parts():
+        module = importlib.import_module(f"voice_assistant.{name}")
+        if hasattr(module, "logger"):
+            assert module.logger.name == "voice_assistant.clock", name
+
+
+def test_each_part_of_the_clock_imports_on_its_own():
+    # A part which only works because clock.py imported something first would break the
+    # moment it was imported alone.
+    for name in _clock_parts():
+        result = subprocess.run([sys.executable, "-c", f"import voice_assistant.{name}"],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, f"{name}: {result.stderr}"
