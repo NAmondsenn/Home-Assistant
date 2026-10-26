@@ -26,7 +26,9 @@ def run_setup(tmp_path, command, stdin="", role="satellite", restart_fails=False
     """
     Runs one of setup.sh's steps, sourced so its main flow doesn't run, against a
     scratch config folder and home, with a systemctl which only notes what it was
-    asked - so neither the real ~/.config/nova nor the real service is touched.
+    asked - so neither the real ~/.config/nova nor the real service is touched. Each
+    of INSTALLERS is shadowed by a stand-in which notes its call in installers.log and
+    fails, so a step which reaches one never installs anything for real.
 
     Args:
         tmp_path: The test's own folder.
@@ -168,7 +170,8 @@ def test_a_broken_new_password_never_reaches_the_install(tmp_path):
     # be a real sudo or apt-get on the machine running the tests.
     log = tmp_path / "installers.log"
     assert log.exists(), result.stdout + result.stderr
-    assert {line.split()[0] for line in log.read_text().splitlines()} <= set(INSTALLERS)
+    # Only the install's first call: its stand-in fails, and the install stops there.
+    assert log.read_text().splitlines() == ["sudo apt-get update -qq"]
     assert result.returncode != 0
     assert restarts(tmp_path) == []
 
