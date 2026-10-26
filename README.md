@@ -69,7 +69,7 @@ In order, it:
 6. Downloads Piper, the voice (`en_US-hfc_female-medium`), the Nemotron speech-to-text model and openWakeWord's own models into `models/`. They're checked against pinned SHA-256 hashes, so a tampered download stops setup rather than being run. Nemotron needs about 1.5GB free: `models/` can be a link to a folder somewhere with more room, and everything follows it.
 7. Installs the brain as the `nova-backend` system service, which runs as that user and starts at boot, and starts it.
 
-Then let each satellite in, by its machine's name, which prints a password for it - once, so keep it for the satellite's setup. Run it as the brain's user, not root: the passwords are kept in that user's `~/.config/nova/satellites.json`, which is where the service reads them.
+Then let each satellite in, by its machine's name: on the settings page (see [The settings page](#the-settings-page)), under Satellites, type it in and Add a satellite. The page shows a password for it once, so keep it for the satellite's setup. Without the page, `add-satellite` does the same, printing the password - run it as the brain's user, not root, as the passwords are kept in that user's `~/.config/nova/satellites.json`, which is where the service reads them.
 
 ```bash
 cd /home/nova/Home-Assistant
@@ -90,7 +90,7 @@ The brain's log is `journalctl -u nova-backend -f`, and `systemctl restart nova-
 
 ### A satellite
 
-You'll need a Raspberry Pi with Raspberry Pi OS (64-bit), a USB microphone and a speaker, on the same tailnet as the brain, and the password `add-satellite` gave for it.
+You'll need a Raspberry Pi with Raspberry Pi OS (64-bit), a USB microphone and a speaker, on the same tailnet as the brain, and the password the settings page (or `add-satellite`) gave for it.
 
 ```bash
 git clone https://github.com/NAmondsenn/Home-Assistant.git
@@ -104,7 +104,7 @@ In order, it:
 2. Installs the system packages, makes a Python environment in `venv/`, and installs the Python packages - the exact versions in `requirements.lock`, which is only what the microphone, speaker and wake word need.
 3. Moves anything an older install kept in the repository folder to its new place (see Configuring).
 4. Asks for the assistant's name, wake word, Spotify speaker name and the brain's address (`nova:10400`), saving them to `~/.config/nova/config.yaml`.
-5. Says the name the brain knows this satellite by - its machine's name - and asks for the password `add-satellite` gave for it (not shown as it's typed), writing it to `~/.config/nova/.env` as `NOVA_BACKEND_TOKEN`, readable only by you. It's the only secret a satellite holds. Left blank, the satellite won't start until it's added there, which setup says.
+5. Says the name the brain knows this satellite by - its machine's name - and asks for the password the settings page gave for it (not shown as it's typed), writing it to `~/.config/nova/.env` as `NOVA_BACKEND_TOKEN`, readable only by you. It's the only secret a satellite holds. Left blank, the satellite won't start until it has one, which setup says - give it one later with `bash setup.sh --new-password`.
 6. Finds your wake word model (see below) and copies it into `models/`, and downloads openWakeWord's own models there. A satellite downloads no speech or voice models - the brain does the hearing and the speaking.
 7. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone - in short bursts, so a sound stops quickly and the wake word reacts sooner - backing up the old one.
 8. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.
@@ -113,6 +113,15 @@ In order, it:
 Each satellite is named by its own machine's name, which the brain knows its password by - the same name given to `add-satellite`. Set `backend.satellite` in `config.yaml` to use another. Either way, it must fit the rule `add-satellite` and the settings page keep to: lower-case letters, digits and hyphens, not starting or ending with a hyphen.
 
 `bash setup.sh --yes` asks nothing, taking what it finds and the defaults; `--no-spotify` leaves Spotify out, and `--no-service` doesn't start Nova at boot. `--brain` and `--satellite` choose the role; without one, an existing install keeps its own.
+
+To give a satellite a new password - one turned away, or a password that may have got out - press New password beside it on the settings page, under Satellites. The brain lets it go straight away, and turns it away until it has the new one, which the page shows once. Then, on the Pi, as its user:
+
+```bash
+cd Home-Assistant
+bash setup.sh --new-password
+```
+
+It asks for the new password (not shown as it's typed), puts it in `~/.config/nova/.env` in place of the old one, leaving the rest of the file as it was, and restarts the satellite. A Pi with a new machine, or a new SD card, is set up as above with the same name, after New password - adding it again isn't needed, and removing it would move its timers, alarms and routines to the default satellite.
 
 To update to the latest code later - it never touches your settings, keys or saved data - run this on the brain (as root) and on each satellite (as its user):
 
@@ -278,7 +287,7 @@ Nova serves a page for looking after it from a phone or a laptop - how it's doin
      allow: ["you@example.com"]
    ```
 
-Then restart the brain, and open `https://` and its name on your tailnet - `tailscale status` shows it - on any of your devices. A change has to come from the page itself, so another website can't make one in your name; settings are saved to the brain's `~/.config/nova/config.yaml`, the one before kept as `config.yaml.bak`. Most are used straight away; under each, the page says whether it's used straight away or once Nova restarts, and when a save waits for a restart, it offers one. A satellite's own settings - the brain's address, and its password - are changed on the satellite, by hand.
+Then restart the brain, and open `https://` and its name on your tailnet - `tailscale status` shows it - on any of your devices. A change has to come from the page itself, so another website can't make one in your name; settings are saved to the brain's `~/.config/nova/config.yaml`, the one before kept as `config.yaml.bak`. Most are used straight away; under each, the page says whether it's used straight away or once Nova restarts, and when a save waits for a restart, it offers one. A satellite's own settings are changed on the satellite: the brain's address by hand, and its password with `bash setup.sh --new-password`, once New password, under Satellites, has made one.
 
 ### The wake word model
 

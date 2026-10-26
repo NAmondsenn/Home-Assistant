@@ -9,6 +9,8 @@
 #   bash setup.sh --yes           takes what it finds and the defaults, asking nothing
 #   bash setup.sh --no-spotify    leaves Spotify out, for Navidrome only
 #   bash setup.sh --no-service    doesn't start Nova at boot
+#   bash setup.sh --new-password  on a satellite already set up: gives it the new
+#                                 password the settings page made for it, on its own
 #
 # The role is kept in ~/.config/nova/role, so running this again without --brain on a
 # brain, and update.sh, both know what they're looking after. --satellite changes an
@@ -301,10 +303,11 @@ write_secrets() {
         name="$(hostname)"
         if [ "$ASSUME_YES" = false ]; then
             echo "  This satellite's password comes from the brain, which knows it by this machine's"
-            echo "  name, ${name}. On the brain, in its clone, run this as the brain's user - from"
-            echo "  root, with 'runuser -u nova -- ' in front (nova being the user the brain runs as):"
+            echo "  name, ${name}. Add it by that name on the settings page, under Satellites - or"
+            echo "  on the brain, in its clone, run this as the brain's user (from root, with"
+            echo "  'runuser -u nova -- ' in front, nova being the user the brain runs as):"
             echo "      venv/bin/python backend.py add-satellite ${name}"
-            echo "  Leave it blank to add it to ${SECRETS_FILE} by hand later."
+            echo "  Leave it blank to give it one later, with 'bash setup.sh --new-password'."
             read -rsp "  Password (not shown as it's typed): " password
             echo ""
         fi
@@ -316,7 +319,7 @@ write_secrets() {
         if [ -n "$password" ]; then
             done_ "Saved to ${SECRETS_FILE}"
         else
-            problem "No password yet, so the satellite won't start until it has one: put it after NOVA_BACKEND_TOKEN= in ${SECRETS_FILE}, then run 'systemctl --user restart ${SERVICE_NAME}'."
+            problem "No password yet, so the satellite won't start until it has one: once you have it, run 'bash ${PROJECT_DIRECTORY}/setup.sh --new-password'."
         fi
         return
     fi
@@ -349,6 +352,64 @@ SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 EOF
     )
     done_ "Saved to ${SECRETS_FILE}"
+}
+
+# Gives a satellite which is already set up the new password the settings page made for
+# it - its New password, under Satellites - in place of the old one, and restarts it.
+# The password is never shown, nor given to another program, where ps would show it:
+# it's written by the shell itself, to a file only this user can read, beside the old.
+new_password() {
+    decide_role
+    if [ "$ROLE" != "satellite" ] || [ ! -f "$SECRETS_FILE" ]; then
+        problem "--new-password is for a satellite which is already set up. On the brain, or with no ${SECRETS_FILE} yet, run 'bash setup.sh' instead."
+        exit 1
+    fi
+    # Root's .env would be one the satellite's service can't read, and root has no user
+    # service of its own to restart.
+    if [ "$(id -u)" = 0 ]; then
+        problem "Run it as the satellite's own user, without sudo."
+        exit 1
+    fi
+    # Bytes, rather than whatever letters the locale counts as A to Z, so "é" is refused.
+    local LC_ALL=C password=""
+    read -rsp "  The new password from the settings page (not shown as it's typed): " password || true
+    echo ""
+    # A phone's copy can bring spaces, or a carriage return, with it.
+    password="${password#"${password%%[![:space:]]*}"}"
+    password="${password%"${password##*[![:space:]]}"}"
+    # token_urlsafe's letters, which the page makes them from - so a quote can't break
+    # the .env, and a copy which lost most of the password is caught here, rather than
+    # by the brain turning the satellite away.
+    if [ ${#password} -lt 16 ] || [[ "$password" == *[!A-Za-z0-9_-]* ]]; then
+        problem "That isn't the whole password - it's at least 16 letters, digits, '-' and '_', as the settings page shows it. Nothing was changed."
+        exit 1
+    fi
+    (
+        umask 077
+        local temporary="" line written=false
+        # Removed however this ends, as it holds the password until it's moved into place.
+        trap 'rm -f "$temporary"' EXIT
+        trap 'exit 1' HUP INT TERM
+        temporary=$(mktemp "${SECRETS_FILE}.XXXXXX")
+        while IFS= read -r line || [ -n "$line" ]; do
+            if [[ "$line" == NOVA_BACKEND_TOKEN=* ]]; then
+                # Only the first, so there's just the one.
+                [ "$written" = true ] && continue
+                line="NOVA_BACKEND_TOKEN=${password}"
+                written=true
+            fi
+            printf '%s\n' "$line"
+        done < "$SECRETS_FILE" > "$temporary"
+        if [ "$written" = false ]; then
+            printf 'NOVA_BACKEND_TOKEN=%s\n' "$password" >> "$temporary"
+        fi
+        mv -f "$temporary" "$SECRETS_FILE"
+    )
+    if ! systemctl --user restart "$SERVICE_NAME"; then
+        problem "Saved, but the satellite didn't restart - run 'systemctl --user restart ${SERVICE_NAME}'."
+        exit 1
+    fi
+    done_ "Saved, and the satellite restarted"
 }
 
 find_wake_word_model() {
@@ -637,9 +698,37 @@ install_service() {
     done_ "Installed as the ${SERVICE_NAME} user service"
 }
 
+# What to do next, said at the end of setup, where it's seen.
+say_whats_next() {
+    # Whoever reads these may be root, whose commands would otherwise write the brain's
+    # passwords and tokens under /root, where its service never looks.
+    local as_user_hint=""
+    if [ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ]; then
+        as_user_hint="runuser -u ${SERVICE_USER} -- "
+    fi
+    echo ""
+    echo "Done. Settings: ${SETTINGS_FILE} · keys: ${SECRETS_FILE}"
+    # Said again here, at the end, where it's seen - a satellite with no password
+    # restarts every few seconds, and is only ever told it can't reach the brain.
+    if [ "$ROLE" = "satellite" ] && ! grep -qE "^NOVA_BACKEND_TOKEN=.+" "$SECRETS_FILE" 2> /dev/null; then
+        problem "The satellite won't start until it has its password - see Keys above. Once you have it, run 'bash ${PROJECT_DIRECTORY}/setup.sh --new-password'."
+    fi
+    if [ "$ROLE" = "brain" ]; then
+        echo "Let a satellite in:         on the settings page, under Satellites - or"
+        echo "                            cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python backend.py add-satellite NAME"
+        echo "For Spotify, sign in on the settings page, under Music."
+        echo "Watch it working:           journalctl -u ${BRAIN_SERVICE_NAME} -f"
+    else
+        echo "Watch it working:           journalctl --user-unit ${SERVICE_NAME} -f"
+    fi
+    echo "Later, to update:           bash ${PROJECT_DIRECTORY}/update.sh"
+}
+
 main() {
+    local renewing=false
     for argument in "$@"; do
         case "$argument" in
+            --new-password) renewing=true ;;
             --yes) ASSUME_YES=true ;;
             --no-spotify) WITH_SPOTIFY=false ;;
             --no-service) WITH_SERVICE=false ;;
@@ -648,6 +737,16 @@ main() {
             *) echo "Unknown option: ${argument} (see the top of setup.sh)" >&2; exit 1 ;;
         esac
     done
+    if [ "$renewing" = true ]; then
+        # Alone, as it changes nothing else - "--new-password --brain" would otherwise
+        # quietly ignore the --brain.
+        if [ $# -ne 1 ]; then
+            problem "--new-password is used on its own: bash setup.sh --new-password"
+            exit 1
+        fi
+        new_password
+        return
+    fi
 
     decide_role
     echo "Installing Nova's ${ROLE} in ${PROJECT_DIRECTORY}"
@@ -671,27 +770,7 @@ main() {
         skipped "Left out (--no-service) - run it by hand with: $([ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ] && echo "runuser -u ${SERVICE_USER} -- ")${PYTHON} ${PROJECT_DIRECTORY}/$([ "$ROLE" = "brain" ] && echo backend.py || echo satellite.py)"
     fi
 
-    # Whoever reads these may be root, whose commands would otherwise write the brain's
-    # passwords and tokens under /root, where its service never looks.
-    local as_user_hint=""
-    if [ "$(id -u)" = 0 ] && [ "$SERVICE_USER" != "root" ]; then
-        as_user_hint="runuser -u ${SERVICE_USER} -- "
-    fi
-    echo ""
-    echo "Done. Settings: ${SETTINGS_FILE} · keys: ${SECRETS_FILE}"
-    # Said again here, at the end, where it's seen - a satellite with no password
-    # restarts every few seconds, and is only ever told it can't reach the brain.
-    if [ "$ROLE" = "satellite" ] && ! grep -qE "^NOVA_BACKEND_TOKEN=.+" "$SECRETS_FILE" 2> /dev/null; then
-        problem "The satellite won't start until its password is in ${SECRETS_FILE}, as NOVA_BACKEND_TOKEN - see Keys above."
-    fi
-    if [ "$ROLE" = "brain" ]; then
-        echo "Let a satellite in:         cd ${PROJECT_DIRECTORY} && ${as_user_hint}venv/bin/python backend.py add-satellite NAME"
-        echo "For Spotify, sign in on the settings page, under Music."
-        echo "Watch it working:           journalctl -u ${BRAIN_SERVICE_NAME} -f"
-    else
-        echo "Watch it working:           journalctl --user-unit ${SERVICE_NAME} -f"
-    fi
-    echo "Later, to update:           bash ${PROJECT_DIRECTORY}/update.sh"
+    say_whats_next
 }
 
 # Run, unless update.sh or uninstall.sh is only borrowing the steps above.
