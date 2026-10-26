@@ -1738,6 +1738,15 @@ def test_the_satellites_list_shows_each_speaker(files, make_config):
         ("bedroom", "Living Room"), ("kitchen", "Kitchen Pi"), ("garage", None)]
 
 
+def test_no_spotify_speaker_is_shown_when_navidrome_plays(files, make_config):
+    # Spotify isn't what plays the music then, so saying where it plays would be wrong.
+    sessions = {"bedroom": FakeSession(), "kitchen": FakeSession(speaker="Kitchen Pi")}
+    page = _page(sessions=sessions, known=["bedroom", "kitchen"],
+                 config=make_config(music={"player": "navidrome"}))
+    assert [(each["name"], each["spotify_speaker"]) for each in page.state()["satellites"]] == [
+        ("bedroom", None), ("kitchen", None)]
+
+
 def test_the_default_satellite_is_marked(files):
     # The first added, whether it's connected or not - what belongs to no satellite goes there.
     page = _page(sessions={"kitchen": FakeSession()}, known=["garage", "kitchen"])

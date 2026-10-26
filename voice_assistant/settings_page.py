@@ -47,7 +47,7 @@ from voice_assistant.clock import format_duration
 from voice_assistant.config import CHOICES, LIMITS, Config, ConfigError, check, clashes, limit_problem
 from voice_assistant.devices import AppDevice
 from voice_assistant.google_calendar import READ_FAILURES, ClientRefused, GoogleSignInError, SignInNeeded
-from voice_assistant.music import why_no_player
+from voice_assistant.music import _chosen, why_no_player
 from voice_assistant.ntfy import RETOPIC
 from voice_assistant.spotify_controller import SpotifySignIn, SpotifySignInError, brains_speaker, spotify_oauth
 from voice_assistant.undo import UndoShelf
@@ -400,19 +400,22 @@ class SettingsPage:
     def _satellites(self, names: List[str]) -> List[Dict]:
         """
         Each satellite the brain lets in, whether it's the default, and whether it's
-        connected - with what it's doing, its mute and the Spotify speaker it plays on
-        if so. Never its password.
+        connected - with what it's doing, its mute and, if Spotify is the player, the
+        speaker it plays on. Never its password.
 
         Args:
             names: The satellites, as the brain has them - the first is the default.
         """
         found = []
         default = names[0] if names else None
+        # With Navidrome as the player, Spotify plays nowhere, so none is said. Spotify
+        # is the player when none is chosen, as with no config at all.
+        spotify = self.brain.config is None or _chosen(self.brain.config) == "spotify"
         for name in names:
             session = self.brain.session_for(name)
             # One which doesn't say plays on the brain's own - see SpotifyController.
             speaker = (session.satellite.speaker_name or brains_speaker(self.brain.config)
-                       if session is not None else None)
+                       if session is not None and spotify else None)
             found.append({"name": name, "connected": session is not None,
                           "activity": session.activity if session is not None else "idle",
                           "muted": session is not None and session.muted, "default": name == default,
