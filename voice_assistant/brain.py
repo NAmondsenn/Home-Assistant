@@ -102,11 +102,12 @@ AWAY_WAIT = 2.0
 # watchdog.ALLOWANCE, 150 seconds, the same as main.py had on the Pi, whose watchdog
 # went quiet as soon as a turn hung, as the microphone was no longer read. That's more
 # than a turn legitimately goes between steps which count as moving - a web search
-# retried once (two lots of llm.search_timeout) after a recording of up to 10 seconds
-# - while a session between wake words, or playing a reply of any length, moves
-# several times a second. nova-backend.service's WatchdogSec=60 then restarts the brain
-# within a minute of the watchdog going quiet: three and a half minutes from a session
-# sticking, at most, which its satellite rides out, ringing from its copy.
+# retried once (two lots of llm.search_timeout) after a recording of up to 30 seconds,
+# the most a satellite sends whatever the brain says - while a session between wake
+# words, or playing a reply of any length, moves several times a second.
+# nova-backend.service's WatchdogSec=60 then restarts the brain within a minute of the
+# watchdog going quiet: three and a half minutes from a session sticking, at most,
+# which its satellite rides out, ringing from its copy.
 STOP_CHECK = 0.5
 
 # What a satellite says when it can't reach the brain, in the brain's own voice - see

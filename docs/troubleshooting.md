@@ -72,7 +72,7 @@ The brain decides when you've stopped, so these are its settings, in its `~/.con
 
 - **Cut off mid-sentence** - raise `thresholds.silence_duration`, or lower `thresholds.vad_threshold`.
 - **Keeps listening after I've finished** - usually because something in the room sounds like speech, such as a TV. Raise `thresholds.vad_threshold`.
-- The brain's log shows `Speech detected` and `Silence detected after ...s` for each recording, and its `latency.jsonl`, in `~/.local/share/nova/logs`, has the timings. Whatever happens, the satellite stops sending after 10 seconds.
+- The brain's log shows `Speech detected` and `Silence detected after ...s` for each recording, and its `latency.jsonl`, in `~/.local/share/nova/logs`, has the timings. Whatever happens, the satellite stops sending after the longest a request may be: `thresholds.recording_timeout`, Longest request on the settings page, 15 seconds unless changed, from 5 to 30. A satellite never sends more than 30 seconds, and one not yet updated stops at 10.
 
 ## Nova mishears, or answers something nobody said
 

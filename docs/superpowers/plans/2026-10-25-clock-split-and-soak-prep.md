@@ -148,7 +148,7 @@ Taken from every `progress.md` under `.superpowers/sdd/`. A soak would trip over
 - **A long turn tripping the 150 s watchdog** is parked as rare. The soak counts restarts.
 - **The one-hour cut-off for missed items** is only checked at start, so "that was 5 hours ago" can be said. It's honest, and nothing grows.
 - **`SettingsPage._playlists`** grows only with the number of satellites.
-- **`AudioFeed` has no cap.** It's bounded by the satellite's 10-second limit, and the sender has a password.
+- **`AudioFeed` has no cap.** It's bounded by the satellite's own most of 30 seconds, whatever the brain's longest request, and the sender has a password.
 - **Undo's toasts** stack, but each goes after 10 seconds.
 - **`update.sh` stops Nova before `install_service`** (`update.sh:118-120`, under `set -e`), so if that fails Nova is left stopped. It's after the settings check, so it never starts wrong code. The soak checklist's "If it fails" says so.
 - **Already done, checked in the code:**

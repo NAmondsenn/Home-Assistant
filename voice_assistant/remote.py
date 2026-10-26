@@ -530,7 +530,7 @@ class RemoteSatellite:
     def listen(self) -> AudioFeed:
         """
         Has the satellite send what the user says from now - their answer to Nova's
-        question - until stop_listening(), or its 10 second limit.
+        question - until stop_listening(), or the longest a request may be.
 
         Returns:
             A feed of it. Already ended if the satellite isn't connected.
