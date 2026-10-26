@@ -5,12 +5,15 @@ Keeps an eye on the assistant while it runs for days on end - its memory, CPU,
 threads, restarts and log size - so anything which slowly grows, or a crash and
 restart in the night, shows up rather than going unnoticed.
 
-Run on the Pi alongside the assistant's service, and use the assistant as normal:
-    venv/bin/python scripts/soak_monitor.py --hours 72
-Run on the brain too, as the service's own user with its own home, so the logs folder is its:
-    sudo -u nova -H venv/bin/python scripts/soak_monitor.py --hours 72 --brain
+Run on the Pi alongside the assistant's service, from the repo, and use the assistant as normal:
+    nohup venv/bin/python scripts/soak_monitor.py --hours 72 > ~/soak-pi.out 2>&1 &
+Run on the brain too, as the service's own user with its own home, so the logs folder is its.
+That home is closed to other users, so the paths are full ones, and setsid -f detaches it:
+    sudo -u nova -H setsid -f /home/nova/Home-Assistant/venv/bin/python \
+        /home/nova/Home-Assistant/scripts/soak_monitor.py --hours 72 --brain < /dev/null > ~/soak-brain.out 2>&1
 It samples every 10 minutes into soak.csv in the logs folder, and says at the end (or on Ctrl+C)
-whether anything grew that shouldn't have, or any errors were logged.
+whether anything grew that shouldn't have, or any errors were logged - into the .out file when
+started as above. docs/release-checklist.md has the rest.
 """
 
 import argparse

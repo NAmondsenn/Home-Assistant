@@ -35,7 +35,7 @@
 
 ## Live checks before Task 8
 
-For the controller, read-only, with the user's OK. On the brain, as the `nova` user with its own home (`sudo -iu nova`, or `sudo -u nova -H` if sudo allows only that):
+For the controller, read-only, with the user's OK. On the brain, as the `nova` user with its own home (`sudo -u nova -H` - its shell is nologin, so `sudo -iu nova` is refused):
 - does `systemctl show -p MainPID,NRestarts --value nova-backend` answer without root?
 - is `/proc/<that pid>/fd` readable?
 - where's the brain's venv Python (setup.sh's `$PYTHON`)?
@@ -269,14 +269,14 @@ The ledger (`.superpowers/sdd/2026-10-25-settings-straight-away/progress.md`, fi
 - Produces:
   - `Target = NamedTuple("Target", [("service", str), ("user_scope", bool), ("log", str)])`, and `TARGETS = {"satellite": Target("voice-assistant", True, "smart_assistant.log"), "brain": Target("nova-backend", False, "backend.log")}`.
   - `--brain` picks the brain's target, and the satellite's is the default. `_systemctl(prop, target)` passes `--user` only for a user-scope target.
-  - Before the first reading, and before making `--out`'s folder, `main` checks the target's log exists in `LOGS_DIRECTORY`. If not, it prints "No <log> in <folder> - run this as the service's own user, with its own home (sudo -iu nova on the brain)." and exits 1. With the wrong `HOME` it would otherwise make an empty logs folder and report 0 errors.
+  - Before the first reading, and before making `--out`'s folder, `main` checks the target's log exists in `LOGS_DIRECTORY`. If not, it prints "No <log> in <folder> - run this as the service's own user, with its own home (sudo -u nova -H on the brain)." and exits 1. With the wrong `HOME` it would otherwise make an empty logs folder and report 0 errors.
   - `count_errors(log: str, since: datetime) -> int` - counts lines with " - ERROR - " or " - CRITICAL - " whose leading timestamp (`%Y-%m-%d %H:%M:%S`, the first 19 characters) is at or after `since`, in the log and its `.1` to `.3`. A line whose first 19 characters aren't a timestamp (a traceback's, or a message's second line) is skipped, not counted. `sample` gets `since`: the monitor's start time for the first reading, so errors from before the soak aren't counted, and the last reading's time after that. A new `errors` field holds each reading's count.
   - `interactions` counts `latency.jsonl` and `latency.jsonl.1`, since it rotates. Only the satellite writes it (`satellite.py:136`), so `summarise(rows, brain: bool = False)` leaves ", N interactions" out of its first line for the brain.
   - `FILE_GROWTH = 20`. `summarise` adds, coping with readings that have no `errors` (an old `soak.csv`):
     - "Errors: N logged, at most M between two readings.";
     - "! Open files went from A to B - something isn't being closed." past `FILE_GROWTH`;
     - "! N errors logged - read them in the log." when there are any.
-- The checklist's section says how to run one monitor on each machine. On the Pi, as now. On the brain, as `nova` with its own home (`sudo -iu nova`), with its venv's Python, `--brain`. The brain section's own checks are done before the monitors start, so they don't show as restarts or a changed process in the readings: restarting it, and the satellite ringing from its copy while the brain is stopped - a one-minute timer, `kill -STOP` the brain's MainPID about 20 s before it's due, the Pi rings it from its copy (it says "Lost the brain" after 15 s of silence), then `kill -CONT` 30 s after the stop. Never longer: `nova-backend.service:23` is `WatchdogSec=60`, so a minute's stop is a restart. It names no host.
+- The checklist's section says how to run one monitor on each machine. On the Pi, as now. On the brain, as `nova` with its own home (`sudo -u nova -H` - `nova`'s shell is nologin, so never `sudo -iu nova`), with its venv's Python and the script by their full paths, `--brain`. The brain section's own checks are done before the monitors start, so they don't show as restarts or a changed process in the readings: restarting it, and the satellite ringing from its copy while the brain is stopped - a one-minute timer, `kill -STOP` the brain's MainPID as `nova` (`sudo -u nova kill -STOP "$pid"`) about 20 s before it's due, the Pi rings it from its copy (it says "Lost the brain" after 15 s of silence), then `sudo -u nova kill -CONT "$pid"` 30 s after the stop. Never longer: `nova-backend.service:23` is `WatchdogSec=60`, so a minute's stop is a restart. It names no host.
 
 - [ ] **Step 1: Write the failing tests:**
   - `test_the_brain_is_watched_as_a_system_service` - a fake `subprocess.run` sees `nova-backend` and no `--user`;
@@ -298,12 +298,14 @@ The ledger (`.superpowers/sdd/2026-10-25-settings-straight-away/progress.md`, fi
 Not a code task. The user runs it, after deploying the brain and updating the Pi to this plan's last commit. Everything is measured read-only: `/proc`, `systemctl show`, and the logs.
 
 **Before it starts**
-- Note the commit each machine runs (`git log -1 --format=%h` in each clone). The soak is of that code.
-- Do the brain section's restart and `kill -STOP` checks (Task 8) now, before the monitors.
+- Note the commit each machine runs. The soak is of that code. On the Pi, `git log -1 --format=%h` in the clone; on the brain, `sudo -u nova git -C /home/nova/Home-Assistant log -1 --format=%h`.
+- Do the brain's restart and stop checks now, before the monitors, as `docs/release-checklist.md` ("Leaving it running") gives them: `sudo systemctl restart nova-backend`, then `sudo systemctl status nova-backend`; and for the stop, `pid=$(systemctl show -p MainPID --value nova-backend); sudo -u nova kill -STOP "$pid"` about 20 s before a one-minute timer is due, then `sudo -u nova kill -CONT "$pid"` 30 s after. The process runs as `nova`, and your own `sudo` may only start, stop, restart and show the status of the service. Once it carries on, the brain finds the timer due and rings it again, through the Pi, since nobody had answered it - that's expected, and one "Hey Nova, stop" ends it everywhere.
 - Leave "Keep conversations in the logs" on (`logging.log_transcripts`). Otherwise the "Timer finished:" lines the timing check reads aren't written.
-- Start both monitors for 72 hours, in something that outlives the terminal (`tmux` or `nohup`):
-  - on the Pi: `venv/bin/python scripts/soak_monitor.py --hours 72`;
-  - on the brain: the same with its venv's Python and `--brain`, after `sudo -iu nova` (it refuses to start under the wrong home). Errors from before it started aren't counted.
+- Start both monitors for 72 hours, detached so they outlive the terminal - neither machine has `tmux`. Each writes `soak.csv` afresh, so copy an older one away first to keep it:
+  - on the Pi, from the clone: `nohup venv/bin/python scripts/soak_monitor.py --hours 72 > ~/soak-pi.out 2>&1 &`;
+  - on the brain, as `nova` with its own home (it refuses to start under the wrong one), by full paths since `nova`'s home is closed to your account: `sudo -u nova -H setsid -f /home/nova/Home-Assistant/venv/bin/python /home/nova/Home-Assistant/scripts/soak_monitor.py --hours 72 --brain < /dev/null > ~/soak-brain.out 2>&1`.
+  Errors from before each started aren't counted. The end summary lands in that `.out` file, in your own home.
+- Log out and back in, and check both are still going: `pgrep -af soak_monitor` on the Pi; on the brain, `pgrep -u nova -af soak_monitor` and `sudo -u nova tail -2 /home/nova/.local/share/nova/logs/soak.csv` (a new reading every 10 minutes).
 - Set what the soak should ring, by voice, each at a time nothing else rings near:
   - a daily alarm at a time the user's awake (three rings);
   - a reminder in 24 hours, and another in 48;
@@ -319,15 +321,15 @@ Not a code task. The user runs it, after deploying the brain and updating the Pi
 
 | What | How, read-only | Passes when |
 |---|---|---|
-| Memory (brain, Pi) | `soak.csv` `rss_mb`, read by hand from the hour-2 row (the summary's figure is from the first reading) | No more than 50 MB of growth from hour 2 to the end on each, and the brain well under its 4 GB |
+| Memory (brain, Pi) | `soak.csv` `rss_mb` (on the brain, `sudo -u nova cat /home/nova/.local/share/nova/logs/soak.csv`), read by hand from the hour-2 row (the summary's figure is from the first reading) | No more than 50 MB of growth from hour 2 to the end on each, and the brain well under its 4 GB |
 | Threads | `soak.csv` `threads` | End minus start at most 10, with no steady climb |
 | File handles | `soak.csv` `open_files` | End minus start at most 20, with no steady climb |
-| Restarts | `soak.csv` `restarts` and `pid`, and `journalctl -u nova-backend \| grep -i watchdog` | None on either machine |
-| Errors | `soak.csv` `errors`, then the lines themselves | No "The clock's tick failed", no traceback, and nothing unexplained. "Couldn't reach ..." during a known internet or Wi-Fi drop is fine |
-| Alarms and timers | `grep -E "Timer finished:\|Dismissed" backend.log*` in nova's logs folder, against each one's due time. "Timer finished:" comes once per announcement - every round until it's dismissed, and each alarm cycle - and an alarm's says the time, not which alarm, so go by time | All six rang: the first "Timer finished:" for each within 5 seconds of its due (later only while a conversation was going on), none for it after its "Dismissed" line until its next due, and none in "You missed" unless it went unanswered |
+| Restarts | `soak.csv` `restarts` and `pid`, and on the brain `sudo journalctl -u nova-backend --no-pager \| grep -i watchdog` (a bare `journalctl` shows your account none of it, and `sudo` allows it only with `--no-pager`) | None on either machine |
+| Errors | `soak.csv` `errors`, then the lines themselves - on the brain, `sudo -u nova sh -c 'grep -E " - (ERROR\|CRITICAL) - " /home/nova/.local/share/nova/logs/backend.log*'` | No "The clock's tick failed", no traceback, and nothing unexplained. "Couldn't reach ..." during a known internet or Wi-Fi drop is fine |
+| Alarms and timers | `sudo -u nova sh -c 'grep -E "Timer finished:\|Dismissed" /home/nova/.local/share/nova/logs/backend.log*'` (the `sh -c` is so the `*` is filled in by `nova`, who can see the folder), against each one's due time. "Timer finished:" comes once per announcement - every round until it's dismissed, and each alarm cycle - and an alarm's says the time, not which alarm, so go by time | All six rang: the first "Timer finished:" for each within 5 seconds of its due (later only while a conversation was going on), none for it after its "Dismissed" line until its next due, and none in "You missed" unless it went unanswered |
 | Wake word | `grep -c "Wake word detected" smart_assistant.log*` on the Pi, against the tally | No misses the user noticed in everyday use, and no more false wakes than in the week before |
 | Audio | `journalctl --user-unit voice-assistant \| grep -E "ran dry\|overflowed"` on the Pi | None, or a handful explained by load |
 | The link | "Lost the brain" in the Pi's log | None, or each one during a known Wi-Fi drop, followed by reconnecting |
-| Disk | `df -h`, and the logs' sizes | Logs at most 5 MB each with three old ones, and free space much as at the start |
+| Disk | `df -h`, and the logs' sizes (on the brain, `sudo -u nova ls -l /home/nova/.local/share/nova/logs`) | Logs at most 5 MB each with three old ones, and free space much as at the start |
 
 **If it fails:** the failure is found and fixed, with a test, and the soak starts again from zero - 72 hours. The soak is the final thing, so a passing one is followed only by the merge. An update that stops at "Restarting" may leave Nova stopped (`install_service` failed after `stop_service`): start it by hand once that's put right.

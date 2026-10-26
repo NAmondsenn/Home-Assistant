@@ -57,28 +57,58 @@ With Navidrome (`music.player: navidrome`), and again with Spotify if you still 
 
 ## Leaving it running
 
-For a soak test, leave it running as normal for a few days, with one monitor on each machine, and use Nova as you would anyway. Each one needs to be somewhere which outlives the terminal (`tmux` or `nohup`).
+For a soak test, leave it running as normal for a few days, with one monitor on each machine, and use Nova as you would anyway. Neither machine has `tmux`, so each monitor is started detached from the terminal, and goes on after you log out.
+
+Do the brain's own checks first, before the monitors start, so they don't show as restarts or a changed process in the readings. On the brain, as your own account:
+
+- Restart it, and check it comes back as active:
+
+  ```bash
+  sudo systemctl restart nova-backend
+  sudo systemctl status nova-backend
+  ```
+
+- Check the satellite rings from its copy while the brain is stopped. Set a one-minute timer, and about 20 seconds before it's due, stop the brain's process. It runs as `nova`, so it's signalled as `nova`:
+
+  ```bash
+  pid=$(systemctl show -p MainPID --value nova-backend)
+  sudo -u nova kill -STOP "$pid"
+  ```
+
+  The Pi rings it from its copy (its log says "Lost the brain" after 15 seconds of silence). 30 seconds after the stop, let it carry on, in the same shell:
+
+  ```bash
+  sudo -u nova kill -CONT "$pid"
+  ```
+
+  Never leave it stopped for longer: `nova-backend.service` has `WatchdogSec=60`, so a minute's stop is a restart. Once it carries on, the brain finds the timer due and rings it again, through the Pi - nobody had answered it. One "Hey Nova, stop" ends it everywhere.
+
+Then start the monitors. Each one writes `soak.csv` afresh, so copy an older one away first if you want to keep it.
 
 On the Pi, from the repo:
 
 ```bash
-venv/bin/python scripts/soak_monitor.py --hours 72
+nohup venv/bin/python scripts/soak_monitor.py --hours 72 > ~/soak-pi.out 2>&1 &
 ```
 
-On the brain, as `nova` with its own home and its venv's Python, from the repo:
+On the brain, as `nova` with its own home and its venv's Python. `nova`'s home is closed to your account, so every path is a full one, and `setsid -f` detaches it from the terminal:
 
 ```bash
-sudo -u nova -H venv/bin/python scripts/soak_monitor.py --hours 72 --brain
+sudo -u nova -H setsid -f /home/nova/Home-Assistant/venv/bin/python /home/nova/Home-Assistant/scripts/soak_monitor.py --hours 72 --brain < /dev/null > ~/soak-brain.out 2>&1
 ```
 
 The brain's monitor refuses to start under any other home, since it would find an empty logs folder and report no errors. Neither counts errors logged before it started.
 
-Do the brain's own checks before the monitors start, so they don't show as restarts or a changed process in the readings:
+Before leaving them, log out and back in, and check each is still going - `pgrep -af soak_monitor` on the Pi, and on the brain:
 
-- Restart it (`sudo systemctl restart nova-backend`) and check it comes back.
-- Check the satellite rings from its copy while the brain is stopped. Set a one-minute timer, and about 20 seconds before it's due `sudo kill -STOP $(systemctl show -p MainPID --value nova-backend)`. The Pi rings it from its copy (its log says "Lost the brain" after 15 seconds of silence). Send `kill -CONT` to the same process 30 seconds after the stop. Never leave it stopped for longer: `nova-backend.service` has `WatchdogSec=60`, so a minute's stop is a restart.
+```bash
+pgrep -u nova -af soak_monitor
+sudo -u nova tail -2 /home/nova/.local/share/nova/logs/soak.csv
+```
 
-Each monitor samples its service's memory, CPU, open files, restarts, errors and log size every 10 minutes into `soak.csv` in its logs folder (`~/.local/share/nova/logs` on the Pi), and says at the end whether anything grew that shouldn't have. Afterwards, the speaker shouldn't have run dry, nor the microphone overflowed - this should find nothing:
+The last line of `soak.csv` is the latest reading, and a new one comes every 10 minutes.
+
+Each monitor samples its service's memory, CPU, open files, restarts, errors and log size every 10 minutes into `soak.csv` in its logs folder (`~/.local/share/nova/logs` on the Pi, `/home/nova/.local/share/nova/logs` on the brain), and says at the end whether anything grew that shouldn't have - in `~/soak-pi.out` or `~/soak-brain.out`, in your own home. Afterwards, the speaker shouldn't have run dry, nor the microphone overflowed - this should find nothing:
 
 ```bash
 journalctl --user-unit voice-assistant | grep -E "ran dry|overflowed"
