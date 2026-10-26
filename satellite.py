@@ -396,7 +396,11 @@ class Satellite:
                 sent += len(audio)
                 if sent >= limit:
                     with self._lock:
-                        self._turn_open = True
+                        # Unless the brain said the user had stopped while this last
+                        # piece was being sent - when it opened the turn itself, and
+                        # may have ended it since, with nothing to say.
+                        if not stopped.is_set():
+                            self._turn_open = True
                     self.link.send("audio_end", reason="limit")
                     return "limit"
         except BaseException:

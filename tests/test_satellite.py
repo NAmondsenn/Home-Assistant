@@ -493,6 +493,37 @@ def test_losing_the_brain_once_it_has_answered_says_nothing(brain, make):
     assert PHRASE not in made.speaker.files()
 
 
+def test_a_turn_the_brain_ended_as_the_recording_hit_its_limit_stays_ended(brain, make):
+    # The brain says the user has stopped, and ends its turn with nothing to say, all
+    # while the last piece before the limit is being sent - so the recording's own end
+    # comes after the brain's.
+    made = make()
+    forgotten = noting_when_the_brain_is_forgotten(made)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    send = made.link.send
+    limit = round(made.longest_request * RATE)
+    sent = 0
+
+    def send_ending_the_turn_first(kind, payload=b"", /, **fields):
+        nonlocal sent
+        if kind == "audio":
+            sent += len(payload) // 2
+            if sent >= limit:
+                brain.say("stop_listening")
+                brain.say("allow", kind="announcement")
+                assert wait_for(lambda: "announcement" not in made.speaker.silenced)
+        return send(kind, payload, **fields)
+
+    made.link.send = send_ending_the_turn_first
+    made.wake.say()
+    assert wait_for(lambda: brain.messages("audio_end"))
+    assert wait_for(lambda: made.wake.listening)
+    brain.drop()
+
+    assert forgotten.wait(5)
+    assert PHRASE not in made.speaker.files()
+
+
 def test_losing_the_brain_during_a_follow_up_says_the_phrase_once(brain, make):
     made = make()
     forgotten = noting_when_the_brain_is_forgotten(made)
