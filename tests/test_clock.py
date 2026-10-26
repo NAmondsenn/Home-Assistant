@@ -10,6 +10,7 @@ here touches the real data/ folder or waits on a real clock.
 import importlib
 import json
 import logging
+import os
 import pkgutil
 import subprocess
 import sys
@@ -1866,8 +1867,11 @@ def test_dismissing_a_ringing_alarm_means_a_restart_doesnt_report_it(make_clock)
 
 def _clock_parts():
     """The names of the modules the clock is split into, each a voice_assistant.clock_* file."""
-    return [module.name for module in pkgutil.iter_modules(voice_assistant.__path__)
-            if module.name.startswith("clock_")]
+    parts = [module.name for module in pkgutil.iter_modules(voice_assistant.__path__)
+             if module.name.startswith("clock_")]
+    # With none found, the pins which go through each part would pass having checked nothing.
+    assert parts, "no voice_assistant.clock_* modules found"
+    return parts
 
 
 def test_the_clock_keeps_every_name_it_is_imported_by():
@@ -1896,6 +1900,8 @@ def test_each_part_of_the_clock_imports_on_its_own():
     # A part which only works because clock.py imported something first would break the
     # moment it was imported alone.
     for name in _clock_parts():
+        # From the repo's root, wherever pytest was started, so the package is found.
         result = subprocess.run([sys.executable, "-c", f"import voice_assistant.{name}"],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True,
+                                cwd=os.path.dirname(os.path.dirname(voice_assistant.__file__)))
         assert result.returncode == 0, f"{name}: {result.stderr}"

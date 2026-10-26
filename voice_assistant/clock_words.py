@@ -28,6 +28,7 @@ REPEAT_WORDS.update({
     "daily": WEEKDAY_NAMES, "everyday": WEEKDAY_NAMES, "day": WEEKDAY_NAMES,
 })
 
+
 def format_duration(seconds: int) -> str:
     """
     Turns a number of seconds into a more human form.
