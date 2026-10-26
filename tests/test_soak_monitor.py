@@ -120,3 +120,31 @@ def test_growing_open_files_and_any_errors_are_pointed_out():
 def test_the_brains_summary_leaves_interactions_out():
     lines = soak_monitor.summarise([_reading(0, 400), _reading(12, 410)], brain=True)
     assert lines[0] == "2 readings over 12.0 hours."
+
+
+@pytest.mark.parametrize("gone_at", ["status", "fd", "stat"])
+def test_a_service_gone_mid_reading_is_recorded_as_not_running(tmp_path, monkeypatch, gone_at):
+    # The service exits or restarts between systemctl giving its pid and /proc being read.
+    # Under nohup a crash here would end the monitor unseen, for the rest of the soak.
+    _scratch_logs(tmp_path, monkeypatch)
+    (tmp_path / "backend.log").write_text("")
+    monkeypatch.setattr(soak_monitor, "_systemctl",
+                        lambda prop, target: str(os.getpid()) if prop == "MainPID" else "3")
+    real_open, real_listdir = open, os.listdir
+
+    def gone(path):
+        raise FileNotFoundError(2, "No such file or directory", path)
+
+    if gone_at == "fd":
+        monkeypatch.setattr(soak_monitor.os, "listdir",
+                            lambda path: gone(path) if path.startswith("/proc/") else real_listdir(path))
+    else:
+        monkeypatch.setattr("builtins.open", lambda path, *args, **kwargs: gone(path)
+                            if str(path).endswith(f"/{gone_at}") else real_open(path, *args, **kwargs))
+
+    row = soak_monitor.sample(None, soak_monitor.TARGETS["brain"], datetime(2026, 10, 20))
+
+    assert row["pid"] == "" and row["restarts"] == "3"
+    assert not any(field in row for field in ("rss_mb", "threads", "open_files", "_cpu"))
+    lines = soak_monitor.summarise([_reading(0, 400), row, _reading(2, 401, pid=2001)], brain=True)
+    assert "! It wasn't running for 1 of the readings." in lines

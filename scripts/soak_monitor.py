@@ -142,14 +142,23 @@ def sample(previous: Optional[Dict], target: Target, since: datetime) -> Dict:
     row["restarts"] = _systemctl("NRestarts", target) or ""
 
     if pid:
-        with open(f"/proc/{pid}/status") as f:
-            row.update(parse_status(f.read()))
-        row["open_files"] = len(os.listdir(f"/proc/{pid}/fd"))
-        cpu = _cpu_seconds(pid)
-        if previous and previous.get("pid") == pid and "_cpu" in previous:
-            elapsed = time.monotonic() - previous["_at"]
-            row["cpu_percent"] = round(100 * (cpu - previous["_cpu"]) / elapsed, 1)
-        row["_cpu"], row["_at"] = cpu, time.monotonic()
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                status = parse_status(f.read())
+            open_files = len(os.listdir(f"/proc/{pid}/fd"))
+            cpu = _cpu_seconds(pid)
+        except OSError:
+            # It exited, or was restarted, after systemctl gave its pid - just what a soak
+            # watches for. Left uncaught, it would end the monitor, unseen under nohup, so
+            # the reading says it wasn't running and the summary points it out.
+            row["pid"] = ""
+        else:
+            row.update(status)
+            row["open_files"] = open_files
+            if previous and previous.get("pid") == pid and "_cpu" in previous:
+                elapsed = time.monotonic() - previous["_at"]
+                row["cpu_percent"] = round(100 * (cpu - previous["_cpu"]) / elapsed, 1)
+            row["_cpu"], row["_at"] = cpu, time.monotonic()
 
     log = os.path.join(LOGS_DIRECTORY, target.log)
     row["log_mb"] = round(os.path.getsize(log) / 1_000_000, 2) if os.path.exists(log) else 0
