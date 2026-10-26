@@ -517,11 +517,29 @@ def test_a_turn_the_brain_ended_as_the_recording_hit_its_limit_stays_ended(brain
     made.link.send = send_ending_the_turn_first
     made.wake.say()
     assert wait_for(lambda: brain.messages("audio_end"))
+    # Ended at the limit, so it's that branch which left the brain's turn alone.
+    assert brain.messages("audio_end") == [{"type": "audio_end", "reason": "limit"}]
     assert wait_for(lambda: made.wake.listening)
     brain.drop()
 
     assert forgotten.wait(5)
     assert PHRASE not in made.speaker.files()
+
+
+def test_a_recording_cut_off_at_its_limit_waits_for_the_brains_answer(brain, make):
+    # Nobody said the user had stopped, so the turn is the satellite's to open - and the
+    # brain going before it answers is silence, which gets the phrase.
+    made = make()
+    forgotten = noting_when_the_brain_is_forgotten(made)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: brain.messages("audio_end"))
+    assert brain.messages("audio_end") == [{"type": "audio_end", "reason": "limit"}]
+    assert wait_for(lambda: made.wake.listening)
+    brain.drop()
+
+    assert forgotten.wait(5)
+    assert PHRASE in made.speaker.files()
 
 
 def test_losing_the_brain_during_a_follow_up_says_the_phrase_once(brain, make):
