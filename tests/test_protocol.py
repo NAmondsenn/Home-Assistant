@@ -167,6 +167,24 @@ def test_a_hello_without_a_speaker_still_connects():
     assert _admitted(speaker="Cuisine de Zoë")["speaker"] == "Cuisine de Zoë"
 
 
+def test_a_speaker_left_out_is_logged(caplog):
+    # So falling back to the brain's own speaker name can be told from the journal,
+    # not only heard as "I can't find the Voice-Assistant speaker" - shown as ascii()
+    # and cut short, so a hello can't write lines of its own into the journal.
+    with caplog.at_level("WARNING", logger="voice_assistant.protocol"):
+        _admitted(speaker="Bedroom\nPi" + "x" * 200)
+    (record,) = caplog.records
+    assert "Bedroom\\nPi" in record.getMessage() and "\n" not in record.getMessage()
+    assert "x" * 100 not in record.getMessage()
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="voice_assistant.protocol"):
+        _admitted()
+        _admitted(speaker="Bedroom Pi")
+    # Nothing for a hello without one, as an older satellite's, or a good one.
+    assert caplog.records == []
+
+
 def test_an_old_brain_ignores_the_speaker():
     # A brain from before speakers were said lets in a satellite which says one, as
     # admit has always let in a hello with fields it doesn't know - which this checks

@@ -46,9 +46,12 @@ brain's to the satellite, without the password itself ever being sent:
 
 import hmac
 import json
+import logging
 import secrets
 import unicodedata
 from typing import BinaryIO, Callable, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # The longest a line of JSON may be, so neither side can be kept reading for ever.
 MAX_LINE = 4096
@@ -220,8 +223,12 @@ def admit(stream: BinaryIO, password_for: Callable[[str], Optional[str]]) -> Dic
         send(stream, "refused")
         raise Refused(f"{name} got the password wrong")
     send(stream, "ready")
+    speaker = _speaker(hello.get("speaker"))
+    if speaker is None and "speaker" in hello:
+        logger.warning(f"{name} said a Spotify speaker which can't be one, so plays on the brain's "
+                       f"own speaker name: {ascii(hello['speaker'])[:80]}")
     return {"name": name, "hostname": hostname, "sample_rate": sample_rate, "unclean": unclean,
-            "speaker": _speaker(hello.get("speaker"))}
+            "speaker": speaker}
 
 
 def _speaker(said) -> Optional[str]:
