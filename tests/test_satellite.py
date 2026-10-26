@@ -660,7 +660,9 @@ def test_with_no_brain_due_alarms_ring_and_the_wake_word_dismisses_them(brain, m
     assert wait_for(lambda: made.wake.listening)
     made.wake.say()
 
-    assert wait_for(lambda: not made.ringer.ringing)
+    # Listening again, as the satellite does once it has done all the wake word does -
+    # it lets the announcements back only after the ringing has stopped.
+    assert wait_for(lambda: not made.ringer.ringing and made.wake.listening)
     assert made.alarms.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": ["alarm-1@1729587600"]}
     # Dismissing is all the wake word does.
     assert PHRASE not in made.speaker.files()
