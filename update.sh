@@ -24,29 +24,10 @@ for argument in "$@"; do
     esac
 done
 
-decide_role
-echo "Updating Nova's ${ROLE} in ${PROJECT_DIRECTORY}"
-step "Code"
-if [ "$PULL" = true ]; then
-    # As the service user, so the files it brings are theirs, and git doesn't object to
-    # a clone it doesn't think root should touch.
-    before=$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)
-    as_user git -C "$PROJECT_DIRECTORY" pull --ff-only
-    # This script and setup.sh's steps were read before the pull, so any new steps
-    # the update brings - a new model to fetch, say - would be missed. So once there's
-    # new code, it starts again on that.
-    # And with where it was before, to go back to if the new code is refused.
-    if [ "$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" != "$before" ]; then
-        export NOVA_UPDATED_FROM="$before"
-        exec bash "${PROJECT_DIRECTORY}/update.sh" --no-pull
-    fi
-fi
-done_ "On $(as_user git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(as_user git -C "$PROJECT_DIRECTORY" log -1 --format='%h %s')"
-
 # Nova goes on running the code it started with until it restarts, so code just pulled
-# that doesn't get through the steps after the pull - a package install failing, or the
-# phone's session dropping mid-step - is taken back out, and a reboot starts what's
-# running now. Set up here, after any start again on the new code, as exec drops traps.
+# that doesn't get through the steps after the pull and the settings check - a package
+# install failing, or the phone's session dropping mid-step - is taken back out, and a
+# reboot starts what's running now.
 # BEGIN take back
 take_back() {
     local why="$1"
@@ -84,12 +65,46 @@ failed_after_pull() {
     fi
     # Ignored, by git too, so a second Ctrl+C can't cut the reset short half-way.
     trap '' HUP INT TERM
-    take_back "A step after fetching the new code failed - Nova is still running the code it had before."
-    problem "Python packages it installed stay installed, so put right what failed and run this again soon - until then the old code may not start with them."
+    # Only an update that fetched new code has new code to take back, or old code its
+    # packages might not suit.
+    if [ -n "${NOVA_UPDATED_FROM:-}" ]; then
+        take_back "A step after fetching the new code failed - Nova is still running the code it had before."
+        problem "Python packages it installed stay installed, so put right what failed and run this again soon - until then the old code may not start with them."
+    else
+        take_back "A step of the update failed - put right what failed, then run this again."
+    fi
     exit $(( status == 0 ? 1 : status ))
 }
 # END take back
+
+# The run started again on the new code is watched from here, so even a role file it
+# can't read leaves the code it fetched for nothing. The run before can't be - exec drops
+# traps - and any other run has fetched nothing yet, so is watched from its steps.
+if [ "$PULL" = false ] && [ -n "${NOVA_UPDATED_FROM:-}" ]; then
+    watch_steps
+fi
+
+decide_role
+echo "Updating Nova's ${ROLE} in ${PROJECT_DIRECTORY}"
+step "Code"
+if [ "$PULL" = true ]; then
+    # As the service user, so the files it brings are theirs, and git doesn't object to
+    # a clone it doesn't think root should touch.
+    before=$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)
+    as_user git -C "$PROJECT_DIRECTORY" pull --ff-only
+    # This script and setup.sh's steps were read before the pull, so any new steps
+    # the update brings - a new model to fetch, say - would be missed. So once there's
+    # new code, it starts again on that.
+    # And with where it was before, to go back to if the new code is refused.
+    if [ "$(as_user git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" != "$before" ]; then
+        export NOVA_UPDATED_FROM="$before"
+        exec bash "${PROJECT_DIRECTORY}/update.sh" --no-pull
+    fi
+fi
+done_ "On $(as_user git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at $(as_user git -C "$PROJECT_DIRECTORY" log -1 --format='%h %s')"
+
 watch_steps
+
 
 # An install from before roles has none saved yet, so what decide_role worked out is.
 run_steps save_role install_python_packages download_models
@@ -148,13 +163,18 @@ except Exception as e:
     else
         why="The new code won't start on this machine, whatever the settings - fix that, then run this again."
     fi
+    # This takes the code back and says so itself, so the watch over the steps stands
+    # down first rather than doing both a second time - with a hangup or Ctrl+C ignored,
+    # by git too, as the watch's own take-back has, so neither cuts the reset short.
+    steps_finished
+    trap '' HUP INT TERM
     take_back "$why"
     echo "$output" | tail -n 5 >&2
     return 1
 }
 # END settings check
-steps_finished
 settings_check || exit 1
+steps_finished
 
 step "Restarting"
 stop_service

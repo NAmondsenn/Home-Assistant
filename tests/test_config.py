@@ -407,11 +407,11 @@ def test_an_update_whose_settings_are_good_keeps_the_new_code(tmp_path):
     assert "status 0" in passed.stdout and (clone / "version").read_text() == "after\n"
 
 
-def _run_steps(tmp_path, step, project, updated_from=None, wait_for=None):
+def _run_steps(tmp_path, step, project, updated_from=None, wait_for=None, python=None):
     """
-    Runs update.sh's take-back block around one step, as update.sh runs its steps after
-    the pull - in the project given, a scratch clone, and as just updated from the commit
-    given.
+    Runs update.sh's take-back and settings-check blocks, then one step watched as
+    update.sh watches its steps and its settings check - in the project given, a scratch
+    clone, and as just updated from the commit given.
 
     Args:
         tmp_path: The test's own scratch folder.
@@ -420,14 +420,15 @@ def _run_steps(tmp_path, step, project, updated_from=None, wait_for=None):
         updated_from: The commit the clone was updated from, if it was pulled.
         wait_for: A line to wait for on stdout, to signal the steps mid-way; with it,
             the script is started in a process group of its own and returned running.
+        python: A stand-in for Nova's Python, for a step that runs the settings check.
 
     Returns:
         The finished run, or with wait_for, the running process, its line read.
     """
     text = (Path(__file__).parent.parent / "update.sh").read_text()
     script = ("set -euo pipefail\n" + UPDATE_STAND_INS + _update_block(text, "take back")
-              + f"watch_steps\n{step}\nsteps_finished\necho finished\n")
-    env = {**os.environ, "PROJECT_DIRECTORY": str(project)}
+              + _update_block(text, "settings check") + f"watch_steps\n{step}\nsteps_finished\necho finished\n")
+    env = {**os.environ, "PROJECT_DIRECTORY": str(project), "PYTHON": python or sys.executable}
     env.pop("NOVA_UPDATED_FROM", None)
     if updated_from:
         env["NOVA_UPDATED_FROM"] = updated_from
@@ -472,8 +473,11 @@ def test_a_failed_step_with_no_pull_leaves_the_code_as_it_is(tmp_path):
     failed = _run_steps(tmp_path, "false", clone)
 
     assert failed.returncode != 0
-    assert "A step after fetching the new code failed" in failed.stderr and "is in place" in failed.stderr
-    assert git("rev-parse", "HEAD") == after
+    assert "A step of the update failed" in failed.stderr and "is in place" in failed.stderr
+    # Nothing was fetched, so there's no new code to speak of, nor old code it might not suit.
+    assert "fetching" not in failed.stderr and "may not start" not in failed.stderr
+    assert "taken back out" not in failed.stderr
+    assert git("rev-parse", "HEAD") == after and git("symbolic-ref", "--short", "HEAD") == "main"
 
 
 @pytest.mark.parametrize("sig, status", [(signal.SIGHUP, 129), (signal.SIGINT, 130), (signal.SIGTERM, 143)],
@@ -496,6 +500,48 @@ def test_an_update_cut_off_mid_step_takes_the_new_code_back_out(tmp_path, sig, s
     assert git("rev-parse", "HEAD") == before
 
 
+def _stand_in_python(tmp_path, body):
+    """A stand-in for Nova's Python, which runs the shell given whatever it's asked."""
+    python = tmp_path / "python"
+    python.write_text(f"#!/bin/bash\n{body}\n")
+    python.chmod(0o755)
+    return str(python)
+
+
+def test_an_update_cut_off_during_the_settings_check_takes_the_new_code_back_out(tmp_path):
+    # The check takes a second or so to start Python, and the new code hasn't passed it
+    # yet, so a session dropped then must leave the old code for a reboot as well.
+    clone, before, git = _updated_clone(tmp_path)
+    # The check keeps what Python says to itself, so the stand-in says it has started on
+    # a copy of the script's own stdout.
+    python = _stand_in_python(tmp_path, "echo started >&3\nsleep 30")
+    proc = _run_steps(tmp_path, "exec 3>&1\nsettings_check || exit 1", clone, updated_from=before,
+                      wait_for="started", python=python)
+    try:
+        assert os.getpgid(proc.pid) == proc.pid
+        os.killpg(proc.pid, signal.SIGHUP)
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        _end_group(proc)
+
+    assert proc.returncode == 129 and "finished" not in stdout
+    assert "taken back out" in stderr
+    assert git("rev-parse", "HEAD") == before
+
+
+def test_settings_refused_while_watched_are_taken_back_and_said_once(tmp_path):
+    # The settings check says its own piece, so the watch over the steps stands down
+    # first rather than taking the code back, and saying so, a second time.
+    clone, before, git = _updated_clone(tmp_path)
+    python = _stand_in_python(tmp_path, "echo \"'thresholds.silence_duration' should be from 0.2 to 3, not 5\"\nexit 1")
+    refused = _run_steps(tmp_path, "settings_check || exit 1", clone, updated_from=before, python=python)
+
+    assert refused.returncode == 1 and "finished" not in refused.stdout
+    assert "settings won't start the new code" in refused.stderr
+    assert refused.stderr.count("taken back out") == 1 and "A step" not in refused.stderr
+    assert git("rev-parse", "HEAD") == before
+
+
 def test_steps_that_finish_leave_the_new_code_in(tmp_path):
     clone, before, git = _updated_clone(tmp_path)
     finished = _run_steps(tmp_path, "true", clone, updated_from=before)
@@ -504,14 +550,17 @@ def test_steps_that_finish_leave_the_new_code_in(tmp_path):
     assert "PROBLEM" not in finished.stderr and (clone / "version").read_text() == "after\n"
 
 
-def test_the_trap_covers_the_steps_and_not_the_settings_check():
-    # After any start again on the new code, as exec drops the traps; and finished before
-    # the settings check, which says its own piece when it takes the code back out.
+def test_the_trap_covers_the_steps_and_the_settings_check():
+    # Watched from before decide_role in the run started again on the new code (exec drops
+    # the traps, so the run before can't), and from the steps in any other; and until the
+    # settings check has passed, before Nova is stopped.
     text = (Path(__file__).parent.parent / "update.sh").read_text()
-    assert text.index('done_ "On') < text.index("# BEGIN take back") < text.index("# BEGIN settings check")
+    assert text.index("# END take back") < text.index("    watch_steps\n") < text.index("\ndecide_role\n")
+    assert text.index('if [ "$PULL" = false ] && [ -n "${NOVA_UPDATED_FROM:-}" ]; then\n    watch_steps\n') >= 0
     # With the newline, as the comment at the top names run_steps too.
-    assert text.index("\nwatch_steps\n") < text.index("\nrun_steps ")
-    assert text.index("\nsteps_finished\n") < text.index("\nsettings_check || exit 1\n")
+    assert text.index('done_ "On') < text.index("\nwatch_steps\n") < text.index("\nrun_steps ")
+    assert (text.index("\nsettings_check || exit 1\n") < text.index("\nsteps_finished\n")
+            < text.index("\nstop_service\n"))
 
 
 def test_update_says_what_it_updated_from_when_it_starts_again_on_the_new_code():
