@@ -46,6 +46,15 @@ const LIGHT_EVERY = 250;
 // was removed a little longer - see voice_assistant/undo.py.
 const UNDO_SHOWN = 10000;
 
+// The least time between two reloads for an update, the first counted from when the page
+// was loaded, in milliseconds - so a brain in a crash loop, or its version flipping
+// mid-update, can't make the page reload round and round.
+const RELOAD_GAP = 60000;
+
+// What can be typed in, so a reload would lose it - a tapped switch or slider keeps the
+// focus in Chromium, but nothing half-done goes with it, as each sends its change at once.
+const TYPED = new Set(["text", "password", "number", "time", "url", "search", "email", "tel", "textarea"]);
+
 // The colours offered as swatches on a light which can be set to one, as a hue in
 // degrees and a saturation in percent.
 const SWATCHES = [
@@ -166,6 +175,15 @@ let firstLook = true;
 
 // Each of every()'s runs, to be started again once the page is unlocked.
 const runners = [];
+
+// The version of the page's own files the brain had when the page first asked, whether
+// a later answer has said another - the brain's been updated since, and the page is out
+// of date - and when the page last loaded or reloaded, for RELOAD_GAP. Also the notice
+// shown while it waits to reload, if it is.
+let pageVersion = null;
+let updated = false;
+let reloadedAt = Date.now();
+let updateNotice = null;
 
 // Making things
 
@@ -406,6 +424,7 @@ async function load() {
     offerRestart = false;
     countChanges();
   }
+  noticeVersion(state.page);
 }
 
 async function live() {
@@ -434,6 +453,8 @@ async function live() {
   }
   activity = now;
   showActivity();
+  // Asked for often, so a reload held back by editing happens soon after it ends.
+  reloadWhenReady();
 }
 
 // Runs work now, and again every so often while the page is in view - never two at
@@ -482,6 +503,7 @@ async function checkLogin() {
   drawIfChanged("page-password", { route: loginState.route, set: loginState.password_set }, showPagePassword);
   if (loginState.route === "npm" && !loginState.logged_in) lock(first);
   else unlock();
+  noticeVersion(loginState.page);
   return true;
 }
 
@@ -550,6 +572,57 @@ async function logIn(event) {
   said.textContent = result.message || "That didn't work.";
   said.hidden = false;
   field.focus();
+}
+
+// A page left open across an update
+
+// Notes the version of the page's files Nova says it has: the first is the page's own,
+// and any other means it's out of date.
+function noticeVersion(version) {
+  if (!version) return;
+  pageVersion = pageVersion || version;
+  updated = version !== pageVersion;
+  reloadWhenReady();
+}
+
+// Reloads an out-of-date page - straight away unless something's being edited, which a
+// reload would lose, or it reloaded less than RELOAD_GAP ago. Meanwhile it says so, with
+// a button to reload when the user's ready.
+function reloadWhenReady() {
+  if (!updated) {
+    if (updateNotice) updateNotice.remove();
+    updateNotice = null;
+    return;
+  }
+  if (!editingSomething() && Date.now() - reloadedAt >= RELOAD_GAP) {
+    reloadedAt = Date.now();
+    location.reload();
+    return;
+  }
+  if (updateNotice) return;
+  // As an Undo's toast, so it stays until it's used - here, until the page reloads.
+  updateNotice = element("div", "Nova has been updated - reload when you're ready", "toast undoable");
+  updateNotice.setAttribute("role", "status");
+  const button = element("button", "Reload", "button quiet");
+  button.type = "button";
+  button.addEventListener("click", () => location.reload());
+  updateNotice.append(button);
+  document.getElementById("undos").append(updateNotice);
+  const shown = updateNotice;
+  requestAnimationFrame(() => shown.classList.add("show"));
+}
+
+// Whether anything's being typed or changed which a reload would lose: a field with the
+// focus, an editor or question open, a sign-in half done, a key or the page password
+// half put in, settings not yet saved, the login form - or a satellite's password, which
+// is shown only the once.
+function editingSomething() {
+  if (TYPED.has(document.activeElement && document.activeElement.type)) return true;
+  const open = ["routine-editor", "renew-panel", "password-panel", "spotify-finish", "google-finish", "login"];
+  if (open.some((id) => !document.getElementById(id).hidden)) return true;
+  return Boolean(document.getElementById("keys").querySelector(".key.open")
+    || document.getElementById("page-password").querySelector(".key.open")
+    || document.getElementById("settings").querySelector(".changed"));
 }
 
 // Draws part of the page again if what it's drawn from has changed - unless drawing

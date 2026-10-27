@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import stat
 import threading
@@ -2549,7 +2550,8 @@ def test_with_no_password_npm_lets_nobody_in(files, monkeypatch):
     page.start()
     try:
         status, _, body = _through_npm(page, "/api/login-state")
-        assert (status, json.loads(body)) == (200, {"route": "npm", "password_set": False, "logged_in": False})
+        assert (status, json.loads(body)) == (200, {"route": "npm", "password_set": False, "logged_in": False,
+                                                 "page": page.page_version})
         for typed in ("", PASSWORD, "anything at all"):
             said, token = _log_in(page, typed)
             assert said == {"success": False,
@@ -2578,7 +2580,7 @@ def test_the_right_password_logs_in_for_thirty_days(npm, caplog):
 
     assert _through_npm(npm, "/api/state", cookie=token)[0] == 200
     status, _, body = _through_npm(npm, "/api/login-state", cookie=token)
-    assert json.loads(body) == {"route": "npm", "password_set": True, "logged_in": True}
+    assert json.loads(body) == {"route": "npm", "password_set": True, "logged_in": True, "page": npm.page_version}
     status, _, body = _through_npm(npm, "/api/volume", {"category": "music", "percent": 20},
                                    cookie=token, X_Nova="page")
     assert status == 200 and json.loads(body)["success"] and _bedroom(npm).volume.levels["music"] == 20
@@ -2704,7 +2706,8 @@ def test_log_out_everywhere_ends_every_login(npm):
 def test_the_tailnet_route_is_unchanged(npm):
     assert _ask(npm, "/api/state")[0] == 200
     status, _, body = _ask(npm, "/api/login-state")
-    assert json.loads(body) == {"route": "tailnet", "password_set": True, "logged_in": True}
+    assert json.loads(body) == {"route": "tailnet", "password_set": True, "logged_in": True,
+                                "page": npm.page_version}
     # Still only for the logins allowed, cookie or not.
     _, token = _log_in(npm)
     assert _ask(npm, "/api/state", login=None, Cookie=f"nova_login={token}")[0] == 403
@@ -2712,6 +2715,35 @@ def test_the_tailnet_route_is_unchanged(npm):
     for _ in range(6):
         _log_in(npm, "not the password")
     assert _ask(npm, "/api/state")[0] == 200
+
+
+# A page left open across an update
+
+def test_the_page_is_told_which_version_of_its_files_the_brain_has(npm):
+    version = npm.page_version
+    assert re.fullmatch(r"[0-9a-f]{12}", version)
+    assert json.loads(_ask(npm, "/api/state")[2])["page"] == version
+    assert json.loads(_ask(npm, "/api/login-state")[2])["page"] == version
+    # Through NPM before a login too - a hash of files served then anyway, and nothing more.
+    status, _, body = _through_npm(npm, "/api/login-state")
+    assert status == 200 and json.loads(body) == {"route": "npm", "password_set": True, "logged_in": False,
+                                                  "page": version}
+
+
+def test_the_version_changes_with_any_of_the_pages_files_and_only_then(files, monkeypatch):
+    web = files / "web"
+    shutil.copytree(page_module.WEB_FOLDER, web)
+    monkeypatch.setattr(page_module, "WEB_FOLDER", str(web))
+    first = _page()
+    assert _page().page_version == first.page_version
+    for name in ("settings.html", "settings.js", "settings.css"):
+        before = (web / name).read_bytes()
+        (web / name).write_bytes(before + b"\n")
+        assert _page().page_version != first.page_version, name
+        (web / name).write_bytes(before)
+    # Worked out once, as the brain starts - a file changed since is the next start's.
+    (web / "settings.js").write_bytes(b"changed")
+    assert first.state()["page"] == first.page_version
 
 
 def test_a_cookie_which_cant_be_read_doesnt_hide_the_login(npm):
