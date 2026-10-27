@@ -261,6 +261,21 @@ def test_a_recording_with_no_speech_found_in_it_isnt_heard_again():
     assert len(nemotron.streams) == 1
 
 
+@pytest.mark.parametrize("seconds, heard_again", [(3.0, True), (3.1, False), (14.5, False)])
+def test_only_a_short_recording_is_heard_again(seconds, heard_again):
+    # Hearing again decodes the recording about three times over - for a long one, a tap
+    # running or a hoover that sounded like talking, a long wait before the sorry, and
+    # Nemotron still busy after FINISH_LIMIT. Timed without the quiet it stopped after.
+    nemotron = FakeNemotron(heard=["", "pause pause"])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+    recording = np.full(round((seconds + 0.6) * 16000), 0.1, dtype=np.float32)
+    transcription.add(recording)
+
+    result = transcription.finish(recording, quiet_after=0.6)
+    assert result["text"] == ("pause" if heard_again else "")
+    assert len(nemotron.streams) == (2 if heard_again else 1)
+
+
 def test_a_nemotron_which_fails_listening_again_hears_nothing(caplog):
     nemotron = FakeNemotron(heard=["", RuntimeError("Failed to decode")])
     transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()

@@ -7,8 +7,8 @@ words are mostly worked out by the time the user stops - and words it imagines i
 noise, such as a lone "Thank you.", are thrown away.
 
 A lone short word - "Pause.", "Wait.", "Play." - often comes back as nothing at all,
-since Nemotron has no words around it to go on. So a recording the user spoke in which
-comes to nothing is heard again, said twice, then after a "Please" - see
+since Nemotron has no words around it to go on. So a short recording the user spoke in
+which comes to nothing is heard again, said twice, then after a "Please" - see
 .superpowers/sdd/pause-investigation.md.
 """
 
@@ -42,6 +42,13 @@ GAP = 0.3
 # How loud Piper's "Please" has to be to count as the word rather than the quiet
 # around it, which is trimmed off.
 PLEASE_QUIET = 0.01
+
+# The longest speech heard again, in seconds, without the quiet it stopped after. The
+# lone words which came back as nothing were 0.23 to 0.95 s of speech (see
+# .superpowers/sdd/pause-investigation.md), and hearing again decodes the speech about
+# three times over - so a long recording which came to nothing, a tap running that
+# sounded like talking, would cost many seconds of silence for no likely gain.
+LONGEST_RETRIED = 3.0
 
 
 def _heard(text: str, duration: float, after_recording: bool = False) -> Dict[str, Any]:
@@ -290,7 +297,8 @@ class NemotronTranscription:
                wake_word: Optional[str] = None) -> Dict[str, Any]:
         """
         The words, once Nemotron has caught up with the end of the recording - heard
-        again if the user spoke and it came to nothing (see NemotronSpeechToText.hear_again).
+        again if the user spoke, for no more than LONGEST_RETRIED, and it came to nothing
+        (see NemotronSpeechToText.hear_again).
 
         Args:
             audio: The whole recording, which is transcribed afresh if anything went
@@ -327,9 +335,11 @@ class NemotronTranscription:
                 or "error" in heard):
             return heard
 
+        speech = np.asarray(audio, dtype=np.float32)[:max(0, len(audio) - int(quiet_after * RATE))]
+        if len(speech) > LONGEST_RETRIED * RATE:
+            return heard
         if timeline:
             timeline.mark("stt_retry_started")
-        speech = np.asarray(audio, dtype=np.float32)[:max(0, len(audio) - int(quiet_after * RATE))]
         # On a thread of its own, so a Nemotron which hangs is given up on, as it is
         # while listening.
         outcome = {}
