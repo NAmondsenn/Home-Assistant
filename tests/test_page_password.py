@@ -134,6 +134,43 @@ def test_if_the_new_password_cannot_be_saved_the_old_one_stands_and_nobody_is_lo
     assert password.check("correct horse battery")
 
 
+def test_a_login_made_as_the_new_password_is_saved_is_ended_too(tmp_path, monkeypatch):
+    # One made with the old password between the first ending and the save would
+    # otherwise outlive the change.
+    password = PagePassword(str(tmp_path / "page_password"))
+    logins = Logins(str(tmp_path / "logins.json"))
+    password.set("correct horse battery", logins)
+    made = []
+    real_save = page_password.save_text
+
+    def saving(path, text):
+        made.append(logins.make())
+        real_save(path, text)
+
+    monkeypatch.setattr(page_password, "save_text", saving)
+    assert password.set("a different password", logins) is None
+    assert made and not logins.check(made[0])
+
+
+def test_a_new_password_whose_logins_cannot_be_ended_after_says_so(tmp_path):
+    password = PagePassword(str(tmp_path / "page_password"))
+    password.set("correct horse battery", Logins(str(tmp_path / "logins.json")))
+
+    class StuckSecondTime(Logins):
+        ended = 0
+
+        def end_all(self):
+            self.ended += 1
+            if self.ended == 2:
+                raise OSError("disk full")
+            super().end_all()
+
+    message = password.set("a different password", StuckSecondTime(str(tmp_path / "logins.json")))
+    assert message == ("The page password is changed, but Nova couldn't log every device out - "
+                       "use Log out everywhere.")
+    assert password.check("a different password")
+
+
 def test_only_one_password_is_checked_at_a_time(tmp_path, monkeypatch):
     password = PagePassword(str(tmp_path / "page_password"))
     password.set("correct horse battery", Logins(str(tmp_path / "logins.json")))

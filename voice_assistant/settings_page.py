@@ -39,9 +39,9 @@ import math
 import os
 import re
 import shutil
+import socket
 import threading
 import time
-from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import parse_qs, urlsplit
@@ -147,7 +147,8 @@ LONGEST_PASSWORD = 1024
 LONGEST_COOKIE = 256
 # What's open through NPM before a login: the page's own files, all public in the
 # repository, so the login form can be the page's own, and asking whether it's logged in.
-OPEN_THROUGH_NPM = {"GET": set(FILES) | {"/api/login-state"}, "POST": {"/api/login"}}
+# Logging out is open too, so a cookie whose login has ended can still be cleared.
+OPEN_THROUGH_NPM = {"GET": set(FILES) | {"/api/login-state"}, "POST": {"/api/login", "/api/logout"}}
 TOO_MANY_TRIES = "Too many wrong passwords - try again in a minute."
 
 # What setup.sh starts this install's own settings file with, written back at every
@@ -319,6 +320,10 @@ class SettingsPage:
         self.password = password or PagePassword()
         self.logins = logins or Logins()
         self.wrong_tries = WrongTries()
+        # Held from a password's check to the login it gives, and through a change of
+        # password - so a login made with the old one can't land after the change has
+        # ended every login, and outlive it.
+        self._password_lock = threading.Lock()
         self.running = running
         self.brain = brain
         # Each satellite's playlists, with when they were asked for.
@@ -1707,10 +1712,11 @@ class SettingsPage:
             return {"success": False, "message": "Set a page password at the page's Tailscale address first."}, None
         if len(typed) > LONGEST_PASSWORD:
             return {"success": False, "message": "That's not the password."}, None
-        problem = self._try_password(typed, device)
-        if problem:
-            return {"success": False, "message": problem}, None
-        token = self.logins.make()
+        with self._password_lock:
+            problem = self._try_password(typed, device)
+            if problem:
+                return {"success": False, "message": problem}, None
+            token = self.logins.make()
         logger.info("Settings page: password logged in")
         return {"success": True, "message": "Logged in."}, token
 
@@ -1748,6 +1754,11 @@ class SettingsPage:
             raise TypeError("not a password")
         if len(new) > LONGEST_PASSWORD:
             return {"success": False, "message": f"The page password can be at most {LONGEST_PASSWORD} characters."}, None
+        with self._password_lock:
+            return self._change_page_password(new, who, current, device)
+
+    def _change_page_password(self, new: str, who: str, current, device: Optional[str]) -> Tuple[Dict, Optional[str]]:
+        """set_page_password's work, with _password_lock held - see there."""
         if device is not None:
             if len(current) > LONGEST_PASSWORD:
                 return {"success": False, "message": "That's not the current password."}, None
@@ -1825,25 +1836,48 @@ class _Handler(BaseHTTPRequestHandler):
         # Every request would otherwise go to the journal; the changes are logged anyway.
         pass
 
-    def parse_request(self) -> bool:
-        # Through NPM, the connection's own address comes first, before any header is
-        # looked at and whatever the method - X-Real-IP, which says which device NPM is
-        # passing on, is only to be believed from NPM itself.
-        if not super().parse_request():
-            return False
+    def handle(self):
+        # Through NPM, the connection's own address comes first, before any of the
+        # request is read, so even nonsense gets nothing but a 403 - X-Real-IP, which
+        # says which device NPM is passing on, is only to be believed from NPM itself.
         address = self.client_address[0]
         if self.server.route == "npm" and address not in self.server.page.proxy_from:
             logger.warning(f"Settings page: turned away {address}, which isn't NPM's")
-            self.close_connection = True
-            self._send(403, b"", "text/plain; charset=utf-8")
-            return False
-        return True
+            self._turn_away()
+            return
+        super().handle()
+
+    def _turn_away(self):
+        """Answers a bare 403 without reading the request, and closes the connection."""
+        headers = {"Server": self.server_version, "Content-Type": "text/plain; charset=utf-8",
+                   "Content-Length": "0", "Connection": "close", **SAFETY_HEADERS}
+        answer = "HTTP/1.1 403 Forbidden\r\n" + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+        try:
+            self.wfile.write((answer + "\r\n").encode())
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            # What was sent is thrown away unread, a little at a time and for a moment
+            # at most - closing with it unread would reset the connection, which can
+            # lose the 403 before it's read.
+            self.connection.settimeout(1)
+            for _ in range(16):
+                if not self.connection.recv(65536):
+                    break
+        except OSError:
+            pass
 
     def do_GET(self):
         page = self.server.page
-        url = urlsplit(self.path)
-        path = url.path
+        try:
+            url = urlsplit(self.path)
+        except ValueError:
+            # E.g. "http://[x", which can't be split - nothing anyone is let in to.
+            url = None
+        path = url.path if url else None
         if not self._let_in(page, path):
+            return
+        if url is None:
+            self._send_json({"success": False, "message": "That didn't make sense."}, 400)
             return
         # Which satellite the page is looking at, if it has a choice of them.
         satellite = (parse_qs(url.query).get("satellite") or [None])[0]
@@ -1908,7 +1942,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.cookie = None
         self._send_json(result, cookie=self.cookie)
 
-    def _let_in(self, page: SettingsPage, path: str) -> bool:
+    def _let_in(self, page: SettingsPage, path: Optional[str]) -> bool:
         """
         Whether this is someone allowed in - on the tailnet as Tailscale says, having
         passed the request on, and through NPM with a login, or for what's open
@@ -1916,7 +1950,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         Args:
             page: The page.
-            path: What's asked for, without its query.
+            path: What's asked for, without its query - None if it can't be told.
         """
         if self.server.route == "npm":
             return self._let_in_through_npm(page, path)
@@ -1929,7 +1963,7 @@ class _Handler(BaseHTTPRequestHandler):
                    "text/plain; charset=utf-8")
         return False
 
-    def _let_in_through_npm(self, page: SettingsPage, path: str) -> bool:
+    def _let_in_through_npm(self, page: SettingsPage, path: Optional[str]) -> bool:
         """
         Whether this is someone allowed in through NPM. Tailscale's header is never
         read here: anyone on the network could send it straight to this port.
@@ -1938,7 +1972,7 @@ class _Handler(BaseHTTPRequestHandler):
             page: The page.
             path: What's asked for, without its query.
         """
-        # Only believed as every request here is from NPM itself - see parse_request.
+        # Only believed as every request here is from NPM itself - see handle.
         self.device = (self.headers.get("X-Real-IP") or "").strip() or self.client_address[0]
         self.token = self._login_token()
         self.logged_in = page.logins.check(self.token)
@@ -1951,18 +1985,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _login_token(self) -> Optional[str]:
         """
         Returns:
-            The login's token from the request's cookie, or None if it has none - or
-            one which is too long to be one, or a cookie header which can't be read.
+            The login's token from the request's cookie, or None if it has none, or
+            one too long to be one.
         """
-        cookies = SimpleCookie()
-        try:
-            cookies.load(self.headers.get("Cookie") or "")
-        except CookieError:
-            return None
-        morsel = cookies.get(LOGIN_COOKIE)
-        if morsel is None or len(morsel.value) > LONGEST_COOKIE:
-            return None
-        return morsel.value
+        # Split by hand rather than with http.cookies, which gives up on the whole
+        # header at the first cookie it can't read - one another service behind NPM
+        # set on the whole domain, say, which would log the user out every time.
+        for cookie in (self.headers.get("Cookie") or "").split(";"):
+            name, _, value = cookie.partition("=")
+            if name.strip() == LOGIN_COOKIE:
+                value = value.strip()
+                return value if 0 < len(value) <= LONGEST_COOKIE else None
+        return None
 
     @staticmethod
     def _login_cookie(token: str) -> str:
@@ -1983,7 +2017,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _log_out(self, page: SettingsPage, body: Dict) -> Dict:
         if self.server.route != "npm":
             return {"success": True, "message": "There's nothing to log out of here - Tailscale lets you in."}
-        page.logins.end(self.token)
+        if self.logged_in:
+            page.logins.end(self.token)
         self.cookie = self._login_cookie("")
         return {"success": True, "message": "Logged out."}
 

@@ -131,7 +131,9 @@ class PagePassword:
         Saves a new password in place of any old one, ending every login first. In that
         order so each failure fails shut: if the logins can't be ended the password
         isn't changed, and if it then can't be saved, the old one stands with nobody
-        logged in - never a new password with the old logins still open.
+        logged in - never a new password with the old logins still open. They're ended
+        again once it's saved, as one made with the old password while the new one was
+        being hashed would otherwise outlive it.
 
         Args:
             password: The new password.
@@ -157,6 +159,11 @@ class PagePassword:
         except OSError as e:
             logger.error(f"Could not save the page password ({type(e).__name__})")
             return "Could not save the page password, so it is as it was - every device is logged out."
+        try:
+            logins.end_all()
+        except OSError as e:
+            logger.error(f"Could not end the page's logins after saving the new page password ({type(e).__name__})")
+            return "The page password is changed, but Nova couldn't log every device out - use Log out everywhere."
         return None
 
 
