@@ -2739,7 +2739,8 @@ def test_anyone_but_npm_gets_a_bare_403_even_for_nonsense(files, monkeypatch, ca
                 assert head.startswith(b"HTTP/1.1 403") and body == b"" and b"100 Continue" not in answer
                 for name, value in page_module.SAFETY_HEADERS.items():
                     assert f"{name}: {value}".encode() in head
-        assert caplog.text.count("isn't NPM's") == 3
+        # The same device three times - only its first is logged.
+        assert caplog.text.count("isn't NPM's") == 1
     finally:
         page.stop()
 
@@ -2801,6 +2802,34 @@ def test_only_so_many_are_turned_away_at_once(files, monkeypatch):
             connection.close()
     finally:
         page.stop()
+
+
+def test_a_log_limit_says_each_thing_at_most_once_a_minute():
+    clock = SimpleNamespace(time=1000.0)
+    limit = page_module.LogLimit(now=lambda: clock.time)
+    assert limit.note("a") == 0
+    assert limit.note("a") is None and limit.note("a") is None
+    assert limit.note("b") == 0
+    clock.time += 59
+    assert limit.note("a") is None
+    # A minute after its last line, the next is logged with the three held back since.
+    clock.time += 1
+    assert limit.note("a") == 3
+    assert limit.note("a") is None
+    # "b" went quiet, so its next is a first again, and it has been forgotten.
+    assert limit.note("b") == 0
+    clock.time += 120
+    limit.note("c")
+    assert set(limit._last) == {"c"}
+
+
+def test_refusals_through_npm_are_logged_at_most_once_a_minute(npm, caplog):
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            assert _through_npm(npm, "/api/login", {"password": PASSWORD})[0] == 403
+            assert _through_npm(npm, "/api/login", {"password": PASSWORD}, X_Real_IP="192.0.2.9")[0] == 403
+    assert caplog.text.count("didn't come from the page") == 2
+    assert "someone at 192.0.2.9 not logged in" in caplog.text
 
 
 def test_an_address_which_cant_be_split_is_answered(npm):

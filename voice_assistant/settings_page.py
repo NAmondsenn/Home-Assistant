@@ -295,6 +295,51 @@ def _number(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+class LogLimit:
+    """
+    At most one log line a minute about each thing, e.g. each device turned away - so
+    one device asking over and over can't turn the log over, losing what explains a
+    real problem, or fill the page's list of problems. Each is forgotten a minute after
+    its last line, so it holds no more than were logged about in the last minute; what
+    was held back from one that then went quiet goes unsaid.
+    """
+
+    def __init__(self, now: Callable[[], float] = time.monotonic):
+        """
+        Args:
+            now: The time, in seconds.
+        """
+        self.now = now
+        self._lock = threading.Lock()
+        # When each thing's last line was, and how many have been held back since.
+        self._last: Dict[str, Tuple[float, int]] = {}
+
+    def note(self, key: str) -> Optional[int]:
+        """
+        Args:
+            key: What it's about, e.g. the device's address.
+
+        Returns:
+            None if it shouldn't be logged, or how many about it have been held back
+            since its last line - 0 for a first.
+        """
+        with self._lock:
+            now = self.now()
+            self._last = {seen: (when, held) for seen, (when, held) in self._last.items()
+                          if seen == key or now - when < 60}
+            when, held = self._last.get(key, (None, 0))
+            if when is not None and now - when < 60:
+                self._last[key] = (when, held + 1)
+                return None
+            self._last[key] = (now, 0)
+            return held
+
+
+def _held_back(held: int) -> str:
+    """What a line let through by a LogLimit adds about those held back, e.g. " (and 3 more since the last time)"."""
+    return f" (and {held} more since the last time)" if held else ""
+
+
 class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
@@ -327,6 +372,9 @@ class SettingsPage:
         self.password = password or PagePassword()
         self.logins = logins or Logins()
         self.wrong_tries = WrongTries()
+        # The two warnings a device can cause through NPM without the password.
+        self.turn_aways = LogLimit()
+        self.refusals = LogLimit()
         # Held from a password's check to the login it gives, and through a change of
         # password - so a login made with the old one can't land after the change has
         # ended every login, and outlive it.
@@ -1850,7 +1898,9 @@ class _Handler(BaseHTTPRequestHandler):
         # says which device NPM is passing on, is only to be believed from NPM itself.
         address = self.client_address[0]
         if self.server.route == "npm" and address not in self.server.page.proxy_from:
-            logger.warning(f"Settings page: turned away {address}, which isn't NPM's")
+            held = self.server.page.turn_aways.note(address)
+            if held is not None:
+                logger.warning(f"Settings page: turned away {address}, which isn't NPM's{_held_back(held)}")
             self._turn_away()
             return
         super().handle()
@@ -2054,7 +2104,12 @@ class _Handler(BaseHTTPRequestHandler):
         """
         if self.headers.get("X-Nova") == "page" and self.headers.get("Sec-Fetch-Site", "same-origin") == "same-origin":
             return True
-        logger.warning(f"Settings page: refused a change for {self.login} which didn't come from the page")
+        # Through NPM, any device can cause this without the password, so each is held to
+        # a line a minute; on the tailnet only the user can, so every one is logged, as before.
+        held = self.server.page.refusals.note(self.login) if self.server.route == "npm" else 0
+        if held is not None:
+            logger.warning(f"Settings page: refused a change for {self.login} which didn't come from the page"
+                           f"{_held_back(held)}")
         self._send(403, b"Changes can only be made from the page itself.", "text/plain; charset=utf-8")
         return False
 
