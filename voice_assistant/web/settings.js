@@ -761,6 +761,7 @@ function showProblems() {
 // give it a new password, and a choice of which to look after below, when there's
 // more than one.
 function showSatellites(state) {
+  const buttons = new Map();
   const rows = satellites.map((satellite) => {
     const row = element("li");
     const what = element("span", undefined, "what");
@@ -783,6 +784,7 @@ function showSatellites(state) {
     renew.type = "button";
     renew.setAttribute("aria-label", `Give ${satellite.name} a new password`);
     renew.addEventListener("click", () => newPassword(satellite.name));
+    buttons.set(satellite.name, renew);
     const remove = element("button", "Remove", "button quiet danger");
     remove.type = "button";
     remove.setAttribute("aria-label", `Remove ${satellite.name}`);
@@ -795,8 +797,17 @@ function showSatellites(state) {
   const none = state.satellites_unreadable
     ? "The satellites' file can't be read, so they can't be shown or changed - see the brain's log."
     : "No satellites have been added.";
-  drawIfChanged("satellites", [satellites, none], () => document.getElementById("satellites").replaceChildren(
-    ...(rows.length ? rows : [emptyRow(none)])));
+  drawIfChanged("satellites", [satellites, none], () => {
+    document.getElementById("satellites").replaceChildren(...(rows.length ? rows : [emptyRow(none)]));
+    renewButtons = buttons;
+  });
+  // Its satellite removed - here or on another device - the question has nothing left to
+  // ask about, and left open it would hold back an update reload for good.
+  if (renewing !== null && !satellites.some((satellite) => satellite.name === renewing)) {
+    const panel = document.getElementById("renew-panel");
+    if (panel.contains(document.activeElement)) cancelRenew();
+    else closeRenew();
+  }
 
   // With more than one, the one looked after is named at the top, and over the sections
   // which are its own: "Nova · bedroom", "Sound · bedroom". The dot's held to the name, so
@@ -832,6 +843,8 @@ function showSatellites(state) {
 // So its name has to be typed first: the button waits for exactly that, and Cancel is
 // not an answer until then.
 let renewing = null;
+// Each satellite's "New password" button as drawn, by its name - for the focus to go back to.
+let renewButtons = new Map();
 // Whether a new password's been asked for and not yet shown - the question's closed by
 // then, so without this the page counts as not being edited, and an update reload could
 // land between the two and lose the password for good.
@@ -857,6 +870,15 @@ function closeRenew() {
   document.getElementById("renew-name").value = "";
   document.getElementById("renew-go").disabled = true;
   document.getElementById("renew-panel").hidden = true;
+}
+
+// Closes the question with the focus back where it was asked from - its satellite's
+// "New password" button, or the satellites' heading once that row's gone - so a keyboard
+// isn't dropped back at the top of the page.
+function cancelRenew() {
+  const button = renewButtons.get(renewing);
+  closeRenew();
+  (button || document.getElementById("satellites-title")).focus();
 }
 
 // Sent once, and only with the name typed exactly - the button's disabled otherwise, but
@@ -905,6 +927,7 @@ async function removeSatellite(shown) {
 // kept nowhere else once this returns - in no variable, nor anything the browser
 // keeps - and closing the panel takes it off the page.
 function showPassword(name, password, added) {
+  closeRenew();
   document.getElementById("password-about").textContent = added
     ? `The ${name} satellite's password, shown only this once:`
     : `The ${name} satellite's new password, shown only this once:`;
@@ -2388,7 +2411,10 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     giveNewPassword();
   });
-  document.getElementById("renew-cancel").addEventListener("click", closeRenew);
+  document.getElementById("renew-cancel").addEventListener("click", cancelRenew);
+  document.getElementById("renew-panel").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") cancelRenew();
+  });
 
   document.getElementById("problems-all").addEventListener("click", () => {
     allProblems = !allProblems;
