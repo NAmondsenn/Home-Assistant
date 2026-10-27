@@ -55,3 +55,17 @@
 - The plan document's soak table writes its greps with `grep -e ... -e ...`, not `\|`, so a line copied from the raw file works.
 - Tests: the 64-character cut (a 10,000-character `X-Real-IP` holds no more than 64 characters); the monitor surviving a log that vanishes between the two calls (a fake `os.path.getsize` raising `FileNotFoundError`).
 - Commit, one per item or as one: "Close the small items the last reviews parked".
+
+### Task 4: A lone short word is heard
+
+**Why:** `.superpowers/sdd/pause-investigation.md` - Nemotron gives '' for many lone short words ("Pause.", "Wait.", "Play.", "Mute.", "No."), so 21 of 152 real requests since 24 Oct came back empty and Nova said nothing. Repeating the speech with a 0.3 s gap brought back 26 of 31 failed cases with no extra memory or download; a "Please" lead-in was never wrong but brought back fewer.
+
+**Files:** `voice_assistant/speech_to_text.py` (`NemotronTranscription.finish`, or a small function it calls), `voice_assistant/wake_phrase.py` (`strip_wake_word`), `voice_assistant/session.py` (what's said for nothing heard); tests in `tests/test_speech_to_text.py` (or wherever `finish` is tested), `tests/test_wake_phrase.py`, `tests/test_session.py`.
+
+- When the transcript is '' and speech was detected in the recording, transcribe once more with the speech twice: `[speech][0.3 s of silence][speech]`. Keep it only when it splits into two halves that match, word for word, ignoring case and punctuation ("pause pause" -> "pause"); otherwise try once more with a short "please" lead-in (Piper's "Please", made once at start, 16 kHz) before the speech, and keep it with a leading "please" dropped. Otherwise it stays ''.
+- The retries are logged at INFO ("Heard nothing, so listening again with it said twice: 'pause'"), and timed into the latency record as their own step.
+- `strip_wake_word` leaves a transcript of just the wake word ("Nova") as it is, rather than ''. (What the session then does with it is unchanged.)
+- When the transcript is still '' after speech was detected, Nova says "Sorry, I didn't catch that." instead of nothing. Not when no speech was detected (a false wake stays silent).
+- Tests (with a fake transcriber, as the existing tests do): '' then "pause pause" -> "pause"; '' then "cause pause" (halves differ) then "please pause" -> "pause"; '' then "x y" then "" -> '' and the sorry; a first transcript that isn't '' never retries; no speech detected -> no retry and no sorry; `strip_wake_word("Nova")` -> "Nova".
+- A live check on the brain (the controller's, read-only, not in the suite): Piper's "Pause." through the real path comes out as the pause action.
+- Commit: "Hear a lone short word by listening again, and say when nothing was caught".
