@@ -10,6 +10,7 @@ import http.client
 import json
 import logging
 import os
+import re
 import socket
 import stat
 import threading
@@ -1367,6 +1368,20 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b'fetch("/api/calendars")' in body
         # A tab closed while Nova was asked gets the link instead.
         assert b"const opened = Boolean(tab && !tab.closed);" in body
+
+
+def test_the_page_has_a_login_form_and_log_out_buttons(served):
+    html = _ask(served, "/")[2].decode()
+    script = _ask(served, "/settings.js")[2].decode()
+    assert 'id="login"' in html and ">Log in</button>" in html
+    field = re.search(r'<input[^>]*id="login-password"[^>]*>', html).group(0)
+    assert 'type="password"' in field and 'autocomplete="current-password"' in field
+    assert ">Log out</button>" in html and ">Log out everywhere</button>" in html
+    assert "Set a page password at the page's Tailscale address first." in html
+    # Posted through the page's script, with X-Nova, never as a plain form.
+    assert 'send("/api/login", { password: field.value })' in script and 'fetch("/api/login-state")' in script
+    assert '"/api/logout"' in script and '"/api/logout-everywhere"' in script and '"/api/page-password"' in script
+    assert 'field("page-password-new", "new-password"' in script and "response.status === 401" in script
 
 
 def test_a_change_has_to_come_from_the_page_itself(served):

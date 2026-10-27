@@ -289,6 +289,24 @@ Nova serves a page for looking after it from a phone or a laptop - how it's doin
 
 Then restart the brain, and open `https://` and its name on your tailnet - `tailscale status` shows it - on any of your devices. A change has to come from the page itself, so another website can't make one in your name; settings are saved to the brain's `~/.config/nova/config.yaml`, the one before kept as `config.yaml.bak`. Most are used straight away; under each, the page says whether it's used straight away or once Nova restarts, and when a save waits for a restart, it offers one. A satellite's own settings are changed on the satellite: the brain's address by hand, and its password with `bash setup.sh --new-password`, once New password, under Satellites, has made one.
 
+#### At an address of your own, through Nginx Proxy Manager
+
+The page can also be served through Nginx Proxy Manager (NPM), at `https://nova.<your domain>`, so it opens at home on any of your devices without Tailscale on - behind a password of its own, as NPM's requests carry no Tailscale login. The tailnet address stays as it is, with no password.
+
+1. Set the page password first, on the page at its tailnet address: under Keys, Page password (for NPM) - at least 12 characters. It's kept only as a salted hash, never shown again, and a new one logs out every device using the old.
+2. In the brain's `~/.config/nova/config.yaml`, give the page a second port and say that only NPM's address may use it, then restart Nova:
+
+   ```yaml
+   settings_page:
+     proxy_port: 8766
+     proxy_from: ["NPM's address"]
+   ```
+
+   That port listens on every address of the brain's, but anything but NPM gets a bare 403. With `proxy_from` empty, the port isn't opened at all.
+3. In NPM, add a proxy host: domain `nova.<your domain>`, scheme `http`, forward to the brain's address and port 8766, with your wildcard certificate, Force SSL on, and the "LAN + Tailscale" access list. No websockets are needed.
+
+Then open `https://nova.<your domain>`. Until you log in, it shows only a login form, and none of Nova's own is served - only the page's files, which are all in this repository. A login lasts 30 days on that device and can do everything the tailnet address can - keys and settings included - so on a shared or lost device, use Log out (under Keys, on that address) or Log out everywhere, which ends every login made with the page password, whichever device - from the tailnet address too. Replacing the page password at the NPM address asks for the current one as well. After 5 wrong passwords in a row, a device's tries are refused for a minute; NPM says which device each try is from, in the `X-Real-IP` header it sends by default. A forgotten page password is set again at the tailnet address.
+
 ### The wake word model
 
 "Hey Nova" is a custom [openWakeWord](https://github.com/dscripka/openWakeWord) model, `hey_nova.onnx`, and it isn't in this repository - keep a copy somewhere safe, and copy it onto the satellite before running `setup.sh`. Only satellites listen for it. Without it, Nova still starts, but listens for openWakeWord's stock "Hey Jarvis" until `models/hey_nova.onnx` is there.

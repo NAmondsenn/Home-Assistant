@@ -6,6 +6,11 @@
 // Anything from Nova - a fact it remembers, a line from its log - is put on the page
 // as text, never as HTML, and styles are only ever set through the CSSOM, since the
 // page's Content-Security-Policy allows nothing inline.
+//
+// Through NPM the page needs its own password: /api/login-state is asked first, and
+// until there's a login only the login form is shown and nothing else is asked for.
+// Any API refused later for want of one - a login which ended meanwhile - brings the
+// form back.
 
 "use strict";
 
@@ -146,6 +151,15 @@ let homeChoices = null;
 // what that save said, which names what waits.
 let offerRestart = false;
 let restartSaid = "";
+
+// Whether the page is waiting for a login, as it is through NPM without one - when
+// nothing is asked for, as Nova would refuse it all - and what /api/login-state said
+// last: which route the page was reached by, and whether the page password is set.
+let locked = true;
+let loginState = null;
+
+// Each of every()'s runs, to be started again once the page is unlocked.
+const runners = [];
 
 // Making things
 
@@ -317,14 +331,22 @@ function forChosen(path) {
   return `${path}${path.includes("?") ? "&" : "?"}satellite=${encodeURIComponent(chosen)}`;
 }
 
+// What Nova answered - and, refused for want of a login, the login form instead of
+// the page. Through NPM that's a login which ended since the page was shown: 30 days
+// on, or Log out everywhere on another device.
+function answered(response) {
+  if (response.status === 401) lockAgain();
+  return response;
+}
+
 // Sends Nova a change, answering with what it said - for the chosen satellite, which
 // only the changes to its own volumes, music, lights, mute and alarms look at.
 async function send(path, body) {
-  const response = await fetch(path, {
+  const response = answered(await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Nova": "page" },
     body: JSON.stringify(chosen ? { ...body, satellite: chosen } : body || {}),
-  });
+  }));
   return response.json().catch(() => ({ success: false, message: "Nova didn't answer properly." }));
 }
 
@@ -345,9 +367,12 @@ async function change(path, body, reload = load) {
 }
 
 async function load() {
+  // Whether the page password is set may have changed on another device.
+  await checkLogin();
+  if (locked) return;
   let state;
   try {
-    const response = await fetch(forChosen("/api/state"));
+    const response = answered(await fetch(forChosen("/api/state")));
     if (!response.ok) throw new Error(await response.text());
     state = await response.json();
   } catch (error) {
@@ -380,7 +405,7 @@ async function live() {
   let now = "offline";
   let stoppable = false;
   try {
-    const response = await fetch(forChosen("/api/live"));
+    const response = answered(await fetch(forChosen("/api/live")));
     if (response.ok) {
       const said = await response.json();
       now = said.activity;
@@ -412,7 +437,7 @@ function every(milliseconds, work) {
   async function run() {
     clearTimeout(timer);
     timer = null;
-    if (running || document.hidden) return;
+    if (running || document.hidden || locked) return;
     running = true;
     try {
       await work();
@@ -422,7 +447,87 @@ function every(milliseconds, work) {
     }
   }
   document.addEventListener("visibilitychange", run);
+  runners.push(run);
   run();
+}
+
+// Logging in, through NPM
+
+// Asks whether the page needs a login, and shows the page or the login form as it
+// says. Out of reach, what's shown stays - or, the first time, the page is shown, and
+// a 401 from anything it asks for brings the form.
+async function checkLogin() {
+  try {
+    const response = await fetch("/api/login-state");
+    if (!response.ok) throw new Error(await response.text());
+    loginState = await response.json();
+  } catch (error) {
+    if (!loginState) unlock();
+    return;
+  }
+  document.getElementById("log-out").hidden = loginState.route !== "npm";
+  drawIfChanged("page-password", { route: loginState.route, set: loginState.password_set }, showPagePassword);
+  if (loginState.route === "npm" && !loginState.logged_in) lock();
+  else unlock();
+}
+
+// Only the login form - or, with no page password yet, where to set one.
+function lock() {
+  locked = true;
+  document.body.classList.add("locked");
+  const form = document.getElementById("login");
+  const opening = form.hidden;
+  form.hidden = !loginState.password_set;
+  document.getElementById("login-first").hidden = loginState.password_set;
+  if (opening && !form.hidden) document.getElementById("login-password").focus();
+}
+
+// A 401: the login has ended, so the form is shown again - once, however many of the
+// page's asks were refused.
+function lockAgain() {
+  if (locked) return;
+  if (loginState) lock();
+  else locked = true;
+  checkLogin();
+}
+
+// The page, and everything it asks for started again.
+function unlock() {
+  document.getElementById("login").hidden = true;
+  document.getElementById("login-first").hidden = true;
+  document.getElementById("login-said").hidden = true;
+  if (!locked) return;
+  locked = false;
+  document.body.classList.remove("locked");
+  for (const run of runners) run();
+}
+
+// Sends what was typed, which is gone from the field as it's sent - the field is the
+// only place it's ever kept - and shows Nova's answer if it's refused.
+async function logIn(event) {
+  event.preventDefault();
+  const field = document.getElementById("login-password");
+  const said = document.getElementById("login-said");
+  const button = event.target.querySelector("button");
+  if (!field.value) return;
+  button.disabled = true;
+  // The body is made as send is called, so the field can be emptied straight after.
+  const sent = send("/api/login", { password: field.value });
+  field.value = "";
+  let result;
+  try {
+    result = await sent;
+  } catch (error) {
+    result = { success: false, message: "Couldn't reach Nova." };
+  }
+  button.disabled = false;
+  if (result.success) {
+    await checkLogin();
+    return;
+  }
+  said.textContent = result.message || "That didn't work.";
+  said.hidden = false;
+  field.focus();
 }
 
 // Draws part of the page again if what it's drawn from has changed - unless drawing
@@ -779,7 +884,7 @@ function volumeSlider(category) {
 
 async function loadMusic() {
   try {
-    const response = await fetch(forChosen("/api/music"));
+    const response = answered(await fetch(forChosen("/api/music")));
     if (!response.ok) return;
     music = await response.json();
     musicAt = Date.now();
@@ -918,7 +1023,7 @@ async function finishSignIn(service, reload) {
 
 async function loadCalendars() {
   try {
-    const response = await fetch("/api/calendars");
+    const response = answered(await fetch("/api/calendars"));
     if (!response.ok) return;
     calendars = await response.json();
   } catch (error) {
@@ -1014,7 +1119,7 @@ function calendarRow(calendar, index) {
 // Asks the page's other choices of Home Assistant: the main list, the weather and the PCs.
 async function loadHomeChoices() {
   try {
-    const response = await fetch("/api/home-choices");
+    const response = answered(await fetch("/api/home-choices"));
     if (!response.ok) return;
     homeChoices = await response.json();
   } catch (error) {
@@ -1153,7 +1258,7 @@ async function playMusic(body, say) {
 
 async function loadHome() {
   try {
-    const response = await fetch(forChosen("/api/home"));
+    const response = answered(await fetch(forChosen("/api/home")));
     if (!response.ok) return;
     home = await response.json();
   } catch (error) {
@@ -1199,7 +1304,7 @@ function showHome() {
 
 async function loadBatteries() {
   try {
-    const response = await fetch("/api/batteries");
+    const response = answered(await fetch("/api/batteries"));
     if (!response.ok) return;
     batteries = await response.json();
   } catch (error) {
@@ -1652,6 +1757,88 @@ function keyTile(key) {
   return form;
 }
 
+// The page's own password, for its NPM address - drawn from /api/login-state, which
+// says only whether it's set.
+function showPagePassword(state) {
+  const shown = document.getElementById("page-password");
+  // Not while it's being put in.
+  if (shown.querySelector(".key.open")) return false;
+  shown.replaceChildren(pagePasswordTile(state));
+}
+
+// As a key's tile, but through NPM replacing it needs the current one too - so a login
+// left open on a device can't lock you out - and a password manager may offer to keep it.
+function pagePasswordTile(state) {
+  const form = element("form", undefined, "tile key");
+  const label = element("label", "Page password (for NPM)");
+  label.htmlFor = "page-password-new";
+  const shownState = element("span", undefined, "state");
+  shownState.append(dot(state.set ? "good" : "off"), state.set ? "Set" : "Not set");
+  const opener = element("button", undefined, "button quiet");
+  opener.type = "button";
+  const showOpen = (open) => {
+    opener.textContent = open ? "Cancel" : state.set ? "Replace" : "Set";
+    opener.setAttribute("aria-label", open ? "Cancel changing the page password" : `${opener.textContent} the page password`);
+  };
+  showOpen(false);
+  const field = (id, autocomplete, placeholder) => {
+    const input = element("input");
+    Object.assign(input, { type: "password", id, autocomplete, placeholder });
+    return input;
+  };
+  const current = state.route === "npm" && state.set
+    ? field("page-password-current", "current-password", "The current one") : null;
+  if (current) current.setAttribute("aria-label", "The current page password");
+  const input = field("page-password-new", "new-password", "At least 12 characters");
+  const save = element("button", "Save", "button");
+  save.type = "submit";
+  save.disabled = true;
+  const entries = [];
+  if (current) {
+    const entry = element("div", undefined, "entry");
+    entry.append(current);
+    entries.push(entry);
+  }
+  const entry = element("div", undefined, "entry");
+  entry.append(input, save);
+  entries.push(entry);
+
+  const fields = current ? [current, input] : [input];
+  function close() {
+    form.classList.remove("open");
+    for (const each of fields) each.value = "";
+    save.disabled = true;
+    showOpen(false);
+  }
+  opener.addEventListener("click", () => {
+    if (form.classList.contains("open")) {
+      close();
+      return;
+    }
+    form.classList.add("open");
+    showOpen(true);
+    fields[0].focus();
+  });
+  for (const each of fields) {
+    each.addEventListener("input", () => (save.disabled = fields.some((one) => !one.value)));
+    each.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      close();
+      opener.focus();
+    });
+  }
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (fields.some((one) => !one.value)) return;
+    // The body is made as change is called, so the fields can be emptied straight after.
+    change("/api/page-password", current ? { password: input.value, current: current.value } : { password: input.value },
+           checkLogin);
+    close();
+  });
+  form.append(label, shownState, opener, ...entries);
+  return form;
+}
+
 function showSettings(settings) {
   const form = document.getElementById("settings");
   // Not while they're being changed.
@@ -2100,6 +2287,14 @@ document.addEventListener("DOMContentLoaded", () => {
     if (result.success) closeEditor();
   });
 
+  document.getElementById("login").addEventListener("submit", logIn);
+  document.getElementById("log-out").addEventListener("click", () => change("/api/logout", {}, checkLogin));
+  document.getElementById("log-out-everywhere").addEventListener("click", () => {
+    if (confirm("Log out every device which logged in with the page password?")) {
+      change("/api/logout-everywhere", {}, checkLogin);
+    }
+  });
+
   every(STATE_EVERY, load);
   every(LIVE_EVERY, live);
   every(MUSIC_EVERY, loadMusic);
@@ -2109,4 +2304,6 @@ document.addEventListener("DOMContentLoaded", () => {
   every(HOME_CHOICES_EVERY, loadHomeChoices);
   document.getElementById("also-send-box").addEventListener("change", (event) =>
     changeBattery("/api/batteries/also", { on: event.target.checked }));
+  // Each of the above waits, locked, until this says the page may be shown.
+  checkLogin();
 });
