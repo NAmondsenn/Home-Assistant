@@ -252,7 +252,7 @@ class Transcription:
     def add(self, audio):
         pass
 
-    def finish(self, audio):
+    def finish(self, audio, **how):
         self.heard = audio
         return {"text": self.text}
 
@@ -323,7 +323,7 @@ def world(tmp_path, monkeypatch, make_config):
     # The brain's models.
     piper, nemotron, claude = Piper(), Nemotron(), Claude()
     monkeypatch.setattr(brain_module, "TextToSpeech", lambda config: piper)
-    monkeypatch.setattr(brain_module, "_speech_to_text", lambda config: nemotron)
+    monkeypatch.setattr(brain_module, "_speech_to_text", lambda config, tts: nemotron)
     monkeypatch.setattr(session_module, "LLMHandler", lambda **kwargs: claude)
     monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
     monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)

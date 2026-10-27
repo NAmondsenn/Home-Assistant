@@ -133,13 +133,15 @@ class FakeTranscription:
         self.text = text
         self.added = []
         self.finished_with = None
+        self.finished_how = None
         self.cancelled = False
 
     def add(self, audio):
         self.added.append(audio)
 
-    def finish(self, audio):
+    def finish(self, audio, **how):
         self.finished_with = audio
+        self.finished_how = how
         return {"text": self.text}
 
     def cancel(self):
@@ -404,10 +406,33 @@ def test_giving_up_without_hearing_anything_is_audible(brain, connect, make_sess
 
     assert session._handle_interaction(feed, timeline=FakeTimeline()) is None
     assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav", "not_heard.wav"]
+    # A false wake word isn't apologised for, only noted.
+    assert brain.tts.said == []
     # Speech-to-text, which was ready to listen, is told nothing's coming - and the
     # satellite stops sending.
     assert brain.stt.made[0].cancelled
     assert wait_for(lambda: pi.messages("stop_listening"))
+
+
+def test_speech_with_no_words_heard_in_it_is_said_so(brain, connect, make_session):
+    # Nemotron hears many a lone "Pause." as nothing, and Nova used to say nothing back.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation()
+    brain.stt.texts = [""]
+    timeline = FakeTimeline()
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=timeline) is None
+    assert brain.tts.said == ["Sorry, I didn't catch that."]
+    assert timeline.notes["outcome"] == "nothing_transcribed"
+    assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav"]
+    # Told how the recording ended, so it can hear the words again without the
+    # quiet after them - and what to time that on.
+    how = brain.stt.made[0].finished_how
+    assert how == {"timeline": timeline, "quiet_after": session.thresholds.get("silence_duration", 0.6)}
 
 
 def test_speech_to_text_is_given_the_recording_as_its_made(brain, make_session):
@@ -895,9 +920,9 @@ def test_what_nova_is_doing_is_kept_for_the_settings_page(brain, make_session, m
     seen = {}
 
     class Watching(FakeTranscription):
-        def finish(self, audio):
+        def finish(self, audio, **how):
             seen["working out the words"] = session.activity
-            return super().finish(audio)
+            return super().finish(audio, **how)
 
     def record_until_silence(source, detector, heard=None, **kwargs):
         seen["recording"] = session.activity

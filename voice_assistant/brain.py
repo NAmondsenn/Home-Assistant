@@ -115,22 +115,25 @@ STOP_CHECK = 0.5
 FALLBACK_PHRASE = "Sorry, I can't reach my server right now."
 
 
-def _speech_to_text(config):
+def _speech_to_text(config, tts: TextToSpeech):
     """
     Nemotron, loaded, for every satellite's recordings - see nemotron.py.
 
     Args:
         config: Configs loaded from config.yaml, for backend.model.
+        tts: Piper, to say the "Please" a recording heard as nothing is heard again
+            after - once, here, rather than for each one. See speech_to_text.py.
 
     Returns:
         A NemotronSpeechToText.
     """
     # Imported here, so the rest of Nova never needs sherpa-onnx.
     from voice_assistant.nemotron import Nemotron
-    from voice_assistant.speech_to_text import NemotronSpeechToText
+    from voice_assistant.speech_to_text import NemotronSpeechToText, make_please
 
     logger.info("Loading Nemotron...")
-    return NemotronSpeechToText(Nemotron(os.path.join(paths.PROJECT_DIRECTORY, config.section("backend").get("model"))))
+    return NemotronSpeechToText(Nemotron(os.path.join(paths.PROJECT_DIRECTORY, config.section("backend").get("model"))),
+                                please=make_please(tts))
 
 
 def _skipped_message(skipped: List[Dict]) -> str:
@@ -308,7 +311,7 @@ class Brain:
 
         # One Piper, and one Nemotron, which every session shares.
         self.tts = TextToSpeech(config)
-        self.stt = _speech_to_text(config)
+        self.stt = _speech_to_text(config, self.tts)
         self.phrase = self._make_phrase()
 
         # The page for looking after Nova from a phone or a laptop, or None if it's

@@ -37,6 +37,8 @@ STAGES = (
     ("Waiting for speech", ("recording_started",), "speech_started"),
     ("End of speech to recording stop", ("speech_ended",), "recording_stopped"),
     ("Speech-to-text", ("recording_stopped",), "stt_done"),
+    # Part of speech-to-text, only when it heard nothing in the user talking - see speech_to_text.py.
+    ("Hearing it again", ("stt_retry_started",), "stt_retry_done"),
     ("Claude", ("stt_done",), "llm_done"),
     ("Action", ("llm_done",), "action_done"),
     # Speech plays as each sentence is ready, so this is how long until the first one is.

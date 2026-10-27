@@ -496,7 +496,8 @@ class Session:
         # carrying on listening if no text comes back. The audio is already at the
         # 16kHz speech-to-text expects, since the satellite sends it at that.
         self.activity = "thinking"
-        transcription = listening.finish(audio_data)
+        transcription = listening.finish(audio_data, timeline=timeline,
+                                         quiet_after=thresholds.get("silence_duration", 0.6))
         timeline.mark("stt_done")
         timeline.note(audio_seconds=round(len(audio_data) / RATE, 2))
 
@@ -504,8 +505,11 @@ class Session:
         # recording sometimes catches - see strip_wake_word.
         text = strip_wake_word((transcription or {}).get("text", ""), self.wake_word)
         if not text.strip():
+            # The user spoke - the recording found them talking - so is told rather
+            # than left waiting, as they were after a lone "Pause." which Nemotron
+            # heard as nothing.
             timeline.note(outcome="nothing_transcribed")
-            self._not_heard()
+            self._say("Sorry, I didn't catch that.")
             return None
 
         timeline.note(text_chars=len(text))

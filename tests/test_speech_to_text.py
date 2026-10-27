@@ -38,6 +38,8 @@ class FakeNemotron:
     """
 
     def __init__(self, heard="Set a timer for ten minutes."):
+        # What it hears in each recording - or, as a list, in each of them in turn,
+        # where an exception is raised rather than heard.
         self.heard = heard
         self.streams = []
         self.finished = []
@@ -60,7 +62,10 @@ class FakeNemotron:
 
     def finish(self, stream):
         self.finished.append(stream)
-        return self.heard
+        heard = self.heard.pop(0) if isinstance(self.heard, list) else self.heard
+        if isinstance(heard, Exception):
+            raise heard
+        return heard
 
 
 def test_nemotron_hears_the_recording_as_its_made():
@@ -146,3 +151,151 @@ def test_a_nemotron_which_hangs_is_given_up_on(monkeypatch):
         assert time.monotonic() - started < 1
     finally:
         nemotron.busy.set()
+
+
+# A lone short word - "Pause.", "Wait.", "Play." - which Nemotron so often hears as nothing.
+
+def _heard_after_nothing(*heard, please=None, timeline=None, quiet_after=0.0):
+    """
+    Nemotron hearing nothing in a recording of the user talking, then each of heard
+    in turn as it listens again.
+
+    Returns:
+        What finish gave, and the Nemotron, whose streams are what it was given.
+    """
+    nemotron = FakeNemotron(heard=["", *heard])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron, please=please).listen()
+    pieces = _pieces(0.1, 0.2)
+    for piece in pieces:
+        transcription.add(piece)
+    return transcription.finish(np.concatenate(pieces), timeline=timeline, quiet_after=quiet_after), nemotron
+
+
+def test_a_lone_word_heard_as_nothing_is_heard_again_said_twice(caplog):
+    caplog.set_level("INFO")
+    speech = np.concatenate(_pieces(0.1, 0.2))
+    result, nemotron = _heard_after_nothing("pause pause", quiet_after=0.03)
+
+    assert result["text"] == "pause"
+    # The words without the quiet the recording stopped after, a moment of quiet,
+    # then the words again - through a stream of its own.
+    again = np.concatenate(nemotron.streams[1])
+    words = speech[:480]
+    assert np.array_equal(again, np.concatenate([words, np.zeros(round(0.3 * 16000)), words]))
+    assert "Heard nothing, so listening again with it said twice: 'pause'" in caplog.text
+
+
+@pytest.mark.parametrize("heard, meant", [
+    ("Pause. Pause.", "Pause."),
+    ("Turn it up, turn it up.", "Turn it up"),
+    ("louder", ""),
+    ("cause pause", ""),
+    ("play play play", ""),
+])
+def test_only_the_same_words_twice_are_kept(heard, meant):
+    assert speech_to_text._said_twice(heard) == meant
+
+
+def test_halves_which_differ_are_heard_again_after_please():
+    please = np.full(800, 0.5, dtype=np.float32)
+    result, nemotron = _heard_after_nothing("cause pause", "please pause", please=please)
+
+    assert result["text"] == "pause"
+    speech = np.concatenate(_pieces(0.1, 0.2))
+    assert np.array_equal(np.concatenate(nemotron.streams[2]),
+                          np.concatenate([please, np.zeros(round(0.3 * 16000)), speech]))
+
+
+@pytest.mark.parametrize("heard", ["", "pause", "Please.", "Thank you, please."])
+def test_please_must_come_first_and_be_followed_by_something(heard):
+    please = np.full(800, 0.5, dtype=np.float32)
+    assert _heard_after_nothing("x y", heard, please=please)[0]["text"] == ""
+
+
+def test_nothing_heard_three_times_is_nothing():
+    please = np.full(800, 0.5, dtype=np.float32)
+    result, nemotron = _heard_after_nothing("x y", "", please=please)
+
+    assert result["text"] == ""
+    assert len(nemotron.streams) == 3
+
+
+def test_without_please_its_heard_again_only_said_twice():
+    # Piper couldn't say "Please" as the brain started.
+    result, nemotron = _heard_after_nothing("x y")
+    assert result["text"] == "" and len(nemotron.streams) == 2
+
+
+def test_hearing_again_is_timed_on_its_own():
+    from voice_assistant.timeline import Timeline
+
+    timeline = Timeline()
+    _heard_after_nothing("pause pause", timeline=timeline)
+    assert {"stt_retry_started", "stt_retry_done"} <= set(timeline.marks)
+    assert timeline.notes["heard_again"] == "twice"
+
+
+def test_words_heard_the_first_time_arent_heard_again():
+    # Listening again takes a second or so, which a request heard first time never waits for.
+    from voice_assistant.timeline import Timeline
+
+    nemotron = FakeNemotron(heard=["Pause the music.", "never asked for"])
+    timeline = Timeline()
+    transcription = speech_to_text.NemotronSpeechToText(nemotron, please=np.ones(800, np.float32)).listen()
+    transcription.add(_pieces(0.1)[0])
+
+    assert transcription.finish(_pieces(0.1)[0], timeline=timeline)["text"] == "Pause the music."
+    assert len(nemotron.streams) == 1 and timeline.marks == {}
+
+
+def test_a_recording_with_no_speech_found_in_it_isnt_heard_again():
+    # Nothing is handed over until the recording finds the user talking, so a
+    # transcription given nothing had none in it.
+    nemotron = FakeNemotron(heard=["", "pause pause"])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+
+    assert transcription.finish(np.zeros(0, np.float32))["text"] == ""
+    assert len(nemotron.streams) == 1
+
+
+def test_a_nemotron_which_fails_listening_again_hears_nothing(caplog):
+    nemotron = FakeNemotron(heard=["", RuntimeError("Failed to decode")])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+    transcription.add(_pieces(0.1)[0])
+
+    assert transcription.finish(_pieces(0.1)[0])["text"] == ""
+    assert "Failed to decode" in caplog.text
+
+
+class FakePiper:
+    """Stands in for Piper, saying each thing as the test sets, at 22050Hz."""
+
+    sample_rate = 22050
+
+    def __init__(self, pieces):
+        self.pieces = pieces
+        self.said = []
+
+    def stream(self, text, remember=True):
+        self.said.append((text, remember))
+        if isinstance(self.pieces, Exception):
+            raise self.pieces
+        yield from self.pieces
+
+
+def test_please_is_said_once_by_piper_at_16khz_without_its_quiet():
+    pytest.importorskip("soxr")
+    word = np.sin(np.arange(11025) / 5).astype(np.float32) * 0.5
+    piper = FakePiper([np.zeros(2205, np.float32), word, np.zeros(4410, np.float32)])
+
+    please = speech_to_text.make_please(piper)
+    assert piper.said == [("Please", False)]
+    assert please.dtype == np.float32
+    # Half a second of it, give or take the edges of the quiet trimmed.
+    assert abs(len(please) - 8000) < 400
+
+
+@pytest.mark.parametrize("pieces", [[], [np.zeros(2205, np.float32)], OSError("No Piper")])
+def test_please_is_done_without_if_piper_cant_say_it(pieces):
+    pytest.importorskip("soxr")
+    assert speech_to_text.make_please(FakePiper(pieces)) is None
