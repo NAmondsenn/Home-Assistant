@@ -150,6 +150,13 @@ LONGEST_COOKIE = 256
 # Logging out is open too, so a cookie whose login has ended can still be cleared.
 OPEN_THROUGH_NPM = {"GET": set(FILES) | {"/api/login-state"}, "POST": {"/api/login", "/api/logout"}}
 TOO_MANY_TRIES = "Too many wrong passwords - try again in a minute."
+# How long a device that isn't NPM may keep its thread while what it sent is thrown
+# away, in seconds all told, and how many may at once - beyond that, the 403 is sent
+# and the connection closed straight away. Otherwise one device sending a byte a
+# second on many connections could hold a thread for each, until the brain couldn't
+# start any more.
+TURN_AWAY_WAIT = 1
+TURN_AWAYS_AT_ONCE = 16
 
 # What setup.sh starts this install's own settings file with, written back at every
 # save, as yaml leaves comments out.
@@ -424,6 +431,7 @@ class SettingsPage:
         server.daemon_threads = True
         server.page = self
         server.route = route
+        server.turning_away = threading.BoundedSemaphore(TURN_AWAYS_AT_ONCE)
         name = "settings-page" if route == "tailnet" else f"settings-page-{route}"
         threading.Thread(target=server.serve_forever, kwargs={"poll_interval": STOP_CHECK},
                          name=name, daemon=True).start()
@@ -1852,19 +1860,25 @@ class _Handler(BaseHTTPRequestHandler):
         headers = {"Server": self.server_version, "Content-Type": "text/plain; charset=utf-8",
                    "Content-Length": "0", "Connection": "close", **SAFETY_HEADERS}
         answer = "HTTP/1.1 403 Forbidden\r\n" + "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+        # Taken before the 403 is written, so a device that has it knows its slot is held.
+        draining = self.server.turning_away.acquire(blocking=False)
         try:
             self.wfile.write((answer + "\r\n").encode())
             self.wfile.flush()
             self.connection.shutdown(socket.SHUT_WR)
-            # What was sent is thrown away unread, a little at a time and for a moment
-            # at most - closing with it unread would reset the connection, which can
-            # lose the 403 before it's read.
-            self.connection.settimeout(1)
-            for _ in range(16):
+            # What was sent is thrown away unread, for a moment at most - closing with
+            # it unread would reset the connection, which can lose the 403 before it's
+            # read. With every slot taken, that's risked rather than wait.
+            deadline = time.monotonic() + TURN_AWAY_WAIT
+            while draining and (left := deadline - time.monotonic()) > 0:
+                self.connection.settimeout(left)
                 if not self.connection.recv(65536):
                     break
         except OSError:
             pass
+        finally:
+            if draining:
+                self.server.turning_away.release()
 
     def do_GET(self):
         page = self.server.page

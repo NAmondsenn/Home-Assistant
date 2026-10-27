@@ -2744,6 +2744,65 @@ def test_anyone_but_npm_gets_a_bare_403_even_for_nonsense(files, monkeypatch, ca
         page.stop()
 
 
+def _timed_turn_aways(monkeypatch):
+    """How long each turn-away held its thread for, in seconds, as each finishes."""
+    held = []
+    real = page_module._Handler._turn_away
+
+    def timed(handler):
+        start = time.monotonic()
+        real(handler)
+        held.append(time.monotonic() - start)
+
+    monkeypatch.setattr(page_module._Handler, "_turn_away", timed)
+    return held
+
+
+def test_a_peer_which_keeps_sending_is_let_go_within_a_second(files, monkeypatch):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    held = _timed_turn_aways(monkeypatch)
+    page = _npm_page(files, proxy_from=["192.0.2.1"])
+    page.start()
+    try:
+        # A byte every 0.3 seconds, each well within a second of the last - for three.
+        with socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5) as connection:
+            assert connection.recv(65536).startswith(b"HTTP/1.1 403")
+            for _ in range(10):
+                try:
+                    connection.sendall(b"x")
+                except OSError:
+                    break
+                time.sleep(0.3)
+        deadline = time.monotonic() + 5
+        while not held and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert held and held[0] < 1.5
+    finally:
+        page.stop()
+
+
+def test_only_so_many_are_turned_away_at_once(files, monkeypatch):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    monkeypatch.setattr(page_module, "TURN_AWAYS_AT_ONCE", 2)
+    held = _timed_turn_aways(monkeypatch)
+    page = _npm_page(files, proxy_from=["192.0.2.1"])
+    page.start()
+    try:
+        # Two which say nothing more hold theirs for the second the rest may take...
+        waiting = [socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5) for _ in range(2)]
+        for connection in waiting:
+            assert connection.recv(65536).startswith(b"HTTP/1.1 403")
+        # ...so a third still gets its 403, but isn't waited for at all.
+        waiting.append(socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5))
+        assert waiting[-1].recv(65536).startswith(b"HTTP/1.1 403")
+        time.sleep(0.3)
+        assert len(held) == 1 and held[0] < 0.3
+        for connection in waiting:
+            connection.close()
+    finally:
+        page.stop()
+
+
 def test_an_address_which_cant_be_split_is_answered(npm):
     # As a whole address, which the server doesn't shorten to a path as it does "//[x".
     assert _raw(npm.proxy_port, b"GET http://[x HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.0 401")
