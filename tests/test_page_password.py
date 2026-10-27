@@ -261,13 +261,27 @@ def test_a_corrupt_logins_file_lets_nobody_in(tmp_path, caplog):
 def test_a_login_that_would_never_end_is_refused(tmp_path):
     path = tmp_path / "page_logins.json"
     clock = Clock()
-    for ends in ("Infinity", "NaN", str(clock.time + LOGIN_DAYS * 86400 + 1)):
+    for ends in ("Infinity", "NaN", str(clock.time + LOGIN_DAYS * 86400 + 86400 + 1)):
         digest = hashlib.sha256(b"forever").hexdigest()
         path.write_text(f'{{"{digest}": {ends}}}')
         assert not Logins(str(path), now=clock).check("forever")
-    # One that ends in time is still let in.
-    path.write_text(f'{{"{digest}": {clock.time + LOGIN_DAYS * 86400}}}')
+    # One that ends in time is still let in, within the day's slack for the clock.
+    path.write_text(f'{{"{digest}": {clock.time + LOGIN_DAYS * 86400 + 86400}}}')
     assert Logins(str(path), now=clock).check("forever")
+
+
+def test_a_wall_clock_stepped_back_ends_no_login(tmp_path):
+    path = str(tmp_path / "page_logins.json")
+    clock = Clock()
+    logins = Logins(path, now=clock)
+    token = logins.make()
+
+    clock.time -= 60
+    assert logins.check(token)
+    # And a save while it's back keeps it.
+    logins.make()
+    clock.time += 60
+    assert logins.check(token)
 
 
 def test_logins_made_at_once_are_all_kept(tmp_path):

@@ -218,8 +218,11 @@ class Logins:
         now = self.now()
         # One that would end later than a new login would - Infinity, say, which
         # json reads - was never made here, so it's dropped like an ended one. NaN
-        # fails both comparisons, so goes too.
-        latest = now + LOGIN_DAYS * 86400
+        # fails both comparisons, so goes too. A day's slack, as the wall clock can step
+        # back - by a minute, say, when it's corrected - and a login made just before
+        # would otherwise seem too long and be dropped. Only make() writes an end, so
+        # the slack can't lengthen a real login.
+        latest = now + LOGIN_DAYS * 86400 + 86400
         return {digest: ends for digest, ends in stored.items() if now < ends <= latest}
 
     def make(self) -> str:
