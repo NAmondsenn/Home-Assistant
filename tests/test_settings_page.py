@@ -1351,6 +1351,11 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b'element("span", `Spotify plays on ${satellite.spotify_speaker}`, "detail")' in body
         # No longer than the name rule lets a name be.
         assert b'id="satellite-name"' in _ask(served, "/")[2] and b'maxlength="63"' in _ask(served, "/")[2]
+        # A new password for a satellite is asked for with its name typed, saying what it stops.
+        assert b"Give ${name} a new password? Nova stops answering on ${name} until you run " in body
+        assert b'" on it and paste the password shown next."' in body and b"confirm(`Give" not in body
+        assert b'id="renew-name"' in _ask(served, "/")[2] and b'id="renew-go" disabled' in _ask(served, "/")[2]
+        assert b"Give it a new password</button>" in _ask(served, "/")[2]
         # The password is only ever put on the page as text.
         assert b'getElementById("password-text").textContent = password' in body and b"innerHTML" not in body
         # Where each removal's Undo is stacked.

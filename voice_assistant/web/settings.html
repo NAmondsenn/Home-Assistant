@@ -81,6 +81,17 @@
           <p class="how" id="password-how"></p>
           <button type="button" class="button quiet" id="password-close">Done</button>
         </div>
+        <!-- Asked before a satellite is given a new password, as it's let go until its setup
+             has the new one: the button waits for the satellite's name to be typed. -->
+        <form class="panel renew" id="renew-panel" hidden>
+          <p class="about" id="renew-about"></p>
+          <label for="renew-name" id="renew-label"></label>
+          <input type="text" id="renew-name" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="63">
+          <div class="entry">
+            <button type="submit" class="button danger" id="renew-go" disabled>Give it a new password</button>
+            <button type="button" class="button quiet" id="renew-cancel">Cancel</button>
+          </div>
+        </form>
         <form class="panel ask" id="add-satellite">
           <label class="visually-hidden" for="satellite-name">The new satellite's machine name</label>
           <input type="text" id="satellite-name" placeholder="Its Pi's machine name, e.g. bedroom" autocomplete="off"

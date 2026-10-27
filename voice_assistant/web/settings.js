@@ -707,10 +707,40 @@ function showSatellites(state) {
   });
 }
 
-// Gives a satellite a new password, once the user's sure - it's let go until its
-// setup has the new one.
-async function newPassword(name) {
-  if (!confirm(`Give ${name} a new password? It stops working until it has the new one.`)) return;
+// Asks before giving a satellite a new password, as it's let go until its setup has the
+// new one - and a "Cancel / OK" was once clicked through, which shut a Pi out for an hour.
+// So its name has to be typed first: the button waits for exactly that, and Cancel is
+// not an answer until then.
+let renewing = null;
+
+function newPassword(name) {
+  renewing = name;
+  document.getElementById("renew-about").replaceChildren(
+    `Give ${name} a new password? Nova stops answering on ${name} until you run `,
+    element("code", "bash setup.sh --new-password"),
+    " on it and paste the password shown next.");
+  document.getElementById("renew-label").textContent = `Type ${name} to go ahead`;
+  const field = document.getElementById("renew-name");
+  field.value = "";
+  document.getElementById("renew-go").disabled = true;
+  closePassword();
+  document.getElementById("renew-panel").hidden = false;
+  field.focus();
+}
+
+function closeRenew() {
+  renewing = null;
+  document.getElementById("renew-name").value = "";
+  document.getElementById("renew-go").disabled = true;
+  document.getElementById("renew-panel").hidden = true;
+}
+
+// Sent once, and only with the name typed exactly - the button's disabled otherwise, but
+// Enter in the field submits the form all the same.
+async function giveNewPassword() {
+  const name = renewing;
+  if (name === null || document.getElementById("renew-name").value !== name) return;
+  closeRenew();
   const result = await change("/api/satellites/password", { name });
   if (result.success && result.password) showPassword(name, result.password, false);
 }
@@ -752,7 +782,8 @@ function showPassword(name, password, added) {
   document.getElementById("password-text").textContent = password;
   document.getElementById("password-how").replaceChildren(...(added
     ? ["Type this into setup.sh on the Pi."]
-    : ["On the Pi, run ", element("code", "bash setup.sh --new-password"), " and type it in - or, on a Pi not yet updated, put it after ",
+    : [`Nova stops answering on ${name} until you run `, element("code", "bash setup.sh --new-password"),
+       " on it and paste this password in - or, on a Pi not yet updated, put it after ",
        element("code", "NOVA_BACKEND_TOKEN="), " in ", element("code", "~/.config/nova/.env"), " and restart the satellite."]));
   const copy = document.getElementById("password-copy");
   copy.textContent = "Copy";
@@ -2221,6 +2252,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.getElementById("password-close").addEventListener("click", closePassword);
+  document.getElementById("renew-name").addEventListener("input", () => {
+    document.getElementById("renew-go").disabled = document.getElementById("renew-name").value !== renewing;
+  });
+  document.getElementById("renew-panel").addEventListener("submit", (event) => {
+    event.preventDefault();
+    giveNewPassword();
+  });
+  document.getElementById("renew-cancel").addEventListener("click", closeRenew);
 
   document.getElementById("problems-all").addEventListener("click", () => {
     allProblems = !allProblems;

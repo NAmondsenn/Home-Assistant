@@ -1235,6 +1235,32 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   min-height: 44px;
 }
 
+/* The question before a satellite's given a new password. */
+.renew {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 14px 16px;
+}
+
+.renew p { margin: 0; }
+
+.renew code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--moon);
+}
+
+.renew .entry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.renew .button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 /* A satellite's password, shown once. */
 .password {
   display: grid;
