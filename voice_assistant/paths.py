@@ -34,11 +34,13 @@ SOUNDS_DIR = os.path.join(PROJECT_DIRECTORY, "sounds")
 CONFIG_DIR = os.path.expanduser(os.environ.get("NOVA_CONFIG") or "~/.config/nova")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.yaml")
 SECRETS_FILE = os.path.join(CONFIG_DIR, ".env")
+PAGE_PASSWORD_FILE = os.path.join(CONFIG_DIR, "page_password")
 
 DATA_DIR = os.path.expanduser(os.environ.get("NOVA_DATA") or "~/.local/share/nova")
 LOGS_DIR = os.path.join(DATA_DIR, "logs")
 SPOTIFY_TOKEN_FILE = os.path.join(DATA_DIR, "spotify_token.json")
 GOOGLE_TOKEN_FILE = os.path.join(DATA_DIR, "google_token.json")
+PAGE_LOGINS_FILE = os.path.join(DATA_DIR, "page_logins.json")
 
 
 def make_folders():
