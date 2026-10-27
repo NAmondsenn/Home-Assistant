@@ -1288,6 +1288,13 @@ def test_a_sessions_actions_read_the_brains_calendar(brain, make_session):
     assert session.actions.calendar is brain.calendar and session.intents.activities() is words
 
 
+def test_a_sessions_local_rules_know_its_wake_word(brain, make_session):
+    # So "Jarvispause." is heard as "pause" by a satellite woken by "Hey Jarvis".
+    brain.config.data["assistant"]["wake_word"] = "Hey Jarvis"
+    session = make_session()
+    assert session.intents.match("Jarvispause.")["actions"][0].tool == "control_playback"
+
+
 def _the_brain_says(session, message):
     """
     What Brain._say_battery and Brain._alert return with this real session as the default

@@ -61,6 +61,30 @@ def test_playback_controls_are_handled_without_claude(text, command):
     assert _actions(text) == [Action("control_playback", {"action": command})]
 
 
+@pytest.mark.parametrize("text, command", [
+    # "Nova, pause." said in one breath, as Nemotron heard it.
+    ("Novopause.", "pause"), ("Novapause.", "pause"), ("Novaskip.", "skip"), ("Novopause, please.", "pause"),
+])
+def test_the_wake_word_run_into_a_command_is_the_command(text, command):
+    assert _actions(text) == [Action("control_playback", {"action": command})]
+
+
+@pytest.mark.parametrize("text", [
+    # Words of their own which start the same way - Claude's, as ever.
+    "Novel.", "Novacane.", "Novas.", "Nova.", "Novo.",
+    # Only a lone word is tried, so a request run on from it is Claude's to work out.
+    "Novopause the music.",
+])
+def test_words_starting_like_the_wake_word_arent_taken_for_it(text):
+    assert _actions(text) is None
+
+
+def test_its_the_wake_word_set_which_is_run_into_a_command():
+    jarvis = LocalIntents(wake_word="Hey Jarvis")
+    assert jarvis.match("Jarvispause.")["actions"] == [Action("control_playback", {"action": "pause"})]
+    assert jarvis.match("Novopause.") is None
+
+
 @pytest.mark.parametrize("text", ["Resume.", "Play.", "Play the music.", "Unpause."])
 def test_resuming_plays_whatever_was_playing(text):
     assert _actions(text) == [Action("play_music")]

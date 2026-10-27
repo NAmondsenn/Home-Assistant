@@ -25,6 +25,7 @@ from voice_assistant.actions import Action
 from voice_assistant.clock import spoken_clock_time
 from voice_assistant.lists import names_list
 from voice_assistant.logging_setup import TRANSCRIPT
+from voice_assistant.wake_phrase import DEFAULT_WAKE_WORD
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -233,7 +234,8 @@ def _ordinal(day: int) -> str:
 class LocalIntents:
     """Recognises the everyday commands handled without Claude."""
 
-    def __init__(self, clock=None, ntfy=None, home=None, activities: Optional[Callable[[], Dict[str, str]]] = None):
+    def __init__(self, clock=None, ntfy=None, home=None, activities: Optional[Callable[[], Dict[str, str]]] = None,
+                 wake_word: str = DEFAULT_WAKE_WORD):
         """
         Args:
             clock: The Clock, to check there's exactly one timer before cancelling
@@ -247,11 +249,18 @@ class LocalIntents:
                 GoogleCalendar.activity_words. Asked at each match, so a calendar added
                 in Google is heard from then on. Without it, the activity rules don't
                 match, and Claude has them.
+            wake_word: The wake word, e.g. "Hey Nova" - its last word, run into a command
+                said in the same breath ("Novopause."), is taken off it.
         """
         self.clock = clock
         self.ntfy = ntfy
         self.home = home
         self.activities = activities
+        # How the wake word's last word starts a lone word it's been run into - and, for
+        # "Nova", how Nemotron heard it so: "Nova, pause." said in one breath was "Novopause.".
+        ending = (wake_word.split() or [""])[-1].lower()
+        starts = [re.escape(ending)] + (["novo"] if ending == "nova" else [])
+        self._run_into = rf"(?:{'|'.join(starts)})(\w+)" if ending else None
         # The request as it was said, punctuation and all, while match looks at it - a
         # session's requests are matched one at a time. "Eggs, milk, bread" has commas,
         # which the rules never see.
@@ -405,6 +414,16 @@ class LocalIntents:
                 logger.info(f"Handled locally: '{text}'" + (f" (actions: {result['actions']})"
                                                             if result["actions"] else ""), extra=TRANSCRIPT)
                 return result
+
+        # A lone word which is the wake word run into a command, tried as the command - only
+        # kept if that's one in full, so "Novacane." is still Claude's. The wake word's
+        # list of commands is the rules themselves, rather than a second one to keep.
+        run_into = re.fullmatch(self._run_into, request) if self._run_into else None
+        if run_into:
+            result = self.match(run_into[1], only=only)
+            if result is not None:
+                logger.info(f"Took '{text}' for the wake word run into '{run_into[1]}'", extra=TRANSCRIPT)
+            return result
         return None
 
     @staticmethod
