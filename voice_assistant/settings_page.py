@@ -17,6 +17,13 @@ tailnet's requests on to it over HTTPS, with its own certificate -
 also has to come from the page itself, with a header only it sends, so that another
 website the user happens to visit can't make one in their name.
 
+It can be served through Nginx Proxy Manager too, at an address of the user's own, on a
+second port - settings_page.proxy_port - which answers only NPM's address, in
+settings_page.proxy_from. There, Tailscale's header is never trusted, whatever it says:
+before anything but the page's own files, the page's password has to be given, for a
+login kept in a cookie - see page_password.py. A login can do everything the tailnet
+can, but replacing the password also needs the current one.
+
 Keys are only ever written, never shown back - the page just says whether each is
 set, and a new one is used once Nova restarts, which the page can do. Settings are
 saved to this install's own ~/.config/nova/config.yaml, the one before kept beside it
@@ -34,6 +41,7 @@ import re
 import shutil
 import threading
 import time
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import parse_qs, urlsplit
@@ -49,6 +57,7 @@ from voice_assistant.devices import AppDevice
 from voice_assistant.google_calendar import READ_FAILURES, ClientRefused, GoogleSignInError, SignInNeeded
 from voice_assistant.music import _chosen, why_no_player
 from voice_assistant.ntfy import RETOPIC
+from voice_assistant.page_password import LOGIN_DAYS, Logins, PagePassword, WrongTries
 from voice_assistant.spotify_controller import SpotifySignIn, SpotifySignInError, brains_speaker, spotify_oauth
 from voice_assistant.undo import UndoShelf
 
@@ -130,6 +139,16 @@ GOOGLE_OUT_OF_REACH = "Nova can't reach Google just now."
 
 # The most a request may send, in bytes.
 MOST_BODY = 64 * 1024
+
+# The cookie an NPM login is kept in, and the longest password or cookie looked at -
+# anything longer is refused unchecked, so a megabyte sent as a guess costs nothing.
+LOGIN_COOKIE = "nova_login"
+LONGEST_PASSWORD = 1024
+LONGEST_COOKIE = 256
+# What's open through NPM before a login: the page's own files, all public in the
+# repository, so the login form can be the page's own, and asking whether it's logged in.
+OPEN_THROUGH_NPM = {"GET": set(FILES) | {"/api/login-state"}, "POST": {"/api/login"}}
+TOO_MANY_TRIES = "Too many wrong passwords - try again in a minute."
 
 # What setup.sh starts this install's own settings file with, written back at every
 # save, as yaml leaves comments out.
@@ -273,7 +292,8 @@ class SettingsPage:
 
     def __init__(self, allow: List[str], port: int = 8765, running=None, brain=None,
                  wake_word: Optional[Callable[[], str]] = None, restart: Optional[Callable[[], str]] = None,
-                 started: Optional[float] = None):
+                 started: Optional[float] = None, proxy_port: int = 0, proxy_from: Optional[List[str]] = None,
+                 password: Optional[PagePassword] = None, logins: Optional[Logins] = None):
         """
         Args:
             allow: The Tailscale logins let in.
@@ -286,9 +306,19 @@ class SettingsPage:
                 own wake word model is missing.
             restart: Restarts the brain, returning what to tell the user - or None for Brain.restart.
             started: When the brain started, in seconds.
+            proxy_port: Where to listen for Nginx Proxy Manager, on every address - 0
+                for not at all.
+            proxy_from: The addresses answered there - NPM's.
+            password: The page's password, for NPM - or None for the one in Nova's config folder.
+            logins: The logins it gives - or None for those in Nova's data folder.
         """
         self.allow = [login.strip().lower() for login in allow if login.strip()]
         self.port = port
+        self.proxy_port = proxy_port
+        self.proxy_from = [str(address).strip() for address in proxy_from or [] if str(address).strip()]
+        self.password = password or PagePassword()
+        self.logins = logins or Logins()
+        self.wrong_tries = WrongTries()
         self.running = running
         self.brain = brain
         # Each satellite's playlists, with when they were asked for.
@@ -313,6 +343,7 @@ class SettingsPage:
         self._undo = UndoShelf()
         self._spotify = self._spotify_sign_in(running)
         self._server: Optional[ThreadingHTTPServer] = None
+        self._proxy_server: Optional[ThreadingHTTPServer] = None
 
     @staticmethod
     def _spotify_sign_in(running) -> Optional[SpotifySignIn]:
@@ -348,29 +379,57 @@ class SettingsPage:
         allow = settings.get("allow") or []
         if not allow:
             logger.warning("The settings page lets nobody in until settings_page.allow names your Tailscale login")
-        return cls(allow, port, running=config, brain=brain, **parts)
+        return cls(allow, port, running=config, brain=brain, proxy_port=int(settings.get("proxy_port") or 0),
+                   proxy_from=settings.get("proxy_from") or [], **parts)
 
     # Serving it
 
     def start(self):
-        """Starts serving the page, on a thread of its own."""
-        try:
-            self._server = ThreadingHTTPServer(("127.0.0.1", self.port), _Handler)
-        except OSError as e:
-            logger.error(f"Couldn't start the settings page on port {self.port}: {e}")
+        """Starts serving the page, on a thread of its own - and for NPM on another, if it's set up."""
+        self._server = self._serve("127.0.0.1", self.port, "tailnet")
+        if self._server is not None:
+            self.port = self._server.server_address[1]
+            logger.info(f"The settings page is on port {self.port}")
+        if not self.proxy_port:
             return
-        self._server.daemon_threads = True
-        self._server.page = self
-        self.port = self._server.server_address[1]
-        threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": STOP_CHECK},
-                         name="settings-page", daemon=True).start()
-        logger.info(f"The settings page is on port {self.port}")
+        if not self.proxy_from:
+            logger.warning("The settings page isn't served to Nginx Proxy Manager until settings_page.proxy_from "
+                           "names its address")
+            return
+        self._proxy_server = self._serve("0.0.0.0", self.proxy_port, "npm")
+        if self._proxy_server is not None:
+            self.proxy_port = self._proxy_server.server_address[1]
+            logger.info(f"The settings page is on port {self.proxy_port} for Nginx Proxy Manager")
+
+    def _serve(self, address: str, port: int, route: str) -> Optional[ThreadingHTTPServer]:
+        """
+        Args:
+            address: Where to listen.
+            port: The port.
+            route: "tailnet" or "npm", which says how a request on it is let in.
+
+        Returns:
+            The server, serving on a thread of its own - or None if it couldn't start.
+        """
+        try:
+            server = ThreadingHTTPServer((address, port), _Handler)
+        except OSError as e:
+            logger.error(f"Couldn't start the settings page on port {port}: {e}")
+            return None
+        server.daemon_threads = True
+        server.page = self
+        server.route = route
+        name = "settings-page" if route == "tailnet" else f"settings-page-{route}"
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": STOP_CHECK},
+                         name=name, daemon=True).start()
+        return server
 
     def stop(self):
         """Stops serving it."""
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
+        for server in (self._server, self._proxy_server):
+            if server is not None:
+                server.shutdown()
+                server.server_close()
 
     # What it shows
 
@@ -1607,6 +1666,110 @@ class SettingsPage:
         logger.info(f"Settings page: {who} made the {name} satellite the default")
         return {"success": True, "message": f"{name} is the default now."}
 
+    # The page's password, for NPM
+
+    def _try_password(self, typed: str, device: str) -> Optional[str]:
+        """
+        Args:
+            typed: What the user typed, no longer than LONGEST_PASSWORD.
+            device: The device it came from, e.g. from X-Real-IP.
+
+        Returns:
+            None if it's the password, or what to tell the user if it isn't or wasn't checked.
+        """
+        outcome = self.wrong_tries.attempt(device, lambda: self.password.check(typed))
+        if outcome == "waiting":
+            return TOO_MANY_TRIES
+        if outcome == "wrong":
+            # Never what was typed - it may be the password with a typo.
+            logger.warning(f"Settings page: a wrong page password from {device} through NPM")
+            return "That's not the password."
+        return None
+
+    def log_in(self, typed, device: str) -> Tuple[Dict, Optional[str]]:
+        """
+        Logs a device in through NPM, if it gives the password.
+
+        Args:
+            typed: What the user typed.
+            device: The device it came from, e.g. from X-Real-IP.
+
+        Returns:
+            What to tell the user, and the new login's token if it's logged in.
+
+        Raises:
+            TypeError: If what was typed isn't text.
+            OSError: If the login couldn't be saved.
+        """
+        if not isinstance(typed, str):
+            raise TypeError("not a password")
+        if not self.password.is_set():
+            return {"success": False, "message": "Set a page password at the page's Tailscale address first."}, None
+        if len(typed) > LONGEST_PASSWORD:
+            return {"success": False, "message": "That's not the password."}, None
+        problem = self._try_password(typed, device)
+        if problem:
+            return {"success": False, "message": problem}, None
+        token = self.logins.make()
+        logger.info("Settings page: password logged in")
+        return {"success": True, "message": "Logged in."}, token
+
+    def log_out_everywhere(self, who: str) -> Dict:
+        """
+        Ends every login through NPM, whichever device - for a lost phone, say.
+
+        Raises:
+            OSError: If the logins couldn't be saved.
+        """
+        self.logins.end_all()
+        logger.info(f"Settings page: {who} logged out every device")
+        return {"success": True, "message": "Every device is logged out."}
+
+    def set_page_password(self, new, who: str, current=None, device: Optional[str] = None) -> Tuple[Dict, Optional[str]]:
+        """
+        Sets or replaces the page's password, which logs out every device. Through NPM
+        it also needs the current one, so a login left open on a device can't lock the
+        user out - and that device is logged in again, so they aren't thrown out of the
+        page they changed it on.
+
+        Args:
+            new: The new password.
+            who: Who's setting it, for the log.
+            current: The current password, through NPM.
+            device: The device through NPM, e.g. from X-Real-IP - or None from the tailnet.
+
+        Returns:
+            What to tell the user, and a new login's token for the device through NPM.
+
+        Raises:
+            TypeError: If either password isn't text.
+        """
+        if not isinstance(new, str) or (device is not None and not isinstance(current, str)):
+            raise TypeError("not a password")
+        if len(new) > LONGEST_PASSWORD:
+            return {"success": False, "message": f"The page password can be at most {LONGEST_PASSWORD} characters."}, None
+        if device is not None:
+            if len(current) > LONGEST_PASSWORD:
+                return {"success": False, "message": "That's not the current password."}, None
+            problem = self._try_password(current, device)
+            if problem:
+                if problem != TOO_MANY_TRIES:
+                    problem = "That's not the current password."
+                return {"success": False, "message": problem}, None
+        problem = self.password.set(new, self.logins)
+        if problem:
+            return {"success": False, "message": problem}, None
+        logger.info(f"Settings page: {who} set the page password")
+        if device is None:
+            return {"success": True, "message": "The page password is set, and every device using it is logged out."}, None
+        try:
+            token = self.logins.make()
+        except OSError as e:
+            logger.error(f"Settings page: couldn't keep this device logged in after the new page password: {e}")
+            return {"success": True, "message": "The page password is set, but this device couldn't stay logged "
+                                                "in - log in again with the new one."}, None
+        return {"success": True, "message": "The page password is set, and every other device is logged out."}, token
+
 
 # What each kind of change is sent to, and what it's given.
 ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
@@ -1648,6 +1811,7 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/satellites/password": lambda page, body, who: page.new_password(body["name"], who),
     "/api/satellites/remove": lambda page, body, who: page.remove_satellite(body["name"], who),
     "/api/satellites/default": lambda page, body, who: page.make_default(body["name"], who),
+    "/api/logout-everywhere": lambda page, body, who: page.log_out_everywhere(who),
 }
 
 
@@ -1661,18 +1825,35 @@ class _Handler(BaseHTTPRequestHandler):
         # Every request would otherwise go to the journal; the changes are logged anyway.
         pass
 
+    def parse_request(self) -> bool:
+        # Through NPM, the connection's own address comes first, before any header is
+        # looked at and whatever the method - X-Real-IP, which says which device NPM is
+        # passing on, is only to be believed from NPM itself.
+        if not super().parse_request():
+            return False
+        address = self.client_address[0]
+        if self.server.route == "npm" and address not in self.server.page.proxy_from:
+            logger.warning(f"Settings page: turned away {address}, which isn't NPM's")
+            self.close_connection = True
+            self._send(403, b"", "text/plain; charset=utf-8")
+            return False
+        return True
+
     def do_GET(self):
         page = self.server.page
-        if not self._let_in(page):
-            return
         url = urlsplit(self.path)
         path = url.path
+        if not self._let_in(page, path):
+            return
         # Which satellite the page is looking at, if it has a choice of them.
         satellite = (parse_qs(url.query).get("satellite") or [None])[0]
         if path in FILES:
             name, content_type = FILES[path]
             with open(os.path.join(WEB_FOLDER, name), "rb") as file:
                 self._send(200, file.read(), content_type)
+        elif path == "/api/login-state":
+            self._send_json({"route": self.server.route, "password_set": page.password.is_set(),
+                             "logged_in": self.logged_in})
         elif path == "/api/state":
             self._send_json(page.state(satellite))
         elif path == "/api/live":
@@ -1699,9 +1880,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         page = self.server.page
-        if not self._let_in(page) or not self._from_the_page():
+        if not self._let_in(page, self.path) or not self._from_the_page():
             return
-        action = ACTIONS.get(self.path)
+        # The cookie a change sets, if it logs in or out.
+        self.cookie: Optional[str] = None
+        action = ACTIONS.get(self.path) or self._LOGIN_ACTIONS.get(self.path)
         if action is None:
             self._send_json({"success": False, "message": "That isn't something the page does."}, 400)
             return
@@ -1712,20 +1895,32 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             body = json.loads(self.rfile.read(int(length)) or b"{}")
-            result = action(page, body, self.login)
+            if self.path in self._LOGIN_ACTIONS:
+                result = action(self, page, body)
+            else:
+                result = action(page, body, self.login)
         # OverflowError is int() of JSON's Infinity.
         except (KeyError, TypeError, ValueError, OverflowError):
             result = {"success": False, "message": "That didn't make sense."}
         except OSError as e:
             logger.error(f"Settings page: couldn't save a change: {e}")
             result = {"success": False, "message": "Couldn't save that."}
-        self._send_json(result)
+            self.cookie = None
+        self._send_json(result, cookie=self.cookie)
 
-    def _let_in(self, page: SettingsPage) -> bool:
+    def _let_in(self, page: SettingsPage, path: str) -> bool:
         """
-        Whether this is someone allowed in - as Tailscale says, having passed the
-        request on.
+        Whether this is someone allowed in - on the tailnet as Tailscale says, having
+        passed the request on, and through NPM with a login, or for what's open
+        before one.
+
+        Args:
+            page: The page.
+            path: What's asked for, without its query.
         """
+        if self.server.route == "npm":
+            return self._let_in_through_npm(page, path)
+        self.logged_in = True
         self.login = self.headers.get("Tailscale-User-Login", "").strip().lower()
         if self.login and self.login in page.allow:
             return True
@@ -1733,6 +1928,74 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(403, b"This page is only for the Tailscale logins in settings_page.allow.",
                    "text/plain; charset=utf-8")
         return False
+
+    def _let_in_through_npm(self, page: SettingsPage, path: str) -> bool:
+        """
+        Whether this is someone allowed in through NPM. Tailscale's header is never
+        read here: anyone on the network could send it straight to this port.
+
+        Args:
+            page: The page.
+            path: What's asked for, without its query.
+        """
+        # Only believed as every request here is from NPM itself - see parse_request.
+        self.device = (self.headers.get("X-Real-IP") or "").strip() or self.client_address[0]
+        self.token = self._login_token()
+        self.logged_in = page.logins.check(self.token)
+        self.login = "password" if self.logged_in else f"someone at {self.device} not logged in"
+        if self.logged_in or path in OPEN_THROUGH_NPM.get(self.command, ()):
+            return True
+        self._send_json({"success": False, "message": "Log in first."}, 401)
+        return False
+
+    def _login_token(self) -> Optional[str]:
+        """
+        Returns:
+            The login's token from the request's cookie, or None if it has none - or
+            one which is too long to be one, or a cookie header which can't be read.
+        """
+        cookies = SimpleCookie()
+        try:
+            cookies.load(self.headers.get("Cookie") or "")
+        except CookieError:
+            return None
+        morsel = cookies.get(LOGIN_COOKIE)
+        if morsel is None or len(morsel.value) > LONGEST_COOKIE:
+            return None
+        return morsel.value
+
+    @staticmethod
+    def _login_cookie(token: str) -> str:
+        """The cookie for a login - or, for "", the one which ends it in the browser."""
+        age = LOGIN_DAYS * 86400 if token else 0
+        return f"{LOGIN_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age={age}"
+
+    # The changes which log in or out, which need more of the request than ACTIONS are given.
+
+    def _log_in(self, page: SettingsPage, body: Dict) -> Dict:
+        if self.server.route != "npm":
+            return {"success": False, "message": "There's no logging in here - Tailscale says who you are."}
+        result, token = page.log_in(body["password"], self.device)
+        if token:
+            self.cookie = self._login_cookie(token)
+        return result
+
+    def _log_out(self, page: SettingsPage, body: Dict) -> Dict:
+        if self.server.route != "npm":
+            return {"success": True, "message": "There's nothing to log out of here - Tailscale lets you in."}
+        page.logins.end(self.token)
+        self.cookie = self._login_cookie("")
+        return {"success": True, "message": "Logged out."}
+
+    def _set_page_password(self, page: SettingsPage, body: Dict) -> Dict:
+        through_npm = self.server.route == "npm"
+        result, token = page.set_page_password(body["password"], self.login, body.get("current"),
+                                               self.device if through_npm else None)
+        if token:
+            self.cookie = self._login_cookie(token)
+        return result
+
+    _LOGIN_ACTIONS = {"/api/login": _log_in, "/api/logout": _log_out, "/api/page-password": _set_page_password}
 
     def _from_the_page(self) -> bool:
         """
@@ -1746,13 +2009,15 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(403, b"Changes can only be made from the page itself.", "text/plain; charset=utf-8")
         return False
 
-    def _send_json(self, data: Dict, status: int = 200):
-        self._send(status, json.dumps(data).encode(), "application/json")
+    def _send_json(self, data: Dict, status: int = 200, cookie: Optional[str] = None):
+        self._send(status, json.dumps(data).encode(), "application/json", cookie)
 
-    def _send(self, status: int, body: bytes, content_type: str):
+    def _send(self, status: int, body: bytes, content_type: str, cookie: Optional[str] = None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         for name, value in SAFETY_HEADERS.items():
             self.send_header(name, value)
         self.end_headers()
