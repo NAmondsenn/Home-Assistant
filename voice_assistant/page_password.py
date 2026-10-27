@@ -15,6 +15,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 import threading
 import time
@@ -43,9 +44,18 @@ _N, _R, _P = 2**14, 8, 1
 _SALT_BYTES = 16
 _HASH_BYTES = 32
 
+# One scrypt at a time, whichever PagePassword asks - so many tries at once can't add
+# up to many times 16 MiB on a small container, nor guess faster in parallel.
+_scrypt_lock = threading.Lock()
+
+# A token's SHA-256, as the logins file keeps it.
+_DIGEST = re.compile("[0-9a-f]{64}")
+
 
 def _scrypt(password: str, salt: bytes, n: int, r: int, p: int, length: int) -> bytes:
-    return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=length)
+    # surrogatepass, as a lone surrogate - which no browser sends, but anyone can -
+    # should be just a wrong password, not an error.
+    return hashlib.scrypt(password.encode(errors="surrogatepass"), salt=salt, n=n, r=r, p=p, dklen=length)
 
 
 class PagePassword:
@@ -108,33 +118,45 @@ class PagePassword:
             return False
         n, r, p, salt, digest = stored
         try:
-            given = _scrypt(password, salt, n, r, p, len(digest))
+            with _scrypt_lock:
+                given = _scrypt(password, salt, n, r, p, len(digest))
         except (ValueError, MemoryError):
             # Parameters scrypt won't take, e.g. an n that isn't a power of two.
             logger.warning("The page password's file has a hash Nova can't check, so it's as if none is set")
             return False
         return hmac.compare_digest(given, digest)
 
-    def set(self, password: str) -> Optional[str]:
+    def set(self, password: str, logins: "Logins") -> Optional[str]:
         """
-        Saves a new password in place of any old one. Ending the logins the old one
-        gave is the caller's part.
+        Saves a new password in place of any old one, ending every login first. In that
+        order so each failure fails shut: if the logins can't be ended the password
+        isn't changed, and if it then can't be saved, the old one stands with nobody
+        logged in - never a new password with the old logins still open.
 
         Args:
             password: The new password.
+            logins: The page's logins, all ended by a new password.
 
         Returns:
             None if it was saved, or what to tell the user if it wasn't.
-
-        Raises:
-            OSError: If it couldn't be written - the old one, if any, stays.
         """
         if len(password) < MIN_LENGTH:
             return f"The page password needs at least {MIN_LENGTH} characters."
+        try:
+            logins.end_all()
+        except OSError as e:
+            logger.error(f"Could not end the page's logins, so the page password wasn't changed "
+                         f"({type(e).__name__})")
+            return "Could not log out every device, so the page password is as it was."
         salt = secrets.token_bytes(_SALT_BYTES)
-        digest = _scrypt(password, salt, _N, _R, _P, _HASH_BYTES)
+        with _scrypt_lock:
+            digest = _scrypt(password, salt, _N, _R, _P, _HASH_BYTES)
         encoded = [base64.b64encode(part).decode() for part in (salt, digest)]
-        save_text(self.path, "$".join(["scrypt", str(_N), str(_R), str(_P), *encoded]) + "\n")
+        try:
+            save_text(self.path, "$".join(["scrypt", str(_N), str(_R), str(_P), *encoded]) + "\n")
+        except OSError as e:
+            logger.error(f"Could not save the page password ({type(e).__name__})")
+            return "Could not save the page password, so it is as it was - every device is logged out."
         return None
 
 
@@ -174,7 +196,9 @@ class Logins:
             if not isinstance(stored, dict):
                 raise ValueError("not an object")
             for digest, ends in stored.items():
-                if len(digest) != 64 or isinstance(ends, bool) or not isinstance(ends, (int, float)):
+                # A key that isn't lower-case hex would make compare_digest raise
+                # rather than say no, e.g. a non-ASCII one.
+                if not _DIGEST.fullmatch(digest) or isinstance(ends, bool) or not isinstance(ends, (int, float)):
                     raise ValueError("not a login")
         except (OSError, ValueError) as e:
             # Once until it's readable again, as it's read on every request.
@@ -185,7 +209,11 @@ class Logins:
             return {}
         self._warned = False
         now = self.now()
-        return {digest: ends for digest, ends in stored.items() if ends > now}
+        # One that would end later than a new login would - Infinity, say, which
+        # json reads - was never made here, so it's dropped like an ended one. NaN
+        # fails both comparisons, so goes too.
+        latest = now + LOGIN_DAYS * 86400
+        return {digest: ends for digest, ends in stored.items() if now < ends <= latest}
 
     def make(self) -> str:
         """
@@ -222,16 +250,18 @@ class Logins:
             found |= hmac.compare_digest(given, digest)
         return found
 
-    def end(self, token: str):
+    def end(self, token: Optional[str]):
         """
         Ends one login - logging out this device.
 
         Args:
-            token: Its token.
+            token: Its token, or None if the request had no cookie, which does nothing.
 
         Raises:
             OSError: If the logins couldn't be saved.
         """
+        if not token:
+            return
         given = _token_hash(token)
         with self._lock:
             logins = self._read()
@@ -253,7 +283,7 @@ class Logins:
 class WrongTries:
     """
     Wrong passwords, counted per device and all together, in memory only. Each device
-    is forgotten WAIT seconds after its last wrong try, so it holds no more than the
+    is forgotten WAIT seconds after its last try, so it holds no more than the
     devices seen in the last minute.
     """
 
@@ -264,9 +294,9 @@ class WrongTries:
         """
         self.now = now
         self._lock = threading.Lock()
-        # Each device's wrong tries in a row, and when its last one was.
+        # Each device's tries in a row not yet found right, and when its last one was.
         self._devices: Dict[str, Tuple[int, float]] = {}
-        # When each wrong try from any device was, over the last WAIT seconds.
+        # When each try not yet found right, from any device, was - over the last WAIT seconds.
         self._recent: Deque[float] = deque()
         self._all_wait_until = 0.0
 
@@ -276,45 +306,63 @@ class WrongTries:
         while self._recent and now - self._recent[0] >= WAIT:
             self._recent.popleft()
 
+    def _waiting(self, device: str, now: float) -> bool:
+        if now < self._all_wait_until:
+            return True
+        count, _ = self._devices.get(device, (0, 0.0))
+        # Its last try was within WAIT, or it would have been forgotten.
+        return count >= TRIES_EACH
+
     def waiting(self, device: str) -> bool:
         """
         Args:
             device: The device's address, e.g. from X-Real-IP.
 
         Returns:
-            Whether its try is to be refused unchecked.
+            Whether a try from it now would be refused unchecked.
         """
         with self._lock:
             now = self.now()
             self._forget_old(now)
-            if now < self._all_wait_until:
-                return True
-            count, _ = self._devices.get(device, (0, 0.0))
-            # Its last wrong try was within WAIT, or it would have been forgotten.
-            return count >= TRIES_EACH
+            return self._waiting(device, now)
 
-    def wrong(self, device: str):
+    def attempt(self, device: str, check: Callable[[], bool]) -> str:
         """
-        Counts a wrong password.
+        Makes one try at the password, unless the device or everyone is waiting.
+
+        The try is counted as wrong before it's checked, and only uncounted if it was
+        right - so tries sent all at once can't each get past the limits before any
+        of them has been counted, as separate calls to ask and then count would let
+        them.
 
         Args:
-            device: The device's address.
+            device: The device's address, e.g. from X-Real-IP.
+            check: Checks the password, e.g. lambda: password.check(typed).
+
+        Returns:
+            "right" or "wrong", or "waiting" if it was refused unchecked.
+
+        Raises:
+            Whatever check raises - the try still counted as wrong.
         """
         with self._lock:
             now = self.now()
             self._forget_old(now)
+            if self._waiting(device, now):
+                return "waiting"
             count, _ = self._devices.get(device, (0, 0.0))
             self._devices[device] = (count + 1, now)
             self._recent.append(now)
             if len(self._recent) >= TRIES_ALL:
                 self._all_wait_until = now + WAIT
-
-    def right(self, device: str):
-        """
-        Resets a device's count after its right password.
-
-        Args:
-            device: The device's address.
-        """
+        if not check():
+            return "wrong"
         with self._lock:
+            # A right one resets its device, and is taken out of everyone's count -
+            # unless it's already aged out of it.
             self._devices.pop(device, None)
+            if now in self._recent:
+                self._recent.remove(now)
+                if len(self._recent) < TRIES_ALL and self._all_wait_until == now + WAIT:
+                    self._all_wait_until = 0.0
+        return "right"
