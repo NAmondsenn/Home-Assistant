@@ -55,6 +55,11 @@ const RELOAD_GAP = 60000;
 // focus in Chromium, but nothing half-done goes with it, as each sends its change at once.
 const TYPED = new Set(["text", "password", "number", "time", "url", "search", "email", "tel", "textarea"]);
 
+// The forms always on show, which empty themselves once sent - so anything in one which
+// differs from how the page drew it is half done, wherever the focus has gone since: a
+// time picked for an alarm, then its Repeats tapped, say.
+const ALWAYS_SHOWN = ["add-alarm", "add-satellite", "play-something"];
+
 // The colours offered as swatches on a light which can be set to one, as a hue in
 // degrees and a saturation in percent.
 const SWATCHES = [
@@ -184,6 +189,9 @@ let pageVersion = null;
 let updated = false;
 let reloadedAt = Date.now();
 let updateNotice = null;
+
+// Whether the brain's being asked if it's up, just before a reload.
+let reloadChecking = false;
 
 // Making things
 
@@ -588,15 +596,15 @@ function noticeVersion(version) {
 // Reloads an out-of-date page - straight away unless something's being edited, which a
 // reload would lose, or it reloaded less than RELOAD_GAP ago. Meanwhile it says so, with
 // a button to reload when the user's ready.
-function reloadWhenReady() {
+async function reloadWhenReady() {
+  if (updated && await readyToReload()) {
+    reloadedAt = Date.now();
+    location.reload();
+    return;
+  }
   if (!updated) {
     if (updateNotice) updateNotice.remove();
     updateNotice = null;
-    return;
-  }
-  if (!editingSomething() && Date.now() - reloadedAt >= RELOAD_GAP) {
-    reloadedAt = Date.now();
-    location.reload();
     return;
   }
   if (updateNotice) return;
@@ -612,12 +620,49 @@ function reloadWhenReady() {
   requestAnimationFrame(() => shown.classList.add("show"));
 }
 
+// Whether the page may reload now: nothing's being edited, RELOAD_GAP has passed, and the
+// brain answers with the new version just before - as in a crash loop it can be down
+// again by then, and a reload onto a brain that's down leaves the browser's own error
+// page, with nothing left to try again. Not answering, it waits for live() to hear
+// from Nova again, and asks then.
+async function readyToReload() {
+  if (reloadChecking || activity === "offline" || editingSomething() || Date.now() - reloadedAt < RELOAD_GAP) {
+    return false;
+  }
+  reloadChecking = true;
+  let said = null;
+  try {
+    const response = await fetch("/api/login-state");
+    if (response.ok) said = await response.json();
+  } catch (error) {
+    // Down again, then.
+  } finally {
+    reloadChecking = false;
+  }
+  if (!said || !said.page) return false;
+  // Back to the page's own files, or something begun while it was asked.
+  updated = said.page !== pageVersion;
+  return updated && !editingSomething();
+}
+
+// Whether a field in one of the forms always on show differs from how the page drew it.
+function changedField(field) {
+  if (field.type === "checkbox" || field.type === "radio") return field.checked !== field.defaultChecked;
+  if (field.options) {
+    const options = [...field.options];
+    const first = options.find((option) => option.defaultSelected) || options[0];
+    return Boolean(first) && field.value !== first.value;
+  }
+  return field.value !== field.defaultValue;
+}
+
 // Whether anything's being typed or changed which a reload would lose: a field with the
-// focus, an editor or question open, a sign-in half done, a key or the page password
-// half put in, settings not yet saved, the login form - or a satellite's password, which
-// is shown only the once.
+// focus, anything in a form always on show, an editor or question open, a sign-in half
+// done, a key or the page password half put in, settings not yet saved, the login form -
+// or a satellite's password, which is shown only the once.
 function editingSomething() {
   if (TYPED.has(document.activeElement && document.activeElement.type)) return true;
+  if (ALWAYS_SHOWN.some((id) => [...document.getElementById(id).elements].some(changedField))) return true;
   const open = ["routine-editor", "renew-panel", "password-panel", "spotify-finish", "google-finish", "login"];
   if (open.some((id) => !document.getElementById(id).hidden)) return true;
   return Boolean(document.getElementById("keys").querySelector(".key.open")
