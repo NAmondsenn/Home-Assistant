@@ -2310,7 +2310,13 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("login").addEventListener("submit", logIn);
-  document.getElementById("log-out").addEventListener("click", () => change("/api/logout", {}, checkLogin));
+  // Reloaded rather than only locked, so nothing the page showed stays in it - Log out
+  // is for a shared or lost device, whose browser someone else might look into.
+  document.getElementById("log-out").addEventListener("click", async () => {
+    const result = await change("/api/logout", {}, async () => {});
+    if (result.success) location.reload();
+    else await checkLogin();
+  });
   document.getElementById("log-out-everywhere").addEventListener("click", () => {
     if (confirm("Log out every device which logged in with the page password?")) {
       change("/api/logout-everywhere", {}, checkLogin);

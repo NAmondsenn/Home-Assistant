@@ -1384,6 +1384,8 @@ def test_the_page_has_a_login_form_and_log_out_buttons(served):
     assert 'send("/api/login", { password: field.value })' in script and 'fetch("/api/login-state")' in script
     assert '"/api/logout"' in script and '"/api/logout-everywhere"' in script and '"/api/page-password"' in script
     assert 'field("page-password-new", "new-password"' in script and "response.status === 401" in script
+    # A Log out reloads the page, so none of what it showed is left in it.
+    assert "if (result.success) location.reload();" in script
 
 
 def test_a_change_has_to_come_from_the_page_itself(served):
