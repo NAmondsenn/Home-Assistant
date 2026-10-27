@@ -660,8 +660,9 @@ function changedField(field) {
 // Whether anything's being typed or changed which a reload would lose: a field with the
 // focus, anything in a form always on show, an editor or question open, a sign-in half
 // done, a key or the page password half put in, settings not yet saved, the login form -
-// or a satellite's password, which is shown only the once.
+// or a satellite's password, which is shown only the once, on its way or on show.
 function editingSomething() {
+  if (passwordComing) return true;
   if (TYPED.has(document.activeElement && document.activeElement.type)) return true;
   if (ALWAYS_SHOWN.some((id) => [...document.getElementById(id).elements].some(changedField))) return true;
   const open = ["routine-editor", "renew-panel", "password-panel", "spotify-finish", "google-finish", "login"];
@@ -831,6 +832,10 @@ function showSatellites(state) {
 // So its name has to be typed first: the button waits for exactly that, and Cancel is
 // not an answer until then.
 let renewing = null;
+// Whether a new password's been asked for and not yet shown - the question's closed by
+// then, so without this the page counts as not being edited, and an update reload could
+// land between the two and lose the password for good.
+let passwordComing = false;
 
 function newPassword(name) {
   renewing = name;
@@ -860,8 +865,13 @@ async function giveNewPassword() {
   const name = renewing;
   if (name === null || document.getElementById("renew-name").value !== name) return;
   closeRenew();
-  const result = await change("/api/satellites/password", { name });
-  if (result.success && result.password) showPassword(name, result.password, false);
+  passwordComing = true;
+  try {
+    const result = await change("/api/satellites/password", { name });
+    if (result.success && result.password) showPassword(name, result.password, false);
+  } finally {
+    passwordComing = false;
+  }
 }
 
 // Removes a satellite, once the user's sure - asked with what happens to what was
