@@ -645,15 +645,16 @@ async function readyToReload() {
   return updated && !editingSomething();
 }
 
-// Whether a field in one of the forms always on show differs from how the page drew it.
+// Whether a field in one of the forms always on show differs from how the page drew it -
+// only what can be typed in or chosen from, as a button has no defaultValue to compare.
 function changedField(field) {
-  if (field.type === "checkbox" || field.type === "radio") return field.checked !== field.defaultChecked;
-  if (field.options) {
+  if (field.type === "select-one") {
     const options = [...field.options];
+    // With none marked as chosen in the HTML, a select starts on its first option.
     const first = options.find((option) => option.defaultSelected) || options[0];
     return Boolean(first) && field.value !== first.value;
   }
-  return field.value !== field.defaultValue;
+  return TYPED.has(field.type) && field.value !== field.defaultValue;
 }
 
 // Whether anything's being typed or changed which a reload would lose: a field with the
