@@ -10,6 +10,7 @@ import http.client
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import socket
@@ -2784,8 +2785,13 @@ def test_anyone_but_npm_gets_a_bare_403_even_for_nonsense(files, monkeypatch, ca
         page.stop()
 
 
-def _timed_turn_aways(monkeypatch):
-    """How long each turn-away held its thread for, in seconds, as each finishes."""
+def _timed_turn_aways(monkeypatch, finished=None):
+    """How long each turn-away held its thread for, in seconds, as each finishes.
+
+    Args:
+        monkeypatch: pytest's, to wrap the handler's turn-away.
+        finished: If given, a queue which gets one item as each turn-away finishes, to wait on.
+    """
     held = []
     real = page_module._Handler._turn_away
 
@@ -2793,6 +2799,8 @@ def _timed_turn_aways(monkeypatch):
         start = time.monotonic()
         real(handler)
         held.append(time.monotonic() - start)
+        if finished is not None:
+            finished.put(None)
 
     monkeypatch.setattr(page_module._Handler, "_turn_away", timed)
     return held
@@ -2824,21 +2832,30 @@ def test_a_peer_which_keeps_sending_is_let_go_within_a_second(files, monkeypatch
 def test_only_so_many_are_turned_away_at_once(files, monkeypatch):
     monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
     monkeypatch.setattr(page_module, "TURN_AWAYS_AT_ONCE", 2)
-    held = _timed_turn_aways(monkeypatch)
+    # Long enough that the two which say nothing more hold their slots until they're closed
+    # below, however slow the machine - nothing here waits on a time.
+    monkeypatch.setattr(page_module, "TURN_AWAY_WAIT", 60)
+    finished = queue.Queue()
+    held = _timed_turn_aways(monkeypatch, finished)
     page = _npm_page(files, proxy_from=["192.0.2.1"])
     page.start()
     try:
-        # Two which say nothing more hold theirs for the second the rest may take...
+        # Two which say nothing more hold theirs...
         waiting = [socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5) for _ in range(2)]
         for connection in waiting:
             assert connection.recv(65536).startswith(b"HTTP/1.1 403")
-        # ...so a third still gets its 403, but isn't waited for at all.
+        # ...so a third still gets its 403, but isn't waited for at all - it's let go
+        # while the first two are still held.
         waiting.append(socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5))
         assert waiting[-1].recv(65536).startswith(b"HTTP/1.1 403")
-        time.sleep(0.3)
-        assert len(held) == 1 and held[0] < 0.3
+        finished.get(timeout=30)
+        assert len(held) == 1
+        # Closing the first two lets them go as well.
         for connection in waiting:
             connection.close()
+        for _ in range(2):
+            finished.get(timeout=30)
+        assert len(held) == 3
     finally:
         page.stop()
 
@@ -2869,6 +2886,17 @@ def test_refusals_through_npm_are_logged_at_most_once_a_minute(npm, caplog):
             assert _through_npm(npm, "/api/login", {"password": PASSWORD}, X_Real_IP="192.0.2.9")[0] == 403
     assert caplog.text.count("didn't come from the page") == 2
     assert "someone at 192.0.2.9 not logged in" in caplog.text
+
+
+def test_a_device_key_from_x_real_ip_is_cut_to_64_characters(npm, monkeypatch, caplog):
+    counted = []
+    real = npm.wrong_tries.attempt
+    monkeypatch.setattr(npm.wrong_tries, "attempt", lambda device, check: counted.append(device) or real(device, check))
+    with caplog.at_level(logging.WARNING):
+        _through_npm(npm, "/api/login", {"password": "wrong"}, X_Nova="page", X_Real_IP="a" * 10_000)
+    assert counted == ["a" * 64]
+    assert "from " + "a" * 64 + " through NPM" in caplog.text
+    assert "a" * 65 not in caplog.text
 
 
 def test_an_address_which_cant_be_split_is_answered(npm):

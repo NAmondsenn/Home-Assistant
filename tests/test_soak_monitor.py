@@ -110,6 +110,21 @@ def test_interactions_count_the_rotated_latency_file_too(tmp_path, monkeypatch):
     assert row["interactions"] == 5
 
 
+def test_a_log_which_vanishes_between_the_checks_is_recorded_as_empty(tmp_path, monkeypatch):
+    logs = _scratch_logs(tmp_path, monkeypatch)
+    (logs / "latency.jsonl").write_text("")
+    target = soak_monitor.TARGETS["satellite"]
+    (logs / target.log).write_text("x")
+
+    def rotated_away(path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(soak_monitor, "_systemctl", lambda prop, target: None)
+    monkeypatch.setattr(soak_monitor.os.path, "getsize", rotated_away)
+    row = soak_monitor.sample(None, target, datetime(2026, 10, 20))
+    assert row["log_mb"] == 0
+
+
 def test_growing_open_files_and_any_errors_are_pointed_out():
     first = {**_reading(0, 400), "open_files": 30, "errors": 0}
     last = {**_reading(12, 401), "open_files": 55, "errors": 3}

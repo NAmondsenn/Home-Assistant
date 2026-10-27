@@ -150,6 +150,7 @@ MOST_BODY = 64 * 1024
 LOGIN_COOKIE = "nova_login"
 LONGEST_PASSWORD = 1024
 LONGEST_COOKIE = 256
+MOST_DEVICE_KEY = 64
 # What's open through NPM before a login: the page's own files, all public in the
 # repository, so the login form can be the page's own, and asking whether it's logged in.
 # Logging out is open too, so a cookie whose login has ended can still be cleared.
@@ -2067,7 +2068,9 @@ class _Handler(BaseHTTPRequestHandler):
             path: What's asked for, without its query.
         """
         # Only believed as every request here is from NPM itself - see handle.
-        self.device = (self.headers.get("X-Real-IP") or "").strip() or self.client_address[0]
+        # Cut short as it's kept in the wrong-tries count and written to the log, where
+        # a 10,000-character header would otherwise be 10,000 characters of both.
+        self.device = (self.headers.get("X-Real-IP") or "").strip()[:MOST_DEVICE_KEY] or self.client_address[0]
         self.token = self._login_token()
         self.logged_in = page.logins.check(self.token)
         self.login = "password" if self.logged_in else f"someone at {self.device} not logged in"
