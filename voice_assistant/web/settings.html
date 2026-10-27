@@ -10,7 +10,8 @@
   <link rel="stylesheet" href="settings.css">
   <script src="settings.js" defer></script>
 </head>
-<body>
+<!-- Locked until settings.js knows the page may be shown - through NPM, not before a login. -->
+<body class="locked">
   <!-- The night sky behind everything, drawn by settings.js. -->
   <canvas id="sky" aria-hidden="true"></canvas>
 
@@ -42,6 +43,19 @@
         <p class="date"><span class="long" id="date-long"></span><span class="short" id="date-short"></span></p>
       </div>
     </header>
+
+    <!-- Through NPM, before a login, the only thing shown: posted by settings.js, with
+         X-Nova, and emptied as it's sent. -->
+    <form class="panel login" id="login" method="post" hidden>
+      <h2 class="heading"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg>Log in</h2>
+      <label class="how" for="login-password">Nova's page password</label>
+      <div class="entry">
+        <input type="password" id="login-password" name="password" autocomplete="current-password" required>
+        <button type="submit" class="button">Log in</button>
+      </div>
+      <p class="said" id="login-said" role="alert" hidden></p>
+    </form>
+    <p class="panel note login" id="login-first" hidden>Set a page password at the page's Tailscale address first.</p>
 
     <div class="notice" id="restart" hidden>
       <p>Saved changes are used once Nova restarts.</p>
@@ -297,6 +311,14 @@
         <h2 class="heading" id="keys-title"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg>Keys</h2>
         <div class="keys" id="keys"></div>
         <p class="hint">Saved on Nova and never shown again. A new key is used once Nova restarts.</p>
+        <!-- The page's own password, for its NPM address: drawn by settings.js from
+             /api/login-state, and used straight away. -->
+        <div class="keys page-password" id="page-password"></div>
+        <div class="account">
+          <button type="button" class="button quiet" id="log-out" hidden>Log out</button>
+          <button type="button" class="button quiet" id="log-out-everywhere">Log out everywhere</button>
+        </div>
+        <p class="hint">The page password lets you in at its NPM address, and a new one logs out every other device using it. Log out everywhere does that too - for a lost phone, say.</p>
       </section>
 
       <section class="wide" aria-labelledby="settings-title">

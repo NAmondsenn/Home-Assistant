@@ -10,6 +10,8 @@ import http.client
 import json
 import logging
 import os
+import re
+import socket
 import stat
 import threading
 import time
@@ -34,6 +36,7 @@ from voice_assistant.config import Config
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.lists import Lists
 from voice_assistant.ntfy import Ntfy
+from voice_assistant.page_password import Logins, PagePassword
 from voice_assistant.pc import PCPower
 from voice_assistant.routines import Routines
 from voice_assistant.settings_page import LATER, NOW, SettingsPage
@@ -1367,6 +1370,24 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b"const opened = Boolean(tab && !tab.closed);" in body
 
 
+def test_the_page_has_a_login_form_and_log_out_buttons(served):
+    html = _ask(served, "/")[2].decode()
+    script = _ask(served, "/settings.js")[2].decode()
+    assert 'id="login"' in html and ">Log in</button>" in html
+    # Should it ever be sent without the script, never in the address, where NPM's log keeps it.
+    assert re.search(r'<form[^>]*id="login"[^>]*method="post"', html)
+    field = re.search(r'<input[^>]*id="login-password"[^>]*>', html).group(0)
+    assert 'type="password"' in field and 'autocomplete="current-password"' in field
+    assert ">Log out</button>" in html and ">Log out everywhere</button>" in html
+    assert "Set a page password at the page's Tailscale address first." in html
+    # Posted through the page's script, with X-Nova, never as a plain form.
+    assert 'send("/api/login", { password: field.value })' in script and 'fetch("/api/login-state")' in script
+    assert '"/api/logout"' in script and '"/api/logout-everywhere"' in script and '"/api/page-password"' in script
+    assert 'field("page-password-new", "new-password"' in script and "response.status === 401" in script
+    # A Log out reloads the page, so none of what it showed is left in it.
+    assert "if (result.success) location.reload();" in script
+
+
 def test_a_change_has_to_come_from_the_page_itself(served):
     change = {"category": "music", "percent": 20}
     # As another website open in the user's browser would send it.
@@ -2409,3 +2430,445 @@ def test_the_weather_and_pcs_are_left_out_without_a_choice(files):
     # Two buttons for the one PC are a choice.
     home.snapshot = FakeChoicesHome().snapshot
     assert page.home_choices_state()["pcs"] is not None
+
+
+# Through Nginx Proxy Manager
+
+PASSWORD = "correct horse battery"
+
+
+def _free_port():
+    """A port nothing's listening on - as 0 switches the NPM listener off."""
+    with socket.socket() as spare:
+        spare.bind(("127.0.0.1", 0))
+        return spare.getsockname()[1]
+
+
+def _npm_page(files, proxy_from=("127.0.0.1",), password=None):
+    """A page with its NPM listener on, the test counting as NPM, and a password if given."""
+    page = SettingsPage([LOGIN], port=0, brain=FakeBrain({"bedroom": FakeSession()}),
+                        restart=lambda: "Restarting.", started=1_800_000_000,
+                        proxy_port=_free_port(), proxy_from=list(proxy_from),
+                        password=PagePassword(str(files / "page_password")),
+                        logins=Logins(str(files / "page_logins.json")))
+    if password:
+        assert page.password.set(password, page.logins) is None
+    return page
+
+
+@pytest.fixture
+def npm(files, monkeypatch):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _npm_page(files, password=PASSWORD)
+    page.start()
+    yield page
+    page.stop()
+
+
+def _through_npm(page, path, body=None, cookie=None, **headers):
+    """Asks the page for something as NPM would pass a browser's request on."""
+    request = urllib.request.Request(f"http://127.0.0.1:{page.proxy_port}{path}",
+                                     data=None if body is None else json.dumps(body).encode())
+    if cookie:
+        request.add_header("Cookie", f"nova_login={cookie}")
+    for name, value in headers.items():
+        request.add_header(name.replace("_", "-"), value)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, response.headers, response.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+def _log_in(page, password=PASSWORD, **headers):
+    """Logs in through NPM, returning what was said and the login's token, or None."""
+    status, headers, body = _through_npm(page, "/api/login", {"password": password}, X_Nova="page", **headers)
+    assert status == 200
+    cookie = headers.get("Set-Cookie")
+    token = cookie.split(";")[0].split("=", 1)[1] if cookie else None
+    return json.loads(body), token
+
+
+def test_only_npms_address_is_answered(files, monkeypatch, caplog):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _npm_page(files, proxy_from=["192.0.2.1"], password=PASSWORD)
+    token = page.logins.make()
+    page.start()
+    try:
+        with caplog.at_level(logging.WARNING):
+            for path in ("/", "/settings.js", "/api/login-state", "/api/state"):
+                status, _, body = _through_npm(page, path, cookie=token)
+                assert (status, body) == (403, b"")
+            for path in ("/api/login", "/api/volume", "/api/logout-everywhere"):
+                assert _through_npm(page, path, {"password": PASSWORD}, cookie=token, X_Nova="page")[0] == 403
+            # Whatever the method.
+            connection = http.client.HTTPConnection("127.0.0.1", page.proxy_port, timeout=2)
+            connection.request("HEAD", "/")
+            assert connection.getresponse().status == 403
+            connection.close()
+        assert "isn't NPM's" in caplog.text and page.logins.check(token)
+    finally:
+        page.stop()
+
+
+def test_npms_listener_needs_npms_address(files, caplog):
+    page = _npm_page(files, proxy_from=[])
+    with caplog.at_level(logging.WARNING):
+        page.start()
+    try:
+        assert page._proxy_server is None and "settings_page.proxy_from" in caplog.text
+        assert page._server.route == "tailnet"
+    finally:
+        page.stop()
+
+
+def test_the_npm_settings_come_from_config(make_config):
+    page = SettingsPage.from_config(make_config(settings_page={
+        "port": 8765, "allow": [LOGIN], "proxy_port": 8766, "proxy_from": ["192.0.2.1"]}), FakeBrain({}))
+    assert (page.proxy_port, page.proxy_from) == (8766, ["192.0.2.1"])
+    page = SettingsPage.from_config(make_config(settings_page={"port": 8765, "allow": [LOGIN]}), FakeBrain({}))
+    assert (page.proxy_port, page.proxy_from) == (0, [])
+
+
+def test_a_tailscale_header_through_npm_lets_nobody_in(npm):
+    assert npm._proxy_server.route == "npm"
+    assert _through_npm(npm, "/api/state", Tailscale_User_Login=LOGIN)[0] == 401
+    assert _through_npm(npm, "/api/volume", {"category": "music", "percent": 20},
+                        Tailscale_User_Login=LOGIN, X_Nova="page")[0] == 401
+    assert _bedroom(npm).volume.levels["music"] == 40
+
+
+def test_with_no_password_npm_lets_nobody_in(files, monkeypatch):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _npm_page(files)
+    page.start()
+    try:
+        status, _, body = _through_npm(page, "/api/login-state")
+        assert (status, json.loads(body)) == (200, {"route": "npm", "password_set": False, "logged_in": False})
+        for typed in ("", PASSWORD, "anything at all"):
+            said, token = _log_in(page, typed)
+            assert said == {"success": False,
+                            "message": "Set a page password at the page's Tailscale address first."}
+            assert token is None
+        status, _, body = _through_npm(page, "/api/state")
+        assert (status, json.loads(body)) == (401, {"success": False, "message": "Log in first."})
+    finally:
+        page.stop()
+
+
+def test_the_right_password_logs_in_for_thirty_days(npm, caplog):
+    caplog.set_level(logging.DEBUG)
+    said, _ = _log_in(npm, "not the password")
+    assert said == {"success": False, "message": "That's not the password."}
+
+    status, headers, body = _through_npm(npm, "/api/login", {"password": PASSWORD}, X_Nova="page")
+    cookie = headers["Set-Cookie"]
+    token = cookie.split(";")[0].split("=", 1)[1]
+    parts = [part.strip() for part in cookie.split(";")]
+    assert parts[0] == f"nova_login={token}" and len(token) >= 40
+    assert {"HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=2592000"} <= set(parts)
+    assert json.loads(body)["success"]
+    # Never the token or the password in the log.
+    assert token not in caplog.text and PASSWORD not in caplog.text
+
+    assert _through_npm(npm, "/api/state", cookie=token)[0] == 200
+    status, _, body = _through_npm(npm, "/api/login-state", cookie=token)
+    assert json.loads(body) == {"route": "npm", "password_set": True, "logged_in": True}
+    status, _, body = _through_npm(npm, "/api/volume", {"category": "music", "percent": 20},
+                                   cookie=token, X_Nova="page")
+    assert status == 200 and json.loads(body)["success"] and _bedroom(npm).volume.levels["music"] == 20
+    assert "Settings page: password " in caplog.text
+    assert "Settings page: password logged in" in caplog.text
+    assert token not in caplog.text and PASSWORD not in caplog.text
+
+
+def test_the_page_files_are_served_before_a_login(npm):
+    for path in ("/", "/settings.js", "/settings.css", "/icon.svg"):
+        status, headers, _ = _through_npm(npm, path)
+        assert status == 200 and headers["Content-Type"] == page_module.FILES[path][1]
+        assert headers["Content-Security-Policy"] == page_module.SAFETY_HEADERS["Content-Security-Policy"]
+    for path in ("/api/music", "/api/state", "/api/live", "/nothing"):
+        assert _through_npm(npm, path)[0] == 401
+    # A cookie which isn't one, or isn't a login, is no login.
+    assert _through_npm(npm, "/api/state", cookie="made-up")[0] == 401
+    assert _through_npm(npm, "/api/state", Cookie='nova_login="unclosed')[0] == 401
+
+
+def test_a_login_post_must_come_from_the_page(npm):
+    for headers in ({}, {"X_Nova": "page", "Sec_Fetch_Site": "cross-site"}):
+        status, sent, _ = _through_npm(npm, "/api/login", {"password": PASSWORD}, **headers)
+        assert status == 403 and sent.get("Set-Cookie") is None
+
+
+def test_an_overlong_password_or_cookie_is_never_checked(npm, monkeypatch):
+    checked = []
+    real_password_check, real_login_check = npm.password.check, npm.logins.check
+    monkeypatch.setattr(npm.password, "check", lambda typed: checked.append("password") or real_password_check(typed))
+    # None, for no cookie, isn't a check.
+    monkeypatch.setattr(npm.logins, "check",
+                        lambda token: (token is not None and checked.append("login")) or real_login_check(token))
+    said, token = _log_in(npm, "x" * 1025)
+    assert not said["success"] and token is None
+    assert _through_npm(npm, "/api/state", cookie="x" * 257)[0] == 401
+    assert checked == []
+    # A body bigger than any change is refused unread.
+    status, _, body = _through_npm(npm, "/api/login", {"password": "x" * (page_module.MOST_BODY + 1)}, X_Nova="page")
+    assert (status, json.loads(body)) == (400, {"success": False, "message": "That didn't make sense."})
+    assert checked == []
+
+
+def test_a_login_which_cant_be_saved_is_answered(npm, monkeypatch):
+    def full():
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(npm.logins, "make", full)
+    assert _log_in(npm) == ({"success": False, "message": "Couldn't save that."}, None)
+
+
+def test_five_wrong_passwords_make_that_device_wait(npm):
+    for _ in range(5):
+        assert _log_in(npm, "not the password", X_Real_IP="192.0.2.7")[0]["message"] == "That's not the password."
+    wait = {"success": False, "message": "Too many wrong passwords - try again in a minute."}
+    assert _log_in(npm, PASSWORD, X_Real_IP="192.0.2.7") == (wait, None)
+    said, token = _log_in(npm, PASSWORD, X_Real_IP="192.0.2.8")
+    assert said["success"] and token
+
+
+def test_log_out_ends_only_this_login(npm):
+    _, this = _log_in(npm)
+    _, other = _log_in(npm)
+    status, headers, body = _through_npm(npm, "/api/logout", {}, cookie=this, X_Nova="page")
+    assert status == 200 and json.loads(body)["success"]
+    assert "nova_login=;" in headers["Set-Cookie"] and "Max-Age=0" in headers["Set-Cookie"]
+    assert _through_npm(npm, "/api/state", cookie=this)[0] == 401
+    assert _through_npm(npm, "/api/state", cookie=other)[0] == 200
+    # One already ended is still cleared from the browser.
+    status, headers, body = _through_npm(npm, "/api/logout", {}, cookie=this, X_Nova="page")
+    assert status == 200 and json.loads(body)["success"] and "Max-Age=0" in headers["Set-Cookie"]
+    assert _through_npm(npm, "/api/logout", {}, cookie=this)[0] == 403
+    # On the tailnet there's no login to end.
+    status, _, body = _ask(npm, "/api/logout", {}, X_Nova="page")
+    assert status == 200 and json.loads(body)["success"]
+
+
+def test_a_new_password_logs_everyone_out(npm):
+    _, this = _log_in(npm)
+    _, other = _log_in(npm)
+    new = "a brand new page password"
+
+    # With the wrong current password, nothing changes.
+    status, headers, body = _through_npm(npm, "/api/page-password", {"password": new, "current": "wrong guess"},
+                                         cookie=this, X_Nova="page")
+    assert json.loads(body) == {"success": False, "message": "That's not the current password."}
+    assert headers.get("Set-Cookie") is None
+    status, _, body = _through_npm(npm, "/api/page-password", {"password": new}, cookie=this, X_Nova="page")
+    assert not json.loads(body)["success"]
+    assert npm.password.check(PASSWORD) and not npm.password.check(new)
+    assert _through_npm(npm, "/api/state", cookie=other)[0] == 200
+
+    # Too short is said, and changes nothing either.
+    status, _, body = _through_npm(npm, "/api/page-password", {"password": "short", "current": PASSWORD},
+                                   cookie=this, X_Nova="page")
+    assert json.loads(body) == {"success": False, "message": "The page password needs at least 12 characters."}
+    assert npm.password.check(PASSWORD)
+
+    status, headers, body = _through_npm(npm, "/api/page-password", {"password": new, "current": PASSWORD},
+                                         cookie=this, X_Nova="page")
+    assert json.loads(body)["success"] and npm.password.check(new)
+    fresh = headers["Set-Cookie"].split(";")[0].split("=", 1)[1]
+    assert fresh and fresh != this
+    assert _through_npm(npm, "/api/state", cookie=other)[0] == 401
+    assert _through_npm(npm, "/api/state", cookie=this)[0] == 401
+    assert _through_npm(npm, "/api/state", cookie=fresh)[0] == 200
+
+    # From the tailnet it's set without the current one, and nobody stays logged in.
+    status, headers, body = _ask(npm, "/api/page-password", {"password": PASSWORD}, X_Nova="page")
+    assert json.loads(body)["success"] and npm.password.check(PASSWORD) and headers.get("Set-Cookie") is None
+    assert _through_npm(npm, "/api/state", cookie=fresh)[0] == 401
+
+
+def test_log_out_everywhere_ends_every_login(npm):
+    _, first = _log_in(npm)
+    _, second = _log_in(npm)
+    status, _, body = _ask(npm, "/api/logout-everywhere", {}, X_Nova="page")
+    assert status == 200 and json.loads(body)["success"]
+    assert _through_npm(npm, "/api/state", cookie=first)[0] == 401
+    assert _through_npm(npm, "/api/state", cookie=second)[0] == 401
+
+
+def test_the_tailnet_route_is_unchanged(npm):
+    assert _ask(npm, "/api/state")[0] == 200
+    status, _, body = _ask(npm, "/api/login-state")
+    assert json.loads(body) == {"route": "tailnet", "password_set": True, "logged_in": True}
+    # Still only for the logins allowed, cookie or not.
+    _, token = _log_in(npm)
+    assert _ask(npm, "/api/state", login=None, Cookie=f"nova_login={token}")[0] == 403
+    # And never slowed by wrong passwords through NPM.
+    for _ in range(6):
+        _log_in(npm, "not the password")
+    assert _ask(npm, "/api/state")[0] == 200
+
+
+def test_a_cookie_which_cant_be_read_doesnt_hide_the_login(npm):
+    # Another service behind NPM may set a cookie on the whole domain which isn't one
+    # Python's parser reads.
+    _, token = _log_in(npm)
+    assert _through_npm(npm, "/api/state", Cookie=f'a="x y" z; nova_login={token}')[0] == 200
+    assert _through_npm(npm, "/api/state", Cookie=f"junk; other=1;nova_login={token}; more=2")[0] == 200
+    assert _through_npm(npm, "/api/state", Cookie="nova_login=" + "x" * 257)[0] == 401
+
+
+def _raw(port, request):
+    """Sends bytes as they are, returning the whole answer."""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+        connection.sendall(request)
+        answer = b""
+        while chunk := connection.recv(65536):
+            answer += chunk
+    return answer
+
+
+def test_anyone_but_npm_gets_a_bare_403_even_for_nonsense(files, monkeypatch, caplog):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page = _npm_page(files, proxy_from=["192.0.2.1"])
+    page.start()
+    try:
+        with caplog.at_level(logging.WARNING):
+            for request in (b"NONSENSE\r\n\r\n", b"GET /" + b"x" * 70000 + b" HTTP/1.1\r\n\r\n",
+                            b"POST /api/login HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"):
+                answer = _raw(page.proxy_port, request)
+                head, _, body = answer.partition(b"\r\n\r\n")
+                assert head.startswith(b"HTTP/1.1 403") and body == b"" and b"100 Continue" not in answer
+                for name, value in page_module.SAFETY_HEADERS.items():
+                    assert f"{name}: {value}".encode() in head
+        # The same device three times - only its first is logged.
+        assert caplog.text.count("isn't NPM's") == 1
+    finally:
+        page.stop()
+
+
+def _timed_turn_aways(monkeypatch):
+    """How long each turn-away held its thread for, in seconds, as each finishes."""
+    held = []
+    real = page_module._Handler._turn_away
+
+    def timed(handler):
+        start = time.monotonic()
+        real(handler)
+        held.append(time.monotonic() - start)
+
+    monkeypatch.setattr(page_module._Handler, "_turn_away", timed)
+    return held
+
+
+def test_a_peer_which_keeps_sending_is_let_go_within_a_second(files, monkeypatch):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    held = _timed_turn_aways(monkeypatch)
+    page = _npm_page(files, proxy_from=["192.0.2.1"])
+    page.start()
+    try:
+        # A byte every 0.3 seconds, each well within a second of the last - for three.
+        with socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5) as connection:
+            assert connection.recv(65536).startswith(b"HTTP/1.1 403")
+            for _ in range(10):
+                try:
+                    connection.sendall(b"x")
+                except OSError:
+                    break
+                time.sleep(0.3)
+        deadline = time.monotonic() + 5
+        while not held and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert held and held[0] < 1.5
+    finally:
+        page.stop()
+
+
+def test_only_so_many_are_turned_away_at_once(files, monkeypatch):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    monkeypatch.setattr(page_module, "TURN_AWAYS_AT_ONCE", 2)
+    held = _timed_turn_aways(monkeypatch)
+    page = _npm_page(files, proxy_from=["192.0.2.1"])
+    page.start()
+    try:
+        # Two which say nothing more hold theirs for the second the rest may take...
+        waiting = [socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5) for _ in range(2)]
+        for connection in waiting:
+            assert connection.recv(65536).startswith(b"HTTP/1.1 403")
+        # ...so a third still gets its 403, but isn't waited for at all.
+        waiting.append(socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5))
+        assert waiting[-1].recv(65536).startswith(b"HTTP/1.1 403")
+        time.sleep(0.3)
+        assert len(held) == 1 and held[0] < 0.3
+        for connection in waiting:
+            connection.close()
+    finally:
+        page.stop()
+
+
+def test_a_log_limit_says_each_thing_at_most_once_a_minute():
+    clock = SimpleNamespace(time=1000.0)
+    limit = page_module.LogLimit(now=lambda: clock.time)
+    assert limit.note("a") == 0
+    assert limit.note("a") is None and limit.note("a") is None
+    assert limit.note("b") == 0
+    clock.time += 59
+    assert limit.note("a") is None
+    # A minute after its last line, the next is logged with the three held back since.
+    clock.time += 1
+    assert limit.note("a") == 3
+    assert limit.note("a") is None
+    # "b" went quiet, so its next is a first again, and it has been forgotten.
+    assert limit.note("b") == 0
+    clock.time += 120
+    limit.note("c")
+    assert set(limit._last) == {"c"}
+
+
+def test_refusals_through_npm_are_logged_at_most_once_a_minute(npm, caplog):
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            assert _through_npm(npm, "/api/login", {"password": PASSWORD})[0] == 403
+            assert _through_npm(npm, "/api/login", {"password": PASSWORD}, X_Real_IP="192.0.2.9")[0] == 403
+    assert caplog.text.count("didn't come from the page") == 2
+    assert "someone at 192.0.2.9 not logged in" in caplog.text
+
+
+def test_an_address_which_cant_be_split_is_answered(npm):
+    # As a whole address, which the server doesn't shorten to a path as it does "//[x".
+    assert _raw(npm.proxy_port, b"GET http://[x HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.0 401")
+    _, token = _log_in(npm)
+    answer = _raw(npm.proxy_port, f"GET http://[x HTTP/1.1\r\nCookie: nova_login={token}\r\n\r\n".encode())
+    assert answer.startswith(b"HTTP/1.0 400") and b"That didn't make sense." in answer
+    answer = _raw(npm.port, f"GET http://[x HTTP/1.1\r\nTailscale-User-Login: {LOGIN}\r\n\r\n".encode())
+    assert answer.startswith(b"HTTP/1.0 400")
+    assert _raw(npm.port, b"GET http://[x HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.0 403")
+
+
+def test_a_login_with_the_old_password_never_outlives_a_change(npm, monkeypatch):
+    # The login's check is held up until the change has finished - or, if the change
+    # has to wait for the login, until it's plainly waiting.
+    checked, go = threading.Event(), threading.Event()
+    real_check = npm.password.check
+
+    def slow_check(typed):
+        right = real_check(typed)
+        checked.set()
+        assert go.wait(5)
+        return right
+
+    monkeypatch.setattr(npm.password, "check", slow_check)
+    logged_in = []
+    login = threading.Thread(target=lambda: logged_in.append(npm.log_in(PASSWORD, "192.0.2.7")))
+    login.start()
+    assert checked.wait(5)
+    change = threading.Thread(target=npm.set_page_password, args=("a brand new page password", LOGIN))
+    change.start()
+    change.join(1)
+    go.set()
+    login.join(5)
+    change.join(5)
+    assert not login.is_alive() and not change.is_alive()
+    said, token = logged_in[0]
+    assert npm.password.check("a brand new page password")
+    assert token is None or not npm.logins.check(token)

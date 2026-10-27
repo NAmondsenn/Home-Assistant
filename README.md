@@ -24,7 +24,7 @@ It's built in two halves - see [docs/decisions/0006](docs/decisions/0006-the-pi-
 - **Remembering you** - mention something about yourself ("I've started a new job at Aldi", "my sister's called Amy") and Nova keeps it, says "I'll remember that", and uses it from then on. "What do you know about me?" reads it back; "forget that..." or "forget everything you know about me" takes it away. It's kept in `~/.local/share/nova/memory.json`, and goes to Claude with each request so it can use it.
 - **Notifications** - with your own [ntfy](https://ntfy.sh/) server, alerts posted to the topics you choose - your homelab's, say - are read out as they arrive, and "tell me more" reads all of one. At night only the most urgent are; "any notifications?" has the rest. "Send that to my phone" sends Nova's last answer there, and "send that to my Mac" (or the tablet) sends it through the Home Assistant app's notifications instead, as do a reminder nobody answered and Nova restarting after a problem.
 - **Routines** - several things at once from a few words of your choosing ("Hey Nova, good morning"), or by themselves at a set time: each step is something you'd say to Nova - "what's the weather", "turn on the kitchen lights", "play my morning playlist" - done just as if you had, so a routine can do anything Nova can. Made and run on the settings page, and kept in `~/.local/share/nova/routines.json`.
-- **A settings page** - how Nova's doing, what's playing, your lights and Home Assistant's scripts and scenes, your batteries and when each warns, your calendars and lists, the sign-ins to Spotify and Google, its volumes, timers and alarms, what it remembers, its keys and its main settings, from your phone or laptop - over your tailnet, and only for you.
+- **A settings page** - how Nova's doing, what's playing, your lights and Home Assistant's scripts and scenes, your batteries and when each warns, your calendars and lists, the sign-ins to Spotify and Google, its volumes, timers and alarms, what it remembers, its keys and its main settings, from your phone or laptop - over your tailnet, and only for you, or, if you choose, through Nginx Proxy Manager at an address of your own, behind a password of its own.
 
 The everyday commands - timers, pause, skip, volume, the time, the weather, the lights, the calendar and the lists - are recognised on the brain without asking Claude, so they're quicker. With the internet down, the brain still handles timers, alarms, the time, the lights and Navidrome; anything which needs Spotify or Claude says straight away that it can't reach the internet, rather than going quiet. With the brain unreachable, a satellite can't understand anything, and says so - but its timers and alarms, which it keeps a copy of, still ring, and "stop" still stops them.
 
@@ -49,7 +49,7 @@ Nova is installed in two roles, from the same clone of the repository. Set the b
 
 ### The brain
 
-The brain is a container (or any machine) running Debian, with Python 3.13 and about 4GB of memory, on your tailnet. It needs an [Anthropic API key](https://console.anthropic.com/) and, for Spotify, Spotify Premium and a [Spotify app](https://developer.spotify.com/dashboard) for its client ID and secret, with `http://127.0.0.1:8888/callback` as its redirect URI. It has no microphone or speaker, and nothing outside your tailnet can reach it.
+The brain is a container (or any machine) running Debian, with Python 3.13 and about 4GB of memory, on your tailnet. It needs an [Anthropic API key](https://console.anthropic.com/) and, for Spotify, Spotify Premium and a [Spotify app](https://developer.spotify.com/dashboard) for its client ID and secret, with `http://127.0.0.1:8888/callback` as its redirect URI. It has no microphone or speaker, and nothing outside your tailnet can reach it - unless you serve the settings page through Nginx Proxy Manager, which opens a port on the brain to your whole network: anything there but NPM gets a bare 403, and through NPM the page needs its password (see [At an address of your own, through Nginx Proxy Manager](#at-an-address-of-your-own-through-nginx-proxy-manager)).
 
 The brain never runs as root. Make it a user of its own (here `nova`, with no sudo), clone the repository as that user, and run the setup as root, from outside or inside the container - root does only the system steps (packages, the service), and everything else, including the packages in `venv/`, the models, and the settings and keys in that user's `~/.config/nova`, is done as the user who owns the clone. It refuses a clone owned by root.
 
@@ -288,6 +288,24 @@ Nova serves a page for looking after it from a phone or a laptop - how it's doin
    ```
 
 Then restart the brain, and open `https://` and its name on your tailnet - `tailscale status` shows it - on any of your devices. A change has to come from the page itself, so another website can't make one in your name; settings are saved to the brain's `~/.config/nova/config.yaml`, the one before kept as `config.yaml.bak`. Most are used straight away; under each, the page says whether it's used straight away or once Nova restarts, and when a save waits for a restart, it offers one. A satellite's own settings are changed on the satellite: the brain's address by hand, and its password with `bash setup.sh --new-password`, once New password, under Satellites, has made one.
+
+#### At an address of your own, through Nginx Proxy Manager
+
+The page can also be served through Nginx Proxy Manager (NPM), at `https://nova.<your domain>`, so it opens at home on any of your devices without Tailscale on - behind a password of its own, as NPM's requests carry no Tailscale login. The tailnet address stays as it is, with no password.
+
+1. Set the page password first, on the page at its tailnet address: under Keys, Page password (for NPM) - at least 12 characters. It's kept only as a salted hash, never shown again, and a new one logs out every device using the old.
+2. In the brain's `~/.config/nova/config.yaml`, give the page a second port and say that only NPM's address may use it, then restart Nova:
+
+   ```yaml
+   settings_page:
+     proxy_port: 8766
+     proxy_from: ["NPM's address"]
+   ```
+
+   That port listens on every address of the brain's, but anything but NPM gets a bare 403. With `proxy_from` empty, the port isn't opened at all.
+3. In NPM, add a proxy host: domain `nova.<your domain>`, scheme `http`, forward to the brain's address and port 8766, with your wildcard certificate, Force SSL on, and the "LAN + Tailscale" access list. No websockets are needed.
+
+Then open `https://nova.<your domain>`. Until you log in, it shows only a login form, and none of Nova's own is served - only the page's files, which are all in this repository. A login lasts 30 days on that device and can do everything the tailnet address can - keys and settings included. Keys are never shown, but a login can change where Nova finds Home Assistant, Navidrome, ntfy or MQTT, and Nova would send that service's token or password to the new address once it restarts, so a login is worth as much as the keys. On a shared or lost device, use Log out (under Keys, on that address) or Log out everywhere, which ends every login made with the page password, whichever device - from the tailnet address too. Replacing the page password at the NPM address asks for the current one as well. After 5 wrong passwords in a row, a device's tries are refused for a minute; NPM says which device each try is from, in the `X-Real-IP` header it sends by default. A forgotten page password is set again at the tailnet address.
 
 ### The wake word model
 

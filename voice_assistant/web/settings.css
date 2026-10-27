@@ -1574,6 +1574,73 @@ input[type="range"].warmth::-moz-range-progress { background: transparent; }
   transform: translate(-50%, 0);
 }
 
+/* Logging in through NPM. Until settings.js knows the page may be shown, nothing
+   which needs a login is - so a device without one sees only the login form, not an
+   empty page behind it. */
+.locked .board,
+.locked #restart,
+.locked #stop,
+.locked .doing,
+.locked #undos { display: none !important; }
+
+.login {
+  display: grid;
+  gap: 12px;
+  max-width: 440px;
+  margin: 0 auto 36px;
+  padding: 18px 20px 20px;
+}
+
+.login .heading { margin: 0 0 4px; }
+
+.login .how {
+  color: var(--dusk);
+  font-size: 13px;
+}
+
+.login .entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.login .entry input {
+  flex: 1;
+  min-width: 0;
+}
+
+.login .button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.login .said {
+  margin: 0;
+  color: var(--ember);
+  font-size: 14px;
+}
+
+p.login { color: var(--moon); }
+
+/* The page password sits under the other keys, and needs its current one beside the
+   new one through NPM - on a line of its own, as two fields and Save don't fit a
+   phone's width. */
+.page-password { margin-top: 18px; }
+
+.page-password .entry input {
+  flex: 1;
+  min-width: 0;
+}
+
+.account {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.account .button { min-height: 44px; }
+
 @media (max-width: 1179px) {
   .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

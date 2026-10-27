@@ -244,6 +244,7 @@ IN_AND_OUT = {
     ("mqtt", "host"): (["192.168.1.20", "ha.local", ""], ["http://ha.local", "ha local"]),
     ("mqtt", "port"): ([1, 1883, 65535], [0, 65536, 1883.5]),
     ("voice", "speed"): ([0.75, 1.5, 1], [0.74, 1.51]),
+    ("settings_page", "proxy_port"): ([0, 8766, 65535], [-1, 65536, 8766.5, True]),
 }
 
 

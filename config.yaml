@@ -98,6 +98,12 @@ settings_page:
   port: 8765
   # The Tailscale logins let in, e.g. ["you@example.com"]. Nobody is until it's set.
   allow: []
+  # A second port, on every address, for Nginx Proxy Manager to pass the page on from,
+  # e.g. 8766 - behind the page's own password, set on the page at its Tailscale
+  # address first. 0 switches it off. Used once Nova restarts.
+  proxy_port: 0
+  # The addresses answered on that port - NPM's alone. Nothing is until it's set.
+  proxy_from: []
 
 conversation:
   history_length: 5
