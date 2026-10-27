@@ -48,7 +48,7 @@ const UNDO_SHOWN = 10000;
 
 // The least time between two reloads for an update, the first counted from when the page
 // was loaded, in milliseconds - so a brain in a crash loop, or its version flipping
-// mid-update, can't make the page reload round and round.
+// mid-update, makes the page reload no more than once a minute.
 const RELOAD_GAP = 60000;
 
 // What can be typed in, so a reload would lose it - a tapped switch or slider keeps the
