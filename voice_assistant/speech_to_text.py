@@ -121,6 +121,11 @@ def _after_please(text: str) -> str:
     return heard.group(1).strip()
 
 
+def _request(text: str, wake_word: Optional[str]) -> str:
+    """What's left of text without the wake word in front, if there's one to take off."""
+    return strip_wake_word(text, wake_word) if wake_word and text else text
+
+
 def make_please(tts) -> Optional[np.ndarray]:
     """
     Says "Please" with Piper, to go before a recording heard again - see
@@ -217,7 +222,7 @@ class NemotronSpeechToText:
         """
         gap = np.zeros(int(GAP * RATE), dtype=np.float32)
         twice = self._hear_whole(np.concatenate([speech, gap, speech]))
-        heard = self._request(_said_twice(twice), wake_word)
+        heard = _request(_said_twice(twice), wake_word)
         logger.info(f"Heard nothing, so listening again with it said twice: '{heard}' (heard as '{twice}')",
                     extra=TRANSCRIPT)
         if heard:
@@ -225,15 +230,10 @@ class NemotronSpeechToText:
         if self.please is None:
             return "", "nothing"
         after = self._hear_whole(np.concatenate([self.please, gap, speech]))
-        heard = self._request(_after_please(after), wake_word)
+        heard = _request(_after_please(after), wake_word)
         logger.info(f"Heard nothing again, so listening once more after 'Please': '{heard}' (heard as '{after}')",
                     extra=TRANSCRIPT)
         return heard, "please" if heard else "nothing"
-
-    @staticmethod
-    def _request(text: str, wake_word: Optional[str]) -> str:
-        """What's left of text without the wake word in front, if there's one to take off."""
-        return strip_wake_word(text, wake_word) if wake_word and text else text
 
     def _hear_whole(self, audio: np.ndarray) -> str:
         """
@@ -331,7 +331,7 @@ class NemotronTranscription:
             heard = _heard(str(self._text).strip(), time.time() - started, after_recording=True)
         # Only nothing at all is heard again - words imagined in noise, a cough heard as
         # "Thank you.", are most likely a false wake word, which is left quiet.
-        if (self._stt._request(heard["text"], wake_word) or heard.get("imagined") or not self._speech
+        if (_request(heard["text"], wake_word) or heard.get("imagined") or not self._speech
                 or "error" in heard):
             return heard
 
