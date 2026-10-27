@@ -453,6 +453,26 @@ def test_only_the_wake_word_heard_is_said_so_rather_than_asked_of_claude(brain, 
     assert brain.tts.said == ["Sorry, I didn't catch that."]
 
 
+def test_speech_to_text_failing_is_said_to_have_gone_wrong(brain, connect, make_session):
+    # Nemotron failed while listening and again on the whole recording - which isn't
+    # the user not being caught, so isn't said to be.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation()
+    failed = FakeTranscription("")
+    failed.finish = lambda audio, **how: {"text": "", "error": "Failed to decode"}
+    brain.stt = SimpleNamespace(listen=lambda: failed)
+    timeline = FakeTimeline()
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=timeline) is None
+    assert session.conversation.heard == []
+    assert brain.tts.said == ["Sorry, something went wrong there."]
+    assert timeline.notes["outcome"] == "nothing_transcribed"
+
+
 def test_words_imagined_in_noise_arent_apologised_for(brain, connect, make_session):
     # A cough or the television after a false wake word, heard as "Thank you." -
     # which stays as quiet as a false wake word with nothing in it.

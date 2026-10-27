@@ -511,6 +511,10 @@ class Session:
                 # Words imagined in noise - a cough heard as "Thank you." - are most
                 # likely a false wake word, so aren't apologised for.
                 self._not_heard()
+            elif "error" in (transcription or {}):
+                # Nemotron failed, as it was made and heard again whole - not the user
+                # not being caught.
+                self._apologise()
             else:
                 # The user spoke - the recording found them talking - so is told rather
                 # than left waiting, as they were after a lone "Pause." which Nemotron
