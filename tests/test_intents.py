@@ -54,6 +54,8 @@ def test_timers_are_set_without_claude(text, seconds):
     ("Previous song.", "previous"), ("Go back.", "previous"),
     # How Moonshine heard "stop" and "skip" said on their own.
     ("Soap.", "pause"), ("So.", "pause"), ("Scap.", "skip"),
+    # How Nemotron, hearing it again said twice, heard Piper's "Pause." on its own.
+    ("Cause.", "pause"), ("Paws.", "pause"),
 ])
 def test_playback_controls_are_handled_without_claude(text, command):
     assert _actions(text) == [Action("control_playback", {"action": command})]

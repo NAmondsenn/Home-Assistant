@@ -433,7 +433,24 @@ def test_speech_with_no_words_heard_in_it_is_said_so(brain, connect, make_sessio
     # Told how the recording ended, so it can hear the words again without the
     # quiet after them - and what to time that on.
     how = brain.stt.made[0].finished_how
-    assert how == {"timeline": timeline, "quiet_after": session.thresholds.get("silence_duration", 0.6)}
+    assert how == {"timeline": timeline, "quiet_after": session.thresholds.get("silence_duration", 0.6),
+                   "wake_word": "Hey Nova"}
+
+
+def test_only_the_wake_word_heard_is_said_so_rather_than_asked_of_claude(brain, connect, make_session):
+    # All Nemotron sometimes hears of "Nova, pause.", even heard again - which
+    # Claude could only guess at.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation()
+    brain.stt.texts = ["Nova."]
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=FakeTimeline()) is None
+    assert session.conversation.heard == []
+    assert brain.tts.said == ["Sorry, I didn't catch that."]
 
 
 def test_words_imagined_in_noise_arent_apologised_for(brain, connect, make_session):

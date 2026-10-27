@@ -265,8 +265,9 @@ class LocalIntents:
             (r"(?:(?:set|start) (?:me )?(?:a |an |of )?)?(?P<amount>[a-z0-9 ]+?) (?P<unit>second|minute|hour) timer",
              self._timer),
             # "Soap" or "so", "scap" and "quiter" are how Moonshine heard "stop", "skip"
-            # and "quieter" said on their own - see speech_to_text.py.
-            (r"(?:pause|stop|soap|so)(?: the)?(?: music| song| spotify)?", self._playback("pause")),
+            # and "quieter" said on their own - see speech_to_text.py. "Cause" and
+            # "paws" are how Nemotron, hearing it again said twice, heard "pause".
+            (r"(?:pause|stop|soap|so|cause|paws)(?: the)?(?: music| song| spotify)?", self._playback("pause")),
             (r"(?:resume|unpause|play)(?: the)?(?: music| spotify)?|carry on playing", self._resume),
             (r"(?:skip|next|scap)(?: (?:this|the))?(?: song| track| one)?", self._playback("skip")),
             (r"(?:previous|last) (?:song|track)|go back(?: a (?:song|track))?", self._playback("previous")),

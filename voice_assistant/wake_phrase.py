@@ -29,8 +29,7 @@ def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
         phrase: The wake word, e.g. "Hey Nova".
 
     Returns:
-        The text without the wake word in front, e.g. "Stop." - or as it was, if
-        that's all there is.
+        The text without the wake word in front, e.g. "Stop."
     """
     words = phrase.split()
     if not words:
@@ -55,10 +54,5 @@ def strip_wake_word(text, phrase=DEFAULT_WAKE_WORD):
         endings = [re.escape(words[-1])] + (["over"] if words[-1].lower() == "nova" else [])
         misheard = rf"^\W*(?:\w+\W+)?(?:{'|'.join(endings)})[.,!?]+\s*"
         rest = re.sub(misheard, "", text, count=1, flags=re.IGNORECASE)
-
-    # Only the wake word is left as it was, rather than taken down to nothing - it's
-    # sometimes all Nemotron hears of "Nova, pause.", and nothing would be ignored.
-    if not re.sub(r"\W", "", rest):
-        return text
 
     return rest[:1].upper() + rest[1:]

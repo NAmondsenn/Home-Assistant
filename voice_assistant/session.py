@@ -497,7 +497,8 @@ class Session:
         # 16kHz speech-to-text expects, since the satellite sends it at that.
         self.activity = "thinking"
         transcription = listening.finish(audio_data, timeline=timeline,
-                                         quiet_after=thresholds.get("silence_duration", 0.6))
+                                         quiet_after=thresholds.get("silence_duration", 0.6),
+                                         wake_word=self.wake_word)
         timeline.mark("stt_done")
         timeline.note(audio_seconds=round(len(audio_data) / RATE, 2))
 

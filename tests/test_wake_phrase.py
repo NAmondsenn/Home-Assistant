@@ -13,10 +13,10 @@ from voice_assistant.wake_phrase import strip_wake_word
     ("Nova. Stop.", "Stop."),
     ("nova stop", "Stop"),
     # Only the wake word, which is all Nemotron sometimes hears of "Nova, pause." -
-    # kept, rather than nothing, so the request isn't dropped without a word.
-    ("Hey, Nova.", "Hey, Nova."),
-    ("Nova", "Nova"),
-    ("Turn over.", "Turn over."),
+    # heard again, rather than asked of Claude (see speech_to_text.py).
+    ("Hey, Nova.", ""),
+    ("Nova", ""),
+    ("Turn over.", ""),
     ("What time is it?", "What time is it?"),
     # Only taken off the front, and only as a whole word.
     ("What's a nova?", "What's a nova?"),

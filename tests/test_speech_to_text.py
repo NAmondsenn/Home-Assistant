@@ -155,20 +155,21 @@ def test_a_nemotron_which_hangs_is_given_up_on(monkeypatch):
 
 # A lone short word - "Pause.", "Wait.", "Play." - which Nemotron so often hears as nothing.
 
-def _heard_after_nothing(*heard, please=None, timeline=None, quiet_after=0.0):
+def _heard_after_nothing(*heard, please=None, timeline=None, quiet_after=0.0, first="", wake_word=None):
     """
-    Nemotron hearing nothing in a recording of the user talking, then each of heard
-    in turn as it listens again.
+    Nemotron hearing nothing in a recording of the user talking - or first, such as
+    only the wake word - then each of heard in turn as it listens again.
 
     Returns:
         What finish gave, and the Nemotron, whose streams are what it was given.
     """
-    nemotron = FakeNemotron(heard=["", *heard])
+    nemotron = FakeNemotron(heard=[first, *heard])
     transcription = speech_to_text.NemotronSpeechToText(nemotron, please=please).listen()
     pieces = _pieces(0.1, 0.2)
     for piece in pieces:
         transcription.add(piece)
-    return transcription.finish(np.concatenate(pieces), timeline=timeline, quiet_after=quiet_after), nemotron
+    return transcription.finish(np.concatenate(pieces), timeline=timeline, quiet_after=quiet_after,
+                                wake_word=wake_word), nemotron
 
 
 def test_a_lone_word_heard_as_nothing_is_heard_again_said_twice(caplog):
@@ -191,6 +192,8 @@ def test_a_lone_word_heard_as_nothing_is_heard_again_said_twice(caplog):
     ("louder", ""),
     ("cause pause", ""),
     ("play play play", ""),
+    # Run together, as one word.
+    ("Pause-pause.", "pause"),
 ])
 def test_only_the_same_words_twice_are_kept(heard, meant):
     assert speech_to_text._said_twice(heard) == meant
@@ -206,7 +209,7 @@ def test_halves_which_differ_are_heard_again_after_please():
                           np.concatenate([please, np.zeros(round(0.3 * 16000)), speech]))
 
 
-@pytest.mark.parametrize("heard", ["", "pause", "Please.", "Thank you, please."])
+@pytest.mark.parametrize("heard", ["", "pause", "Please.", "Thank you, please.", "Please, please."])
 def test_please_must_come_first_and_be_followed_by_something(heard):
     please = np.full(800, 0.5, dtype=np.float32)
     assert _heard_after_nothing("x y", heard, please=please)[0]["text"] == ""
@@ -321,3 +324,50 @@ def test_nothing_heard_at_all_is_heard_again_and_not_taken_for_noise():
 
     result, nemotron = _heard_after_nothing("pause pause")
     assert result["text"] == "pause" and not result["imagined"]
+
+
+# Only the wake word - all Nemotron sometimes hears of "Nova, pause."
+
+def test_only_the_wake_word_is_heard_again_and_the_wake_word_left_out():
+    result, nemotron = _heard_after_nothing("Nova, pause. Nova, pause.", first="Nova.", wake_word="Hey Nova")
+    assert result["text"] == "Pause." and not result["imagined"]
+    assert len(nemotron.streams) == 2
+
+
+def test_only_the_wake_word_heard_again_and_again_is_nothing():
+    please = np.full(800, 0.5, dtype=np.float32)
+    timeline = __import__("voice_assistant.timeline", fromlist=["Timeline"]).Timeline()
+    result, nemotron = _heard_after_nothing("Nova. Nova.", "Please, Nova.", please=please, first="Hey, Nova.",
+                                            wake_word="Hey Nova", timeline=timeline)
+    assert result["text"] == "" and not result["imagined"]
+    assert len(nemotron.streams) == 3 and timeline.notes["heard_again"] == "nothing"
+
+
+def test_the_wake_word_with_a_request_isnt_heard_again():
+    nemotron = FakeNemotron(heard=["Nova, pause.", "never asked for"])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+    transcription.add(_pieces(0.1)[0])
+    assert transcription.finish(_pieces(0.1)[0], wake_word="Hey Nova")["text"] == "Nova, pause."
+    assert len(nemotron.streams) == 1
+
+
+def test_a_nemotron_which_hangs_listening_again_is_given_up_on(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(speech_to_text, "FINISH_LIMIT", 0.1)
+    stuck = threading.Event()
+
+    class Hanging(FakeNemotron):
+        def finish(self, stream):
+            if self.finished:
+                stuck.wait(2)
+            return super().finish(stream)
+
+    nemotron = Hanging(heard=["", "pause pause"])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron).listen()
+    transcription.add(_pieces(0.1)[0])
+    try:
+        with pytest.raises(TimeoutError):
+            transcription.finish(_pieces(0.1)[0])
+    finally:
+        stuck.set()
