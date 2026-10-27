@@ -46,7 +46,7 @@
 
     <!-- Through NPM, before a login, the only thing shown: posted by settings.js, with
          X-Nova, and emptied as it's sent. -->
-    <form class="panel login" id="login" hidden>
+    <form class="panel login" id="login" method="post" hidden>
       <h2 class="heading"><svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg>Log in</h2>
       <label class="how" for="login-password">Nova's page password</label>
       <div class="entry">
@@ -318,7 +318,7 @@
           <button type="button" class="button quiet" id="log-out" hidden>Log out</button>
           <button type="button" class="button quiet" id="log-out-everywhere">Log out everywhere</button>
         </div>
-        <p class="hint">The page password lets you in at its NPM address, and a new one logs out every device using it. Log out everywhere does that too - for a lost phone, say.</p>
+        <p class="hint">The page password lets you in at its NPM address, and a new one logs out every other device using it. Log out everywhere does that too - for a lost phone, say.</p>
       </section>
 
       <section class="wide" aria-labelledby="settings-title">

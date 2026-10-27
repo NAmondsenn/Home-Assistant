@@ -1374,6 +1374,8 @@ def test_the_page_has_a_login_form_and_log_out_buttons(served):
     html = _ask(served, "/")[2].decode()
     script = _ask(served, "/settings.js")[2].decode()
     assert 'id="login"' in html and ">Log in</button>" in html
+    # Should it ever be sent without the script, never in the address, where NPM's log keeps it.
+    assert re.search(r'<form[^>]*id="login"[^>]*method="post"', html)
     field = re.search(r'<input[^>]*id="login-password"[^>]*>', html).group(0)
     assert 'type="password"' in field and 'autocomplete="current-password"' in field
     assert ">Log out</button>" in html and ">Log out everywhere</button>" in html

@@ -158,6 +158,12 @@ let restartSaid = "";
 let locked = true;
 let loginState = null;
 
+// Whether login-state has been read since load() last looked - so the first load, straight
+// after the look at start-up, doesn't ask again - and whether the page has looked at all
+// yet, as only the first look moves the focus to the password, never one mid-use.
+let loginFresh = false;
+let firstLook = true;
+
 // Each of every()'s runs, to be started again once the page is unlocked.
 const runners = [];
 
@@ -368,7 +374,8 @@ async function change(path, body, reload = load) {
 
 async function load() {
   // Whether the page password is set may have changed on another device.
-  await checkLogin();
+  if (loginFresh) loginFresh = false;
+  else await checkLogin();
   if (locked) return;
   let state;
   try {
@@ -456,38 +463,49 @@ function every(milliseconds, work) {
 // Asks whether the page needs a login, and shows the page or the login form as it
 // says. Out of reach, what's shown stays - or, the first time, the page is shown, and
 // a 401 from anything it asks for brings the form.
+//
+// Returns:
+//   Whether Nova said.
 async function checkLogin() {
+  const first = firstLook;
+  firstLook = false;
   try {
     const response = await fetch("/api/login-state");
     if (!response.ok) throw new Error(await response.text());
     loginState = await response.json();
   } catch (error) {
     if (!loginState) unlock();
-    return;
+    return false;
   }
+  loginFresh = true;
   document.getElementById("log-out").hidden = loginState.route !== "npm";
   drawIfChanged("page-password", { route: loginState.route, set: loginState.password_set }, showPagePassword);
-  if (loginState.route === "npm" && !loginState.logged_in) lock();
+  if (loginState.route === "npm" && !loginState.logged_in) lock(first);
   else unlock();
+  return true;
 }
 
-// Only the login form - or, with no page password yet, where to set one.
-function lock() {
+// Only the login form - or, with no page password yet, where to set one. Nothing's
+// asked for until it's sent, so a page left locked asks Nova nothing at all.
+function lock(focus) {
   locked = true;
   document.body.classList.add("locked");
   const form = document.getElementById("login");
   const opening = form.hidden;
   form.hidden = !loginState.password_set;
   document.getElementById("login-first").hidden = loginState.password_set;
-  if (opening && !form.hidden) document.getElementById("login-password").focus();
+  if (focus && opening && !form.hidden) document.getElementById("login-password").focus();
 }
 
 // A 401: the login has ended, so the form is shown again - once, however many of the
-// page's asks were refused.
+// page's asks were refused. Only NPM's route ever says 401, so the form is shown even
+// if login-state couldn't be read at start-up, taking the page password as set - or
+// failing to read it would unlock the page, whose asks would be refused again, round
+// and round as fast as Nova answers.
 function lockAgain() {
   if (locked) return;
-  if (loginState) lock();
-  else locked = true;
+  loginState = loginState || { route: "npm", password_set: true, logged_in: false };
+  lock(false);
   checkLogin();
 }
 
@@ -522,8 +540,12 @@ async function logIn(event) {
   }
   button.disabled = false;
   if (result.success) {
-    await checkLogin();
-    return;
+    const told = await checkLogin();
+    // Logged in, yet the page can't be shown: Nova out of reach as it's asked, or the
+    // browser didn't send the login back.
+    if (!told) result = { message: "Logged in, but Nova couldn't be reached to show the page - try again in a moment." };
+    else if (!locked) return;
+    else result = { message: "Logged in, but this browser didn't keep it - check it's the https:// address, with cookies allowed." };
   }
   said.textContent = result.message || "That didn't work.";
   said.hidden = false;
