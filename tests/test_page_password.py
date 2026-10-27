@@ -78,6 +78,17 @@ def test_an_unreadable_password_file_is_not_set(tmp_path, caplog):
     assert "not a hash" not in caplog.text and "!!!" not in caplog.text
 
 
+def test_a_hash_scrypt_rejects_lets_nobody_in(tmp_path, caplog):
+    # Read as a hash Nova wrote, but n isn't a power of two, so scrypt won't take it.
+    path = tmp_path / "page_password"
+    path.write_text("scrypt$3$8$1$AAAA$AAAA")
+    password = PagePassword(str(path))
+
+    assert password.is_set()
+    assert not password.check("correct horse battery")
+    assert "a hash Nova can't check" in caplog.text
+
+
 def test_a_lone_surrogate_is_just_a_wrong_password(tmp_path, caplog):
     password = PagePassword(str(tmp_path / "page_password"))
     password.set("correct horse battery", Logins(str(tmp_path / "logins.json")))
@@ -256,6 +267,22 @@ def test_a_corrupt_logins_file_lets_nobody_in(tmp_path, caplog):
         assert logins.check(token)
         assert token not in caplog.text
     assert "tomorrow" not in caplog.text
+
+
+def test_an_unreadable_logins_file_is_warned_of_once_until_readable(tmp_path, caplog):
+    path = tmp_path / "page_logins.json"
+    path.write_text("not json")
+    logins = Logins(str(path))
+
+    for _ in range(3):
+        assert not logins.check("anything")
+    assert caplog.text.count("Could not read the page's logins") == 1
+    token = logins.make()
+    assert logins.check(token)
+    # Once it can be read again, the next time it can't is warned of afresh.
+    path.write_text("not json")
+    assert not logins.check(token)
+    assert caplog.text.count("Could not read the page's logins") == 2
 
 
 def test_a_login_that_would_never_end_is_refused(tmp_path):
