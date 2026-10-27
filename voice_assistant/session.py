@@ -505,11 +505,16 @@ class Session:
         # recording sometimes catches - see strip_wake_word.
         text = strip_wake_word((transcription or {}).get("text", ""), self.wake_word)
         if not text.strip():
-            # The user spoke - the recording found them talking - so is told rather
-            # than left waiting, as they were after a lone "Pause." which Nemotron
-            # heard as nothing.
             timeline.note(outcome="nothing_transcribed")
-            self._say("Sorry, I didn't catch that.")
+            if (transcription or {}).get("imagined"):
+                # Words imagined in noise - a cough heard as "Thank you." - are most
+                # likely a false wake word, so aren't apologised for.
+                self._not_heard()
+            else:
+                # The user spoke - the recording found them talking - so is told rather
+                # than left waiting, as they were after a lone "Pause." which Nemotron
+                # heard as nothing.
+                self._say("Sorry, I didn't catch that.")
             return None
 
         timeline.note(text_chars=len(text))

@@ -54,15 +54,17 @@ def _heard(text: str, duration: float, after_recording: bool = False) -> Dict[st
             the rest having been done while the user was talking.
 
     Returns:
-        The 'text' - empty if it's one of the things speech models imagine in noise -
-        and the 'duration'.
+        The 'text' - empty if it's one of the things speech models imagine in noise,
+        when 'imagined' is True - and the 'duration'.
     """
     took = f"{duration:.2f}s after the recording stopped" if after_recording else f"{duration:.2f}s"
     logger.info(f"Transcription complete ({took}): '{text}'", extra=TRANSCRIPT)
-    if text and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS:
+    imagined = bool(text) and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS
+    if imagined:
         logger.info(f"Ignoring '{text}' - most likely words imagined in noise", extra=TRANSCRIPT)
         text = ""
-    return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration}
+    return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration,
+            "imagined": imagined}
 
 
 def _words(text: str) -> list:
@@ -298,7 +300,9 @@ class NemotronTranscription:
             heard = self._stt.transcribe(audio)
         else:
             heard = _heard(str(self._text).strip(), time.time() - started, after_recording=True)
-        if heard["text"] or not self._speech or "error" in heard:
+        # Only nothing at all is heard again - words imagined in noise, a cough heard as
+        # "Thank you.", are most likely a false wake word, which is left quiet.
+        if heard["text"] or heard.get("imagined") or not self._speech or "error" in heard:
             return heard
 
         if timeline:
@@ -312,7 +316,10 @@ class NemotronTranscription:
         if timeline:
             timeline.mark("stt_retry_done")
             timeline.note(heard_again=how)
-        return _heard(text, time.time() - started, after_recording=True)
+        heard = _heard(text, time.time() - started, after_recording=True)
+        # The user did say something, even if hearing it again only imagined words.
+        heard["imagined"] = False
+        return heard
 
     def cancel(self):
         """

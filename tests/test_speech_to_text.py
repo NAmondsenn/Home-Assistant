@@ -299,3 +299,25 @@ def test_please_is_said_once_by_piper_at_16khz_without_its_quiet():
 def test_please_is_done_without_if_piper_cant_say_it(pieces):
     pytest.importorskip("soxr")
     assert speech_to_text.make_please(FakePiper(pieces)) is None
+
+
+def test_words_imagined_in_noise_arent_heard_again():
+    # Most likely a false wake word - a cough heard as "Thank you." - so it isn't
+    # worth a second or two more, nor an apology.
+    nemotron = FakeNemotron(heard=["Thank you.", "pause pause"])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron, please=np.ones(800, np.float32)).listen()
+    transcription.add(_pieces(0.1)[0])
+
+    result = transcription.finish(_pieces(0.1)[0])
+    assert result["text"] == "" and result["imagined"]
+    assert len(nemotron.streams) == 1
+
+
+def test_nothing_heard_at_all_is_heard_again_and_not_taken_for_noise():
+    # Even if hearing it again only imagines words, the user did say something.
+    result, nemotron = _heard_after_nothing("Thank you. Thank you.")
+    assert result["text"] == "" and not result["imagined"]
+    assert len(nemotron.streams) == 2
+
+    result, nemotron = _heard_after_nothing("pause pause")
+    assert result["text"] == "pause" and not result["imagined"]

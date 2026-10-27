@@ -129,8 +129,9 @@ class Pi:
 class FakeTranscription:
     """Stands in for speech-to-text listening to one recording, noting what it was given."""
 
-    def __init__(self, text=""):
+    def __init__(self, text="", imagined=False):
         self.text = text
+        self.imagined = imagined
         self.added = []
         self.finished_with = None
         self.finished_how = None
@@ -142,7 +143,7 @@ class FakeTranscription:
     def finish(self, audio, **how):
         self.finished_with = audio
         self.finished_how = how
-        return {"text": self.text}
+        return {"text": self.text, "imagined": self.imagined}
 
     def cancel(self):
         self.cancelled = True
@@ -433,6 +434,23 @@ def test_speech_with_no_words_heard_in_it_is_said_so(brain, connect, make_sessio
     # quiet after them - and what to time that on.
     how = brain.stt.made[0].finished_how
     assert how == {"timeline": timeline, "quiet_after": session.thresholds.get("silence_duration", 0.6)}
+
+
+def test_words_imagined_in_noise_arent_apologised_for(brain, connect, make_session):
+    # A cough or the television after a false wake word, heard as "Thank you." -
+    # which stays as quiet as a false wake word with nothing in it.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.stt = SimpleNamespace(listen=lambda: FakeTranscription("", imagined=True))
+    timeline = FakeTimeline()
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=timeline) is None
+    assert brain.tts.said == []
+    assert timeline.notes["outcome"] == "nothing_transcribed"
+    assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav", "not_heard.wav"]
 
 
 def test_speech_to_text_is_given_the_recording_as_its_made(brain, make_session):
