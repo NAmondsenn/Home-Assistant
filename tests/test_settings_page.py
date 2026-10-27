@@ -2839,9 +2839,11 @@ def test_only_so_many_are_turned_away_at_once(files, monkeypatch):
     held = _timed_turn_aways(monkeypatch, finished)
     page = _npm_page(files, proxy_from=["192.0.2.1"])
     page.start()
+    waiting = []
     try:
         # Two which say nothing more hold theirs...
-        waiting = [socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5) for _ in range(2)]
+        for _ in range(2):
+            waiting.append(socket.create_connection(("127.0.0.1", page.proxy_port), timeout=5))
         for connection in waiting:
             assert connection.recv(65536).startswith(b"HTTP/1.1 403")
         # ...so a third still gets its 403, but isn't waited for at all - it's let go
@@ -2857,6 +2859,8 @@ def test_only_so_many_are_turned_away_at_once(files, monkeypatch):
             finished.get(timeout=30)
         assert len(held) == 3
     finally:
+        for connection in waiting:
+            connection.close()
         page.stop()
 
 
