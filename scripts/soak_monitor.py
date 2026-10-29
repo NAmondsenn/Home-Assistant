@@ -168,7 +168,12 @@ def sample(previous: Optional[Dict], target: Target, since: datetime) -> Dict:
             row["_cpu"], row["_at"] = cpu, time.monotonic()
 
     log = os.path.join(LOGS_DIRECTORY, target.log)
-    row["log_mb"] = round(os.path.getsize(log) / 1_000_000, 2) if os.path.exists(log) else 0
+    try:
+        row["log_mb"] = round(os.path.getsize(log) / 1_000_000, 2)
+    except OSError:
+        # Missing, or rotated away a moment ago - a reading of 0 is better than ending a
+        # soak that has been running for days.
+        row["log_mb"] = 0
     # It rotates, so the older file counts too or the total would drop at each rotation.
     row["interactions"] = sum(_count_lines(os.path.join(LOGS_DIRECTORY, name))
                               for name in ("latency.jsonl", "latency.jsonl.1"))

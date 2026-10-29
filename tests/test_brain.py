@@ -95,7 +95,7 @@ class FakeTranscription:
     def add(self, audio):
         pass
 
-    def finish(self, audio):
+    def finish(self, audio, **how):
         return {"text": self.text}
 
     def cancel(self):
@@ -216,7 +216,7 @@ def make_brain(tmp_path, monkeypatch, make_config, passwords):
     monkeypatch.setattr(brain_module, "SOCKET_TIMEOUT", 0.1)
     monkeypatch.setattr(brain_module, "STOP_CHECK", 0.02)
     monkeypatch.setattr(brain_module, "TextToSpeech", lambda config: FakePiper())
-    monkeypatch.setattr(brain_module, "_speech_to_text", lambda config: FakeSpeechToText())
+    monkeypatch.setattr(brain_module, "_speech_to_text", lambda config, tts: FakeSpeechToText())
     happened = []
     monkeypatch.setattr(brain_module, "Session", lambda brain, satellite: FakeSession(brain, satellite, happened))
     made = []

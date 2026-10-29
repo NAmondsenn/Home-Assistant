@@ -33,6 +33,7 @@ a player, such as a server's address, wait for a restart, as one swapped half wa
 where things go wrong, and the page says which each setting is.
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -73,6 +74,10 @@ FILES = {"/": ("settings.html", "text/html; charset=utf-8"),
          # Outfit, by The Outfit Project Authors, under the SIL Open Font License -
          # see web/Outfit-OFL.txt.
          "/Outfit.woff2": ("Outfit.woff2", "font/woff2")}
+
+# The files the page itself is made of, whose hash tells a page left open across an
+# update that it's out of date - see page_version.
+PAGE_FILES = ("settings.html", "settings.js", "settings.css")
 
 # Sent with every answer: nothing but the page's own files may run in it, no other
 # site may show it in a frame, and nothing is kept in a cache.
@@ -145,6 +150,7 @@ MOST_BODY = 64 * 1024
 LOGIN_COOKIE = "nova_login"
 LONGEST_PASSWORD = 1024
 LONGEST_COOKIE = 256
+MOST_DEVICE_KEY = 64
 # What's open through NPM before a login: the page's own files, all public in the
 # repository, so the login form can be the page's own, and asking whether it's logged in.
 # Logging out is open too, so a cookie whose login has ended can still be cleared.
@@ -340,6 +346,27 @@ def _held_back(held: int) -> str:
     return f" (and {held} more since the last time)" if held else ""
 
 
+def page_version() -> str:
+    """
+    A short hash of the page's own files, for a page left open to tell it's been
+    updated since it was loaded. It's asked for before a login through NPM, so it's of
+    nothing but files served then anyway.
+
+    Returns:
+        Twelve hex digits, the same for the same files.
+
+    Raises:
+        OSError: One of the files couldn't be read.
+    """
+    digest = hashlib.sha256()
+    for name in PAGE_FILES:
+        with open(os.path.join(WEB_FOLDER, name), "rb") as file:
+            # Each file's own hash, so a byte moved from the end of one to the start of
+            # the next still makes a different version.
+            digest.update(hashlib.sha256(file.read()).digest())
+    return digest.hexdigest()[:12]
+
+
 class SettingsPage:
     """What the page shows and changes, and the server it's served from."""
 
@@ -386,6 +413,9 @@ class SettingsPage:
         self._listening_for = wake_word
         self._restart = restart
         self.started = started or time.time()
+        # Worked out once, as the brain starts, rather than each time it's asked for -
+        # an update is used from the restart after it, so that's when the page is told.
+        self.page_version = page_version()
         with open(paths.DEFAULTS_FILE) as file:
             self.defaults = yaml.safe_load(file)
         self._keys_changed = False
@@ -588,7 +618,8 @@ class SettingsPage:
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,
-                "restart_needed": self._restart_needed(saved)}
+                "restart_needed": self._restart_needed(saved),
+                "page": self.page_version}
 
     def live(self, satellite: Optional[str] = None) -> Dict:
         """
@@ -1951,7 +1982,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, file.read(), content_type)
         elif path == "/api/login-state":
             self._send_json({"route": self.server.route, "password_set": page.password.is_set(),
-                             "logged_in": self.logged_in})
+                             "logged_in": self.logged_in, "page": page.page_version})
         elif path == "/api/state":
             self._send_json(page.state(satellite))
         elif path == "/api/live":
@@ -2037,7 +2068,9 @@ class _Handler(BaseHTTPRequestHandler):
             path: What's asked for, without its query.
         """
         # Only believed as every request here is from NPM itself - see handle.
-        self.device = (self.headers.get("X-Real-IP") or "").strip() or self.client_address[0]
+        # Cut short as it's kept in the wrong-tries count and written to the log, where
+        # a 10,000-character header would otherwise be 10,000 characters of both.
+        self.device = (self.headers.get("X-Real-IP") or "").strip()[:MOST_DEVICE_KEY] or self.client_address[0]
         self.token = self._login_token()
         self.logged_in = page.logins.check(self.token)
         self.login = "password" if self.logged_in else f"someone at {self.device} not logged in"

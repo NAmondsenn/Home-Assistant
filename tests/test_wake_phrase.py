@@ -12,7 +12,11 @@ from voice_assistant.wake_phrase import strip_wake_word
     ("Hey Nova, what time is it?", "What time is it?"),
     ("Nova. Stop.", "Stop."),
     ("nova stop", "Stop"),
+    # Only the wake word, which is all Nemotron sometimes hears of "Nova, pause." -
+    # heard again, rather than asked of Claude (see speech_to_text.py).
     ("Hey, Nova.", ""),
+    ("Nova", ""),
+    ("Turn over.", ""),
     ("What time is it?", "What time is it?"),
     # Only taken off the front, and only as a whole word.
     ("What's a nova?", "What's a nova?"),

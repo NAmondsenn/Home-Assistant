@@ -67,7 +67,7 @@
         <h2 class="heading" id="status-title"><svg class="icon" aria-hidden="true"><use href="#i-pulse"></use></svg>Status</h2>
         <div class="tiles" id="status"></div>
         <!-- Each satellite, and a choice of which to look after when there's more than one. -->
-        <h3 class="subheading">Satellites</h3>
+        <h3 class="subheading" id="satellites-title" tabindex="-1">Satellites</h3>
         <ul class="list satellites" id="satellites"></ul>
         <div class="chips" id="satellite-choice" role="group" aria-label="Look after" hidden></div>
         <!-- A satellite's password, just made: put straight into the text here and
@@ -81,6 +81,17 @@
           <p class="how" id="password-how"></p>
           <button type="button" class="button quiet" id="password-close">Done</button>
         </div>
+        <!-- Asked before a satellite is given a new password, as it's let go until its setup
+             has the new one: the button waits for the satellite's name to be typed. -->
+        <form class="panel renew" id="renew-panel" hidden>
+          <p class="about" id="renew-about"></p>
+          <label for="renew-name" id="renew-label"></label>
+          <input type="text" id="renew-name" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="63">
+          <div class="entry">
+            <button type="submit" class="button danger" id="renew-go" disabled>Give it a new password</button>
+            <button type="button" class="button quiet" id="renew-cancel">Cancel</button>
+          </div>
+        </form>
         <form class="panel ask" id="add-satellite">
           <label class="visually-hidden" for="satellite-name">The new satellite's machine name</label>
           <input type="text" id="satellite-name" placeholder="Its Pi's machine name, e.g. bedroom" autocomplete="off"

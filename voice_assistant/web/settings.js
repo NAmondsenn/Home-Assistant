@@ -46,6 +46,20 @@ const LIGHT_EVERY = 250;
 // was removed a little longer - see voice_assistant/undo.py.
 const UNDO_SHOWN = 10000;
 
+// The least time between two reloads for an update, the first counted from when the page
+// was loaded, in milliseconds - so a brain in a crash loop, or its version flipping
+// mid-update, makes the page reload no more than once a minute.
+const RELOAD_GAP = 60000;
+
+// What can be typed in, so a reload would lose it - a tapped switch or slider keeps the
+// focus in Chromium, but nothing half-done goes with it, as each sends its change at once.
+const TYPED = new Set(["text", "password", "number", "time", "url", "search", "email", "tel", "textarea"]);
+
+// The forms always on show, which empty themselves once sent - so anything in one which
+// differs from how the page drew it is half done, wherever the focus has gone since: a
+// time picked for an alarm, then its Repeats tapped, say.
+const ALWAYS_SHOWN = ["add-alarm", "add-satellite", "play-something"];
+
 // The colours offered as swatches on a light which can be set to one, as a hue in
 // degrees and a saturation in percent.
 const SWATCHES = [
@@ -166,6 +180,18 @@ let firstLook = true;
 
 // Each of every()'s runs, to be started again once the page is unlocked.
 const runners = [];
+
+// The version of the page's own files the brain had when the page first asked, whether
+// a later answer has said another - the brain's been updated since, and the page is out
+// of date - and when the page last loaded or reloaded, for RELOAD_GAP. Also the notice
+// shown while it waits to reload, if it is.
+let pageVersion = null;
+let updated = false;
+let reloadedAt = Date.now();
+let updateNotice = null;
+
+// Whether the brain's being asked if it's up, just before a reload.
+let reloadChecking = false;
 
 // Making things
 
@@ -406,6 +432,7 @@ async function load() {
     offerRestart = false;
     countChanges();
   }
+  noticeVersion(state.page);
 }
 
 async function live() {
@@ -434,6 +461,8 @@ async function live() {
   }
   activity = now;
   showActivity();
+  // Asked for often, so a reload held back by editing happens soon after it ends.
+  reloadWhenReady();
 }
 
 // Runs work now, and again every so often while the page is in view - never two at
@@ -482,6 +511,7 @@ async function checkLogin() {
   drawIfChanged("page-password", { route: loginState.route, set: loginState.password_set }, showPagePassword);
   if (loginState.route === "npm" && !loginState.logged_in) lock(first);
   else unlock();
+  noticeVersion(loginState.page);
   return true;
 }
 
@@ -550,6 +580,96 @@ async function logIn(event) {
   said.textContent = result.message || "That didn't work.";
   said.hidden = false;
   field.focus();
+}
+
+// A page left open across an update
+
+// Notes the version of the page's files Nova says it has: the first is the page's own,
+// and any other means it's out of date.
+function noticeVersion(version) {
+  if (!version) return;
+  pageVersion = pageVersion || version;
+  updated = version !== pageVersion;
+  reloadWhenReady();
+}
+
+// Reloads an out-of-date page - straight away unless something's being edited, which a
+// reload would lose, or it reloaded less than RELOAD_GAP ago. Meanwhile it says so, with
+// a button to reload when the user's ready.
+async function reloadWhenReady() {
+  if (updated && await readyToReload()) {
+    reloadedAt = Date.now();
+    location.reload();
+    return;
+  }
+  if (!updated) {
+    if (updateNotice) updateNotice.remove();
+    updateNotice = null;
+    return;
+  }
+  if (updateNotice) return;
+  // As an Undo's toast, so it stays until it's used - here, until the page reloads.
+  updateNotice = element("div", "Nova has been updated - reload when you're ready", "toast undoable");
+  updateNotice.setAttribute("role", "status");
+  const button = element("button", "Reload", "button quiet");
+  button.type = "button";
+  button.addEventListener("click", () => location.reload());
+  updateNotice.append(button);
+  document.getElementById("undos").append(updateNotice);
+  const shown = updateNotice;
+  requestAnimationFrame(() => shown.classList.add("show"));
+}
+
+// Whether the page may reload now: nothing's being edited, RELOAD_GAP has passed, and the
+// brain answers with the new version just before - as in a crash loop it can be down
+// again by then, and a reload onto a brain that's down leaves the browser's own error
+// page, with nothing left to try again. Not answering, it waits for live() to hear
+// from Nova again, and asks then.
+async function readyToReload() {
+  if (reloadChecking || activity === "offline" || editingSomething() || Date.now() - reloadedAt < RELOAD_GAP) {
+    return false;
+  }
+  reloadChecking = true;
+  let said = null;
+  try {
+    const response = await fetch("/api/login-state");
+    if (response.ok) said = await response.json();
+  } catch (error) {
+    // Down again, then.
+  } finally {
+    reloadChecking = false;
+  }
+  if (!said || !said.page) return false;
+  // Back to the page's own files, or something begun while it was asked.
+  updated = said.page !== pageVersion;
+  return updated && !editingSomething();
+}
+
+// Whether a field in one of the forms always on show differs from how the page drew it -
+// only what can be typed in or chosen from, as a button has no defaultValue to compare.
+function changedField(field) {
+  if (field.type === "select-one") {
+    const options = [...field.options];
+    // With none marked as chosen in the HTML, a select starts on its first option.
+    const first = options.find((option) => option.defaultSelected) || options[0];
+    return Boolean(first) && field.value !== first.value;
+  }
+  return TYPED.has(field.type) && field.value !== field.defaultValue;
+}
+
+// Whether anything's being typed or changed which a reload would lose: a field with the
+// focus, anything in a form always on show, an editor or question open, a sign-in half
+// done, a key or the page password half put in, settings not yet saved, the login form -
+// or a satellite's password, which is shown only the once, on its way or on show.
+function editingSomething() {
+  if (passwordComing) return true;
+  if (TYPED.has(document.activeElement && document.activeElement.type)) return true;
+  if (ALWAYS_SHOWN.some((id) => [...document.getElementById(id).elements].some(changedField))) return true;
+  const open = ["routine-editor", "renew-panel", "password-panel", "spotify-finish", "google-finish", "login"];
+  if (open.some((id) => !document.getElementById(id).hidden)) return true;
+  return Boolean(document.getElementById("keys").querySelector(".key.open")
+    || document.getElementById("page-password").querySelector(".key.open")
+    || document.getElementById("settings").querySelector(".changed"));
 }
 
 // Draws part of the page again if what it's drawn from has changed - unless drawing
@@ -641,6 +761,7 @@ function showProblems() {
 // give it a new password, and a choice of which to look after below, when there's
 // more than one.
 function showSatellites(state) {
+  const buttons = new Map();
   const rows = satellites.map((satellite) => {
     const row = element("li");
     const what = element("span", undefined, "what");
@@ -663,6 +784,7 @@ function showSatellites(state) {
     renew.type = "button";
     renew.setAttribute("aria-label", `Give ${satellite.name} a new password`);
     renew.addEventListener("click", () => newPassword(satellite.name));
+    buttons.set(satellite.name, renew);
     const remove = element("button", "Remove", "button quiet danger");
     remove.type = "button";
     remove.setAttribute("aria-label", `Remove ${satellite.name}`);
@@ -675,8 +797,17 @@ function showSatellites(state) {
   const none = state.satellites_unreadable
     ? "The satellites' file can't be read, so they can't be shown or changed - see the brain's log."
     : "No satellites have been added.";
-  drawIfChanged("satellites", [satellites, none], () => document.getElementById("satellites").replaceChildren(
-    ...(rows.length ? rows : [emptyRow(none)])));
+  drawIfChanged("satellites", [satellites, none], () => {
+    document.getElementById("satellites").replaceChildren(...(rows.length ? rows : [emptyRow(none)]));
+    renewButtons = buttons;
+  });
+  // Its satellite removed - here or on another device - the question has nothing left to
+  // ask about, and left open it would hold back an update reload for good.
+  if (renewing !== null && !satellites.some((satellite) => satellite.name === renewing)) {
+    const panel = document.getElementById("renew-panel");
+    if (panel.contains(document.activeElement)) cancelRenew();
+    else closeRenew();
+  }
 
   // With more than one, the one looked after is named at the top, and over the sections
   // which are its own: "Nova · bedroom", "Sound · bedroom". The dot's held to the name, so
@@ -707,12 +838,62 @@ function showSatellites(state) {
   });
 }
 
-// Gives a satellite a new password, once the user's sure - it's let go until its
-// setup has the new one.
-async function newPassword(name) {
-  if (!confirm(`Give ${name} a new password? It stops working until it has the new one.`)) return;
-  const result = await change("/api/satellites/password", { name });
-  if (result.success && result.password) showPassword(name, result.password, false);
+// Asks before giving a satellite a new password, as it's let go until its setup has the
+// new one - and a "Cancel / OK" was once clicked through, which shut a Pi out for an hour.
+// So its name has to be typed first: the button waits for exactly that, and Cancel is
+// not an answer until then.
+let renewing = null;
+// Each satellite's "New password" button as drawn, by its name - for the focus to go back to.
+let renewButtons = new Map();
+// Whether a new password's been asked for and not yet shown - the question's closed by
+// then, so without this the page counts as not being edited, and an update reload could
+// land between the two and lose the password for good.
+let passwordComing = false;
+
+function newPassword(name) {
+  renewing = name;
+  document.getElementById("renew-about").replaceChildren(
+    `Give ${name} a new password? Nova stops answering on ${name} until you run `,
+    element("code", "bash setup.sh --new-password"),
+    " on it and paste the password shown next.");
+  document.getElementById("renew-label").textContent = `Type ${name} to go ahead`;
+  const field = document.getElementById("renew-name");
+  field.value = "";
+  document.getElementById("renew-go").disabled = true;
+  closePassword();
+  document.getElementById("renew-panel").hidden = false;
+  field.focus();
+}
+
+function closeRenew() {
+  renewing = null;
+  document.getElementById("renew-name").value = "";
+  document.getElementById("renew-go").disabled = true;
+  document.getElementById("renew-panel").hidden = true;
+}
+
+// Closes the question with the focus back where it was asked from - its satellite's
+// "New password" button, or the satellites' heading once that row's gone - so a keyboard
+// isn't dropped back at the top of the page.
+function cancelRenew() {
+  const button = renewButtons.get(renewing);
+  closeRenew();
+  (button || document.getElementById("satellites-title")).focus();
+}
+
+// Sent once, and only with the name typed exactly - the button's disabled otherwise, but
+// Enter in the field submits the form all the same.
+async function giveNewPassword() {
+  const name = renewing;
+  if (name === null || document.getElementById("renew-name").value !== name) return;
+  closeRenew();
+  passwordComing = true;
+  try {
+    const result = await change("/api/satellites/password", { name });
+    if (result.success && result.password) showPassword(name, result.password, false);
+  } finally {
+    passwordComing = false;
+  }
 }
 
 // Removes a satellite, once the user's sure - asked with what happens to what was
@@ -746,13 +927,15 @@ async function removeSatellite(shown) {
 // kept nowhere else once this returns - in no variable, nor anything the browser
 // keeps - and closing the panel takes it off the page.
 function showPassword(name, password, added) {
+  closeRenew();
   document.getElementById("password-about").textContent = added
     ? `The ${name} satellite's password, shown only this once:`
     : `The ${name} satellite's new password, shown only this once:`;
   document.getElementById("password-text").textContent = password;
   document.getElementById("password-how").replaceChildren(...(added
     ? ["Type this into setup.sh on the Pi."]
-    : ["On the Pi, run ", element("code", "bash setup.sh --new-password"), " and type it in - or, on a Pi not yet updated, put it after ",
+    : [`Nova stops answering on ${name} until you run `, element("code", "bash setup.sh --new-password"),
+       " on it and paste this password in - or, on a Pi not yet updated, put it after ",
        element("code", "NOVA_BACKEND_TOKEN="), " in ", element("code", "~/.config/nova/.env"), " and restart the satellite."]));
   const copy = document.getElementById("password-copy");
   copy.textContent = "Copy";
@@ -2221,6 +2404,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.getElementById("password-close").addEventListener("click", closePassword);
+  document.getElementById("renew-name").addEventListener("input", () => {
+    document.getElementById("renew-go").disabled = document.getElementById("renew-name").value !== renewing;
+  });
+  document.getElementById("renew-panel").addEventListener("submit", (event) => {
+    event.preventDefault();
+    giveNewPassword();
+  });
+  document.getElementById("renew-cancel").addEventListener("click", cancelRenew);
+  document.getElementById("renew-panel").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") cancelRenew();
+  });
 
   document.getElementById("problems-all").addEventListener("click", () => {
     allProblems = !allProblems;

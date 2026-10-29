@@ -185,7 +185,8 @@ class Session:
         # The everyday commands handled without Claude - see intents.py. The activities are
         # the calendars' names, so "when's gym tomorrow?" is heard once there's a Gym calendar.
         self.intents = LocalIntents(clock=brain.clock, ntfy=brain.ntfy, home=self.home,
-                                    activities=brain.calendar.activity_words if brain.calendar else None)
+                                    activities=brain.calendar.activity_words if brain.calendar else None,
+                                    wake_word=self.wake_word)
 
         # The satellite as a device of its own in Home Assistant, over MQTT, or None
         # until mqtt.host is set - see ha_device.py. It's named after the satellite's
@@ -496,7 +497,9 @@ class Session:
         # carrying on listening if no text comes back. The audio is already at the
         # 16kHz speech-to-text expects, since the satellite sends it at that.
         self.activity = "thinking"
-        transcription = listening.finish(audio_data)
+        transcription = listening.finish(audio_data, timeline=timeline,
+                                         quiet_after=thresholds.get("silence_duration", 0.6),
+                                         wake_word=self.wake_word)
         timeline.mark("stt_done")
         timeline.note(audio_seconds=round(len(audio_data) / RATE, 2))
 
@@ -505,7 +508,19 @@ class Session:
         text = strip_wake_word((transcription or {}).get("text", ""), self.wake_word)
         if not text.strip():
             timeline.note(outcome="nothing_transcribed")
-            self._not_heard()
+            if (transcription or {}).get("imagined"):
+                # Words imagined in noise - a cough heard as "Thank you." - are most
+                # likely a false wake word, so aren't apologised for.
+                self._not_heard()
+            elif "error" in (transcription or {}):
+                # Nemotron failed, as it was made and heard again whole - not the user
+                # not being caught.
+                self._apologise()
+            else:
+                # The user spoke - the recording found them talking - so is told rather
+                # than left waiting, as they were after a lone "Pause." which Nemotron
+                # heard as nothing.
+                self._say("Sorry, I didn't catch that.")
             return None
 
         timeline.note(text_chars=len(text))

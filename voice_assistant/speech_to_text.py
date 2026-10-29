@@ -5,6 +5,11 @@ Speech-to-text on the brain, with Nemotron (see nemotron.py) for every satellite
 recordings. Each recording is heard as it's made, through a stream of its own, so the
 words are mostly worked out by the time the user stops - and words it imagines in
 noise, such as a lone "Thank you.", are thrown away.
+
+A lone short word - "Pause.", "Wait.", "Play." - often comes back as nothing at all,
+since Nemotron has no words around it to go on. So a short recording the user spoke in
+which comes to nothing is heard again, said twice, then after a "Please" - see
+.superpowers/sdd/pause-investigation.md.
 """
 
 import logging
@@ -12,9 +17,10 @@ import queue
 import re
 import threading
 import numpy as np
-from typing import Any, Optional, Dict, Union
+from typing import Any, Optional, Dict, Tuple, Union
 import time
 from voice_assistant.logging_setup import TRANSCRIPT
+from voice_assistant.wake_phrase import strip_wake_word
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -24,6 +30,25 @@ logger = logging.getLogger(__name__)
 # away when they're the whole transcript, so a real "set a timer, thank you" is kept.
 HALLUCINATIONS = {"you", "thank you", "thanks", "bye", "bye bye",
                   "thanks for watching", "thank you for watching"}
+
+RATE = 16000
+
+# The quiet between the two copies of a recording heard again, and after the "Please"
+# before one, in seconds. On the brain, at 0.3s 26 of 31 lone words which had come
+# back as nothing were heard; at 0.5s and more the halves disagreed more often
+# ("Ludder Lutter").
+GAP = 0.3
+
+# How loud Piper's "Please" has to be to count as the word rather than the quiet
+# around it, which is trimmed off.
+PLEASE_QUIET = 0.01
+
+# The longest speech heard again, in seconds, without the quiet it stopped after. The
+# lone words which came back as nothing were 0.23 to 0.95 s of speech (see
+# .superpowers/sdd/pause-investigation.md), and hearing again decodes the speech about
+# three times over - so a long recording which came to nothing, a tap running that
+# sounded like talking, would cost many seconds of silence for no likely gain.
+LONGEST_RETRIED = 3.0
 
 
 def _heard(text: str, duration: float, after_recording: bool = False) -> Dict[str, Any]:
@@ -37,15 +62,98 @@ def _heard(text: str, duration: float, after_recording: bool = False) -> Dict[st
             the rest having been done while the user was talking.
 
     Returns:
-        The 'text' - empty if it's one of the things speech models imagine in noise -
-        and the 'duration'.
+        The 'text' - empty if it's one of the things speech models imagine in noise,
+        when 'imagined' is True - and the 'duration'.
     """
     took = f"{duration:.2f}s after the recording stopped" if after_recording else f"{duration:.2f}s"
     logger.info(f"Transcription complete ({took}): '{text}'", extra=TRANSCRIPT)
-    if text and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS:
+    imagined = bool(text) and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS
+    if imagined:
         logger.info(f"Ignoring '{text}' - most likely words imagined in noise", extra=TRANSCRIPT)
         text = ""
-    return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration}
+    return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration,
+            "imagined": imagined}
+
+
+def _words(text: str) -> list:
+    """The words in text as they're compared - in lower case, without punctuation."""
+    return re.findall(r"[a-z0-9']+", text.lower())
+
+
+def _said_twice(text: str) -> str:
+    """
+    What a recording heard again said twice over was, if Nemotron heard the same both times.
+
+    Args:
+        text: What it heard, e.g. "Pause. Pause."
+
+    Returns:
+        The first of the two, e.g. "Pause." - or '' if the halves differ, as "Cause
+        pause" does, so a word only half heard isn't acted on.
+    """
+    said = [word for word in text.split() if _words(word)]
+    half = len(said) // 2
+    if said and not len(said) % 2 and _words(" ".join(said[:half])) == _words(" ".join(said[half:])):
+        return " ".join(said[:half]).rstrip(",;:")
+    # Run together - "Pause-pause." - so only the words themselves can be kept.
+    words = _words(text)
+    half = len(words) // 2
+    if words and not len(words) % 2 and words[:half] == words[half:]:
+        return " ".join(words[:half])
+    return ""
+
+
+def _after_please(text: str) -> str:
+    """
+    What a recording heard again after a "Please" was.
+
+    Args:
+        text: What it heard, e.g. "Please pause."
+
+    Returns:
+        It without the "Please", e.g. "pause." - or '' unless it starts with "Please"
+        and has more after, other than "please" again, since otherwise Nemotron didn't
+        hear what it was given.
+    """
+    heard = re.match(r"\W*please\b\W*(.*)", text, flags=re.IGNORECASE)
+    if not heard or not [word for word in _words(heard.group(1)) if word != "please"]:
+        return ""
+    return heard.group(1).strip()
+
+
+def _request(text: str, wake_word: Optional[str]) -> str:
+    """What's left of text without the wake word in front, if there's one to take off."""
+    return strip_wake_word(text, wake_word) if wake_word and text else text
+
+
+def make_please(tts) -> Optional[np.ndarray]:
+    """
+    Says "Please" with Piper, to go before a recording heard again - see
+    NemotronSpeechToText.hear_again. Made once, as the brain starts, rather than for
+    each recording which needs it.
+
+    Args:
+        tts: The brain's TextToSpeech.
+
+    Returns:
+        It, as float32 samples at 16kHz without Piper's quiet before and after - or
+        None if Piper couldn't say it, when a recording is only heard again said twice.
+    """
+    try:
+        import soxr
+
+        pieces = list(tts.stream("Please", remember=False))
+        audio = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
+        loud = np.flatnonzero(np.abs(audio) >= PLEASE_QUIET)
+        if not len(loud):
+            logger.warning("Piper didn't say 'Please', so a recording heard as nothing is only heard again said twice")
+            return None
+        word = audio[loud[0]:loud[-1] + 1]
+        return np.asarray(soxr.resample(word, tts.sample_rate, RATE), dtype=np.float32)
+    except Exception as e:
+        logger.warning(f"Couldn't have Piper say 'Please', so a recording heard as nothing is only heard "
+                       f"again said twice: {e}")
+        return None
 
 
 class NemotronSpeechToText:
@@ -56,12 +164,15 @@ class NemotronSpeechToText:
     backend heard for the Pi.
     """
 
-    def __init__(self, nemotron):
+    def __init__(self, nemotron, please: Optional[np.ndarray] = None):
         """
         Args:
             nemotron: The Nemotron, loaded - one, which every satellite's recordings share.
+            please: Piper's "Please", from make_please, to hear a recording again after -
+                or None not to.
         """
         self.nemotron = nemotron
+        self.please = please
 
     @property
     def loaded(self) -> bool:
@@ -85,13 +196,55 @@ class NemotronSpeechToText:
         """
         started = time.time()
         try:
-            stream = self.nemotron.start()
-            self.nemotron.add(stream, np.asarray(audio, dtype=np.float32))
-            text = self.nemotron.finish(stream)
+            text = self._hear_whole(audio)
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             return {"text": "", "language": None, "language_probability": 0.0, "duration": 0.0, "error": str(e)}
-        return _heard(str(text).strip(), time.time() - started)
+        return _heard(text, time.time() - started)
+
+    def hear_again(self, speech: np.ndarray, wake_word: Optional[str] = None) -> Tuple[str, str]:
+        """
+        Hears a recording Nemotron heard nothing in again: said twice over, which gives
+        it words around the one said to go on, and if the two don't agree, after a
+        "Please" - which is never wrong, but on the brain heard fewer.
+
+        Args:
+            speech: The recording, without the quiet it stopped after.
+            wake_word: The wake word, taken off the front of what's heard - "Nova,
+                pause. Nova, pause." is "Pause." - so only the wake word heard again
+                is still nothing. None to leave it.
+
+        Returns:
+            What was heard, or '' - and how: "twice", "please" or "nothing".
+
+        Raises:
+            Exception: Whatever Nemotron raises.
+        """
+        gap = np.zeros(int(GAP * RATE), dtype=np.float32)
+        twice = self._hear_whole(np.concatenate([speech, gap, speech]))
+        heard = _request(_said_twice(twice), wake_word)
+        logger.info(f"Heard nothing, so listening again with it said twice: '{heard}' (heard as '{twice}')",
+                    extra=TRANSCRIPT)
+        if heard:
+            return heard, "twice"
+        if self.please is None:
+            return "", "nothing"
+        after = self._hear_whole(np.concatenate([self.please, gap, speech]))
+        heard = _request(_after_please(after), wake_word)
+        logger.info(f"Heard nothing again, so listening once more after 'Please': '{heard}' (heard as '{after}')",
+                    extra=TRANSCRIPT)
+        return heard, "please" if heard else "nothing"
+
+    def _hear_whole(self, audio: np.ndarray) -> str:
+        """
+        What Nemotron hears in a whole recording, through a stream of its own.
+
+        Raises:
+            Exception: Whatever Nemotron raises.
+        """
+        stream = self.nemotron.start()
+        self.nemotron.add(stream, np.asarray(audio, dtype=np.float32))
+        return str(self.nemotron.finish(stream)).strip()
 
 
 # What a NemotronTranscription is told once the recording is over.
@@ -124,6 +277,9 @@ class NemotronTranscription:
         self._waiting: "queue.Queue[Union[np.ndarray, str]]" = queue.Queue()
         self._text: Optional[str] = None
         self._failed: Optional[Exception] = None
+        # Whether it was given any of the recording - which is only once the recording
+        # has found the user talking (see recording.record_until_silence).
+        self._speech = False
         self._thread = threading.Thread(target=self._hear, name="nemotron", daemon=True)
         self._thread.start()
 
@@ -134,15 +290,24 @@ class NemotronTranscription:
         Args:
             audio: float32 samples at 16kHz, carrying on from the last.
         """
+        self._speech = True
         self._waiting.put(audio)
 
-    def finish(self, audio: np.ndarray) -> Dict[str, Any]:
+    def finish(self, audio: np.ndarray, timeline=None, quiet_after: float = 0.0,
+               wake_word: Optional[str] = None) -> Dict[str, Any]:
         """
-        The words, once Nemotron has caught up with the end of the recording.
+        The words, once Nemotron has caught up with the end of the recording - heard
+        again if the user spoke, for no more than LONGEST_RETRIED, and it came to nothing
+        (see NemotronSpeechToText.hear_again).
 
         Args:
             audio: The whole recording, which is transcribed afresh if anything went
                 wrong while listening, so nothing said is lost.
+            timeline: The Timeline to time hearing it again on, if it is.
+            quiet_after: Seconds of quiet the recording stopped after, left out when
+                it's heard again - the two copies are to be GAP apart.
+            wake_word: The wake word, so that only it heard - all Nemotron sometimes
+                hears of "Nova, pause." - counts as nothing heard. None if it doesn't.
 
         Returns:
             What NemotronSpeechToText.transcribe() returns - its 'duration' only how
@@ -150,7 +315,8 @@ class NemotronTranscription:
 
         Raises:
             TimeoutError: Nemotron hasn't finished within FINISH_LIMIT, so has hung -
-                and hearing the whole recording again would only hang too.
+                and hearing the whole recording again would only hang too - or hasn't
+                finished hearing it again within FINISH_LIMIT more.
         """
         started = time.time()
         self._waiting.put(_FINISHED)
@@ -160,8 +326,43 @@ class NemotronTranscription:
         if self._failed is not None:
             logger.warning(f"Couldn't transcribe the recording as it was made, so starting again "
                            f"on the whole of it: {self._failed}")
-            return self._stt.transcribe(audio)
-        return _heard(str(self._text).strip(), time.time() - started, after_recording=True)
+            heard = self._stt.transcribe(audio)
+        else:
+            heard = _heard(str(self._text).strip(), time.time() - started, after_recording=True)
+        # Only nothing at all is heard again - words imagined in noise, a cough heard as
+        # "Thank you.", are most likely a false wake word, which is left quiet.
+        if (_request(heard["text"], wake_word) or heard.get("imagined") or not self._speech
+                or "error" in heard):
+            return heard
+
+        speech = np.asarray(audio, dtype=np.float32)[:max(0, len(audio) - int(quiet_after * RATE))]
+        if len(speech) > LONGEST_RETRIED * RATE:
+            return heard
+        if timeline:
+            timeline.mark("stt_retry_started")
+        # On a thread of its own, so a Nemotron which hangs is given up on, as it is
+        # while listening.
+        outcome = {}
+
+        def hear():
+            try:
+                outcome["heard"] = self._stt.hear_again(speech, wake_word)
+            except Exception as e:
+                logger.error(f"Couldn't listen to the recording again: {e}")
+
+        again = threading.Thread(target=hear, name="nemotron-again", daemon=True)
+        again.start()
+        again.join(FINISH_LIMIT)
+        if again.is_alive():
+            raise TimeoutError(f"Nemotron hadn't heard the recording again after {FINISH_LIMIT:.0f}s")
+        text, how = outcome.get("heard", ("", "nothing"))
+        if timeline:
+            timeline.mark("stt_retry_done")
+            timeline.note(heard_again=how)
+        heard = _heard(text, time.time() - started, after_recording=True)
+        # The user did say something, even if hearing it again only imagined words.
+        heard["imagined"] = False
+        return heard
 
     def cancel(self):
         """

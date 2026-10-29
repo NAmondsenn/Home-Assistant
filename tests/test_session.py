@@ -129,18 +129,21 @@ class Pi:
 class FakeTranscription:
     """Stands in for speech-to-text listening to one recording, noting what it was given."""
 
-    def __init__(self, text=""):
+    def __init__(self, text="", imagined=False):
         self.text = text
+        self.imagined = imagined
         self.added = []
         self.finished_with = None
+        self.finished_how = None
         self.cancelled = False
 
     def add(self, audio):
         self.added.append(audio)
 
-    def finish(self, audio):
+    def finish(self, audio, **how):
         self.finished_with = audio
-        return {"text": self.text}
+        self.finished_how = how
+        return {"text": self.text, "imagined": self.imagined}
 
     def cancel(self):
         self.cancelled = True
@@ -404,10 +407,87 @@ def test_giving_up_without_hearing_anything_is_audible(brain, connect, make_sess
 
     assert session._handle_interaction(feed, timeline=FakeTimeline()) is None
     assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav", "not_heard.wav"]
+    # A false wake word isn't apologised for, only noted.
+    assert brain.tts.said == []
     # Speech-to-text, which was ready to listen, is told nothing's coming - and the
     # satellite stops sending.
     assert brain.stt.made[0].cancelled
     assert wait_for(lambda: pi.messages("stop_listening"))
+
+
+def test_speech_with_no_words_heard_in_it_is_said_so(brain, connect, make_session):
+    # Nemotron hears many a lone "Pause." as nothing, and Nova used to say nothing back.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation()
+    brain.stt.texts = [""]
+    timeline = FakeTimeline()
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=timeline) is None
+    assert brain.tts.said == ["Sorry, I didn't catch that."]
+    assert timeline.notes["outcome"] == "nothing_transcribed"
+    assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav"]
+    # Told how the recording ended, so it can hear the words again without the
+    # quiet after them - and what to time that on.
+    how = brain.stt.made[0].finished_how
+    assert how == {"timeline": timeline, "quiet_after": session.thresholds.get("silence_duration", 0.6),
+                   "wake_word": "Hey Nova"}
+
+
+def test_only_the_wake_word_heard_is_said_so_rather_than_asked_of_claude(brain, connect, make_session):
+    # All Nemotron sometimes hears of "Nova, pause.", even heard again - which
+    # Claude could only guess at.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation()
+    brain.stt.texts = ["Nova."]
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=FakeTimeline()) is None
+    assert session.conversation.heard == []
+    assert brain.tts.said == ["Sorry, I didn't catch that."]
+
+
+def test_speech_to_text_failing_is_said_to_have_gone_wrong(brain, connect, make_session):
+    # Nemotron failed while listening and again on the whole recording - which isn't
+    # the user not being caught, so isn't said to be.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation()
+    failed = FakeTranscription("")
+    failed.finish = lambda audio, **how: {"text": "", "error": "Failed to decode"}
+    brain.stt = SimpleNamespace(listen=lambda: failed)
+    timeline = FakeTimeline()
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=timeline) is None
+    assert session.conversation.heard == []
+    assert brain.tts.said == ["Sorry, something went wrong there."]
+    assert timeline.notes["outcome"] == "nothing_transcribed"
+
+
+def test_words_imagined_in_noise_arent_apologised_for(brain, connect, make_session):
+    # A cough or the television after a false wake word, heard as "Thank you." -
+    # which stays as quiet as a false wake word with nothing in it.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.stt = SimpleNamespace(listen=lambda: FakeTranscription("", imagined=True))
+    timeline = FakeTimeline()
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+
+    assert session._handle_interaction(feed, timeline=timeline) is None
+    assert brain.tts.said == []
+    assert timeline.notes["outcome"] == "nothing_transcribed"
+    assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav", "not_heard.wav"]
 
 
 def test_speech_to_text_is_given_the_recording_as_its_made(brain, make_session):
@@ -895,9 +975,9 @@ def test_what_nova_is_doing_is_kept_for_the_settings_page(brain, make_session, m
     seen = {}
 
     class Watching(FakeTranscription):
-        def finish(self, audio):
+        def finish(self, audio, **how):
             seen["working out the words"] = session.activity
-            return super().finish(audio)
+            return super().finish(audio, **how)
 
     def record_until_silence(source, detector, heard=None, **kwargs):
         seen["recording"] = session.activity
@@ -1206,6 +1286,13 @@ def test_a_sessions_actions_read_the_brains_calendar(brain, make_session):
     brain.calendar = SimpleNamespace(activity_words=lambda: words, activity_calendars=dict)
     session = make_session()
     assert session.actions.calendar is brain.calendar and session.intents.activities() is words
+
+
+def test_a_sessions_local_rules_know_its_wake_word(brain, make_session):
+    # So "Jarvispause." is heard as "pause" by a satellite woken by "Hey Jarvis".
+    brain.config.data["assistant"]["wake_word"] = "Hey Jarvis"
+    session = make_session()
+    assert session.intents.match("Jarvispause.")["actions"][0].tool == "control_playback"
 
 
 def _the_brain_says(session, message):
