@@ -8,8 +8,9 @@ noise, such as a lone "Thank you.", are thrown away.
 
 A lone short word - "Pause.", "Wait.", "Play." - often comes back as nothing at all,
 since Nemotron has no words around it to go on. So a short recording the user spoke in
-which comes to nothing is heard again, said twice, then after a "Please" - see
-.superpowers/sdd/pause-investigation.md.
+which comes to nothing is first asked of a second, small model, Parakeet (see
+parakeet.py), then heard again, said twice, then after a "Please" - see
+.superpowers/sdd/pause-investigation.md and .superpowers/sdd/second-model-spike.md.
 """
 
 import logging
@@ -20,6 +21,7 @@ import numpy as np
 from typing import Any, Optional, Dict, Tuple, Union
 import time
 from voice_assistant.logging_setup import TRANSCRIPT
+from voice_assistant.parakeet import Parakeet
 from voice_assistant.wake_phrase import strip_wake_word
 
 # Logger setup
@@ -67,12 +69,17 @@ def _heard(text: str, duration: float, after_recording: bool = False) -> Dict[st
     """
     took = f"{duration:.2f}s after the recording stopped" if after_recording else f"{duration:.2f}s"
     logger.info(f"Transcription complete ({took}): '{text}'", extra=TRANSCRIPT)
-    imagined = bool(text) and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS
+    imagined = _imagined(text)
     if imagined:
         logger.info(f"Ignoring '{text}' - most likely words imagined in noise", extra=TRANSCRIPT)
         text = ""
     return {"text": text, "language": "en", "language_probability": 1.0, "duration": duration,
             "imagined": imagined}
+
+
+def _imagined(text: str) -> bool:
+    """Whether text is, all of it, one of the things speech models imagine in noise."""
+    return bool(text) and re.sub(r"[^a-z' ]", "", text.lower()).strip() in HALLUCINATIONS
 
 
 def _words(text: str) -> list:
@@ -164,15 +171,18 @@ class NemotronSpeechToText:
     backend heard for the Pi.
     """
 
-    def __init__(self, nemotron, please: Optional[np.ndarray] = None):
+    def __init__(self, nemotron, please: Optional[np.ndarray] = None, fallback: Optional[Parakeet] = None):
         """
         Args:
             nemotron: The Nemotron, loaded - one, which every satellite's recordings share.
             please: Piper's "Please", from make_please, to hear a recording again after -
                 or None not to.
+            fallback: The second model, Parakeet, loaded, to ask first about a recording
+                Nemotron heard nothing in - or None to go straight to hearing it again.
         """
         self.nemotron = nemotron
         self.please = please
+        self.fallback = fallback
 
     @property
     def loaded(self) -> bool:
@@ -201,6 +211,34 @@ class NemotronSpeechToText:
             logger.error(f"Transcription failed: {e}")
             return {"text": "", "language": None, "language_probability": 0.0, "duration": 0.0, "error": str(e)}
         return _heard(text, time.time() - started)
+
+    def ask_fallback(self, speech: np.ndarray, wake_word: Optional[str] = None) -> str:
+        """
+        Asks the second model what's in a recording Nemotron heard nothing in.
+
+        Args:
+            speech: The recording, without the quiet it stopped after.
+            wake_word: The wake word, taken off the front of what's heard, as hear_again
+                does. None to leave it.
+
+        Returns:
+            What it heard - or '' if there's no second model, it failed, or it heard
+            nothing, only the wake word, or words imagined in noise, so the recording
+            is heard again as before.
+        """
+        if self.fallback is None:
+            return ""
+        try:
+            said = str(self.fallback.transcribe(speech)).strip()
+        except Exception as e:
+            logger.warning(f"The second speech model failed, so listening again instead: {e}")
+            return ""
+        heard = _request(said, wake_word)
+        if _imagined(heard):
+            heard = ""
+        shown = "" if heard == said else f" (heard as '{said}')"
+        logger.info(f"Heard nothing, so asked the second model: '{heard}'{shown}", extra=TRANSCRIPT)
+        return heard
 
     def hear_again(self, speech: np.ndarray, wake_word: Optional[str] = None) -> Tuple[str, str]:
         """
@@ -296,14 +334,16 @@ class NemotronTranscription:
     def finish(self, audio: np.ndarray, timeline=None, quiet_after: float = 0.0,
                wake_word: Optional[str] = None) -> Dict[str, Any]:
         """
-        The words, once Nemotron has caught up with the end of the recording - heard
-        again if the user spoke, for no more than LONGEST_RETRIED, and it came to nothing
-        (see NemotronSpeechToText.hear_again).
+        The words, once Nemotron has caught up with the end of the recording - asked of
+        the second model, then heard again if that came to nothing too, if the user
+        spoke, for no more than LONGEST_RETRIED, and it came to nothing (see
+        NemotronSpeechToText.ask_fallback and hear_again).
 
         Args:
             audio: The whole recording, which is transcribed afresh if anything went
                 wrong while listening, so nothing said is lost.
-            timeline: The Timeline to time hearing it again on, if it is.
+            timeline: The Timeline to time asking the second model and hearing it
+                again on, if they are.
             quiet_after: Seconds of quiet the recording stopped after, left out when
                 it's heard again - the two copies are to be GAP apart.
             wake_word: The wake word, so that only it heard - all Nemotron sometimes
@@ -345,6 +385,19 @@ class NemotronTranscription:
         outcome = {}
 
         def hear():
+            # The second model first: on the brain it heard 52 of 54 lone words
+            # Nemotron lost, in about 0.1s - hearing again only gets a turn when it
+            # comes to nothing, or isn't loaded. Its times are only noted here, and
+            # marked once this is waited for, so a request given up on is never
+            # marked after it's over.
+            if self._stt.fallback is not None:
+                outcome["fallback_started"] = time.monotonic()
+            heard = self._stt.ask_fallback(speech, wake_word)
+            if self._stt.fallback is not None:
+                outcome["fallback_done"] = time.monotonic()
+            if heard:
+                outcome["heard"] = (heard, "fallback")
+                return
             try:
                 outcome["heard"] = self._stt.hear_again(speech, wake_word)
             except Exception as e:
@@ -357,6 +410,9 @@ class NemotronTranscription:
             raise TimeoutError(f"Nemotron hadn't heard the recording again after {FINISH_LIMIT:.0f}s")
         text, how = outcome.get("heard", ("", "nothing"))
         if timeline:
+            for mark in ("fallback_started", "fallback_done"):
+                if mark in outcome:
+                    timeline.mark(f"stt_{mark}", at=outcome[mark])
             timeline.mark("stt_retry_done")
             timeline.note(heard_again=how)
         heard = _heard(text, time.time() - started, after_recording=True)

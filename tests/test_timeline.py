@@ -106,3 +106,11 @@ def test_the_report_reads_the_old_file_too(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["latency_report.py", str(path)])
     report.main()
     assert f"{both} interactions" in capsys.readouterr().out
+
+
+def test_asking_the_second_model_is_a_stage_of_its_own():
+    # Asked first when Nemotron hears nothing - see speech_to_text.py - inside hearing it again.
+    rows = {row["stage"]: row for row in summarise([{"marks_ms": {
+        "stt_retry_started": 1000, "stt_fallback_started": 1000, "stt_fallback_done": 1120, "stt_retry_done": 1130}}])}
+    assert rows["Asking the second model"]["p50"] == 120
+    assert rows["Hearing it again"]["p50"] == 130

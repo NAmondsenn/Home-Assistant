@@ -77,6 +77,7 @@ The brain decides when you've stopped, so these are its settings, in its `~/.con
 ## Nova mishears, or answers something nobody said
 
 - **The brain's log shows what was heard**, as `Transcription complete (...): '...'`. The known slips are allowed for - a lone "stop" heard as "soap", "sop" or "so" still stops things, and "skip" heard as "scap" still skips.
+- **A lone word, such as "Pause.", ignored** - Nemotron often hears nothing in one, so the brain asks its second model, Parakeet, logged as `Heard nothing, so asked the second model: '...'`. If the brain's log says at startup `The second speech model couldn't be loaded`, it's missing from `models/`: run `update.sh` on the brain to download it. Until then, such words are heard again more slowly, and some are missed.
 - **Words found in noise** - the obvious ones ("Thank you.", "Thanks for watching") are thrown away, logged as `Ignoring '...'`. If a false wake word is the cause, raise `thresholds.wake_word_confidence` in the satellite's settings.
 
 ## Music doesn't play

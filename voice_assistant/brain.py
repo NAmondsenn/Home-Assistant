@@ -117,23 +117,39 @@ FALLBACK_PHRASE = "Sorry, I can't reach my server right now."
 
 def _speech_to_text(config, tts: TextToSpeech):
     """
-    Nemotron, loaded, for every satellite's recordings - see nemotron.py.
+    Nemotron, loaded, for every satellite's recordings - see nemotron.py - with the
+    second model, Parakeet, for what it hears nothing in (see parakeet.py).
 
     Args:
-        config: Configs loaded from config.yaml, for backend.model.
+        config: Configs loaded from config.yaml, for backend.model and
+            backend.fallback_model.
         tts: Piper, to say the "Please" a recording heard as nothing is heard again
             after - once, here, rather than for each one. See speech_to_text.py.
 
     Returns:
-        A NemotronSpeechToText.
+        A NemotronSpeechToText - without the second model if it's switched off or
+        couldn't be loaded.
     """
     # Imported here, so the rest of Nova never needs sherpa-onnx.
     from voice_assistant.nemotron import Nemotron
+    from voice_assistant.parakeet import Parakeet
     from voice_assistant.speech_to_text import NemotronSpeechToText, make_please
 
+    backend = config.section("backend")
     logger.info("Loading Nemotron...")
-    return NemotronSpeechToText(Nemotron(os.path.join(paths.PROJECT_DIRECTORY, config.section("backend").get("model"))),
-                                please=make_please(tts))
+    nemotron = Nemotron(os.path.join(paths.PROJECT_DIRECTORY, backend.get("model")))
+    fallback = None
+    if backend.get("fallback_model"):
+        # Loaded now rather than when first needed, so its second or so isn't added to a
+        # request already gone wrong - and a missing model is said at the start. Nova
+        # still hears without it, as it did before it had one.
+        try:
+            logger.info("Loading Parakeet...")
+            fallback = Parakeet(os.path.join(paths.PROJECT_DIRECTORY, backend.get("fallback_model")))
+        except Exception as e:
+            logger.warning(f"The second speech model couldn't be loaded, so Nova will hear lone words again by "
+                           f"itself: {e}")
+    return NemotronSpeechToText(nemotron, please=make_please(tts), fallback=fallback)
 
 
 def _skipped_message(skipped: List[Dict]) -> str:

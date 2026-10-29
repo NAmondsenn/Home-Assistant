@@ -71,6 +71,10 @@ backend:
   # hears with, inside the project.
   port: 10400
   model: "models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25"
+  # A second, small offline model asked first when the streaming one hears nothing in
+  # a short recording of you talking - a lone "Pause." - see voice_assistant/parakeet.py.
+  # Empty switches it off, and Nova hears such words again by itself, more slowly.
+  fallback_model: "models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8"
 
 ntfy:
   # Your own ntfy server, e.g. "https://ntfy.example.com" - for alerts said out loud

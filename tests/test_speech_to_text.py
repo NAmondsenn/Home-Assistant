@@ -1,9 +1,13 @@
 """
 Speech-to-Text Test
 Checks that what speech models imagine in noise is thrown away, and that the brain's
-Nemotron speech-to-text hears each recording as it's made. Needs numpy installed (as
-it is on the Pi), and is skipped anywhere it isn't.
+Nemotron speech-to-text hears each recording as it's made, with a second model, Parakeet,
+asked first when it hears nothing. Needs numpy installed (as it is on the Pi), and is
+skipped anywhere it isn't. sherpa-onnx isn't, so it's faked.
 """
+
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -386,3 +390,248 @@ def test_a_nemotron_which_hangs_listening_again_is_given_up_on(monkeypatch):
             transcription.finish(_pieces(0.1)[0])
     finally:
         stuck.set()
+
+
+# The second model, Parakeet - asked first when Nemotron hears nothing in the user talking.
+
+class FakeParakeet:
+    """Stands in for Parakeet, hearing what the test sets - or raising it, if it's an exception."""
+
+    def __init__(self, heard):
+        self.heard = heard
+        self.given = []
+
+    def transcribe(self, audio):
+        self.given.append(audio)
+        if isinstance(self.heard, Exception):
+            raise self.heard
+        return self.heard
+
+
+def _fallback_after_nothing(fallback, *heard, first="", wake_word=None, timeline=None):
+    """
+    Nemotron hearing first in a recording of the user talking, with the fallback set -
+    then each of heard in turn, if it's heard again.
+
+    Returns:
+        What finish gave, and the Nemotron.
+    """
+    nemotron = FakeNemotron(heard=[first, *heard])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron, fallback=fallback).listen()
+    pieces = _pieces(0.1, 0.2)
+    for piece in pieces:
+        transcription.add(piece)
+    return transcription.finish(np.concatenate(pieces), timeline=timeline, quiet_after=0.03,
+                                wake_word=wake_word), nemotron
+
+
+def test_nothing_heard_is_asked_of_the_second_model_first(caplog):
+    from voice_assistant.timeline import Timeline
+
+    caplog.set_level("INFO")
+    fallback = FakeParakeet("Pause.")
+    timeline = Timeline()
+    result, nemotron = _fallback_after_nothing(fallback, "never asked for", timeline=timeline)
+
+    assert result["text"] == "Pause." and not result["imagined"]
+    # Given the words without the quiet the recording stopped after, as hearing again is -
+    # and Nemotron never asked again.
+    assert np.array_equal(fallback.given[0], np.concatenate(_pieces(0.1, 0.2))[:480])
+    assert len(nemotron.streams) == 1
+    assert "Heard nothing, so asked the second model: 'Pause.'" in caplog.text
+    assert {"stt_fallback_started", "stt_fallback_done", "stt_retry_started", "stt_retry_done"} <= set(timeline.marks)
+    assert timeline.notes["heard_again"] == "fallback"
+
+
+@pytest.mark.parametrize("fallback", ["", "Thank you.", "Nova.", RuntimeError("Failed to decode")])
+def test_nothing_from_the_second_model_is_heard_again_as_before(fallback, caplog):
+    # A word it imagines in noise, or only the wake word, is nothing from it too.
+    from voice_assistant.timeline import Timeline
+
+    timeline = Timeline()
+    result, nemotron = _fallback_after_nothing(FakeParakeet(fallback), "pause pause", wake_word="Hey Nova",
+                                               timeline=timeline)
+    assert result["text"] == "Pause"
+    assert len(nemotron.streams) == 2 and timeline.notes["heard_again"] == "twice"
+    if isinstance(fallback, Exception):
+        assert "Failed to decode" in caplog.text
+
+
+def test_without_a_second_model_its_heard_again_as_before():
+    from voice_assistant.timeline import Timeline
+
+    timeline = Timeline()
+    result, nemotron = _fallback_after_nothing(None, "pause pause", timeline=timeline)
+    assert result["text"] == "pause" and len(nemotron.streams) == 2
+    assert set(timeline.marks) == {"stt_retry_started", "stt_retry_done"}
+
+
+def test_the_second_models_words_lose_the_wake_word():
+    result, nemotron = _fallback_after_nothing(FakeParakeet("Nova, pause."), first="Nova.", wake_word="Hey Nova")
+    assert result["text"] == "Pause."
+    assert len(nemotron.streams) == 1
+
+
+def test_words_heard_the_first_time_are_never_asked_of_the_second_model():
+    fallback = FakeParakeet("never asked for")
+    nemotron = FakeNemotron(heard=["Pause the music."])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron, fallback=fallback).listen()
+    transcription.add(_pieces(0.1)[0])
+
+    assert transcription.finish(_pieces(0.1)[0])["text"] == "Pause the music."
+    assert fallback.given == []
+
+
+def test_a_long_recording_isnt_asked_of_the_second_model_either():
+    fallback = FakeParakeet("never asked for")
+    nemotron = FakeNemotron(heard=[""])
+    transcription = speech_to_text.NemotronSpeechToText(nemotron, fallback=fallback).listen()
+    recording = np.full(round(3.6 * 16000), 0.1, dtype=np.float32)
+    transcription.add(recording)
+
+    assert transcription.finish(recording, quiet_after=0.5)["text"] == ""
+    assert fallback.given == []
+
+
+class FakeSherpa:
+    """Stands in for sherpa-onnx's offline recogniser, hearing "Pause." in whatever it's given."""
+
+    def __init__(self):
+        self.made = None
+        self.given = []
+
+    def from_transducer(self, **settings):
+        self.made = settings
+        return self
+
+    def create_stream(self):
+        return SimpleNamespace(accept_waveform=lambda rate, audio: self.given.append((rate, audio)),
+                               result=SimpleNamespace(text=" Pause. "))
+
+    def decode_stream(self, stream):
+        pass
+
+
+def _model_folder(tmp_path):
+    for name in ("tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx"):
+        (tmp_path / name).write_text("")
+    return str(tmp_path)
+
+
+def test_parakeet_hears_a_whole_recording(tmp_path, monkeypatch):
+    from voice_assistant import parakeet
+
+    sherpa = FakeSherpa()
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", SimpleNamespace(OfflineRecognizer=sherpa))
+    model = parakeet.Parakeet(_model_folder(tmp_path))
+
+    assert sherpa.made["model_type"] == "nemo_transducer"
+    assert sherpa.made["encoder"] == f"{tmp_path}/encoder.int8.onnx"
+    audio = np.full(800, 0.1, dtype=np.float32)
+    assert model.transcribe(audio) == "Pause."
+    assert sherpa.given[0][0] == 16000 and np.array_equal(sherpa.given[0][1], audio)
+
+
+def test_parakeet_without_its_model_says_so_before_sherpa_onnx_sees_it(tmp_path, monkeypatch):
+    # sherpa-onnx can stop the whole process over a missing file, rather than raise.
+    from voice_assistant import parakeet
+
+    sherpa = FakeSherpa()
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", SimpleNamespace(OfflineRecognizer=sherpa))
+    with pytest.raises(FileNotFoundError, match="tokens.txt"):
+        parakeet.Parakeet(str(tmp_path / "missing"))
+    assert sherpa.made is None
+
+
+class StuckSherpa(FakeSherpa):
+    """FakeSherpa, each decode held until the test lets it go - noting when each starts and ends."""
+
+    def __init__(self):
+        super().__init__()
+        import threading
+
+        self.going = threading.Event()
+        self.decoding = threading.Event()
+        self.happened = []
+
+    def decode_stream(self, stream):
+        self.happened.append("started")
+        self.decoding.set()
+        self.going.wait(5)
+        self.happened.append("ended")
+
+
+def _stuck_parakeet(tmp_path, monkeypatch):
+    """A real Parakeet over StuckSherpa, and the StuckSherpa."""
+    from voice_assistant import parakeet
+
+    sherpa = StuckSherpa()
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", SimpleNamespace(OfflineRecognizer=sherpa))
+    return parakeet.Parakeet(_model_folder(tmp_path)), sherpa
+
+
+def test_parakeet_decodes_take_turns(tmp_path, monkeypatch):
+    import threading
+
+    model, sherpa = _stuck_parakeet(tmp_path, monkeypatch)
+    audio = np.zeros(800, dtype=np.float32)
+    first = threading.Thread(target=model.transcribe, args=(audio,))
+    second = threading.Thread(target=model.transcribe, args=(audio,))
+    first.start()
+    assert sherpa.decoding.wait(2)
+    second.start()
+    second.join(0.2)
+    # The second waits for the first, rather than decoding alongside it.
+    assert sherpa.happened == ["started"]
+    sherpa.going.set()
+    first.join(2)
+    second.join(2)
+    assert sherpa.happened == ["started", "ended", "started", "ended"]
+
+
+def test_a_parakeet_which_hangs_never_holds_up_hearing_again(tmp_path, monkeypatch, caplog):
+    # One decode stuck for good keeps its turn - the next lone word goes straight on to
+    # hearing again, rather than waiting out FINISH_LIMIT behind it.
+    import threading
+    import time
+    from voice_assistant import parakeet
+
+    monkeypatch.setattr(parakeet, "TURN_LIMIT", 0.1)
+    model, sherpa = _stuck_parakeet(tmp_path, monkeypatch)
+    stuck = threading.Thread(target=model.transcribe, args=(np.zeros(800, dtype=np.float32),), daemon=True)
+    stuck.start()
+    try:
+        assert sherpa.decoding.wait(2)
+        started = time.monotonic()
+        result, nemotron = _fallback_after_nothing(model, "pause pause")
+        assert result["text"] == "pause" and len(nemotron.streams) == 2
+        assert time.monotonic() - started < 2
+        warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
+        assert len(warnings) == 1 and "second speech model" in warnings[0]
+    finally:
+        sherpa.going.set()
+        stuck.join(2)
+
+
+def test_a_request_given_up_on_isnt_timed_afterwards(monkeypatch):
+    # Asking the second model and hearing again carry on on their own thread after
+    # finish has given up - their marks mustn't land on a timeline already done with.
+    import threading
+    from voice_assistant.timeline import Timeline
+
+    monkeypatch.setattr(speech_to_text, "FINISH_LIMIT", 0.1)
+    going = threading.Event()
+
+    class Slow(FakeParakeet):
+        def transcribe(self, audio):
+            going.wait(2)
+            return super().transcribe(audio)
+
+    timeline = Timeline()
+    with pytest.raises(TimeoutError):
+        _fallback_after_nothing(Slow("Pause."), timeline=timeline)
+    going.set()
+    for thread in threading.enumerate():
+        if thread.name == "nemotron-again":
+            thread.join(2)
+    assert not {"stt_fallback_started", "stt_fallback_done", "stt_retry_done"} & set(timeline.marks)
