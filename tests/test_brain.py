@@ -2023,3 +2023,44 @@ def test_a_warning_or_alert_not_said_to_the_end_counts_as_not_said(brain, connec
     bedroom.said = False
     assert brain._say_battery("Your phone's battery is down to 5%.") is False
     assert brain._alert(Alert("homelab", "Disk nearly full", "")) is False
+
+
+# The speech-to-text the brain loads, with its second model for what Nemotron misses.
+
+@pytest.fixture
+def loading(monkeypatch, tmp_path):
+    """Stands in for Nemotron and Piper's "Please" as speech-to-text is loaded, from the test's own folder."""
+    from voice_assistant import nemotron as nemotron_module
+    from voice_assistant import speech_to_text as speech_to_text_module
+
+    monkeypatch.setattr(paths, "PROJECT_DIRECTORY", str(tmp_path))
+    monkeypatch.setattr(nemotron_module, "Nemotron", lambda folder: SimpleNamespace(folder=folder))
+    monkeypatch.setattr(speech_to_text_module, "make_please", lambda tts: None)
+
+
+def test_without_its_second_model_the_brain_still_hears(loading, make_config, tmp_path, caplog):
+    config = make_config(backend={"model": "models/nemotron", "fallback_model": "models/parakeet"})
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
+        stt = brain_module._speech_to_text(config, FakePiper())
+
+    assert stt.loaded and stt.nemotron.folder == str(tmp_path / "models/nemotron")
+    assert stt.fallback is None
+    warnings = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("The second speech model couldn't be loaded, so Nova will hear lone words "
+                                  "again by itself: ")
+
+
+def test_the_brain_loads_its_second_model_from_the_project(loading, make_config, tmp_path, monkeypatch):
+    from voice_assistant import parakeet as parakeet_module
+
+    monkeypatch.setattr(parakeet_module, "Parakeet", lambda path: SimpleNamespace(path=path))
+    config = make_config(backend={"model": "models/nemotron", "fallback_model": "models/parakeet"})
+    assert brain_module._speech_to_text(config, FakePiper()).fallback.path == str(tmp_path / "models/parakeet")
+
+
+def test_an_empty_fallback_model_switches_the_second_model_off(loading, make_config, caplog):
+    config = make_config(backend={"model": "models/nemotron", "fallback_model": ""})
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
+        assert brain_module._speech_to_text(config, FakePiper()).fallback is None
+    assert not [record for record in caplog.records if record.levelno == logging.WARNING]

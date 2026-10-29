@@ -73,19 +73,26 @@ NEMOTRON_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models
 # The most the archive and what's unpacked from it need, in kilobytes. It's 464MB
 # packed, and PVE2's storage is nearly full, so better to say so than to fill it.
 NEMOTRON_KILOBYTES_NEEDED=1500000
+# Its second, small model, asked when Nemotron hears nothing in a lone word - NVIDIA's
+# Parakeet TDT 110m, from the same release, about 108MB packed and 136MB unpacked. See
+# voice_assistant/parakeet.py. Its folder is where backend.fallback_model points.
+PARAKEET_NAME="sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8"
+PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_NAME}.tar.bz2"
 
 # The SHA-256 of everything downloaded and then run or trusted, so a tampered
 # release or mirror stops setup rather than being run on the Pi. Taken from the
 # files themselves - Piper's on 20 October 2026, when the binary inside the aarch64
 # archive matched the one Nova had been using, the voice's on 22 October 2026, when
-# the model's matched Hugging Face's own, and Nemotron's on 22 October 2026, from the
-# release's archive as downloaded that day. Changing PIPER_VERSION, VOICE_MODEL or
-# NEMOTRON_NAME means updating these too.
+# the model's matched Hugging Face's own, Nemotron's on 22 October 2026, from the
+# release's archive as downloaded that day, and Parakeet's on 29 October 2026, when it
+# matched the release's own digest. Changing PIPER_VERSION, VOICE_MODEL, NEMOTRON_NAME
+# or PARAKEET_NAME means updating these too.
 PIPER_SHA256_AARCH64="fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb"
 PIPER_SHA256_X86_64="a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
 VOICE_SHA256_MODEL="914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7"
 VOICE_SHA256_CONFIG="03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c58b6c"
 NEMOTRON_SHA256="78e2b79fcf7271553a74402a76b771b09ea40117a39566a79f52235b23db6358"
+PARAKEET_SHA256="f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b"
 RASPOTIFY_KEY_SHA256="36dd5aadd073950d55c404f0e0c6c2e0555259bf38bd8b6448c35591a3cc9cfd"
 
 # These can come from the environment, as steps run as another user (see run_steps) are
@@ -490,8 +497,25 @@ download_nemotron() {
     done_ "Nemotron (${NEMOTRON_NAME})"
 }
 
-# Downloads whatever models aren't there yet. The brain needs Piper with its voice and
-# Nemotron, and both roles openWakeWord's own - the satellite for the wake word, the
+# Downloads Parakeet, the brain's second speech model, if it isn't there yet.
+download_parakeet() {
+    if [ -f "${MODELS_DIRECTORY}/${PARAKEET_NAME}/encoder.int8.onnx" ]; then
+        return
+    fi
+    local archive="${MODELS_DIRECTORY}/${PARAKEET_NAME}.tar.bz2"
+    if ! wget -q "$PARAKEET_URL" -O "${archive}.part"; then
+        rm -f "${archive}.part"
+        problem "Couldn't download Parakeet - check the internet connection, and run this again."
+        exit 1
+    fi
+    check_sha256 "${archive}.part" "$PARAKEET_SHA256"
+    tar -xjf "${archive}.part" -C "$MODELS_DIRECTORY"
+    rm -f "${archive}.part"
+    done_ "Parakeet (${PARAKEET_NAME})"
+}
+
+# Downloads whatever models aren't there yet. The brain needs Piper with its voice,
+# Nemotron and Parakeet, and both roles openWakeWord's own - the satellite for the wake word, the
 # brain for Silero's voice activity check. Run by update.sh too, for any new ones.
 # models/ may be a link to somewhere with more room, which all of this follows.
 download_models() {
@@ -500,6 +524,7 @@ download_models() {
     if [ "$ROLE" = "brain" ]; then
         download_voice
         download_nemotron
+        download_parakeet
     fi
     # Now, rather than left to the first start, which would need the internet.
     (cd "$PROJECT_DIRECTORY" && "$PYTHON" - <<'EOF'

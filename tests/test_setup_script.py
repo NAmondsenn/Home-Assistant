@@ -2,13 +2,16 @@
 Setup Script Test
 Checks setup.sh --new-password gives a set-up satellite the password the settings page
 made for it - replacing only that line of its .env, keeping the file private, and
-never showing the password - and that setup sends the user to the page for one.
+never showing the password - that setup sends the user to the page for one, and that
+the brain's second speech model, Parakeet, is downloaded and checked as Nemotron is.
 """
 
 import os
 import stat
 import subprocess
 from pathlib import Path
+
+import pytest
 
 SETUP = Path(__file__).parent.parent / "setup.sh"
 # Long enough, and only token_urlsafe's letters - as the page makes them.
@@ -240,3 +243,85 @@ def test_the_password_isnt_echoed(tmp_path):
     assert PASSWORD not in result.stdout + result.stderr
     # Nor given to systemctl, where ps would show it.
     assert all(PASSWORD not in line for line in restarts(tmp_path))
+
+
+# The brain's second speech model, Parakeet - downloaded, checked, unpacked and the
+# archive removed, as Nemotron is.
+
+def make_archive(tmp_path):
+    """A stand-in for Parakeet's release archive, with its folder inside, and its SHA-256."""
+    import hashlib
+    import tarfile
+
+    folder = tmp_path / "made" / "parakeet"
+    folder.mkdir(parents=True)
+    (folder / "encoder.int8.onnx").write_text("model")
+    archive = tmp_path / "parakeet.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tar:
+        tar.add(folder, arcname="./parakeet")
+    return archive, hashlib.sha256(archive.read_bytes()).hexdigest()
+
+
+def download_parakeet(tmp_path, sha256=None):
+    """
+    Runs download_parakeet into the test's own models folder, with a wget which copies
+    in the stand-in archive.
+
+    Args:
+        tmp_path: The test's own folder.
+        sha256: The SHA-256 setup.sh expects - or None for the stand-in's own.
+
+    Returns:
+        The finished process, and the models folder.
+    """
+    archive, own = make_archive(tmp_path)
+    models = tmp_path / "models"
+    models.mkdir()
+    return run_setup(tmp_path, f'MODELS_DIRECTORY="{models}"; PARAKEET_NAME=parakeet; '
+                               f'PARAKEET_SHA256={sha256 or own}; '
+                               f'wget() {{ cp "{archive}" "$4"; }}; download_parakeet', role="brain"), models
+
+
+def test_parakeet_is_downloaded_checked_and_unpacked(tmp_path):
+    result, models = download_parakeet(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert (models / "parakeet" / "encoder.int8.onnx").read_text() == "model"
+    assert sorted(path.name for path in models.iterdir()) == ["parakeet"]
+
+
+def test_a_parakeet_which_isnt_the_one_expected_is_never_unpacked(tmp_path):
+    result, models = download_parakeet(tmp_path, "0" * 64)
+
+    assert result.returncode != 0
+    assert "SHA-256 doesn't match" in result.stderr
+    assert list(models.iterdir()) == []
+
+
+def test_parakeet_already_there_isnt_downloaded_again(tmp_path):
+    models = tmp_path / "models"
+    (models / "parakeet").mkdir(parents=True)
+    (models / "parakeet" / "encoder.int8.onnx").write_text("model")
+    result = run_setup(tmp_path, f'MODELS_DIRECTORY="{models}"; PARAKEET_NAME=parakeet; download_parakeet',
+                       role="brain")
+
+    assert result.returncode == 0
+    assert not (tmp_path / "installers.log").exists()
+
+
+def test_parakeets_pinned_release_is_the_one_measured():
+    # The 110m model, which the trial on the brain found right where Nemotron heard
+    # nothing - see .superpowers/sdd/second-model-spike.md.
+    text = SETUP.read_text()
+    assert 'PARAKEET_NAME="sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8"' in text
+    assert 'PARAKEET_SHA256="f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b"' in text
+
+
+@pytest.mark.parametrize("role", ["brain", "satellite"])
+def test_only_the_brain_downloads_parakeet(tmp_path, role):
+    result = run_setup(tmp_path, f'MODELS_DIRECTORY="{tmp_path / "models"}"; PYTHON=true; download_voice() {{ :; }}; '
+                                 'download_nemotron() { :; }; download_parakeet() { echo parakeet; }; download_models',
+                       role=role)
+
+    assert result.returncode == 0, result.stderr
+    assert ("parakeet" in result.stdout.splitlines()) == (role == "brain")
