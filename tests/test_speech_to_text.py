@@ -541,3 +541,97 @@ def test_parakeet_without_its_model_says_so_before_sherpa_onnx_sees_it(tmp_path,
     with pytest.raises(FileNotFoundError, match="tokens.txt"):
         parakeet.Parakeet(str(tmp_path / "missing"))
     assert sherpa.made is None
+
+
+class StuckSherpa(FakeSherpa):
+    """FakeSherpa, each decode held until the test lets it go - noting when each starts and ends."""
+
+    def __init__(self):
+        super().__init__()
+        import threading
+
+        self.going = threading.Event()
+        self.decoding = threading.Event()
+        self.happened = []
+
+    def decode_stream(self, stream):
+        self.happened.append("started")
+        self.decoding.set()
+        self.going.wait(5)
+        self.happened.append("ended")
+
+
+def _stuck_parakeet(tmp_path, monkeypatch):
+    """A real Parakeet over StuckSherpa, and the StuckSherpa."""
+    from voice_assistant import parakeet
+
+    sherpa = StuckSherpa()
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", SimpleNamespace(OfflineRecognizer=sherpa))
+    return parakeet.Parakeet(_model_folder(tmp_path)), sherpa
+
+
+def test_parakeet_decodes_take_turns(tmp_path, monkeypatch):
+    import threading
+
+    model, sherpa = _stuck_parakeet(tmp_path, monkeypatch)
+    audio = np.zeros(800, dtype=np.float32)
+    first = threading.Thread(target=model.transcribe, args=(audio,))
+    second = threading.Thread(target=model.transcribe, args=(audio,))
+    first.start()
+    assert sherpa.decoding.wait(2)
+    second.start()
+    second.join(0.2)
+    # The second waits for the first, rather than decoding alongside it.
+    assert sherpa.happened == ["started"]
+    sherpa.going.set()
+    first.join(2)
+    second.join(2)
+    assert sherpa.happened == ["started", "ended", "started", "ended"]
+
+
+def test_a_parakeet_which_hangs_never_holds_up_hearing_again(tmp_path, monkeypatch, caplog):
+    # One decode stuck for good keeps its turn - the next lone word goes straight on to
+    # hearing again, rather than waiting out FINISH_LIMIT behind it.
+    import threading
+    import time
+    from voice_assistant import parakeet
+
+    monkeypatch.setattr(parakeet, "TURN_LIMIT", 0.1)
+    model, sherpa = _stuck_parakeet(tmp_path, monkeypatch)
+    stuck = threading.Thread(target=model.transcribe, args=(np.zeros(800, dtype=np.float32),), daemon=True)
+    stuck.start()
+    try:
+        assert sherpa.decoding.wait(2)
+        started = time.monotonic()
+        result, nemotron = _fallback_after_nothing(model, "pause pause")
+        assert result["text"] == "pause" and len(nemotron.streams) == 2
+        assert time.monotonic() - started < 2
+        warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
+        assert len(warnings) == 1 and "second speech model" in warnings[0]
+    finally:
+        sherpa.going.set()
+        stuck.join(2)
+
+
+def test_a_request_given_up_on_isnt_timed_afterwards(monkeypatch):
+    # Asking the second model and hearing again carry on on their own thread after
+    # finish has given up - their marks mustn't land on a timeline already done with.
+    import threading
+    from voice_assistant.timeline import Timeline
+
+    monkeypatch.setattr(speech_to_text, "FINISH_LIMIT", 0.1)
+    going = threading.Event()
+
+    class Slow(FakeParakeet):
+        def transcribe(self, audio):
+            going.wait(2)
+            return super().transcribe(audio)
+
+    timeline = Timeline()
+    with pytest.raises(TimeoutError):
+        _fallback_after_nothing(Slow("Pause."), timeline=timeline)
+    going.set()
+    for thread in threading.enumerate():
+        if thread.name == "nemotron-again":
+            thread.join(2)
+    assert not {"stt_fallback_started", "stt_fallback_done", "stt_retry_done"} & set(timeline.marks)

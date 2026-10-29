@@ -23,6 +23,12 @@ RATE = 16000
 # What the unpacked model folder holds, which sherpa-onnx is given.
 FILES = ("tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx")
 
+# The longest a decode waits for another's turn to end, in seconds. Each takes about
+# 0.1s, so this only runs out behind one which has hung - which would otherwise keep its
+# turn for good, and leave every later lone word waiting out FINISH_LIMIT (see
+# speech_to_text.py) rather than going on to be heard again.
+TURN_LIMIT = 3.0
+
 
 class Parakeet:
     """The model, and what it hears in a whole recording given to it at once."""
@@ -69,10 +75,15 @@ class Parakeet:
             What it heard, or '' for nothing.
 
         Raises:
+            TimeoutError: Another decode still had its turn after TURN_LIMIT, so has hung.
             Exception: Whatever sherpa-onnx raises.
         """
-        with self._turn:
+        if not self._turn.acquire(timeout=TURN_LIMIT):
+            raise TimeoutError(f"Parakeet was still busy with another recording after {TURN_LIMIT:.0f}s")
+        try:
             stream = self.recognizer.create_stream()
             stream.accept_waveform(RATE, np.asarray(audio, dtype=np.float32))
             self.recognizer.decode_stream(stream)
             return str(stream.result.text).strip()
+        finally:
+            self._turn.release()

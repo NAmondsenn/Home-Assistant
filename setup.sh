@@ -78,6 +78,8 @@ NEMOTRON_KILOBYTES_NEEDED=1500000
 # voice_assistant/parakeet.py. Its folder is where backend.fallback_model points.
 PARAKEET_NAME="sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8"
 PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_NAME}.tar.bz2"
+# As for Nemotron: the archive and what's unpacked from it, with plenty to spare.
+PARAKEET_KILOBYTES_NEEDED=400000
 
 # The SHA-256 of everything downloaded and then run or trusted, so a tampered
 # release or mirror stops setup rather than being run on the Pi. Taken from the
@@ -476,47 +478,60 @@ download_voice() {
     done
 }
 
-# Downloads Nemotron, the brain's speech-to-text, if it isn't there yet.
-download_nemotron() {
-    if [ -f "${MODELS_DIRECTORY}/${NEMOTRON_NAME}/encoder.int8.onnx" ]; then
+# Downloads one of the brain's speech models from sherpa-onnx's releases, if it isn't
+# there yet: checks there's room, downloads it, checks its SHA-256 and unpacks it. It's
+# unpacked to one side and moved into place once whole, so one cut short - a full disk,
+# or setup stopped part way - is never taken for there by the next run.
+#
+#   download_model LABEL NAME URL SHA256 KILOBYTES_NEEDED ROOM REQUIRED
+#
+# ROOM is KILOBYTES_NEEDED as it's said, e.g. "1.5GB". Without a REQUIRED one (true),
+# setup stops; without one which isn't (false), it says so and carries on, so update.sh
+# still restarts Nova. A download which isn't the file expected always stops it.
+download_model() {
+    local label="$1" name="$2" url="$3" sha256="$4" needed="$5" room="$6" required="$7"
+    if [ -d "${MODELS_DIRECTORY}/${name}" ]; then
         return
     fi
-    local archive="${MODELS_DIRECTORY}/${NEMOTRON_NAME}.tar.bz2"
-    if [ "$(df -Pk "$MODELS_DIRECTORY" | awk 'NR==2 {print $4}')" -lt "$NEMOTRON_KILOBYTES_NEEDED" ]; then
-        problem "Nemotron needs about 1.5GB free in ${MODELS_DIRECTORY}, and there's less. Free some up - or make models/ a link to somewhere with room - and run this again."
-        exit 1
+    local archive="${MODELS_DIRECTORY}/${name}.tar.bz2.part"
+    local unpacking="${MODELS_DIRECTORY}/.${name}.unpacking"
+    local missing=""
+    if [ "$(df -Pk "$MODELS_DIRECTORY" | awk 'NR==2 {print $4}')" -lt "$needed" ]; then
+        missing="${label} needs about ${room} free in ${MODELS_DIRECTORY}, and there's less. Free some up - or make models/ a link to somewhere with room - and run this again."
+    elif ! wget -q "$url" -O "$archive"; then
+        rm -f "$archive"
+        missing="Couldn't download ${label} - check the internet connection, and run this again."
     fi
-    if ! wget -q "$NEMOTRON_URL" -O "${archive}.part"; then
-        rm -f "${archive}.part"
-        problem "Couldn't download Nemotron - check the internet connection, and run this again."
-        exit 1
+    if [ -n "$missing" ]; then
+        problem "$missing"
+        if [ "$required" = true ]; then
+            exit 1
+        fi
+        problem "Carrying on without ${label} - Nova works without it, but hears lone words less well."
+        return
     fi
-    check_sha256 "${archive}.part" "$NEMOTRON_SHA256"
-    tar -xjf "${archive}.part" -C "$MODELS_DIRECTORY"
-    rm -f "${archive}.part"
-    done_ "Nemotron (${NEMOTRON_NAME})"
+    check_sha256 "$archive" "$sha256"
+    rm -rf "$unpacking"
+    mkdir -p "$unpacking"
+    tar -xjf "$archive" -C "$unpacking"
+    mv "${unpacking}/${name}" "${MODELS_DIRECTORY}/${name}"
+    rm -rf "$unpacking" "$archive"
+    done_ "${label} (${name})"
 }
 
-# Downloads Parakeet, the brain's second speech model, if it isn't there yet.
+# Downloads Nemotron, the brain's speech-to-text, which it can't hear without.
+download_nemotron() {
+    download_model Nemotron "$NEMOTRON_NAME" "$NEMOTRON_URL" "$NEMOTRON_SHA256" "$NEMOTRON_KILOBYTES_NEEDED" 1.5GB true
+}
+
+# Downloads Parakeet, the brain's second speech model, which it can do without.
 download_parakeet() {
-    if [ -f "${MODELS_DIRECTORY}/${PARAKEET_NAME}/encoder.int8.onnx" ]; then
-        return
-    fi
-    local archive="${MODELS_DIRECTORY}/${PARAKEET_NAME}.tar.bz2"
-    if ! wget -q "$PARAKEET_URL" -O "${archive}.part"; then
-        rm -f "${archive}.part"
-        problem "Couldn't download Parakeet - check the internet connection, and run this again."
-        exit 1
-    fi
-    check_sha256 "${archive}.part" "$PARAKEET_SHA256"
-    tar -xjf "${archive}.part" -C "$MODELS_DIRECTORY"
-    rm -f "${archive}.part"
-    done_ "Parakeet (${PARAKEET_NAME})"
+    download_model Parakeet "$PARAKEET_NAME" "$PARAKEET_URL" "$PARAKEET_SHA256" "$PARAKEET_KILOBYTES_NEEDED" 400MB false
 }
 
 # Downloads whatever models aren't there yet. The brain needs Piper with its voice,
-# Nemotron and Parakeet, and both roles openWakeWord's own - the satellite for the wake word, the
-# brain for Silero's voice activity check. Run by update.sh too, for any new ones.
+# Nemotron and Parakeet, and both roles openWakeWord's own - the satellite for the
+# wake word, the brain for Silero's voice activity check. Run by update.sh too, for any new ones.
 # models/ may be a link to somewhere with more room, which all of this follows.
 download_models() {
     step "Models"

@@ -387,13 +387,14 @@ class NemotronTranscription:
         def hear():
             # The second model first: on the brain it heard 52 of 54 lone words
             # Nemotron lost, in about 0.1s - hearing again only gets a turn when it
-            # comes to nothing, or isn't loaded.
-            timed = timeline and self._stt.fallback is not None
-            if timed:
-                timeline.mark("stt_fallback_started")
+            # comes to nothing, or isn't loaded. Its times are only noted here, and
+            # marked once this is waited for, so a request given up on is never
+            # marked after it's over.
+            if self._stt.fallback is not None:
+                outcome["fallback_started"] = time.monotonic()
             heard = self._stt.ask_fallback(speech, wake_word)
-            if timed:
-                timeline.mark("stt_fallback_done")
+            if self._stt.fallback is not None:
+                outcome["fallback_done"] = time.monotonic()
             if heard:
                 outcome["heard"] = (heard, "fallback")
                 return
@@ -409,6 +410,9 @@ class NemotronTranscription:
             raise TimeoutError(f"Nemotron hadn't heard the recording again after {FINISH_LIMIT:.0f}s")
         text, how = outcome.get("heard", ("", "nothing"))
         if timeline:
+            for mark in ("fallback_started", "fallback_done"):
+                if mark in outcome:
+                    timeline.mark(f"stt_{mark}", at=outcome[mark])
             timeline.mark("stt_retry_done")
             timeline.note(heard_again=how)
         heard = _heard(text, time.time() - started, after_recording=True)

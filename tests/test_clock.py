@@ -1502,15 +1502,20 @@ def test_whats_ringing_or_missed_is_given_to_the_default_too(make_clock, tmp_pat
     assert again.announced[0]["satellite"] == "pi"
 
 
-def test_moving_an_alarm_the_satellite_already_has_doesnt_double_it(make_clock, tmp_path):
+def test_moving_an_alarm_the_satellite_already_has_doesnt_double_it(make_clock, tmp_path, monkeypatch):
     # The same 7am weekday alarm on both, and both ringing: moved, the bedroom would
-    # ring it twice over.
+    # ring it twice over. On a Monday, so the 7am rings on Tuesday and next on
+    # Wednesday, before the one-off 6:30 on Thursday - from a Thursday, it would next
+    # ring on Monday, after it.
+    monday = datetime(2026, 10, 19, 12, 0).timestamp()
+    monkeypatch.setattr(clock_module.time, "time", lambda: monday)
     clock = make_clock()
     due = clock._next_occurrence(7, 0, "weekdays")
+    one_off = clock._next_occurrence(6, 30, None, after=due + 86400)
     (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 4, "alarms": [
         {"id": 1, "hour": 7, "minute": 0, "repeat": "weekdays", "due_at": due, "satellite": "bedroom"},
         {"id": 2, "hour": 7, "minute": 0, "repeat": "weekdays", "due_at": due, "satellite": "kitchen"},
-        {"id": 3, "hour": 6, "minute": 30, "repeat": None, "due_at": due + 86400, "satellite": "kitchen"}]}))
+        {"id": 3, "hour": 6, "minute": 30, "repeat": None, "due_at": one_off, "satellite": "kitchen"}]}))
     clock = make_clock()
     clock.alarm_ring_duration = 0
     clock._tick(due + 1)

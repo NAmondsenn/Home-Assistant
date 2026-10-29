@@ -39,6 +39,8 @@ STAGES = (
     ("Speech-to-text", ("recording_stopped",), "stt_done"),
     # Part of speech-to-text, only when it heard nothing in the user talking - see speech_to_text.py.
     ("Hearing it again", ("stt_retry_started",), "stt_retry_done"),
+    # Part of hearing it again - the second model, asked first. See speech_to_text.py.
+    ("Asking the second model", ("stt_fallback_started",), "stt_fallback_done"),
     ("Claude", ("stt_done",), "llm_done"),
     ("Action", ("llm_done",), "action_done"),
     # Speech plays as each sentence is ready, so this is how long until the first one is.
