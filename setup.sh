@@ -513,8 +513,18 @@ download_model() {
     check_sha256 "$archive" "$sha256"
     rm -rf "$unpacking"
     mkdir -p "$unpacking"
-    tar -xjf "$archive" -C "$unpacking"
-    mv "${unpacking}/${name}" "${MODELS_DIRECTORY}/${name}"
+    # An optional model's failure must not stop setup, or update.sh would take back the
+    # whole update over it - and the half-unpacked folder and archive, about 245MB,
+    # would sit on a nearly full disk until the next run.
+    if ! tar -xjf "$archive" -C "$unpacking" || ! mv "${unpacking}/${name}" "${MODELS_DIRECTORY}/${name}"; then
+        rm -rf "$unpacking" "$archive"
+        problem "Couldn't unpack ${label} - the download may be damaged. Run this again."
+        if [ "$required" = true ]; then
+            exit 1
+        fi
+        problem "Carrying on without ${label} - Nova works without it, but hears lone words less well."
+        return
+    fi
     rm -rf "$unpacking" "$archive"
     done_ "${label} (${name})"
 }

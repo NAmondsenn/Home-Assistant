@@ -327,9 +327,12 @@ def test_a_failed_download_only_stops_setup_for_nemotron(tmp_path, model, stops)
     assert list(models.iterdir()) == []
 
 
-def test_a_model_cut_short_unpacking_is_never_taken_for_there(tmp_path):
+@pytest.mark.parametrize("model, stops", [("nemotron", True), ("parakeet", False)])
+def test_a_model_cut_short_unpacking_is_never_taken_for_there(tmp_path, model, stops):
     # Unpacked to one side and moved into place once whole - so a broken archive, or
-    # setup stopped part way, leaves no folder which a later run would skip.
+    # setup stopped part way, leaves no folder which a later run would skip. Only
+    # Nemotron's stops setup: Parakeet's would otherwise make update.sh take back the
+    # whole update over a model Nova works without.
     import hashlib
     import tarfile
 
@@ -346,11 +349,15 @@ def test_a_model_cut_short_unpacking_is_never_taken_for_there(tmp_path):
     sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
     models = tmp_path / "models"
     models.mkdir()
-    result = run_setup(tmp_path, f'MODELS_DIRECTORY="{models}"; PARAKEET_NAME=parakeet; PARAKEET_SHA256={sha256}; '
-                                 f'wget() {{ cp "{archive}" "$4"; }}; download_parakeet', role="brain")
+    prefix = model.upper()
+    result = run_setup(tmp_path, f'MODELS_DIRECTORY="{models}"; {prefix}_NAME=parakeet; {prefix}_SHA256={sha256}; '
+                                 f'wget() {{ cp "{archive}" "$4"; }}; '
+                                 f'df() {{ echo "Filesystem 1024-blocks Used Available Capacity Mounted"; '
+                                 f'echo "disk 0 0 {10 ** 9} 0% /"; }}; download_{model}', role="brain")
 
-    assert result.returncode != 0
-    assert not (models / "parakeet").exists()
+    assert (result.returncode != 0) is stops
+    assert "Couldn't unpack" in result.stderr
+    assert list(models.iterdir()) == []
 
 
 def test_what_an_earlier_run_left_unpacking_is_cleared(tmp_path):
