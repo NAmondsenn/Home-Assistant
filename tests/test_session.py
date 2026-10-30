@@ -1343,6 +1343,83 @@ def test_a_room_found_without_a_media_watcher_sends_nothing(brain, connect, make
     assert pi.messages("state") == []
 
 
+# How sure the satellite must be of its wake word
+
+def _wake_confidence_sent(session, pi):
+    """Has the session send its state, and returns the wake confidence the satellite got."""
+    before = len(pi.messages("state"))
+    assert session.send_state()
+    assert wait_for(lambda: len(pi.messages("state")) == before + 1)
+    return pi.messages("state")[-1]["wake_confidence"]
+
+
+def test_the_satellite_is_sent_a_surer_wake_word_while_something_plays_in_its_room(brain, connect, make_session):
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing()
+    assert _wake_confidence_sent(session, pi) == 0.5
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    assert _wake_confidence_sent(session, pi) == 0.75
+    # Something playing in another room doesn't count here.
+    brain.media = _playing(("media_player.radio", "Radio", "Kitchen", "devradio", None))
+    assert _wake_confidence_sent(session, pi) == 0.5
+
+
+def test_the_wake_confidence_is_never_lower_while_something_plays(brain, connect, make_session):
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    # Read as it's sent, as the longest request is, so a save reaches it with no restart.
+    brain.config.apply({("thresholds", "wake_word_confidence"): 0.6,
+                        ("thresholds", "media_wake_word_confidence"): 0.4})
+    assert _wake_confidence_sent(session, pi) == 0.6
+
+
+def test_without_a_media_watcher_the_satellite_is_sent_the_normal_wake_confidence(brain, connect, make_session):
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    # No Home Assistant, so no watcher.
+    assert brain.media is None
+    assert _wake_confidence_sent(session, pi) == 0.5
+    brain.config.apply({("thresholds", "wake_word_confidence"): 0.7})
+    assert _wake_confidence_sent(session, pi) == 0.7
+
+
+def test_two_states_sent_at_once_arrive_in_the_order_they_were_read(brain, connect, make_session):
+    # The media watcher, the settings page and the device lookup each send on a thread of their own. Were
+    # one's older state to arrive after another's newer one, the normal wake word would stay on for a film.
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing()
+    sent, sending, carry_on = [], threading.Event(), threading.Event()
+
+    def set_state(volumes, muted, longest_request=None, wake_confidence=None):
+        # The first send stalls on the way, as one to a satellite slow to read can.
+        if not sending.is_set():
+            sending.set()
+            carry_on.wait(5)
+        sent.append(wake_confidence)
+        return True
+
+    satellite.set_state = set_state
+    first = threading.Thread(target=session.send_state)
+    first.start()
+    assert sending.wait(5)
+    # A film starts while the first is on its way.
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    second = threading.Thread(target=session.send_state)
+    second.start()
+    # Long enough for the second to have been sent, had it not waited for the first.
+    second.join(0.3)
+    carry_on.set()
+    first.join(5)
+    second.join(5)
+    assert sent == [0.5, 0.75]
+
+
 def test_closing_a_session_ends_every_thread_it_started(connect, make_session, monkeypatch):
     # A satellite which connects again gets a new session, and the old one's threads
     # held the whole of it - Navidrome's waited for something to play for ever.

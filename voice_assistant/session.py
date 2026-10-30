@@ -131,6 +131,12 @@ class Session:
         # see hear_voice.
         self._last_hearing = None
         self._hearing_lock = threading.Lock()
+        # Held while the satellite's state is read and sent, as the media watcher, the
+        # settings page, the device lookup and satellites joining each send it from a thread
+        # of their own - so the later of two sends always reads later and arrives last. One
+        # read just before a film started, landing after the one read just after, would
+        # leave the usual wake word on through the film. See send_state.
+        self._sending_state = threading.Lock()
         # Set once the session is closed, which ends run() - see close.
         self._closed = threading.Event()
         self._closing = threading.Lock()
@@ -269,15 +275,32 @@ class Session:
         """
         Sends the satellite its volumes and its mute, which the brain owns: whenever
         either changes, and as it connects. It mutes its wake word by them, and rings
-        by them while it can't reach the brain. With them goes the longest request,
-        which isn't the satellite's to keep but is sent here so a save on the settings
-        page can reach it in the same way - see Brain.apply_settings.
+        by them while it can't reach the brain. With them go the longest request and
+        how sure to be of its wake word, which aren't the satellite's to keep but are
+        sent here so a save on the settings page can reach it in the same way - see
+        Brain.apply_settings - as can something starting or stopping in its room.
 
         Returns:
             Whether it was sent.
         """
-        volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
-        return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0))
+        # Never called with the brain's lock held, which playing_here takes while this is held.
+        with self._sending_state:
+            volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
+            return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0),
+                                            wake_confidence=self._wake_confidence())
+
+    def _wake_confidence(self) -> float:
+        """
+        Returns:
+            How sure, from 0 to 1, the satellite must be that it heard its wake word: the
+            usual setting, or the media one while anything plays in its room - but never
+            less sure then, so a media setting saved below the usual one changes nothing.
+        """
+        thresholds = self.thresholds
+        usual = thresholds.get("wake_word_confidence", 0.5)
+        if not self.playing_here():
+            return usual
+        return max(usual, thresholds.get("media_wake_word_confidence", 0.75))
 
     def playing_here(self) -> List[str]:
         """

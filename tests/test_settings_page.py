@@ -200,9 +200,15 @@ class FakeSession:
         self.stopped = 0
         # The routines it was told to run.
         self.routines_run = []
+        # How many times its satellite was sent its state.
+        self.states_sent = 0
 
     def run_routine(self, routine):
         self.routines_run.append(routine["name"])
+
+    def send_state(self):
+        self.states_sent += 1
+        return True
 
     def set_muted(self, muted):
         self.muted = muted
@@ -272,8 +278,14 @@ class FakeBrain:
         return Brain.stop_everywhere(self)
 
     def apply_settings(self, changes):
-        # The brain's own, so a change reaches ntfy and the logs as it does on the brain.
+        # The brain's own, so a change reaches ntfy, the logs and the satellites as it does on the brain.
         return Brain.apply_settings(self, changes)
+
+    def connected_sessions(self):
+        return list(self.sessions.values())
+
+    def _send_states(self, but=None):
+        return Brain._send_states(self, but)
 
 
 def _page(running=None, sessions=None, known=None, wake_word=None, **parts):
@@ -1725,6 +1737,32 @@ def test_longest_request_is_on_the_page_from_5_to_30(files):
 
     assert page.save_settings({"thresholds.recording_timeout": 25}, LOGIN)["success"]
     assert yaml.safe_load((files / "config.yaml").read_text())["thresholds"]["recording_timeout"] == 25
+
+
+@pytest.mark.parametrize("name, label, value", [
+    ("wake_word_confidence", "How sure Nova must be it heard its wake word", 0.5),
+    ("media_wake_word_confidence",
+     "How sure Nova must be it heard its wake word while something's playing in the room", 0.75)])
+def test_each_wake_word_confidence_is_on_the_page_from_0_3_to_0_95(files, name, label, value):
+    page = _page()
+    (shown,) = [setting for setting in page.state()["settings"] if setting["key"] == f"thresholds.{name}"]
+    assert shown["label"] == label and shown["value"] == value and shown["used"] == "Used straight away"
+    assert (shown["min"], shown["max"], shown["whole"]) == (0.3, 0.95, False)
+    for refused in (0.2, 0.97):
+        assert page.save_settings({f"thresholds.{name}": refused}, LOGIN) == {
+            "success": False, "message": f"{label} should be from 0.3 to 0.95."}
+    assert not (files / "config.yaml").exists()
+
+
+@pytest.mark.parametrize("name", ["wake_word_confidence", "media_wake_word_confidence"])
+def test_a_wake_word_confidence_saved_is_sent_to_every_satellite(files, name):
+    sessions = {"bedroom": FakeSession(), "kitchen": FakeSession()}
+    page, running = _running(files, sessions=sessions)
+    result = page.save_settings({f"thresholds.{name}": 0.8}, LOGIN)
+
+    assert result == {"success": True, "message": "Saved. It's used straight away.", "restart_needed": False}
+    assert running.section("thresholds")[name] == 0.8
+    assert [session.states_sent for session in sessions.values()] == [1, 1]
 
 
 def test_hear_it_refuses_a_speed_out_of_range(files):

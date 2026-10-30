@@ -2022,6 +2022,29 @@ def test_the_brain_sends_each_satellite_its_longest_request(brain, connect):
     assert bedroom.messages("state")[1]["longest_request"] == kitchen.messages("state")[1]["longest_request"] == 20.0
 
 
+@pytest.mark.parametrize("name", ["wake_word_confidence", "media_wake_word_confidence"])
+def test_a_wake_word_confidence_saved_is_sent_to_each_satellite(brain, connect, name):
+    serving(brain)
+    bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: bedroom.messages("state") and kitchen.messages("state"))
+
+    assert brain.apply_settings({("thresholds", name): 0.6}) == []
+    assert wait_for(lambda: len(bedroom.messages("state")) == len(kitchen.messages("state")) == 2)
+
+
+def test_other_settings_saved_send_the_satellites_nothing(brain, connect):
+    serving(brain)
+    bedroom = connect(brain)
+    connected(brain)
+    assert wait_for(lambda: bedroom.messages("state"))
+
+    assert brain.apply_settings({("thresholds", "silence_duration"): 1.0}) == []
+    time.sleep(0.2)
+    assert len(bedroom.messages("state")) == 1
+
+
 def test_the_cant_reach_phrase_is_made_again_at_the_new_speed(brain, connect):
     # Each satellite says it while it can't reach the brain, so it should sound as Nova now does.
     serving(brain)

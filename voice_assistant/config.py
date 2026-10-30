@@ -29,8 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Settings which only make sense within a range, or as one of a few words - checked
 # beyond being the right kind.
-BETWEEN_0_AND_1 = {("thresholds", "vad_threshold"), ("thresholds", "wake_word_confidence"),
-                   ("thresholds", "silence_threshold"), ("llm", "temperature")}
+BETWEEN_0_AND_1 = {("thresholds", "vad_threshold"), ("thresholds", "silence_threshold"), ("llm", "temperature")}
 CHOICES = {("music", "player"): ("navidrome", "spotify")}
 # Battery marks are percentages, and how many each kind of device has - the settings page
 # allows no other number. The battery watcher can't check every 0 seconds or call a
@@ -62,6 +61,9 @@ LIMITS: Dict[Tuple[str, str], Limit] = {
     ("ntfy", "alerts"): Limit("topics"),
     ("thresholds", "silence_duration"): Limit("number", 0.2, 3),
     ("thresholds", "recording_timeout"): Limit("number", 5, 30, False),
+    # Below 0.3 almost anything wakes Nova, and above 0.95 hardly anything does.
+    ("thresholds", "wake_word_confidence"): Limit("number", 0.3, 0.95),
+    ("thresholds", "media_wake_word_confidence"): Limit("number", 0.3, 0.95),
     ("conversation", "history_max_age"): Limit("number", 0, 3600, True),
     ("mqtt", "host"): Limit("host"),
     ("mqtt", "port"): Limit("number", 1, 65535, True),

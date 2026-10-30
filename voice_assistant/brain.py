@@ -115,6 +115,11 @@ STOP_CHECK = 0.5
 # fallback.Phrase.
 FALLBACK_PHRASE = "Sorry, I can't reach my server right now."
 
+# The settings each satellite is sent with its state - see Session.send_state - so a
+# save of any of them on the settings page sends every satellite its state again.
+SENT_IN_STATE = (("thresholds", "recording_timeout"), ("thresholds", "wake_word_confidence"),
+                 ("thresholds", "media_wake_word_confidence"))
+
 
 def _speech_to_text(config, tts: TextToSpeech):
     """
@@ -406,7 +411,7 @@ class Brain:
                 unused.append(("logging", "log_transcripts"))
         if ("voice", "speed") in changes and not self._change_speed(changes[("voice", "speed")]):
             unused.append(("voice", "speed"))
-        if ("thresholds", "recording_timeout") in changes:
+        if any(key in changes for key in SENT_IN_STATE):
             self._send_states()
         return unused
 

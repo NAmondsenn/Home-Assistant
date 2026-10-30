@@ -144,8 +144,13 @@ thresholds:
   # you say. Each satellite is told it, but never records for more than 30 seconds
   # whatever it is set to.
   recording_timeout: 15.0
-  # Minimum confidence required to consider a wake word detected.
+  # How sure Nova must be that it heard its wake word, from 0.3 to 0.95. Raise it if Nova
+  # wakes when nobody said it; lower it if it misses you.
   wake_word_confidence: 0.5
+  # The same while something's playing in the satellite's room - any media player Home
+  # Assistant puts there, but not Nova's own music - as a film's speech can sound like the
+  # wake word. The higher of the two is used then.
+  media_wake_word_confidence: 0.75
 
 timers:
   # Reminders are announced twice in quick succession.
