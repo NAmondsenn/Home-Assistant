@@ -543,6 +543,16 @@ class Satellite:
         # or 1e-9, which is no audio at all. The brain's own setting is at least 5.
         if isinstance(longest, (int, float)) and not isinstance(longest, bool) and 1 <= longest < math.inf:
             self.longest_request = min(longest, MOST_SECONDS)
+        confidence = message.get("wake_confidence")
+        # Held to the same care: a score is never above 1, so anything past 0 to 1 -
+        # or "0.75" as text, True, NaN - would make the wake word never fire, or fire
+        # on any noise, and the Pi has nobody at the keyboard to notice.
+        if (isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+                and 0 < confidence <= 1 and confidence != self.wake.sensitivity):
+            # A plain assignment is enough: the listening thread only reads it, one
+            # score at a time, and a change taking effect on the next one is fine.
+            self.wake.sensitivity = confidence
+            logger.info(f"Listening for the wake word at {confidence} now")
         self.wake.set_muted(self.state.muted)
 
     def _away_settled(self, message: Dict, payload: bytes):

@@ -149,6 +149,7 @@ class FakeWake:
     def __init__(self, config=None, microphone=None):
         self.microphone = microphone
         self.muted = False
+        self.sensitivity = 0.5
         self.heard_at = None
         self.listening = False
         self._said = queue.Queue()
@@ -412,6 +413,52 @@ def test_an_old_brain_leaves_the_satellite_at_ten_seconds(brain, make, sent):
     brain.say("state", volumes={}, muted=False, **sent)
     assert wait_for(lambda: made.wake.muted is False)
     assert made.longest_request == 12
+
+
+def test_the_satellite_listens_as_surely_as_the_brain_says(brain, make, caplog):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    assert made.wake.sensitivity == 0.5
+    with caplog.at_level("INFO", logger="satellite"):
+        brain.say("state", volumes={}, muted=False, wake_confidence=0.75)
+        assert wait_for(lambda: made.wake.sensitivity == 0.75)
+        # The brain repeats its state often, and the log shouldn't fill with the same value.
+        brain.say("state", volumes={}, muted=False, wake_confidence=0.75)
+        brain.say("state", volumes={}, muted=True, wake_confidence=0.75)
+        assert wait_for(lambda: made.wake.muted is True)
+    assert len([record for record in caplog.records
+                if "Listening for the wake word at 0.75 now" in record.getMessage()]) == 1
+
+    # A state without it changes nothing: an old brain, or one with nothing playing to say.
+    brain.say("state", volumes={}, muted=False)
+    assert wait_for(lambda: made.wake.muted is False)
+    assert made.wake.sensitivity == 0.75
+
+
+def test_a_wake_confidence_of_exactly_one_is_taken(brain, make):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, wake_confidence=1)
+    assert wait_for(lambda: made.wake.sensitivity == 1)
+
+
+@pytest.mark.parametrize("sent", [{"wake_confidence": "0.75"}, {"wake_confidence": True},
+                                  {"wake_confidence": float("nan")}, {"wake_confidence": float("inf")},
+                                  {"wake_confidence": 0}, {"wake_confidence": -0.1}, {"wake_confidence": 1.5},
+                                  {"wake_confidence": None}],
+                         ids=["text", "bool", "nan", "inf", "zero", "negative", "over-one", "null"])
+def test_a_wake_confidence_which_makes_no_sense_is_ignored(brain, make, sent):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, wake_confidence=0.75)
+    assert wait_for(lambda: made.wake.sensitivity == 0.75)
+    brain.say("state", volumes={}, muted=True, **sent)
+    assert wait_for(lambda: made.wake.muted is True)
+
+    assert made.wake.sensitivity == 0.75
+    # And a good one afterwards still counts, so the bad one didn't wedge the state.
+    brain.say("state", volumes={}, muted=False, wake_confidence=0.6)
+    assert wait_for(lambda: made.wake.sensitivity == 0.6)
 
 
 def test_an_old_satellite_ignores_the_longest_request(tmp_path):
