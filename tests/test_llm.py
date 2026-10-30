@@ -694,13 +694,20 @@ def test_a_reply_cut_off_in_its_text_is_said_but_warned_about(llm, caplog):
 
 
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
-def test_nothing_is_run_from_a_reply_which_stopped_short(llm, caplog, stop_reason):
-    llm.client = FakeClient(_reply("Okay.", _tool("set_timer", duration_seconds=1200), stop_reason=stop_reason))
+def test_nothing_is_run_or_claimed_from_a_reply_which_stopped_short(llm, caplog, stop_reason):
+    # Its words go with its tools: "Setting a 20 minute timer." said with no timer set.
+    llm.client = FakeClient([
+        _reply("Setting a 20 minute timer.", _tool("set_timer", duration_seconds=1200), stop_reason=stop_reason),
+        _reply("Yes.")])
     with caplog.at_level("WARNING"):
         result = llm.process_query("set a timer for 20 minutes")
     assert result["actions"] == [] and result["response"] == llm_module.COULDNT_FIND_OUT
     assert any(stop_reason in warning for warning in _warnings(caplog))
     assert llm.history[0]["tools"] == []
+    assert "timer" not in llm.history[0]["assistant"] and "timer" not in llm.history[0]["model_text"]
+
+    llm.process_query("and a second")
+    assert "Setting a 20 minute timer" not in repr(llm.client.requests[-1]["messages"])
 
 
 def test_a_read_isnt_made_from_a_reply_which_stopped_short():
@@ -710,6 +717,29 @@ def test_a_read_isnt_made_from_a_reply_which_stopped_short():
     result = llm.process_query("when's sunset?", read=read.append)
     assert read == [] and len(llm.client.requests) == 1
     assert result["response"] == llm_module.COULDNT_FIND_OUT
+
+
+def test_thinking_on_a_web_search_reply_isnt_said(llm):
+    search = [SimpleNamespace(type="server_tool_use", id="s1", name="web_search", input={"query": "weather"}),
+              SimpleNamespace(type="web_search_tool_result", tool_use_id="s1", content=[])]
+    llm.client = FakeClient(_thought(_reply("It's sunny in Bristol."), _thinking("Checking the results..."), *search))
+    result = llm.process_query("search for the weather in Bristol")
+    assert result["response"] == "It's sunny in Bristol."
+    assert "web_search" in [tool["name"] for tool in llm.client.requests[0]["tools"]]
+    assert "Checking" not in repr(llm.history)
+
+
+def test_thinking_goes_back_unchanged_on_a_pause_turn_continuation(llm):
+    thought = _thinking("Looking it up...")
+    paused = _thought(_reply("", stop_reason="pause_turn"), thought,
+                      SimpleNamespace(type="server_tool_use", id="s1", name="web_search", input={"query": "weather"}))
+    llm.client = FakeClient([paused, _thought(_reply("It's sunny in Bristol."), _thinking("Done."))])
+    result = llm.process_query("search for the weather in Bristol")
+    assert result["response"] == "It's sunny in Bristol."
+    assert len(llm.client.requests) == 2
+    assistant = llm.client.requests[1]["messages"][-1]
+    assert assistant["role"] == "assistant" and assistant["content"] == paused.content
+    assert assistant["content"][0] is thought and thought.thinking == "Looking it up..."
 
 
 def test_a_thinking_block_with_text_isnt_taken_for_empty(llm):

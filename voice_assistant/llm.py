@@ -571,9 +571,12 @@ class LLMHandler:
             stop_reason = getattr(response, "stop_reason", None)
             stopped_short = stop_reason in STOPPED_SHORT and bool(actions)
             if stopped_short:
+                # Its words go with its tools - "Setting a 20 minute timer." must not be said
+                # when the timer wasn't set, nor kept to be built on in the history.
                 logger.warning(f"Claude stopped short ({stop_reason}), so nothing it called is run: "
                                f"{[action.tool for action in actions]}")
                 actions = []
+                response_text = COULDNT_FIND_OUT
 
             # An album is only played whole when the user actually asked for one.
             # Titles are often both a song and an album, and the model tends to
@@ -595,7 +598,7 @@ class LLMHandler:
             if not actions and not response_text:
                 logger.warning(f"Claude gave no reply (stop_reason={stop_reason})")
                 response_text = COULDNT_FIND_OUT
-            elif (dropped or reads or stopped_short) and not actions and bare_acknowledgement(response_text):
+            elif (dropped or reads) and not actions and bare_acknowledgement(response_text):
                 response_text = COULDNT_FIND_OUT
             elif stop_reason == "max_tokens":
                 logger.warning("Claude's reply was cut off by max_tokens, so it may end mid-sentence")
