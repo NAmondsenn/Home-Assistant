@@ -35,7 +35,7 @@ the same label.
 The recordings are of your voice, so they're kept outside the project, readable by
 you only - in ~/.local/share/nova/voice-samples/wake, in hey_nova and not_hey_nova -
 and are never sent anywhere. Ctrl-C stops a run and keeps every take or file already
-finished.
+finished. Once the voice check is trained on them, they can be deleted.
 """
 
 import argparse

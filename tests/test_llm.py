@@ -339,6 +339,11 @@ def test_claude_is_always_told_about_not_for_me_so_the_cache_holds(llm):
     first, second = llm.client.requests
     assert first["system"] == second["system"] and first["tools"] == second["tools"]
     assert "call not_for_me and nothing else" in first["system"][0]["text"]
+    assert "when in doubt" not in first["system"][0]["text"].lower()
+    assert "clear command or question for a voice assistant" in first["system"][0]["text"]
+    assert "Never make conversation" in first["system"][0]["text"]
+    assert "never with any other tool" in first["tools"][-1]["description"]
+    assert "doubt" not in first["tools"][-1]["description"]
     assert [tool["name"] for tool in first["tools"]] == ["set_lights", "not_for_me"]
     assert first["tools"][-1]["input_schema"] == {"type": "object", "properties": {}}
 
@@ -558,6 +563,13 @@ def test_thinking_is_adaptive_at_low_effort_and_no_temperature_is_sent(llm):
     assert "temperature" not in request
 
 
+def test_a_temperature_which_is_set_is_sent(make_config):
+    llm = LLMHandler(config=make_config(llm={"temperature": 0.3}), api_key=None)
+    llm.client = FakeClient(_reply("Paris."))
+    llm.process_query("what's the capital of France")
+    assert llm.client.requests[-1]["temperature"] == 0.3
+
+
 def test_the_effort_is_the_one_set(make_config):
     llm = LLMHandler(config=make_config(llm={"effort": "medium"}), api_key=None)
     llm.client = FakeClient(_reply("Paris."))
@@ -652,13 +664,13 @@ def test_a_reply_with_nothing_in_it_says_something_and_warns(llm, caplog, respon
     llm.client = FakeClient([response, _reply("Yes.")])
     with caplog.at_level("WARNING"):
         result = llm.process_query("what have I got on next Friday")
-    assert result["response"] == llm_module.COULDNT_FIND_OUT and result["actions"] == []
+    assert result["response"] == llm_module.DIDNT_WORK and result["actions"] == []
     assert any(response.stop_reason in warning for warning in _warnings(caplog))
 
     # What's said is what's kept, so the next request doesn't send an empty turn.
     llm.process_query("and the Friday after")
     assert _no_empty_assistant_turn(llm.client.requests[-1])
-    assert llm.history[0]["assistant"] == llm_module.COULDNT_FIND_OUT
+    assert llm.history[0]["assistant"] == llm_module.DIDNT_WORK
 
 
 def test_a_reply_cut_off_while_thinking_after_a_read_says_something_and_warns(caplog):
@@ -694,20 +706,58 @@ def test_a_reply_cut_off_in_its_text_is_said_but_warned_about(llm, caplog):
 
 
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
-def test_nothing_is_run_or_claimed_from_a_reply_which_stopped_short(llm, caplog, stop_reason):
-    # Its words go with its tools: "Setting a 20 minute timer." said with no timer set.
-    llm.client = FakeClient([
-        _reply("Setting a 20 minute timer.", _tool("set_timer", duration_seconds=1200), stop_reason=stop_reason),
-        _reply("Yes.")])
+@pytest.mark.parametrize("call, said", [
+    (_tool("set_timer", duration_seconds=1200), "Setting a 20 minute timer."),
+    (_tool("home_status", about="sunset"), "Let me check."),
+    (_tool("remember", fact="Likes tea"), "I'll remember that."),
+], ids=["set_timer", "home_status", "remember"])
+def test_nothing_is_run_or_claimed_from_a_reply_which_stopped_short(caplog, stop_reason, call, said):
+    # Its words go with its tools, whichever tool: "Setting a 20 minute timer." said with no timer set.
+    llm = _reader()
+    llm.client = FakeClient([_reply(said, call, stop_reason=stop_reason), _reply("Yes.")])
     with caplog.at_level("WARNING"):
         result = llm.process_query("set a timer for 20 minutes")
-    assert result["actions"] == [] and result["response"] == llm_module.COULDNT_FIND_OUT
+    assert result["actions"] == [] and result["response"] == llm_module.DIDNT_WORK
     assert any(stop_reason in warning for warning in _warnings(caplog))
-    assert llm.history[0]["tools"] == []
-    assert "timer" not in llm.history[0]["assistant"] and "timer" not in llm.history[0]["model_text"]
+    assert len(llm.client.requests) == 1
+    assert llm.history[0]["tools"] == [] and llm.history[0]["assistant"] == llm.history[0]["model_text"]
+    assert said not in llm.history[0]["assistant"]
 
     llm.process_query("and a second")
-    assert "Setting a 20 minute timer" not in repr(llm.client.requests[-1]["messages"])
+    assert said not in repr(llm.client.requests[-1]["messages"])
+
+
+def test_a_reply_which_stopped_short_after_a_read_says_it_couldnt_find_out(caplog):
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sun")),
+                             _reply("Setting it.", _tool("set_timer", duration_seconds=60), stop_reason="max_tokens")])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["actions"] == [] and result["response"] == llm_module.COULDNT_FIND_OUT
+
+
+def test_a_reply_which_stopped_short_isnt_also_said_to_be_cut_off_mid_sentence(llm, caplog):
+    llm.client = FakeClient(_reply("Setting it.", _tool("set_timer", duration_seconds=60), stop_reason="max_tokens"))
+    with caplog.at_level("WARNING"):
+        llm.process_query("set a timer for a minute")
+    assert not any("mid-sentence" in warning for warning in _warnings(caplog))
+
+
+def test_a_refusal_is_warned_of_with_its_category_even_with_words_beside_it(llm, caplog):
+    details = SimpleNamespace(type="refusal", category="general_harms")
+    response = _reply("I can't help with that.", stop_reason="refusal")
+    response.stop_details = details
+    llm.client = FakeClient(response)
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("call the police, Sarah")
+    assert result["response"] == "I can't help with that."
+    assert any("refus" in warning and "general_harms" in warning for warning in _warnings(caplog))
+
+
+def test_a_refusal_with_no_details_is_still_warned_of(llm, caplog):
+    llm.client = FakeClient(_reply("I can't help with that.", stop_reason="refusal"))
+    with caplog.at_level("WARNING"):
+        llm.process_query("call the police, Sarah")
+    assert any("refus" in warning for warning in _warnings(caplog))
 
 
 def test_a_read_isnt_made_from_a_reply_which_stopped_short():
@@ -716,7 +766,7 @@ def test_a_read_isnt_made_from_a_reply_which_stopped_short():
     read = []
     result = llm.process_query("when's sunset?", read=read.append)
     assert read == [] and len(llm.client.requests) == 1
-    assert result["response"] == llm_module.COULDNT_FIND_OUT
+    assert result["response"] == llm_module.DIDNT_WORK
 
 
 def test_thinking_on_a_web_search_reply_isnt_said(llm):

@@ -46,8 +46,13 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 STOPPED_SHORT = ("max_tokens", "refusal")
 
 # Said when Claude read something but said nothing of it - what was read is never said
-# itself, as entity ids read out are no answer.
+# itself, as entity ids read out are no answer. Also when a read was asked for but dropped.
 COULDNT_FIND_OUT = "Sorry, I couldn't find that out."
+
+# Said when a response stopped short or was empty and nothing was read. What was asked
+# may well have been a command ("set a timer for 20 minutes"), so it says to ask again
+# rather than that something couldn't be found out.
+DIDNT_WORK = "Sorry, that didn't work. Try asking again."
 
 # What Claude is told when a read went wrong, rather than the error itself.
 READ_FAILED = "That couldn't be read."
@@ -59,10 +64,9 @@ READ_FAILED = "That couldn't be read."
 # whether it counts.
 NOT_FOR_ME = {
     "name": "not_for_me",
-    "description": ("Say that what was heard was speech from what's playing in the room - a film, a programme, "
-                    "a song or a presenter - and not a request to you, so nothing is said or done. Only when "
-                    "the message says something is playing, only when that's plain, and never with any other "
-                    "tool. When in doubt, answer as normal instead."),
+    "description": ("Say that what was heard was speech from what's playing in the room, not a request to you, "
+                    "so nothing is said or done. Only when the message says something is playing, and never "
+                    "with any other tool."),
     "input_schema": {"type": "object", "properties": {}},
 }
 
@@ -350,11 +354,18 @@ class LLMHandler:
         # A film or music playing in the room is heard by the microphone too, and a line of
         # it can sound like the wake word and a request - so Claude may say it was that.
         # Always in the instructions, whether anything plays or not, so they can be cached.
+        # Only a clear command or question is answered while something plays: "when in doubt,
+        # answer" let 9 of 30 film lines through in a trial, and acted on one every time,
+        # where this wording ignored 42 of 42 and answered 57 of 57 real requests.
         system_prompt += (
-            "When the message says something is playing in this room, what you received may be speech "
-            "from it - a film, a programme, a song or a presenter - picked up as if it were said to you. "
-            "If it plainly is that, and not a request to you, call not_for_me and nothing else. "
-            "When in doubt, answer as normal. "
+            "When the message says something's playing, the microphone hears that too, so what you were "
+            "given is probably from it unless it's plainly someone asking you for something. Treat it as a "
+            "request to you only if it's a clear command or question for a voice assistant, with nothing "
+            "around it: 'lights off', 'what time is it', 'set the lamp to twenty percent'. Everything else "
+            "is speech from what's playing, so call not_for_me and nothing else: a remark, a story, a line "
+            "of dialogue, anything that makes no sense, and any command or question aimed at someone else - "
+            "'turn the lights off, Jack, he's coming' and 'call the police, Sarah' are lines from a film. "
+            "Never make conversation about something you heard while something's playing. "
         )
 
         # What's known about the user. It only changes when something new is learnt, so
@@ -570,13 +581,20 @@ class LLMHandler:
                        if getattr(block, "type", None) == "tool_use"]
             stop_reason = getattr(response, "stop_reason", None)
             stopped_short = stop_reason in STOPPED_SHORT and bool(actions)
+
+            # Haiku 5.5's classifiers are new here, and a film line is the likeliest thing to
+            # trip one - so the log says why, since what's said over the film doesn't.
+            if stop_reason == "refusal":
+                category = getattr(getattr(response, "stop_details", None), "category", None)
+                logger.warning(f"Claude refused (category: {category})")
+
             if stopped_short:
                 # Its words go with its tools - "Setting a 20 minute timer." must not be said
                 # when the timer wasn't set, nor kept to be built on in the history.
                 logger.warning(f"Claude stopped short ({stop_reason}), so nothing it called is run: "
                                f"{[action.tool for action in actions]}")
                 actions = []
-                response_text = COULDNT_FIND_OUT
+                response_text = COULDNT_FIND_OUT if reads else DIDNT_WORK
 
             # An album is only played whole when the user actually asked for one.
             # Titles are often both a song and an album, and the model tends to
@@ -597,10 +615,10 @@ class LLMHandler:
             # block which used up max_tokens, a refusal, or just an empty reply.
             if not actions and not response_text:
                 logger.warning(f"Claude gave no reply (stop_reason={stop_reason})")
-                response_text = COULDNT_FIND_OUT
+                response_text = COULDNT_FIND_OUT if reads or dropped else DIDNT_WORK
             elif (dropped or reads) and not actions and bare_acknowledgement(response_text):
                 response_text = COULDNT_FIND_OUT
-            elif stop_reason == "max_tokens":
+            elif stop_reason == "max_tokens" and not stopped_short:
                 logger.warning("Claude's reply was cut off by max_tokens, so it may end mid-sentence")
 
             # Fallback for when the action is called by the model, but no message is produced.
