@@ -275,9 +275,13 @@ class FakeMicrophone:
     def __init__(self, samples):
         self.reader = FakeReader(samples)
         self.listened = 0
+        # Set to the model to note when the reader is opened among what the model is given.
+        self.model = None
 
     def listen(self):
         self.listened += 1
+        if self.model is not None:
+            self.model.calls.append("listen")
         return self.reader
 
 
@@ -301,11 +305,14 @@ def test_a_take_is_scored_chunk_by_chunk_on_a_reset_model_and_saved_as_floats():
     microphone = FakeMicrophone(np.full(CHUNK_SAMPLES, 16384, dtype=np.int16))
     # The best is in the middle, not the end.
     model = FakeModel([0.1] * 10 + [0.93] + [0.2] * (chunks - 11))
+    microphone.model = model
 
     audio, score = wake.listen_for_take(microphone, model, "hey_nova", CHUNK_SAMPLES)
 
     assert score == 0.93
-    assert model.calls == ["reset"] + [CHUNK_SAMPLES] * chunks
+    # Listening starts before the reset, which takes long enough on the Pi to lose the
+    # start of a quick "Hey Nova" otherwise.
+    assert model.calls == ["listen", "reset"] + [CHUNK_SAMPLES] * chunks
     assert microphone.listened == 1
     assert audio.dtype == np.float32 and len(audio) == 3 * RATE
     assert audio[0] == 0.5
@@ -416,7 +423,6 @@ def _fake_voice_assistant(monkeypatch, tmp_path, samples, scores=()):
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr(wake.paths, "DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(wake.time, "sleep", lambda seconds: None)
     return opened
 
 

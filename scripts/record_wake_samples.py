@@ -77,7 +77,7 @@ MIN_SCORE = 0.5
 # moment would have the end of the blip in it.
 BLIP_TAIL_SECONDS = 0.15
 
-# How many more times a take under MIN_SCORE is tried, before it's kept as it is.
+# How many more times a take under MIN_SCORE is tried, before the best of them is kept.
 RETAKES = 2
 
 # How long each file of a film or of talking is, in seconds.
@@ -241,8 +241,11 @@ def listen_for_take(microphone, model, wake_word_key: str, chunk_samples: int) -
     Returns:
         TAKE_SECONDS of float32 samples at 16kHz, and the highest score of any 80ms.
     """
-    model.reset()
+    # The reader first. Resetting the model takes about 180ms on the Pi, and audio
+    # which arrives meanwhile is held by the microphone, so starting the reader after
+    # it would lose the start of a quick "Hey Nova" - and here it's read straight away.
     reader = microphone.listen()
+    model.reset()
     chunks, best = [], 0.0
     # Whole chunks, so the last is scored with the rest - and trimmed afterwards.
     for _ in range(math.ceil(TAKE_SECONDS * RATE / chunk_samples)):
@@ -323,7 +326,7 @@ def main():
     from voice_assistant.wake_word import CHUNK_SAMPLES, WakeWordDetector
 
     def show(line: str):
-        # Over ssh, Python holds output back until a line's worth has built up, which
+        # Over ssh, Python holds output back until a block's worth has built up, which
         # would leave the user waiting to hear how a take went.
         print(line, flush=True)
 
