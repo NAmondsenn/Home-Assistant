@@ -2305,6 +2305,49 @@ def test_people_come_with_their_trackers_devices(make_home):
     assert "states.person" in template and "person.name" in template
 
 
+# What's playing
+
+def test_whats_playing_is_read_with_its_room_device_and_source(make_home):
+    rows = [{"entity_id": "media_player.spotify_nathan", "name": "Spotify Nathan", "area": None, "device": None,
+             "source": "Voice-Assistant"},
+            {"entity_id": "media_player.bedroom_tv", "name": "Bedroom TV", "area": "Bedroom", "device": "devtv",
+             "source": None}]
+    home = make_home({"/api/template": FakeResponse(json.dumps(rows))})
+    assert home.playing_media() == rows
+    (method, path, sent), = home._session.requests
+    assert (method, path) == ("POST", "/api/template")
+    assert home._session.timeouts == [2]
+
+
+def test_only_players_playing_are_rendered_with_what_the_watcher_needs(make_home):
+    home = make_home({"/api/template": FakeResponse("[]")})
+    assert home.playing_media() == []
+    template = home._session.requests[0][2]["json"]["template"]
+    # Exactly "playing": paused, idle, off and unavailable players are left in Home Assistant.
+    assert "states.media_player | selectattr('state', 'eq', 'playing')" in template
+    assert "area_name(player.entity_id)" in template and "device_id(player.entity_id)" in template
+    assert "attributes.get('source')" in template
+    assert "attributes.get('friendly_name') or player.entity_id" in template
+    assert "| tojson" in template
+
+
+def test_no_value_of_novas_is_written_into_the_playing_template(make_home):
+    # Each satellite's room and device are compared in Python, so the template's text is the same whatever they are.
+    home = make_home({"/api/template": FakeResponse("[]")})
+    home.area, home.device_id = 'Bed") }}{{ states | list }}', "devnova"
+    home.playing_media()
+    template = home._session.requests[0][2]["json"]["template"]
+    assert template == home_assistant.PLAYING_MEDIA_TEMPLATE
+    assert "Bed" not in template and "devnova" not in template
+
+
+@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("", status=403),
+                                    FakeResponse("<html>not JSON</html>")])
+def test_whats_playing_raises_when_home_assistant_cant_say(make_home, answer):
+    with pytest.raises((requests.RequestException, ValueError)):
+        make_home({"/api/template": answer}).playing_media()
+
+
 # The Home Assistant app's devices, as live check 4 found them
 
 def _rendered_app_device(device="dev25", own_name="s25-ultra", **shown):

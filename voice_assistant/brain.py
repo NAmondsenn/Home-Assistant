@@ -37,6 +37,7 @@ from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSock
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.lists import Lists
 from voice_assistant.logging_setup import TRANSCRIPT
+from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.memory import Memory
 from voice_assistant.ntfy import RETOPIC, Ntfy
 from voice_assistant.pc import PCPower
@@ -302,6 +303,9 @@ class Brain:
         if self.home:
             self.home.registry = self.registry
         self.batteries = self._make_battery_watcher() if self.home else None
+        # What's playing, for each satellite's wake word in its own room - see media_watch.py
+        # and Session.playing_here. Started by run().
+        self.media = MediaWatcher(self.home, on_change=self._send_states) if self.home else None
         # Home Assistant's own weather, and which of its weather entities to use, for a
         # home with several - see weather.py.
         self.weather = (Weather(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "weather.json"), {"entity": None}))
@@ -581,6 +585,11 @@ class Brain:
         with self._lock:
             sessions = list(self.sessions.values())
         return min([time.monotonic()] + [session.moved_at for session in sessions])
+
+    def connected_sessions(self) -> List[Session]:
+        """Returns every satellite's session the brain has now - a copy, to go through without the lock."""
+        with self._lock:
+            return list(self.sessions.values())
 
     def session_for(self, satellite: Optional[str]) -> Optional[Session]:
         """
@@ -1308,6 +1317,8 @@ class Brain:
         threading.Thread(target=self._send_alarms_hourly, daemon=True, name="alarm-copies").start()
         if self.batteries:
             self.batteries.start()
+        if self.media:
+            self.media.start()
         if self.registry:
             self.registry.start()
         if self.calendar:
@@ -1369,14 +1380,16 @@ class Brain:
     def _clean_up(self):
         """
         Closes everything down in order - the clock, so nothing else starts ringing,
-        then the batteries, ntfy and the settings page, then every satellite's session, so its device
-        in Home Assistant and its music stop - and then the Piper process kept waiting
-        for the next thing to say.
+        then the batteries, what's playing, ntfy and the settings page, then every
+        satellite's session, so its device in Home Assistant and its music stop - and
+        then the Piper process kept waiting for the next thing to say.
         """
         self.running = False
         self.clock.stop()
         if self.batteries:
             self.batteries.stop()
+        if self.media:
+            self.media.stop()
         if self.registry:
             self.registry.stop()
         if self.ntfy:

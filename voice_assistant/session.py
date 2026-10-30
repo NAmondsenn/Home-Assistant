@@ -21,7 +21,7 @@ import queue
 import re
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from voice_assistant import paths, storage
 from voice_assistant.actions import ActionExecutor
@@ -36,6 +36,7 @@ from voice_assistant.network import online
 from voice_assistant.recording import RATE, record_until_silence
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.settings_page import change_volume, volume_levels
+from voice_assistant.spotify_controller import brains_speaker
 from voice_assistant.timeline import Timeline
 from voice_assistant.vad import make_detector
 from voice_assistant.volume import VolumeControl
@@ -277,6 +278,25 @@ class Session:
         """
         volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
         return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0))
+
+    def playing_here(self) -> List[str]:
+        """
+        What's playing in this satellite's room, as the brain's media watcher last read it -
+        see media_watch.py.
+
+        Returns:
+            The players' names, in order, e.g. ["Bedroom TV"]. Nova's own music - on any
+            satellite's device, or Spotify on any satellite's speaker - isn't counted. Empty
+            with no watcher, no Home Assistant, or while this satellite's room isn't known.
+        """
+        if self.brain.media is None or self.home is None:
+            return []
+        # This one too, in case it asks while the brain is still letting it in.
+        sessions = {*self.brain.connected_sessions(), self}
+        devices = [session.home.device_id for session in sessions if session.home]
+        # One which doesn't say plays on the brain's own - see SpotifyController.
+        speakers = [session.satellite.speaker_name or brains_speaker(self.config) for session in sessions]
+        return self.brain.media.playing_in(self.home.area, devices, speakers)
 
     # Running
 

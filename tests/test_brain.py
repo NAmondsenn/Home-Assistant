@@ -37,6 +37,7 @@ from voice_assistant import settings_page as settings_page_module
 from voice_assistant.batteries import BatteryWatcher
 from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
+from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.ntfy import Alert
 from voice_assistant.recording import RATE
 from voice_assistant.remote import RemoteSatellite
@@ -1741,6 +1742,63 @@ def test_the_brain_has_no_battery_watcher_without_home_assistant(make_brain, mon
     brain = make_brain(home_assistant=HOME_ASSISTANT)
     assert brain.batteries is None and brain.home is None
     assert make_brain().batteries is None
+
+
+def test_the_brain_watches_whats_playing_when_home_assistant_is_set_up(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    assert isinstance(brain.media, MediaWatcher) and brain.media._home is brain.home
+    assert brain.media._on_change == brain._send_states
+    assert brain.media._every == 3.0
+    # Not running until run() starts it.
+    assert brain.media._thread is None
+
+
+def test_the_brain_has_no_media_watcher_without_home_assistant(make_brain, monkeypatch):
+    monkeypatch.delenv("HA_TOKEN", raising=False)
+    assert make_brain(home_assistant=HOME_ASSISTANT).media is None
+    assert make_brain().media is None
+
+
+class _StateCounter:
+    """Stands in for a session, counting the states it's had sent."""
+
+    def __init__(self, name):
+        self.satellite = SimpleNamespace(name=name, close=lambda: None)
+        self.sent = 0
+
+    def send_state(self):
+        self.sent += 1
+
+    def close(self):
+        pass
+
+
+def test_a_change_in_whats_playing_sends_every_satellite_its_state(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    sessions = [_StateCounter("bedroom"), _StateCounter("kitchen")]
+    brain.sessions.update({"bedroom": sessions[0], "kitchen": sessions[1]})
+    assert brain.connected_sessions() == sessions
+    brain.media._on_change()
+    brain.media._on_change()
+    assert [session.sent for session in sessions] == [2, 2]
+
+
+def test_the_media_watcher_runs_while_the_brain_does_and_stops_with_it(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    # Nothing here may reach a real Home Assistant.
+    brain.home.batteries = lambda timeout=None: []
+    brain.home.people = lambda: []
+    brain.home.playing_media = lambda: []
+    brain.registry.refresh = lambda: True
+    running = []
+
+    def serve():
+        running.append(any(thread.name == "media" and thread.is_alive() for thread in threading.enumerate()))
+
+    brain.serve = serve
+    brain.run()
+    assert running == [True]
+    assert not any(thread.name == "media" for thread in threading.enumerate())
 
 
 def test_the_brain_has_the_weather_only_with_home_assistant(make_brain, home_assistant_token, monkeypatch,

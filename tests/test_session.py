@@ -30,6 +30,7 @@ from voice_assistant.actions import Action
 from voice_assistant.brain import Brain
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
+from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.conversation import Reply
 from voice_assistant.navidrome import NavidromePlayer
 from voice_assistant.recording import RATE, AudioFeed
@@ -240,8 +241,8 @@ def brain(tmp_path, monkeypatch, make_config):
     config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"})
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
-                           batteries=None, lists=None, pc=None, registry=None, calendar=None, tts=FakePiper(),
-                           stt=FakeSpeechToText(), sounds_folder=Path(paths.SOUNDS_DIR))
+                           batteries=None, lists=None, pc=None, registry=None, calendar=None, media=None,
+                           tts=FakePiper(), stt=FakeSpeechToText(), sounds_folder=Path(paths.SOUNDS_DIR))
 
 
 @pytest.fixture
@@ -1225,6 +1226,69 @@ def test_a_satellite_that_doesnt_say_uses_the_brains_name(brain, connect, make_s
     # As one from before satellites said - which plays where every satellite did then.
     brain.config.apply({("spotify", "device_name"): "Living Room"})
     assert make_session(connect("bedroom")[0]).music_player.device_name == "Living Room"
+
+
+# What's playing in the satellite's room
+
+def _playing(*players):
+    """A media watcher which has read these players, each as (entity, name, area, device, source)."""
+    rows = [dict(zip(("entity_id", "name", "area", "device", "source"), player)) for player in players]
+    watcher = MediaWatcher(SimpleNamespace(playing_media=lambda: rows), on_change=lambda: None)
+    watcher.check()
+    return watcher
+
+
+def _in_room(session, area, device_id):
+    """Puts a session's satellite in a room, on its own device in Home Assistant."""
+    session.home = SimpleNamespace(area=area, device_id=device_id)
+    return session
+
+
+def test_each_satellite_hears_whats_playing_in_its_own_room(brain, connect, make_session):
+    bedroom = _in_room(make_session(connect("bedroom")[0]), "Bedroom", "devbedroom")
+    kitchen = _in_room(make_session(connect("kitchen", "kitchen-pi.local")[0]), "Kitchen", "devkitchen")
+    brain.connected_sessions = lambda: [bedroom, kitchen]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None),
+                           ("media_player.radio", "Radio", "Kitchen", "devradio", None))
+    assert bedroom.playing_here() == ["Bedroom TV"]
+    assert kitchen.playing_here() == ["Radio"]
+
+
+def test_nothing_on_any_connected_satellites_device_or_speaker_counts(brain, connect, make_session):
+    brain.config.apply({("spotify", "device_name"): "Voice-Assistant"})
+    bedroom = _in_room(make_session(connect("bedroom")[0]), "Bedroom", "devbedroom")
+    kitchen = _in_room(make_session(connect("kitchen", "kitchen-pi.local", speaker="Kitchen Pi")[0]),
+                       "Kitchen", "devkitchen")
+    brain.connected_sessions = lambda: [bedroom, kitchen]
+    brain.media = _playing(
+        # The kitchen satellite's own device, though it's in the bedroom's room.
+        ("media_player.kitchen_pi", "Kitchen Pi", "Bedroom", "devkitchen", None),
+        # Spotify on the kitchen satellite's speaker, and on the brain's, which the bedroom one plays on.
+        ("media_player.spotify_a", "Spotify A", "Bedroom", None, " kitchen pi"),
+        ("media_player.spotify_b", "Spotify B", "Bedroom", None, "voice-assistant "),
+        ("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", "HDMI 1"))
+    assert bedroom.playing_here() == ["Bedroom TV"]
+
+
+def test_a_session_counts_its_own_device_before_the_brain_has_it(brain, connect, make_session):
+    bedroom = _in_room(make_session(connect("bedroom")[0]), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: []
+    brain.media = _playing(("media_player.bedroom_pi", "Bedroom Pi", "Bedroom", "devbedroom", None))
+    assert bedroom.playing_here() == []
+
+
+def test_nothing_plays_here_without_a_watcher_home_assistant_or_a_room(brain, connect, make_session):
+    session = make_session(connect("bedroom")[0])
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    # No Home Assistant set up here.
+    assert session.home is None and session.playing_here() == []
+    _in_room(session, None, None)
+    assert session.playing_here() == []
+    _in_room(session, "Bedroom", "devbedroom")
+    assert session.playing_here() == ["Bedroom TV"]
+    brain.media = None
+    assert session.playing_here() == []
 
 
 def test_closing_a_session_ends_every_thread_it_started(connect, make_session, monkeypatch):
