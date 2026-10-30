@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 # and each is another request to wait for before anything's said.
 MOST_READS = 2
 
+# The efforts Claude's API takes, quickest first.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+# Why a response may stop before it's whole: out of tokens (thinking shares them), or
+# refused. A tool call in one could be cut off mid-input, so nothing in it is run.
+STOPPED_SHORT = ("max_tokens", "refusal")
+
 # Said when Claude read something but said nothing of it - what was read is never said
 # itself, as entity ids read out are no answer.
 COULDNT_FIND_OUT = "Sorry, I couldn't find that out."
@@ -74,7 +81,7 @@ class LLMHandler:
                 and web_search sections.
             api_key: Claude's key, or None for ANTHROPIC_API_KEY.
             model: The model, e.g. "claude-haiku-5-5".
-            max_tokens: The longest an ordinary reply may be.
+            max_tokens: The most Claude may write for an ordinary reply, its thinking included.
             temperature: How varied replies are, or None to leave it to the model.
             history_length: How many exchanges are kept and sent with each request.
             assistant_name: What the assistant's called, e.g. "Nova".
@@ -115,9 +122,12 @@ class LLMHandler:
         self.max_tokens = int(max_tokens if max_tokens is not None else llm_config.get("max_tokens", 1024))
         # A search needs more room than an ordinary spoken reply, or its answer is cut off mid-sentence.
         self.max_tokens_search = int(llm_config.get("max_tokens_search", 1200))
-        # How hard Claude thinks before it answers - "low" is the quickest, and the least
-        # likely to put its working-out into the reply. See process_query.
+        # How hard Claude thinks before it answers, and how long that takes - see process_query.
+        # An empty or misspelt one would fail every request, so it's put right here.
         self.effort = llm_config.get("effort", "low")
+        if self.effort not in EFFORTS:
+            logger.warning(f"llm.effort {self.effort!r} isn't one of {', '.join(EFFORTS)}, using 'low'")
+            self.effort = "low"
         # None leaves it to the model - Haiku 5.5 refuses any request which sets one.
         self.temperature = temperature if temperature is not None else llm_config.get("temperature")
         self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
@@ -140,7 +150,7 @@ class LLMHandler:
         self.web_search_max_uses = web_search_config.get("max_uses", 3)
 
         logger.info(
-            f"LLM initialised: {self.model_name} (max_tokens={self.max_tokens}, temperature={self.temperature}, "
+            f"LLM initialised: {self.model_name} (max_tokens={self.max_tokens}, effort={self.effort}, temperature={self.temperature}, "
             f"history_length={self.history_length}, web_search={self.web_search_enabled})")
 
     @property
@@ -521,6 +531,7 @@ class LLMHandler:
                     logger.info("Search paused by the API, continuing the turn...")
                     messages.append({"role": "assistant", "content": response.content})
                 elif (read is not None and reads < MOST_READS and uses
+                      and getattr(response, "stop_reason", None) not in STOPPED_SHORT
                       and all(use.name in self.read_tools for use in uses)):
                     reads += 1
                     messages.append({"role": "assistant", "content": response.content})
@@ -557,6 +568,12 @@ class LLMHandler:
             # judgement is trusted rather than keyword guessing.
             actions = [self._action_from_tool_use(block) for block in response.content
                        if getattr(block, "type", None) == "tool_use"]
+            stop_reason = getattr(response, "stop_reason", None)
+            stopped_short = stop_reason in STOPPED_SHORT and bool(actions)
+            if stopped_short:
+                logger.warning(f"Claude stopped short ({stop_reason}), so nothing it called is run: "
+                               f"{[action.tool for action in actions]}")
+                actions = []
 
             # An album is only played whole when the user actually asked for one.
             # Titles are often both a song and an album, and the model tends to
@@ -571,19 +588,21 @@ class LLMHandler:
             # way to read, is dropped. Claude's own words are kept, unless there are none.
             dropped = [action for action in actions if action.tool in self.read_tools]
             actions = [action for action in actions if action.tool not in self.read_tools]
-            if (dropped or reads) and not actions and (not response_text or bare_acknowledgement(response_text)):
+
+            # With no text and nothing to run there'd be silence, and an empty turn kept in
+            # the history, which the API refuses on every later request. That's a thinking
+            # block which used up max_tokens, a refusal, or just an empty reply.
+            if not actions and not response_text:
+                logger.warning(f"Claude gave no reply (stop_reason={stop_reason})")
                 response_text = COULDNT_FIND_OUT
+            elif (dropped or reads or stopped_short) and not actions and bare_acknowledgement(response_text):
+                response_text = COULDNT_FIND_OUT
+            elif stop_reason == "max_tokens":
+                logger.warning("Claude's reply was cut off by max_tokens, so it may end mid-sentence")
 
             # Fallback for when the action is called by the model, but no message is produced.
             if actions and not response_text:
                 response_text = "Okay."
-
-            # Thinking counts toward max_tokens, so a long think can use all of them and
-            # leave no text and no tool call - which would otherwise be silence.
-            if not actions and not response_text and any(
-                    getattr(block, "type", None) == "thinking" for block in response.content):
-                logger.warning(f"Claude thought but said nothing (stop_reason={getattr(response, 'stop_reason', None)})")
-                response_text = COULDNT_FIND_OUT
 
             # The tools it called, and its own text with them, are kept too, so the next
             # request can show them as called - see _earlier_messages.

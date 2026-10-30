@@ -21,12 +21,13 @@ llm:
   # think at 300 could use them all, and a search needs more.
   max_tokens: 1024
   max_tokens_search: 1200
-  # How hard Claude thinks before it answers: "low" is quickest. With thinking off,
+  # How hard Claude thinks before it answers - low, medium, high, xhigh or max; the
+  # lower, the quicker. Only low was trialled. With thinking off,
   # Haiku 5.5 wrote its working-out into the reply, which was then said aloud; in a
   # trial of 36 replies per setup, low leaked none for 0.4 s more than off.
   effort: "low"
-  # null leaves it to the model - which Haiku 5.5 insists on, refusing any request
-  # which sets one. Only for older models.
+  # Leave null: Haiku 5.5 refuses any request which sets a temperature. A number is only
+  # for a model which takes one beside thinking.
   temperature: null
   # Seconds to wait for a reply before giving up, and how many times to retry.
   # Searches do more work, so they get longer.

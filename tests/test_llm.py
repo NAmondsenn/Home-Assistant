@@ -548,18 +548,14 @@ def test_reply_lengths_are_the_ones_set(make_config):
     assert [request["max_tokens"] for request in llm.client.requests] == [200, 500]
 
 
-def test_thinking_is_adaptive_at_low_effort_and_temperature_only_sent_when_set(llm):
-    # Haiku 5.5 refuses any request which sets a temperature.
+def test_thinking_is_adaptive_at_low_effort_and_no_temperature_is_sent(llm):
+    # Haiku 5.5 refuses any request which sets a temperature, so none is sent unless
+    # one is configured.
     llm.client = FakeClient(_reply("Paris."))
-    llm.temperature = None
     llm.process_query("what's the capital of France")
     request = llm.client.requests[-1]
     assert request["thinking"] == {"type": "adaptive"} and request["output_config"] == {"effort": "low"}
     assert "temperature" not in request
-
-    llm.temperature = 0.7
-    llm.process_query("and Spain")
-    assert llm.client.requests[-1]["temperature"] == 0.7
 
 
 def test_the_effort_is_the_one_set(make_config):
@@ -569,10 +565,23 @@ def test_the_effort_is_the_one_set(make_config):
     assert llm.client.requests[-1]["output_config"] == {"effort": "medium"}
 
 
+@pytest.mark.parametrize("effort", [None, "", "mediun", 3])
+def test_an_effort_which_isnt_one_falls_back_to_low_with_a_warning(make_config, caplog, effort):
+    with caplog.at_level("WARNING"):
+        llm = LLMHandler(config=make_config(llm={"effort": effort}), api_key=None)
+    llm.client = FakeClient(_reply("Paris."))
+    llm.process_query("what's the capital of France")
+    assert llm.client.requests[-1]["output_config"] == {"effort": "low"}
+    assert any("effort" in record.getMessage() for record in caplog.records if record.levelname == "WARNING")
+
+
 # Claude's working-out is never said
 
 def _thinking(text="The user said 'Light', which is ambiguous..."):
-    """A thinking block, shaped like the ones the API returns - it has no text."""
+    """
+    A thinking block, with the fields the API's have and no text. Its text is filled in
+    here, which is stricter than the API's own default of an empty one.
+    """
     return SimpleNamespace(type="thinking", thinking=text, signature="sig")
 
 
@@ -624,16 +633,86 @@ def test_a_thinking_block_goes_back_unchanged_beside_a_reads_answer():
     assert assistant["content"] == first.content and assistant["content"][0].thinking == _thinking().thinking
 
 
-def test_a_reply_cut_off_while_thinking_says_something_and_warns(llm, caplog):
-    # Thinking counts toward max_tokens, so a long think can leave nothing to say.
-    llm.client = FakeClient(_thought(_reply("", stop_reason="max_tokens"), _thinking()))
+def _warnings(caplog):
+    return [record.getMessage() for record in caplog.records if record.levelname == "WARNING"]
+
+
+def _no_empty_assistant_turn(request):
+    """Whether no assistant message in the request has nothing in it, which the API refuses."""
+    return all(message["content"] for message in request["messages"] if message["role"] == "assistant")
+
+
+@pytest.mark.parametrize("response", [
+    _thought(_reply("", stop_reason="max_tokens"), _thinking()),
+    _thought(_reply("", stop_reason="end_turn"), SimpleNamespace(type="redacted_thinking", data="x")),
+    _reply("", stop_reason="refusal"),
+    _reply("", stop_reason="end_turn"),
+], ids=["thinking cut off", "redacted thinking alone", "refusal", "plain empty"])
+def test_a_reply_with_nothing_in_it_says_something_and_warns(llm, caplog, response):
+    llm.client = FakeClient([response, _reply("Yes.")])
     with caplog.at_level("WARNING"):
         result = llm.process_query("what have I got on next Friday")
     assert result["response"] == llm_module.COULDNT_FIND_OUT and result["actions"] == []
-    assert any("max_tokens" in record.getMessage() for record in caplog.records if record.levelname == "WARNING")
+    assert any(response.stop_reason in warning for warning in _warnings(caplog))
+
+    # What's said is what's kept, so the next request doesn't send an empty turn.
+    llm.process_query("and the Friday after")
+    assert _no_empty_assistant_turn(llm.client.requests[-1])
+    assert llm.history[0]["assistant"] == llm_module.COULDNT_FIND_OUT
 
 
-def test_a_thinking_block_with_text_isnt_taken_for_cut_off(llm):
+def test_a_reply_cut_off_while_thinking_after_a_read_says_something_and_warns(caplog):
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _thought(_reply("", stop_reason="max_tokens"), _thinking())])
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["response"] == llm_module.COULDNT_FIND_OUT
+    assert any("max_tokens" in warning for warning in _warnings(caplog))
+
+
+def test_thinking_on_the_last_round_after_two_reads_is_sent_back_and_answered():
+    llm = _reader()
+    llm.client = FakeClient([_thought(_reply("", _tool("home_status", use_id="t1", about="sunset")), _thinking("One")),
+                             _thought(_reply("", _tool("home_status", use_id="t2", about="sunrise")), _thinking("Two")),
+                             _thought(_reply("Sunset's at 5:52 PM."), _thinking("Three"))])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["response"] == "Sunset's at 5:52 PM."
+    first, second, last = llm.client.requests
+    assert "tool_choice" not in first and last["tool_choice"] == {"type": "none"}
+    assert last["thinking"] == {"type": "adaptive"}
+    assistant_turns = [m["content"] for m in last["messages"] if m["role"] == "assistant"]
+    assert [turn[0].thinking for turn in assistant_turns[-2:]] == ["One", "Two"]
+
+
+def test_a_reply_cut_off_in_its_text_is_said_but_warned_about(llm, caplog):
+    llm.client = FakeClient(_reply("It's a very long story, so", stop_reason="max_tokens"))
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("tell me a story")
+    assert result["response"] == "It's a very long story, so"
+    assert any("max_tokens" in warning for warning in _warnings(caplog))
+
+
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
+def test_nothing_is_run_from_a_reply_which_stopped_short(llm, caplog, stop_reason):
+    llm.client = FakeClient(_reply("Okay.", _tool("set_timer", duration_seconds=1200), stop_reason=stop_reason))
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("set a timer for 20 minutes")
+    assert result["actions"] == [] and result["response"] == llm_module.COULDNT_FIND_OUT
+    assert any(stop_reason in warning for warning in _warnings(caplog))
+    assert llm.history[0]["tools"] == []
+
+
+def test_a_read_isnt_made_from_a_reply_which_stopped_short():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sun"), stop_reason="max_tokens")])
+    read = []
+    result = llm.process_query("when's sunset?", read=read.append)
+    assert read == [] and len(llm.client.requests) == 1
+    assert result["response"] == llm_module.COULDNT_FIND_OUT
+
+
+def test_a_thinking_block_with_text_isnt_taken_for_empty(llm):
     llm.client = FakeClient(_thought(_reply("Okay."), _thinking()))
     assert llm.process_query("thanks")["response"] == "Okay."
 
