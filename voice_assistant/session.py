@@ -16,6 +16,7 @@ Piper and Nemotron - is the brain's.
 """
 
 import logging
+import math
 import os
 import queue
 import re
@@ -25,7 +26,7 @@ from typing import Dict, List, Optional, Tuple
 
 from voice_assistant import paths, storage
 from voice_assistant.actions import ActionExecutor
-from voice_assistant.conversation import Conversation
+from voice_assistant.conversation import NOT_CAUGHT, Conversation
 from voice_assistant.ha_device import DeviceControls, NovaDevice
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.intents import LocalIntents
@@ -83,6 +84,23 @@ def _kept_for(what: str, satellite: str) -> str:
     return os.path.join(paths.DATA_DIR, f"{what}-{re.sub(r'[^A-Za-z0-9_.-]', '_', satellite)}.json")
 
 
+def _number(value, default: float) -> float:
+    """
+    A setting as a number, or its default when it isn't one - left empty in config.yaml
+    by hand, say, which the settings page would never save.
+
+    Args:
+        value: The setting as read.
+        default: What to use in its place.
+
+    Returns:
+        The value if it's a finite int or float (not a bool), else the default.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return default
+    return value
+
+
 class Session:
     """One satellite's Nova, for as long as the satellite stays connected."""
 
@@ -137,6 +155,8 @@ class Session:
         # read just before a film started, landing after the one read just after, would
         # leave the usual wake word on through the film. See send_state.
         self._sending_state = threading.Lock()
+        # Whether anything played in the satellite's room as its state was last sent - see send_state.
+        self._something_played = False
         # Set once the session is closed, which ends run() - see close.
         self._closed = threading.Event()
         self._closing = threading.Lock()
@@ -287,21 +307,36 @@ class Session:
         # Never called with the brain's lock held, which playing_here takes while this is held.
         with self._sending_state:
             volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
+            playing = self.playing_here()
+            wake_confidence = self._wake_confidence(playing)
+            # Said each time it starts and stops, so a satellite that was hard to wake can be
+            # traced to what Home Assistant said was playing - a browser tab left on, say.
+            if bool(playing) != self._something_played:
+                self._something_played = bool(playing)
+                if playing:
+                    logger.info(f"Something's playing in the {self.satellite.name} satellite's room "
+                                f"({', '.join(playing)}), so its wake word needs {wake_confidence:g}")
+                else:
+                    logger.info(f"Nothing's playing in the {self.satellite.name} satellite's room now, "
+                                f"so its wake word needs {wake_confidence:g}")
             return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0),
-                                            wake_confidence=self._wake_confidence())
+                                            wake_confidence=wake_confidence)
 
-    def _wake_confidence(self) -> float:
+    def _wake_confidence(self, playing: List[str]) -> float:
         """
+        Args:
+            playing: What's playing in the satellite's room - see playing_here.
+
         Returns:
             How sure, from 0 to 1, the satellite must be that it heard its wake word: the
             usual setting, or the media one while anything plays in its room - but never
             less sure then, so a media setting saved below the usual one changes nothing.
         """
         thresholds = self.thresholds
-        usual = thresholds.get("wake_word_confidence", 0.5)
-        if not self.playing_here():
+        usual = _number(thresholds.get("wake_word_confidence"), 0.5)
+        if not playing:
             return usual
-        return max(usual, thresholds.get("media_wake_word_confidence", 0.75))
+        return max(usual, _number(thresholds.get("media_wake_word_confidence"), 0.75))
 
     def playing_here(self) -> List[str]:
         """
@@ -564,7 +599,7 @@ class Session:
                 # The user spoke - the recording found them talking - so is told rather
                 # than left waiting, as they were after a lone "Pause." which Nemotron
                 # heard as nothing.
-                self._say("Sorry, I didn't catch that.")
+                self._say(NOT_CAUGHT)
             return None
 
         timeline.note(text_chars=len(text))

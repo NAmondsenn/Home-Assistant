@@ -2023,15 +2023,23 @@ def test_the_brain_sends_each_satellite_its_longest_request(brain, connect):
 
 
 @pytest.mark.parametrize("name", ["wake_word_confidence", "media_wake_word_confidence"])
-def test_a_wake_word_confidence_saved_is_sent_to_each_satellite(brain, connect, name):
+def test_a_wake_word_confidence_saved_is_sent_to_each_satellite(brain, connect, monkeypatch, name):
+    # The real session, which works out the value it sends.
+    monkeypatch.setattr(brain_module, "Session", session_module.Session)
+    monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
     serving(brain)
     bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
     connected(brain)
-    connected(brain, "kitchen")
+    connected(brain, "kitchen").home = SimpleNamespace(area="Kitchen", device_id="devkitchen")
     assert wait_for(lambda: bedroom.messages("state") and kitchen.messages("state"))
+    # A film in the kitchen only.
+    brain.media = SimpleNamespace(playing_in=lambda area, devices, speakers: ["Kitchen TV"] if area == "Kitchen" else [])
 
     assert brain.apply_settings({("thresholds", name): 0.6}) == []
     assert wait_for(lambda: len(bedroom.messages("state")) == len(kitchen.messages("state")) == 2)
+    sent = {"wake_word_confidence": (0.6, 0.75), "media_wake_word_confidence": (0.5, 0.6)}[name]
+    assert (bedroom.messages("state")[1]["wake_confidence"], kitchen.messages("state")[1]["wake_confidence"]) == sent
 
 
 def test_other_settings_saved_send_the_satellites_nothing(brain, connect):

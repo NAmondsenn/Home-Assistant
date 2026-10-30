@@ -1447,6 +1447,57 @@ def test_without_a_media_watcher_the_satellite_is_sent_the_normal_wake_confidenc
     assert _wake_confidence_sent(session, pi) == 0.7
 
 
+@pytest.mark.parametrize("left", [None, True, "0.6", float("nan")])
+def test_a_wake_setting_thats_not_a_number_is_taken_as_its_default(brain, connect, make_session, left):
+    # Left empty in config.yaml by hand, max() would raise as a film played - and with it
+    # the catch-up of a satellite connecting, which couldn't then reach the brain at all.
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    film = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+
+    brain.config.apply({("thresholds", "wake_word_confidence"): left,
+                        ("thresholds", "media_wake_word_confidence"): 0.8})
+    brain.media = _playing()
+    assert _wake_confidence_sent(session, pi) == 0.5
+    brain.media = film
+    assert _wake_confidence_sent(session, pi) == 0.8
+
+    brain.config.apply({("thresholds", "wake_word_confidence"): 0.6,
+                        ("thresholds", "media_wake_word_confidence"): left})
+    assert _wake_confidence_sent(session, pi) == 0.75
+    brain.media = _playing()
+    assert _wake_confidence_sent(session, pi) == 0.6
+
+
+def test_what_plays_in_a_satellites_room_is_logged_as_it_starts_and_stops(brain, connect, make_session, caplog):
+    # So a satellite that was hard to wake can be traced to what Home Assistant said was
+    # playing - a browser tab left on, say.
+    caplog.set_level(logging.INFO, logger="voice_assistant.session")
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+
+    def logged():
+        return [message for message in caplog.messages if "playing in the" in message]
+
+    brain.media = _playing()
+    _wake_confidence_sent(session, pi)
+    assert logged() == []
+    brain.media = _playing(("media_player.firefox", "Firefox", "Bedroom", "devpc", None),
+                           ("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    _wake_confidence_sent(session, pi)
+    _wake_confidence_sent(session, pi)
+    brain.media = _playing(("media_player.firefox", "Firefox", "Bedroom", "devpc", None))
+    _wake_confidence_sent(session, pi)
+    brain.media = _playing()
+    _wake_confidence_sent(session, pi)
+    _wake_confidence_sent(session, pi)
+    assert logged() == [
+        "Something's playing in the bedroom satellite's room (Bedroom TV, Firefox), so its wake word needs 0.75",
+        "Nothing's playing in the bedroom satellite's room now, so its wake word needs 0.5"]
+
+
 def test_two_states_sent_at_once_arrive_in_the_order_they_were_read(brain, connect, make_session):
     # The media watcher, the settings page and the device lookup each send on a thread of their own. Were
     # one's older state to arrive after another's newer one, the normal wake word would stay on for a film.
@@ -1477,6 +1528,7 @@ def test_two_states_sent_at_once_arrive_in_the_order_they_were_read(brain, conne
     carry_on.set()
     first.join(5)
     second.join(5)
+    assert not first.is_alive() and not second.is_alive()
     assert sent == [0.5, 0.75]
 
 

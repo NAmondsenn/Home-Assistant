@@ -237,6 +237,10 @@ class Conversation:
         else:
             result = self._ask_claude(text, in_routine=in_routine)
         timeline.mark("llm_done")
+        # Before anything is run or done with the turn: speech from a film has nothing ringing
+        # silenced, as the user said nothing, nor kept to send to the phone.
+        if result.get("not_for_me"):
+            return self._not_for_me(result["playing"], timeline)
         actions = result.get("actions", [])
 
         # Every action asked for is run, in order - "pause the music and set a ten
@@ -256,12 +260,10 @@ class Conversation:
             timeline.note(local_intent=False)
             result = self._ask_claude(text, in_routine=in_routine)
             timeline.mark("llm_done")
+            if result.get("not_for_me"):
+                return self._not_for_me(result["playing"], timeline)
             actions = result.get("actions", [])
             action_results = self._run(actions)
-        # Before anything else is done with the turn: speech from a film has nothing ringing
-        # silenced, as the user said nothing, nor kept to send to the phone.
-        if result.get("not_for_me"):
-            return self._not_for_me(result["playing"], timeline)
         response_text = result["response"]
         if actions:
             # Marked here rather than as each run finishes, so Assist's failed attempt
@@ -388,6 +390,7 @@ class Conversation:
             Claude had no grounds for it.
         """
         if not playing:
+            timeline.note(outcome="not_for_me_unfounded")
             logger.info("Claude took that for speech from what's playing, with nothing playing, "
                         "so it wasn't caught")
             return Reply(say=NOT_CAUGHT)

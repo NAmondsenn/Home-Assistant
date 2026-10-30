@@ -412,7 +412,8 @@ class LLMHandler:
         Asks Claude to answer what the user said, with the recent conversation and
         the tools it may call. The keyword parser (_parse_action) is only used when
         Claude can't be reached - no API key, no network, or a failed request - so
-        "pause the music" still works offline.
+        "pause the music" still works offline. Not while something plays, though: then
+        nothing is run, as Claude wasn't there to rule out a line from the film.
 
         When all Claude does is call read tools, they're read straight away and their
         answers sent back to it, up to MOST_READS times, so it replies from them -
@@ -437,12 +438,16 @@ class LLMHandler:
         """
         logger.info(f"Processing query: '{text}'", extra=TRANSCRIPT)
         use_web_search = self._wants_web_search(text)
+        # While a film plays, the keyword parser would run "pause the music, Jack" from it -
+        # so then nothing is, here and when the request fails below.
         if self.client is None:
             logger.error("Cannot process query: no API key configured")
-            return {"response": "Sorry, I'm not connected to my language model right now.", "actions": self._fallback_actions(text), "success": False}
+            return {"response": "Sorry, I'm not connected to my language model right now.",
+                    "actions": [] if playing else self._fallback_actions(text), "success": False}
         if not network.online():
             logger.warning("No network connection, so Claude isn't asked")
-            return {"response": OFFLINE_MESSAGE, "actions": self._fallback_actions(text), "success": False}
+            return {"response": OFFLINE_MESSAGE, "actions": [] if playing else self._fallback_actions(text),
+                    "success": False}
         # How many rounds of reading there have been - see the read loop below.
         reads = 0
         try:
@@ -526,7 +531,7 @@ class LLMHandler:
             # Nothing of a response which says it's speech from a film is acted on - not a
             # set_lights beside it, which a line like "turn the lights off, Jack" could bring.
             if any(use.name == NOT_FOR_ME["name"] for use in uses):
-                logger.info("Claude took that for speech from what's playing")
+                logger.debug("Claude took that for speech from what's playing")
                 self._log_usage(response)
                 return {"response": "", "actions": [], "success": True, "not_for_me": True}
 
@@ -594,7 +599,7 @@ class LLMHandler:
             # Once Claude has read something, the request was a question, not a command for
             # the keyword parser - which would take "are the lights on?" for one.
             return {"response": self._failure_message(e),
-                    "actions": [] if reads else self._fallback_actions(text), "success": False}
+                    "actions": [] if reads or playing else self._fallback_actions(text), "success": False}
 
     @staticmethod
     def _log_usage(response):

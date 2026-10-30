@@ -381,6 +381,33 @@ def test_an_ordinary_answer_isnt_marked_not_for_me(llm):
     assert "not_for_me" not in llm.process_query("what time is it", playing=["Bedroom TV"])
 
 
+# Claude can't be reached while something plays: the keyword parser would act on a line
+# from the film - "pause the music, Jack" - that Claude was never there to rule out.
+
+def test_no_api_key_runs_no_fallback_action_while_something_plays(llm):
+    result = llm.process_query("pause the music", playing=["Bedroom TV"])
+    assert result == {"response": "Sorry, I'm not connected to my language model right now.",
+                      "actions": [], "success": False}
+    assert llm.process_query("pause the music")["actions"] == [Action("control_playback", {"action": "pause"})]
+
+
+def test_offline_runs_no_fallback_action_while_something_plays(llm, monkeypatch):
+    monkeypatch.setattr(llm_module.network, "online", lambda: False)
+    llm.client = FakeClient(_reply("Okay."))
+    result = llm.process_query("pause the music", playing=["Bedroom TV"])
+    assert result == {"response": llm_module.OFFLINE_MESSAGE, "actions": [], "success": False}
+    assert llm.process_query("pause the music")["actions"] == [Action("control_playback", {"action": "pause"})]
+
+
+def test_a_failed_request_runs_no_fallback_action_while_something_plays(llm, monkeypatch):
+    monkeypatch.setattr(llm_module.network, "online", lambda: True)
+    error = _error(anthropic.APIConnectionError)
+    llm.client = FakeClient(error)
+    result = llm.process_query("pause the music", playing=["Bedroom TV"])
+    assert result == {"response": llm._failure_message(error), "actions": [], "success": False}
+    assert llm.process_query("pause the music")["actions"] == [Action("control_playback", {"action": "pause"})]
+
+
 def test_home_assistant_down_reaches_claude_rather_than_being_said():
     llm = _reader()
     llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),

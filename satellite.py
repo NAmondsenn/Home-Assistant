@@ -544,11 +544,12 @@ class Satellite:
         if isinstance(longest, (int, float)) and not isinstance(longest, bool) and 1 <= longest < math.inf:
             self.longest_request = min(longest, MOST_SECONDS)
         confidence = message.get("wake_confidence")
-        # Held to the same care: a score is never above 1, so anything past 0 to 1 -
-        # or "0.75" as text, True, NaN - would make the wake word never fire, or fire
-        # on any noise, and the Pi has nobody at the keyboard to notice.
+        # Held to the same care, as the Pi has nobody at the keyboard to notice. Only 0.05
+        # to 0.99 is taken: near 0 the wake word fires on any noise, and at 1 it all but
+        # never fires - a score of exactly 1.00 came in 2 of about 500 wakes here. Text
+        # such as "0.75", True or NaN is left alone too.
         if (isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
-                and 0 < confidence <= 1 and confidence != self.wake.sensitivity):
+                and 0.05 <= confidence <= 0.99 and confidence != self.wake.sensitivity):
             # A plain assignment is enough: the listening thread only reads it, one
             # score at a time, and a change taking effect on the next one is fine.
             self.wake.sensitivity = confidence

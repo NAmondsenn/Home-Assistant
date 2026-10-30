@@ -591,6 +591,32 @@ def test_not_for_me_without_anything_to_say_whats_playing_is_taken_as_not_caught
     assert _conversation(llm=FakeLLM(NOT_FOR_ME)).handle("turn the lights off").say == "Sorry, I didn't catch that."
 
 
+def test_an_unfounded_not_for_me_is_noted_on_the_timeline():
+    # What the prompt is tuned by: how often Claude says "the film" with nothing playing.
+    timeline = Timeline()
+    _conversation(llm=FakeLLM(NOT_FOR_ME), playing=FakePlaying([])).handle("turn the lights off", timeline=timeline)
+    assert timeline.notes["outcome"] == "not_for_me_unfounded"
+
+
+# What the llm would never give - kept here so a slip there still runs nothing.
+NOT_FOR_ME_WITH_ACTIONS = {**NOT_FOR_ME, "actions": [Action("set_lights", {"on": False})]}
+
+
+@pytest.mark.parametrize("playing", [["Bedroom TV"], []])
+def test_not_for_me_runs_nothing_even_with_actions_beside_it(playing):
+    actions = FakeActions()
+    conversation = _conversation(llm=FakeLLM(NOT_FOR_ME_WITH_ACTIONS), actions=actions, playing=FakePlaying(playing))
+    conversation.handle("turn the lights off, Jack")
+    assert actions.run == [] and conversation.music.waited == 0
+
+
+def test_not_for_me_after_a_fall_through_runs_nothing_even_with_actions_beside_it():
+    conversation, llm, actions = _lights_assist_didnt_understand(llm=FakeLLM(NOT_FOR_ME_WITH_ACTIONS),
+                                                                 playing=FakePlaying(["Bedroom TV"]))
+    assert conversation.handle("dim the lights") == Reply()
+    assert actions.run == ["control_home"]
+
+
 def test_a_follow_up_gets_the_same_check():
     # Heard without the wake word, a follow-up is the likeliest to be the film's.
     llm = FakeLLM(_answer("Which room?"), NOT_FOR_ME)
