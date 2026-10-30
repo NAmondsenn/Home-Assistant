@@ -4,7 +4,8 @@ Conversation Module.
 Decides how to answer what the user said: whether it answers a question the
 assistant asked, stops something ringing, is an everyday command handled locally or
 goes to Claude, which actions to run, and how they're confirmed - a sound, or words,
-and whether to listen for an answer afterwards.
+and whether to listen for an answer afterwards. Or, when Claude takes it for speech from
+a film playing in the room, that nothing is done at all.
 
 This used to be tangled up with the recording and playback in main.py, with its
 ordering rules held in comments and instance flags, so none of it could be tested
@@ -35,6 +36,10 @@ NOTHING_RINGING = {"insistent": False, "insistent_entries": [], "reminder": None
 # cost roughly this much at most, rather than the five seconds anything else waits -
 # "what's the weather" shouldn't take longer because the lights couldn't be read.
 LIGHTS_TIMEOUT = 1.5
+
+# Said when Claude takes what it heard for speech from what's playing, while it was told
+# nothing plays - as when nothing was caught at all.
+NOT_CAUGHT = "Sorry, I didn't catch that."
 
 # The whole of what may be said back to "Shut down the PC?" to do it, and to leave it. Not
 # Clock.answer_to_offer, which takes "stop", "cancel" or "thanks" for a yes - harmless for a
@@ -70,7 +75,8 @@ class Conversation:
     """The rules for answering the user, from one wake word to the end of any follow-ups."""
 
     def __init__(self, clock, intents, llm, actions, music, chime_enabled: Union[bool, Callable[[], bool]] = True,
-                 max_follow_ups: int = 3, routines=None, satellite: Optional[str] = None):
+                 max_follow_ups: int = 3, routines=None, satellite: Optional[str] = None,
+                 playing: Optional[Callable[[], List[str]]] = None):
         """
         Args:
             clock: The Clock, for what's ringing and for dismissing it.
@@ -88,6 +94,8 @@ class Conversation:
             routines: The user's Routines, or None, for the words which start one.
             satellite: The satellite the user is talking to, whose ringing alone they
                 can hear, and so stop - or None for anything ringing anywhere.
+            playing: Gives the names of what's playing in the user's room - see
+                Session.playing_here - or None for nothing ever playing.
         """
         self.clock = clock
         self.intents = intents
@@ -98,6 +106,7 @@ class Conversation:
         self.max_follow_ups = max_follow_ups
         self.routines = routines
         self.satellite = satellite
+        self.playing = playing
         self.start()
 
     @property
@@ -226,7 +235,7 @@ class Conversation:
         if local:
             timeline.note(local_intent=True)
         else:
-            result = self._ask_claude(text)
+            result = self._ask_claude(text, in_routine=in_routine)
         timeline.mark("llm_done")
         actions = result.get("actions", [])
 
@@ -245,10 +254,14 @@ class Conversation:
         elif local:
             logger.info("Home Assistant didn't understand that, so asking Claude")
             timeline.note(local_intent=False)
-            result = self._ask_claude(text)
+            result = self._ask_claude(text, in_routine=in_routine)
             timeline.mark("llm_done")
             actions = result.get("actions", [])
             action_results = self._run(actions)
+        # Before anything else is done with the turn: speech from a film has nothing ringing
+        # silenced, as the user said nothing, nor kept to send to the phone.
+        if result.get("not_for_me"):
+            return self._not_for_me(result["playing"], timeline)
         response_text = result["response"]
         if actions:
             # Marked here rather than as each run finishes, so Assist's failed attempt
@@ -325,15 +338,18 @@ class Conversation:
                 self.asked_first = _only_question(response_text, action_results)
         return Reply(say=response_text, sounds=sounds, listen_again=listen_again)
 
-    def _ask_claude(self, text: str) -> Dict:
+    def _ask_claude(self, text: str, in_routine: bool = False) -> Dict:
         """
         Asks Claude to answer what the user said, along with what's going on around it.
 
         Args:
             text: What they said.
+            in_routine: True for a step of a routine - the user's own words for it, never
+                something heard, so Claude isn't told what's playing.
 
         Returns:
-            What LLMHandler.process_query gives.
+            What LLMHandler.process_query gives - with 'playing', what Claude was told
+            plays in the room, when it took what it heard for speech from that.
         """
         # Sent along with what's currently on the clock, so a mangled label like
         # "walk the frogs" can still be matched to the real "walk the dogs" reminder.
@@ -347,9 +363,37 @@ class Conversation:
         # the same executor's, at the same time, so none is ever run as an action.
         self.llm.tools = self.actions.tool_schemas()
         self.llm.read_tools = set(self.actions.read_tools())
+        # Read once, as the request is built, so what Claude is told plays is what decides
+        # whether its not_for_me counts - a film which stops while it thinks changes neither.
+        playing = [] if in_routine or self.playing is None else list(self.playing())
         # What Claude reads, such as home_status, goes back to it to answer from.
-        return self.llm.process_query(text, context=timers, lights=lights,
-                                      read=lambda action: self.actions.execute(action).say)
+        result = self.llm.process_query(text, context=timers, lights=lights, playing=playing,
+                                        read=lambda action: self.actions.execute(action).say)
+        if result.get("not_for_me"):
+            result["playing"] = playing
+        return result
+
+    def _not_for_me(self, playing: List[str], timeline: Timeline) -> Reply:
+        """
+        The reply when Claude took what it heard for speech from what's playing - a line
+        from a film, heard as the wake word and a request.
+
+        Args:
+            playing: What Claude was told plays in the room.
+            timeline: The Timeline the turn is marked on.
+
+        Returns:
+            Nothing at all while something played, so a film is never answered, and the
+            music comes back as after any reply with nothing to say - else NOT_CAUGHT, as
+            Claude had no grounds for it.
+        """
+        if not playing:
+            logger.info("Claude took that for speech from what's playing, with nothing playing, "
+                        "so it wasn't caught")
+            return Reply(say=NOT_CAUGHT)
+        timeline.note(outcome="not_for_me")
+        logger.info("Taken as speech from what's playing, so ignored")
+        return Reply()
 
     def _run(self, actions: List[Action]) -> List[ActionResult]:
         """

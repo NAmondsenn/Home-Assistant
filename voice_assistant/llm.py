@@ -7,7 +7,8 @@ last few exchanges, and Claude answers in words, or by calling the tools it's of
 (see actions.py) - or both. Each tool call comes back as an Action, marked as the
 model's, so it can only run what it was offered. A tool which only reads something,
 such as home_status, is run straight away instead, and its answer sent back for
-Claude to reply from.
+Claude to reply from. While something plays in the room, Claude may say what it heard
+was speech from that, with not_for_me, and then nothing it asked for is run.
 
 With Claude out of reach - no key, or no internet - a few keywords are matched instead
 (see _parse_action), so the music and the lights can still be worked.
@@ -43,6 +44,20 @@ COULDNT_FIND_OUT = "Sorry, I couldn't find that out."
 
 # What Claude is told when a read went wrong, rather than the error itself.
 READ_FAILED = "That couldn't be read."
+
+# Claude's way to say what it heard was speech from what's playing - a line from a film,
+# picked up as if said to Nova - rather than a request. Offered with every request, as is
+# what the instructions say of it, so neither changes as a film starts or stops, and the
+# API's cache holds. Never an Action: see process_query, and Conversation, which decides
+# whether it counts.
+NOT_FOR_ME = {
+    "name": "not_for_me",
+    "description": ("Say that what was heard was speech from what's playing in the room - a film, a programme, "
+                    "a song or a presenter - and not a request to you, so nothing is said or done. Only when "
+                    "the message says something is playing, only when that's plain, and never with any other "
+                    "tool. When in doubt, answer as normal instead."),
+    "input_schema": {"type": "object", "properties": {}},
+}
 
 
 class LLMHandler:
@@ -285,8 +300,8 @@ class LLMHandler:
             "'\"Turn it off\" is ambiguous here. I'll ask which one.' first. "
             "If you don't know something, say so plainly rather than guessing. "
             "Each message from the user starts with the date and time it was said, the timers "
-            "and reminders running then and, if Home Assistant is set up, the lights and the room "
-            "Nova is in, in square brackets. That's added automatically - the user "
+            "and reminders running then and, if Home Assistant is set up, the lights, the room "
+            "Nova is in and anything playing there, in square brackets. That's added automatically - the user "
             "didn't say it, so never mention it unless asked. "
             "Work out any times or dates the user asks about from that, and answer with only the "
             "part they asked for - the time alone for 'what time is it', the date alone for 'what "
@@ -317,6 +332,16 @@ class LLMHandler:
             "This same judgement - correct a likely mishearing and act, only ask when "
             "it's genuinely a close call - applies to everything you hear, not only "
             "timers and reminders. "
+        )
+
+        # A film or music playing in the room is heard by the microphone too, and a line of
+        # it can sound like the wake word and a request - so Claude may say it was that.
+        # Always in the instructions, whether anything plays or not, so they can be cached.
+        system_prompt += (
+            "When the message says something is playing in this room, what you received may be speech "
+            "from it - a film, a programme, a song or a presenter - picked up as if it were said to you. "
+            "If it plainly is that, and not a request to you, call not_for_me and nothing else. "
+            "When in doubt, answer as normal. "
         )
 
         # What's known about the user. It only changes when something new is learnt, so
@@ -353,7 +378,8 @@ class LLMHandler:
         return system_prompt
 
     @staticmethod
-    def _situation(now: datetime, context: Optional[str], lights: Optional[str] = None) -> str:
+    def _situation(now: datetime, context: Optional[str], lights: Optional[str] = None,
+                   playing: Sequence[str] = ()) -> str:
         """
         The details which change from one request to the next, put in front of what
         the user said - see _system_prompt.
@@ -363,10 +389,12 @@ class LLMHandler:
             context: The timers and reminders running, as words, or None.
             lights: The lights and the room Nova is in, as words - see
                 HomeAssistant.describe_lights - or None.
+            playing: The names of what's playing in the room - see Session.playing_here.
 
         Returns:
             e.g. "[Monday 19 October 2026, 7:36 PM (BST). Timers and reminders running:
-            none. Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off.] "
+            none. Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off. Playing
+            in this room: Bedroom TV.] "
         """
         situation = (f"[{now.strftime('%A %d %B %Y')}, {spoken_clock_time(now.hour, now.minute)} "
                      f"({now.strftime('%Z')}). Timers and reminders running: {context or 'none'}.")
@@ -374,9 +402,12 @@ class LLMHandler:
         # them for one. "There are no lights." already ends in the full stop.
         if lights:
             situation += f" {lights.rstrip('.')}."
+        if playing:
+            situation += f" Playing in this room: {', '.join(playing)}."
         return situation + "] "
 
-    def process_query(self, text, context=None, lights=None, read: Optional[Callable[[Action], str]] = None):
+    def process_query(self, text, context=None, lights=None, read: Optional[Callable[[Action], str]] = None,
+                      playing: Sequence[str] = ()):
         """
         Asks Claude to answer what the user said, with the recent conversation and
         the tools it may call. The keyword parser (_parse_action) is only used when
@@ -388,16 +419,21 @@ class LLMHandler:
         "Sunset's at 5:52 PM." rather than the sensor's own line. The last round may call
         no tool, and a read tool is never an action, so what's read is never said as it is.
 
+        A response which calls not_for_me ends it all there: nothing in it is run or read,
+        and the turn isn't kept in the history, the user's words included.
+
         Args:
             text: What the user said.
             context: The timers and reminders running, as said to Claude.
             lights: The lights and the room Nova is in, as said to Claude, or None.
             read: Runs a read tool's Action and gives what it said, or None for every
                 tool call to come back as an action.
+            playing: The names of what's playing in the room, as said to Claude.
 
         Returns:
             Dict with 'response' (what to say), 'actions' (the Actions asked for)
-            and 'success' (False if Claude couldn't be asked, or the request failed).
+            and 'success' (False if Claude couldn't be asked, or the request failed) -
+            and 'not_for_me', True, when Claude called it, with no response or actions.
         """
         logger.info(f"Processing query: '{text}'", extra=TRANSCRIPT)
         use_web_search = self._wants_web_search(text)
@@ -423,7 +459,7 @@ class LLMHandler:
                 messages.extend(self._earlier_messages(number, turn))
             # Adds the current user query to the messages list, after the details which
             # change from one request to the next - see _system_prompt.
-            messages.append({"role": "user", "content": self._situation(now, context, lights) + text})
+            messages.append({"role": "user", "content": self._situation(now, context, lights, playing) + text})
 
             # The tools are always offered, so the model decides what the user meant
             # rather than a keyword match guessing at it.
@@ -431,7 +467,7 @@ class LLMHandler:
             # added two or three seconds to a spoken answer, and - asked "what have I got
             # on next Friday?" - sometimes spent all 300 tokens deciding which Friday,
             # leaving nothing to say.
-            request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.tools),
+            request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.tools) + [NOT_FOR_ME],
                               "thinking": {"type": "disabled"}}
 
             # Only attaches the web search tool when the user explicitly asked to look something up.
@@ -468,6 +504,8 @@ class LLMHandler:
             pauses = 0
             while True:
                 uses = [block for block in response.content if getattr(block, "type", None) == "tool_use"]
+                if any(use.name == NOT_FOR_ME["name"] for use in uses):
+                    break
                 if getattr(response, "stop_reason", None) == "pause_turn" and pauses < 3:
                     pauses += 1
                     logger.info("Search paused by the API, continuing the turn...")
@@ -484,6 +522,13 @@ class LLMHandler:
                     request_kwargs["tool_choice"] = {"type": "none"}
                 response = client.messages.create(
                     model=self.model_name, system=system, messages=messages, **request_kwargs)
+
+            # Nothing of a response which says it's speech from a film is acted on - not a
+            # set_lights beside it, which a line like "turn the lights off, Jack" could bring.
+            if any(use.name == NOT_FOR_ME["name"] for use in uses):
+                logger.info("Claude took that for speech from what's playing")
+                self._log_usage(response)
+                return {"response": "", "actions": [], "success": True, "not_for_me": True}
 
             # Retrieves text blocks from the model's response, joins them and strips excess whitespace.
             # This is because responses come as several text blocks which need to be formatted.
@@ -535,10 +580,7 @@ class LLMHandler:
 
             logger.info(f"LLM response: '{response_text}'" + (f" (actions: {actions})" if actions else ""),
                         extra=TRANSCRIPT)
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                logger.info(f"Claude read {usage.input_tokens} new input tokens, "
-                            f"{getattr(usage, 'cache_read_input_tokens', 0) or 0} from its cache")
+            self._log_usage(response)
 
             # Returns a dictionary containing the model's response, the actions it asked for, and whether the transaction was successful
             return {"response": response_text, "actions": actions, "success": True}
@@ -553,6 +595,14 @@ class LLMHandler:
             # the keyword parser - which would take "are the lights on?" for one.
             return {"response": self._failure_message(e),
                     "actions": [] if reads else self._fallback_actions(text), "success": False}
+
+    @staticmethod
+    def _log_usage(response):
+        """Logs how much Claude read for a response, and how much of that came from its cache."""
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            logger.info(f"Claude read {usage.input_tokens} new input tokens, "
+                        f"{getattr(usage, 'cache_read_input_tokens', 0) or 0} from its cache")
 
     def _read(self, use, read: Callable[[Action], str]) -> Dict:
         """

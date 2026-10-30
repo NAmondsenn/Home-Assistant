@@ -213,7 +213,8 @@ class Session:
         self.conversation = Conversation(brain.clock, self.intents, self.llm, self.actions, self.music,
                                          chime_enabled=lambda: self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
-                                         routines=brain.routines, satellite=satellite.name)
+                                         routines=brain.routines, satellite=satellite.name,
+                                         playing=self.playing_here)
 
     @property
     def thresholds(self) -> Dict:

@@ -24,7 +24,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("soxr")
 
 from voice_assistant import clock as clock_module
-from voice_assistant import ha_device, music, paths, protocol, satellite_link, spotify_controller
+from voice_assistant import ha_device, music, network, paths, protocol, satellite_link, spotify_controller
 from voice_assistant import session as session_module
 from voice_assistant.actions import Action
 from voice_assistant.brain import Brain
@@ -1289,6 +1289,66 @@ def test_nothing_plays_here_without_a_watcher_home_assistant_or_a_room(brain, co
     assert session.playing_here() == ["Bedroom TV"]
     brain.media = None
     assert session.playing_here() == []
+
+
+class _Claude:
+    """Stands in for the Anthropic client, answering every request with these content blocks."""
+
+    def __init__(self, *content):
+        self.content = list(content)
+        self.requests = []
+        self.messages = self
+
+    def create(self, **request):
+        self.requests.append(request)
+        return SimpleNamespace(content=self.content, stop_reason="tool_use")
+
+
+def _film_heard(brain, connect, make_session, monkeypatch, playing):
+    """
+    A session in the Bedroom hearing "Turn the lights off, Jack." with these players there, each as
+    _playing has them, which Claude takes for speech from what's playing - beside working the lights.
+    """
+    monkeypatch.setattr(network, "online", lambda: True)
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(*playing)
+    session.llm.client = _Claude(SimpleNamespace(type="tool_use", id="t1", name="not_for_me", input={}),
+                                 SimpleNamespace(type="tool_use", id="t2", name="set_lights",
+                                                 input={"on": False, "light": "light.lamp"}))
+    run, held = [], []
+    session.actions.execute = run.append
+    session.music = session.conversation.music = SimpleNamespace(
+        hold=lambda: held.append("hold"), release=lambda: held.append("release"), wait=lambda: None)
+    brain.stt.texts = ["Turn the lights off, Jack."]
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+    session._converse({"talked_over": False, "feed": feed})
+    return session, pi, run, held
+
+
+def test_speech_from_whats_playing_here_is_ignored_and_the_music_comes_back(brain, connect, make_session,
+                                                                            monkeypatch):
+    session, pi, run, held = _film_heard(brain, connect, make_session, monkeypatch,
+                                         [("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None)])
+    assert "Playing in this room: Bedroom TV.] Turn the lights off, Jack." in \
+        session.llm.client.requests[0]["messages"][-1]["content"]
+    # Nothing said, played, run or listened for - and the music back as after any reply.
+    assert run == [] and brain.tts.said == [] and pi.messages("play_stream") == []
+    assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav"]
+    assert pi.messages("listen") == [] and session.llm.history == []
+    assert held == ["hold", "release"] and session.activity == "idle"
+
+
+def test_not_for_me_with_nothing_playing_here_is_said_to_be_not_caught(brain, connect, make_session, monkeypatch):
+    # Playing in the kitchen, which isn't where this satellite is.
+    session, _, run, held = _film_heard(brain, connect, make_session, monkeypatch,
+                                        [("media_player.radio", "Radio", "Kitchen", "devradio", None)])
+    assert "Playing" not in session.llm.client.requests[0]["messages"][-1]["content"]
+    assert run == [] and brain.tts.said == ["Sorry, I didn't catch that."]
+    assert held == ["hold", "release"]
 
 
 class _Finding:

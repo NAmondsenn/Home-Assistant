@@ -310,6 +310,77 @@ def test_a_read_tool_beside_another_tool_is_dropped():
     assert llm.history[-1]["tools"] == [("set_timer", {"duration_seconds": 600})]
 
 
+# Speech from what's playing
+
+def test_whats_playing_is_told_only_while_something_plays():
+    assert LLMHandler._situation(LUNCHTIME, None, LAMP, ["Firefox", "Windows PC"]) == (
+        "[Wednesday 21 October 2026, 11:50 AM (BST). Timers and reminders running: none. "
+        "Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off. Playing in this room: Firefox, Windows PC.] ")
+    assert "Playing" not in LLMHandler._situation(LUNCHTIME, None, LAMP, [])
+    assert "Playing" not in LLMHandler._situation(LUNCHTIME, None, LAMP)
+
+
+def test_whats_playing_reaches_claude_with_the_message(llm):
+    llm.client = FakeClient(_reply("It's 11:50 AM."))
+    llm.process_query("what time is it", lights=LAMP, playing=["Bedroom TV"])
+    llm.process_query("what time is it", lights=LAMP)
+    first, second = (request["messages"][-1]["content"] for request in llm.client.requests)
+    assert first.endswith("off. Playing in this room: Bedroom TV.] what time is it")
+    assert "Playing" not in second
+
+
+def test_claude_is_always_told_about_not_for_me_so_the_cache_holds(llm):
+    # Told only while something plays, the instructions and tools would change as a film
+    # starts and stops, and be read through again in full.
+    llm.tools = [{"name": "set_lights", "description": "Lights.", "input_schema": {"type": "object"}}]
+    llm.client = FakeClient(_reply("Okay."))
+    llm.process_query("what time is it", playing=["Bedroom TV"])
+    llm.process_query("what time is it")
+    first, second = llm.client.requests
+    assert first["system"] == second["system"] and first["tools"] == second["tools"]
+    assert "call not_for_me and nothing else" in first["system"][0]["text"]
+    assert [tool["name"] for tool in first["tools"]] == ["set_lights", "not_for_me"]
+    assert first["tools"][-1]["input_schema"] == {"type": "object", "properties": {}}
+
+
+def test_not_for_me_runs_nothing_else_from_the_same_response(llm):
+    # A line from a film - "turn the lights off, Jack" - must never work the lights, even if
+    # Claude asked for them beside it.
+    llm.history = [{"user": "what time is it", "assistant": "It's 7:36 PM.", "at": 0.0}]
+    kept = [dict(turn) for turn in llm.history]
+    llm.client = FakeClient(_reply("Okay.", _tool("not_for_me", use_id="t1"),
+                                   _tool("set_lights", use_id="t2", on=False, light="light.lamp")))
+    result = llm.process_query("turn the lights off, Jack", playing=["Bedroom TV"])
+    assert result == {"response": "", "actions": [], "success": True, "not_for_me": True}
+    # Not in the thread, the user's words included.
+    assert llm.history == kept
+    assert len(llm.client.requests) == 1
+
+
+def test_not_for_me_beside_a_read_reads_nothing():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset"),
+                                    _tool("not_for_me", use_id="t2"))])
+    read = []
+    result = llm.process_query("when's sunset?", read=read.append, playing=["Bedroom TV"])
+    assert read == [] and len(llm.client.requests) == 1
+    assert result["not_for_me"] is True and result["actions"] == []
+
+
+def test_not_for_me_after_reading_keeps_nothing_of_the_reads():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _reply("", _tool("not_for_me", use_id="t2"))])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET, playing=["Bedroom TV"])
+    assert len(llm.client.requests) == 2
+    assert (result["not_for_me"], result["actions"], llm.history) == (True, [], [])
+
+
+def test_an_ordinary_answer_isnt_marked_not_for_me(llm):
+    llm.client = FakeClient(_reply("It's 7:36 PM."))
+    assert "not_for_me" not in llm.process_query("what time is it", playing=["Bedroom TV"])
+
+
 def test_home_assistant_down_reaches_claude_rather_than_being_said():
     llm = _reader()
     llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
