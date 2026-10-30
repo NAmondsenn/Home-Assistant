@@ -1783,6 +1783,45 @@ def test_a_change_in_whats_playing_sends_every_satellite_its_state(make_brain, h
     assert [session.sent for session in sessions] == [2, 2]
 
 
+def test_a_satellite_joining_or_leaving_sends_the_others_their_state(brain, connect):
+    # Each satellite's view of what's playing leaves out every connected satellite's speaker and device.
+    brain.media = MediaWatcher(SimpleNamespace(playing_media=lambda: []), on_change=brain._send_states)
+    serving(brain)
+    bedroom = connect(brain)
+    connected(brain)
+    assert wait_for(lambda: len(bedroom.messages("state")) == 1)
+    kitchen = connect(brain, "kitchen", KITCHEN)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: len(bedroom.messages("state")) == 2)
+    # The one joining has its state once, as it's caught up.
+    assert len(kitchen.messages("state")) == 1
+    kitchen.go()
+    assert wait_for(lambda: brain.session_for("kitchen") is None)
+    assert wait_for(lambda: len(bedroom.messages("state")) == 3)
+
+
+def test_a_removed_satellite_sends_the_others_their_state(brain, connect, passwords):
+    brain.media = MediaWatcher(SimpleNamespace(playing_media=lambda: []), on_change=brain._send_states)
+    serving(brain)
+    bedroom = connect(brain)
+    connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: len(bedroom.messages("state")) == 2)
+    brain.remove_satellite("kitchen")
+    assert wait_for(lambda: len(bedroom.messages("state")) == 3)
+
+
+def test_without_a_media_watcher_a_satellite_joining_sends_the_others_nothing(brain, connect):
+    serving(brain)
+    bedroom = connect(brain)
+    connected(brain)
+    connect(brain, "kitchen", KITCHEN)
+    connected(brain, "kitchen")
+    time.sleep(0.2)
+    assert len(bedroom.messages("state")) == 1
+
+
 def test_the_media_watcher_runs_while_the_brain_does_and_stops_with_it(make_brain, home_assistant_token):
     brain = make_brain(home_assistant=HOME_ASSISTANT)
     # Nothing here may reach a real Home Assistant.

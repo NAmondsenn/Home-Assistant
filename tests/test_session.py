@@ -30,8 +30,8 @@ from voice_assistant.actions import Action
 from voice_assistant.brain import Brain
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
-from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.conversation import Reply
+from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.navidrome import NavidromePlayer
 from voice_assistant.recording import RATE, AudioFeed
 from voice_assistant.remote import RemoteSatellite
@@ -1289,6 +1289,58 @@ def test_nothing_plays_here_without_a_watcher_home_assistant_or_a_room(brain, co
     assert session.playing_here() == ["Bedroom TV"]
     brain.media = None
     assert session.playing_here() == []
+
+
+class _Finding:
+    """Stands in for a session's Home Assistant, finding its satellite in each (room, device) given in turn."""
+
+    def __init__(self, *found):
+        self.found = list(found)
+        self.area = self.device_id = None
+
+    def find_device(self, identifier):
+        self.area, self.device_id = self.found.pop(0)
+        return self.device_id is not None
+
+
+def _looked_up(session, *found):
+    """Has the session look its device up once for each (room, device) given, then close."""
+    session.home = _Finding(*found)
+    session.device = SimpleNamespace(identifier="nova_bedroom_pi", stop=lambda: None)
+    waits = []
+    session._stop_looking_up = SimpleNamespace(wait=lambda timeout: waits.append(timeout) or len(waits) == len(found),
+                                               set=lambda: None)
+    session._look_up_device()
+
+
+def test_a_satellite_whose_room_becomes_known_while_a_film_plays_is_sent_its_state(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    # As after a restart: the satellite was sent its state as it connected, before its room was known.
+    _looked_up(session, (None, None), ("Bedroom", "devbedroom"))
+    assert session.playing_here() == ["Bedroom TV"]
+    assert wait_for(lambda: len(pi.messages("state")) == 1)
+
+
+def test_a_satellite_is_sent_its_state_each_time_its_room_or_device_changes(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing()
+    _looked_up(session, ("Bedroom", "devbedroom"), ("Bedroom", "devbedroom"), ("Kitchen", "devbedroom"),
+               ("Kitchen", "devother"), ("Kitchen", "devother"))
+    assert wait_for(lambda: len(pi.messages("state")) == 3)
+    time.sleep(0.2)
+    assert len(pi.messages("state")) == 3
+
+
+def test_a_room_found_without_a_media_watcher_sends_nothing(brain, connect, make_session):
+    satellite, pi = connect()
+    _looked_up(make_session(satellite), ("Bedroom", "devbedroom"))
+    time.sleep(0.2)
+    assert pi.messages("state") == []
 
 
 def test_closing_a_session_ends_every_thread_it_started(connect, make_session, monkeypatch):

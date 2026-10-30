@@ -49,8 +49,9 @@ class MediaWatcher:
         self._every = every
         self._players: List[Dict] = []
         self._down = False
-        # The kind of error the thread last logged, while it keeps happening - see _pass.
+        # The kind of error the thread, and the read, last logged, while it keeps happening - see _pass and _read.
         self._failing: Optional[type] = None
+        self._read_failing: Optional[type] = None
         self._stopping = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -93,8 +94,9 @@ class MediaWatcher:
 
     def check(self):
         """
-        Reads what's playing once, and calls on_change if it has changed. Home Assistant not
-        answering is warned of once until it does again, and counts as nothing playing.
+        Reads what's playing once, and calls on_change if it has changed. A read which
+        fails - Home Assistant not answering, or a bug - counts as nothing playing, and is
+        logged once until a read works again.
 
         Raises:
             Exception: Whatever on_change raises - a bug, which the thread logs.
@@ -139,16 +141,27 @@ class MediaWatcher:
     def _read(self) -> List[Dict]:
         """
         Returns:
-            Every player playing - none if Home Assistant can't be read.
+            Every player playing - none if Home Assistant can't be read, or anything else
+            goes wrong reading it.
         """
         try:
             found = self._home.playing_media()
+            # Put in order here, so a player of the wrong shape fails the read - with nothing counting - rather
+            # than check(), which would keep the last list, and the stronger wake word with it.
+            _what_counts(found)
         except HOME_FAILURES as e:
             # A line every three seconds for a night of Home Assistant being restarted would bury the log.
             if not self._down:
-                logger.warning(f"Home Assistant didn't answer, so nothing counts as playing: {e}")
+                logger.warning(f"Couldn't read what's playing from Home Assistant, so nothing counts as playing: {e}")
             self._down = True
             return []
+        except Exception as e:
+            # A bug, so with its traceback - once while it keeps happening, as for Home Assistant being down.
+            if type(e) is not self._read_failing:
+                logger.exception("Reading what's playing failed, so nothing counts as playing")
+            self._read_failing = type(e)
+            return []
+        self._read_failing = None
         if self._down:
             logger.info("Home Assistant answers again, so what's playing is watched again.")
             self._down = False

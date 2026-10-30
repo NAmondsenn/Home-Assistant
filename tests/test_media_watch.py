@@ -60,9 +60,9 @@ def test_whats_playing_is_named_in_order():
                     _player("media_player.kodi", "Kodi")) == ["Bedroom TV", "Firefox", "Kodi"]
 
 
-def test_a_paused_or_idle_player_doesnt_count():
-    # Home Assistant only renders the players which are playing - see PLAYING_MEDIA_TEMPLATE - so nothing
-    # else ever reaches the watcher, and nothing playing counts as nothing.
+def test_nothing_playing_counts_as_nothing():
+    # Paused, idle, off and unavailable players never reach the watcher: the template renders only those
+    # playing - see test_home_assistant.py's test_only_players_playing_are_rendered_with_what_the_watcher_needs.
     assert _counted() == []
 
 
@@ -193,6 +193,7 @@ def test_home_assistant_down_is_warned_of_once_and_its_return_said(caplog):
         for _ in range(3):
             rig.watcher.check()
         assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+        assert "Couldn't read what's playing from Home Assistant, so nothing counts as playing: down" in caplog.text
         assert not [r for r in caplog.records if r.levelno == logging.INFO]
         rig.home.fails = None
         rig.watcher.check()
@@ -202,6 +203,27 @@ def test_home_assistant_down_is_warned_of_once_and_its_return_said(caplog):
         rig.home.fails = requests.ConnectionError("down again")
         rig.watcher.check()
         assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
+
+def test_an_unexpected_failure_in_a_read_leaves_nothing_counting(caplog):
+    rig = Rig(_player())
+    rig.watcher.check()
+    rig.home.fails = RuntimeError("a bug")
+    with caplog.at_level(logging.INFO, logger="voice_assistant.media_watch"):
+        rig.watcher.check()
+        rig.watcher.check()
+    assert rig.watcher.playing() == [] and rig.changes == 2
+    # With its traceback, as it's a bug rather than Home Assistant - and once while it keeps happening.
+    assert [r.exc_info[0] for r in caplog.records if r.exc_info] == [RuntimeError]
+
+
+def test_a_player_of_the_wrong_shape_leaves_nothing_counting():
+    # Compared by entity, so one with none can't be put in order with the rest.
+    rig = Rig(_player())
+    rig.watcher.check()
+    rig.home.players = [_player(), _player(entity=None)]
+    rig.watcher.check()
+    assert rig.watcher.playing() == [] and rig.changes == 2
 
 
 def test_a_first_good_read_says_nothing(caplog):

@@ -410,16 +410,34 @@ class Brain:
             self._send_states()
         return unused
 
-    def _send_states(self):
-        """Has every session connected send its satellite its state again."""
-        with self._lock:
-            sessions = list(self.sessions.values())
-        for session in sessions:
+    def _send_states(self, but: Optional[Session] = None):
+        """
+        Has every session connected send its satellite its state again.
+
+        Args:
+            but: A session to leave out - one which has just been sent its own.
+        """
+        for session in self.connected_sessions():
+            if session is but:
+                continue
             try:
                 session.send_state()
             except Exception:
-                logger.exception(f"The {session.satellite.name} satellite couldn't be sent the longest request, "
-                                 "so it keeps the old one until it reconnects")
+                logger.exception(f"The {session.satellite.name} satellite couldn't be sent its state, "
+                                 "so it keeps the old one until it's next sent")
+
+    def _satellites_changed(self, but: Optional[Session] = None):
+        """
+        Sends every other satellite its state again once one joins or leaves, as what
+        counts as playing in each room leaves out every connected satellite's own
+        speaker and device - see Session.playing_here. Only what's playing depends on
+        that, so with no media watcher nothing is sent.
+
+        Args:
+            but: The session which joined, which is sent its own as it's caught up.
+        """
+        if self.media:
+            self._send_states(but=but)
 
     def _change_speed(self, speed: float) -> bool:
         """
@@ -582,9 +600,7 @@ class Brain:
         Returns:
             The earliest of now and each session's moved_at.
         """
-        with self._lock:
-            sessions = list(self.sessions.values())
-        return min([time.monotonic()] + [session.moved_at for session in sessions])
+        return min([time.monotonic()] + [session.moved_at for session in self.connected_sessions()])
 
     def connected_sessions(self) -> List[Session]:
         """Returns every satellite's session the brain has now - a copy, to go through without the lock."""
@@ -698,6 +714,7 @@ class Brain:
         try:
             session = self._start_session(satellite, password)
             if session is not None and self._catch_up(session, hello_at):
+                self._satellites_changed(but=session)
                 session.run()
         except Exception:
             logger.exception(f"The {name} satellite's session failed")
@@ -830,6 +847,7 @@ class Brain:
             with self._sending_alarms:
                 emptied = session.satellite.connected and session.satellite.send_alarms([])
             self._let_go(session)
+            self._satellites_changed()
         with self._lock:
             self._emptied[name] = emptied
         if not emptied:
@@ -995,6 +1013,7 @@ class Brain:
                 return
             del self.sessions[name]
             self._caught_up.discard(name)
+        self._satellites_changed()
 
     def _give_out_orphans(self):
         """

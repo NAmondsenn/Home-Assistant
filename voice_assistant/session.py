@@ -21,7 +21,7 @@ import queue
 import re
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from voice_assistant import paths, storage
 from voice_assistant.actions import ActionExecutor
@@ -1015,17 +1015,36 @@ class Session:
         """
         threading.Thread(target=self.announce, args=(message,), daemon=True, name="ha-speak").start()
 
+    def _room(self) -> Optional[Tuple[Optional[str], Optional[str]]]:
+        """
+        Returns:
+            This satellite's room and device in Home Assistant, as (area, device id) - or
+            None with no media watcher, as nothing else sent to the satellite depends on them.
+        """
+        if self.brain.media is None:
+            return None
+        return self.home.area, self.home.device_id
+
     def _look_up_device(self):
         """
         Keeps up with which device in Home Assistant is this satellite's, and the room
-        it's in - which Assist goes by for "turn on the lights" - until the session
-        closes. HomeAssistant.find_device logs anything that goes wrong.
+        it's in - which Assist goes by for "turn on the lights", and what's playing here
+        by, so the satellite is sent its state again when either changes - until the
+        session closes. HomeAssistant.find_device logs anything that goes wrong.
         """
         while True:
+            before = self._room()
             try:
                 found = self.home.find_device(self.device.identifier)
             except Exception as e:
                 logger.error(f"Couldn't look for the {self.satellite.name} satellite's device in Home Assistant: {e}")
                 found = False
+            if self._room() != before:
+                # What's playing here depends on the room, and nothing else would tell the satellite: a film
+                # already on when the brain restarts doesn't change what's playing, only the room found after.
+                try:
+                    self.send_state()
+                except Exception:
+                    logger.exception(f"The {self.satellite.name} satellite couldn't be sent its state for its room")
             if self._stop_looking_up.wait(DEVICE_LOOKUP_FOUND if found else DEVICE_LOOKUP):
                 return
