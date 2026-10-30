@@ -284,7 +284,7 @@ class Claude:
     def forget_stale_history(self):
         pass
 
-    def process_query(self, text, context=None, lights=None, read=None):
+    def process_query(self, text, context=None, lights=None, read=None, playing=()):
         self.asked.append(text)
         return {"response": self.replies.pop(0), "actions": [], "success": True}
 

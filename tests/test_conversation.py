@@ -5,15 +5,18 @@ Whisper or Claude - using fakes for the clock, local commands, Claude and the
 actions, so each rule can be checked on its own.
 """
 
+import logging
+
 import pytest
 
 from voice_assistant.actions import Action, ActionExecutor, ActionResult
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
-from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation
+from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation, Reply
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.intents import LocalIntents
 from voice_assistant.pc import PCPower
+from voice_assistant.timeline import Timeline
 
 
 class FakeClock:
@@ -62,7 +65,7 @@ class FakeLLM:
     def __init__(self, *replies):
         self.replies = list(replies)
         self.asked, self.remembered, self.recorded, self.tool_answers = [], [], [], []
-        self.contexts, self.lights = [], []
+        self.contexts, self.lights, self.playing = [], [], []
         # What Claude reads before answering, and what it's told - see LLMHandler.process_query.
         self.to_read, self.read = [], []
         # The tools it's offered, and those of them it only reads from - as each request found them.
@@ -71,10 +74,11 @@ class FakeLLM:
     def forget_stale_history(self):
         pass
 
-    def process_query(self, text, context=None, lights=None, read=None):
+    def process_query(self, text, context=None, lights=None, read=None, playing=()):
         self.asked.append(text)
         self.contexts.append(context)
         self.lights.append(lights)
+        self.playing.append(list(playing))
         self.offered.append((list(self.tools), set(self.read_tools)))
         self.read += [read(action) for action in self.to_read]
         return self.replies.pop(0)
@@ -128,6 +132,10 @@ class FakeMusic:
 
 def _answer(text, *actions):
     return {"response": text, "actions": list(actions), "success": True}
+
+
+# Claude's answer when what it heard was speech from what's playing - see LLMHandler.process_query.
+NOT_FOR_ME = {"response": "", "actions": [], "success": True, "not_for_me": True}
 
 
 def _conversation(clock=None, intents=None, llm=None, actions=None, ringing=None, **settings):
@@ -503,6 +511,147 @@ def test_stop_said_after_the_reply_has_finished_is_still_a_command():
     actions = FakeActions()
     _conversation(intents=intents, actions=actions).handle("Stop.")
     assert actions.run == ["control_playback"]
+
+
+# Speech from what's playing
+
+class FakePlaying:
+    """Stands in for Session.playing_here: what plays in the room each time it's asked, in turn."""
+
+    def __init__(self, *each):
+        self.each = [list(names) for names in each]
+        self.asked = 0
+
+    def __call__(self):
+        self.asked += 1
+        return self.each.pop(0) if len(self.each) > 1 else self.each[0]
+
+
+def test_claude_is_told_whats_playing_in_the_room():
+    llm = FakeLLM(_answer("It's sunny."), _answer("It's sunny."))
+    conversation = _conversation(llm=llm, playing=FakePlaying(["Firefox", "Windows PC"], []))
+    conversation.handle("is it sunny")
+    conversation.handle("is it sunny")
+    assert llm.playing == [["Firefox", "Windows PC"], []]
+
+
+def test_without_anything_to_say_whats_playing_claude_is_told_nothing_plays():
+    llm = FakeLLM(_answer("It's sunny."))
+    _conversation(llm=llm).handle("is it sunny")
+    assert llm.playing == [[]]
+
+
+def test_speech_from_whats_playing_is_ignored_without_a_sound():
+    llm = FakeLLM(NOT_FOR_ME)
+    actions = FakeActions()
+    conversation = _conversation(llm=llm, actions=actions, playing=FakePlaying(["Bedroom TV"]))
+    timeline = Timeline()
+    reply = conversation.handle("I'll never let go, Jack.", timeline=timeline)
+    assert (reply.say, reply.sounds, reply.shown, reply.listen_again) == ("", [], "", False)
+    assert timeline.notes["outcome"] == "not_for_me"
+    # Nothing in the thread, and nothing kept to send to the phone.
+    assert llm.remembered == [] and llm.recorded == [] and not hasattr(actions, "last_answer")
+    assert actions.run == [] and conversation.music.waited == 0
+
+
+def test_whats_playing_is_read_once_as_the_request_is_built():
+    # Read again afterwards, a film stopped while Claude thought would have its line taken
+    # for a request - or one started, a request taken for the film.
+    playing = FakePlaying(["Bedroom TV"], [])
+    reply = _conversation(llm=FakeLLM(NOT_FOR_ME), playing=playing).handle("I'll never let go, Jack.")
+    assert playing.asked == 1 and reply == Reply()
+
+
+def test_ignoring_speech_is_logged_without_the_words(caplog):
+    caplog.set_level(logging.INFO)
+    _conversation(llm=FakeLLM(NOT_FOR_ME), playing=FakePlaying(["Bedroom TV"])).handle("I'll never let go, Jack.")
+    assert "Taken as speech from what's playing, so ignored" in caplog.messages
+    assert not any("let go" in message for message in caplog.messages)
+
+
+def test_something_ringing_carries_on_when_speech_from_whats_playing_is_ignored():
+    # The user didn't speak, so hasn't heard it.
+    clock = FakeClock(ringing=True)
+    ringing = {"insistent": True, "insistent_entries": ["timer 1"], "reminder": None, "reminder_sounding": False}
+    conversation = _conversation(clock=clock, llm=FakeLLM(NOT_FOR_ME), playing=FakePlaying(["Bedroom TV"]),
+                                 ringing=ringing)
+    assert conversation.handle("Fire!") == Reply()
+    assert clock.silenced == [] and clock.dismissed == 0
+
+
+def test_not_for_me_with_nothing_playing_is_taken_as_not_caught():
+    llm = FakeLLM(NOT_FOR_ME)
+    actions = FakeActions()
+    reply = _conversation(llm=llm, actions=actions, playing=FakePlaying([])).handle("turn the lights off")
+    assert (reply.say, reply.sounds, reply.listen_again) == ("Sorry, I didn't catch that.", [], False)
+    assert actions.run == [] and llm.remembered == [] and llm.recorded == []
+
+
+def test_not_for_me_without_anything_to_say_whats_playing_is_taken_as_not_caught():
+    assert _conversation(llm=FakeLLM(NOT_FOR_ME)).handle("turn the lights off").say == "Sorry, I didn't catch that."
+
+
+def test_an_unfounded_not_for_me_is_noted_on_the_timeline():
+    # What the prompt is tuned by: how often Claude says "the film" with nothing playing.
+    timeline = Timeline()
+    _conversation(llm=FakeLLM(NOT_FOR_ME), playing=FakePlaying([])).handle("turn the lights off", timeline=timeline)
+    assert timeline.notes["outcome"] == "not_for_me_unfounded"
+
+
+# What the llm would never give - kept here so a slip there still runs nothing.
+NOT_FOR_ME_WITH_ACTIONS = {**NOT_FOR_ME, "actions": [Action("set_lights", {"on": False})]}
+
+
+@pytest.mark.parametrize("playing", [["Bedroom TV"], []])
+def test_not_for_me_runs_nothing_even_with_actions_beside_it(playing):
+    actions = FakeActions()
+    conversation = _conversation(llm=FakeLLM(NOT_FOR_ME_WITH_ACTIONS), actions=actions, playing=FakePlaying(playing))
+    conversation.handle("turn the lights off, Jack")
+    assert actions.run == [] and conversation.music.waited == 0
+
+
+def test_not_for_me_after_a_fall_through_runs_nothing_even_with_actions_beside_it():
+    conversation, llm, actions = _lights_assist_didnt_understand(llm=FakeLLM(NOT_FOR_ME_WITH_ACTIONS),
+                                                                 playing=FakePlaying(["Bedroom TV"]))
+    assert conversation.handle("dim the lights") == Reply()
+    assert actions.run == ["control_home"]
+
+
+def test_a_follow_up_gets_the_same_check():
+    # Heard without the wake word, a follow-up is the likeliest to be the film's.
+    llm = FakeLLM(_answer("Which room?"), NOT_FOR_ME)
+    conversation = _conversation(llm=llm, playing=FakePlaying(["Bedroom TV"]))
+    assert conversation.handle("turn the lights on").listen_again is True
+    assert conversation.handle("Get out of the house!", follow_up=True) == Reply()
+    assert llm.playing == [["Bedroom TV"], ["Bedroom TV"]]
+    assert llm.recorded == [("turn the lights on", "Which room?")]
+
+
+def test_a_fall_through_from_assist_gets_the_same_check():
+    playing = FakePlaying(["Bedroom TV"])
+    conversation, llm, actions = _lights_assist_didnt_understand(llm=FakeLLM(NOT_FOR_ME), playing=playing)
+    assert conversation.handle("dim the lights") == Reply()
+    assert actions.run == ["control_home"] and llm.remembered == [] and llm.recorded == []
+
+
+@pytest.mark.parametrize("said", ["pause", "stop"])
+def test_local_commands_never_reach_claude_while_something_plays(said):
+    llm = FakeLLM()
+    intents = FakeIntents({said: _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    actions = FakeActions({"control_playback": ActionResult(True, "Paused", confirm="chime")})
+    playing = FakePlaying(["Bedroom TV"])
+    reply = _conversation(intents=intents, llm=llm, actions=actions, playing=playing).handle(said)
+    assert llm.asked == [] and actions.run == ["control_playback"]
+    assert reply.sounds == [("success_chime.wav", "general")] and playing.asked == 0
+
+
+def test_a_routines_steps_are_never_taken_for_whats_playing():
+    # The user's own words for the routine, not something heard - so Claude isn't told
+    # what's playing, and a not_for_me is taken as not caught rather than dropping a step.
+    evening = FakeRoutines({"name": "Evening", "phrases": ["evening"], "steps": ["is it sunny"]})
+    llm = FakeLLM(NOT_FOR_ME)
+    reply = _conversation(llm=llm, routines=evening, playing=FakePlaying(["Bedroom TV"])).handle("evening")
+    assert llm.playing == [[]] and reply.say == "Sorry, I didn't catch that."
 
 
 # Sending to the phone

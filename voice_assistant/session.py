@@ -16,16 +16,17 @@ Piper and Nemotron - is the brain's.
 """
 
 import logging
+import math
 import os
 import queue
 import re
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from voice_assistant import paths, storage
 from voice_assistant.actions import ActionExecutor
-from voice_assistant.conversation import Conversation
+from voice_assistant.conversation import NOT_CAUGHT, Conversation
 from voice_assistant.ha_device import DeviceControls, NovaDevice
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.intents import LocalIntents
@@ -36,6 +37,7 @@ from voice_assistant.network import online
 from voice_assistant.recording import RATE, record_until_silence
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.settings_page import change_volume, volume_levels
+from voice_assistant.spotify_controller import brains_speaker
 from voice_assistant.timeline import Timeline
 from voice_assistant.vad import make_detector
 from voice_assistant.volume import VolumeControl
@@ -80,6 +82,23 @@ def _kept_for(what: str, satellite: str) -> str:
     replaced, so a name can't lead anywhere else.
     """
     return os.path.join(paths.DATA_DIR, f"{what}-{re.sub(r'[^A-Za-z0-9_.-]', '_', satellite)}.json")
+
+
+def _number(value, default: float) -> float:
+    """
+    A setting as a number, or its default when it isn't one - left empty in config.yaml
+    by hand, say, which the settings page would never save.
+
+    Args:
+        value: The setting as read.
+        default: What to use in its place.
+
+    Returns:
+        The value if it's a finite int or float (not a bool), else the default.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return default
+    return value
 
 
 class Session:
@@ -130,6 +149,14 @@ class Session:
         # see hear_voice.
         self._last_hearing = None
         self._hearing_lock = threading.Lock()
+        # Held while the satellite's state is read and sent, as the media watcher, the
+        # settings page, the device lookup and satellites joining each send it from a thread
+        # of their own - so the later of two sends always reads later and arrives last. One
+        # read just before a film started, landing after the one read just after, would
+        # leave the usual wake word on through the film. See send_state.
+        self._sending_state = threading.Lock()
+        # Whether anything played in the satellite's room as its state was last sent - see send_state.
+        self._something_played = False
         # Set once the session is closed, which ends run() - see close.
         self._closed = threading.Event()
         self._closing = threading.Lock()
@@ -206,7 +233,8 @@ class Session:
         self.conversation = Conversation(brain.clock, self.intents, self.llm, self.actions, self.music,
                                          chime_enabled=lambda: self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
-                                         routines=brain.routines, satellite=satellite.name)
+                                         routines=brain.routines, satellite=satellite.name,
+                                         playing=self.playing_here)
 
     @property
     def thresholds(self) -> Dict:
@@ -268,15 +296,66 @@ class Session:
         """
         Sends the satellite its volumes and its mute, which the brain owns: whenever
         either changes, and as it connects. It mutes its wake word by them, and rings
-        by them while it can't reach the brain. With them goes the longest request,
-        which isn't the satellite's to keep but is sent here so a save on the settings
-        page can reach it in the same way - see Brain.apply_settings.
+        by them while it can't reach the brain. With them go the longest request and
+        how sure to be of its wake word, which aren't the satellite's to keep but are
+        sent here so a save on the settings page can reach it in the same way - see
+        Brain.apply_settings - as can something starting or stopping in its room.
 
         Returns:
             Whether it was sent.
         """
-        volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
-        return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0))
+        # Never called with the brain's lock held, which playing_here takes while this is held.
+        with self._sending_state:
+            volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
+            playing = self.playing_here()
+            wake_confidence = self._wake_confidence(playing)
+            # Said each time it starts and stops, so a satellite that was hard to wake can be
+            # traced to what Home Assistant said was playing - a browser tab left on, say.
+            if bool(playing) != self._something_played:
+                self._something_played = bool(playing)
+                if playing:
+                    logger.info(f"Something's playing in the {self.satellite.name} satellite's room "
+                                f"({', '.join(playing)}), so its wake word needs {wake_confidence:g}")
+                else:
+                    logger.info(f"Nothing's playing in the {self.satellite.name} satellite's room now, "
+                                f"so its wake word needs {wake_confidence:g}")
+            return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0),
+                                            wake_confidence=wake_confidence)
+
+    def _wake_confidence(self, playing: List[str]) -> float:
+        """
+        Args:
+            playing: What's playing in the satellite's room - see playing_here.
+
+        Returns:
+            How sure, from 0 to 1, the satellite must be that it heard its wake word: the
+            usual setting, or the media one while anything plays in its room - but never
+            less sure then, so a media setting saved below the usual one changes nothing.
+        """
+        thresholds = self.thresholds
+        usual = _number(thresholds.get("wake_word_confidence"), 0.5)
+        if not playing:
+            return usual
+        return max(usual, _number(thresholds.get("media_wake_word_confidence"), 0.75))
+
+    def playing_here(self) -> List[str]:
+        """
+        What's playing in this satellite's room, as the brain's media watcher last read it -
+        see media_watch.py.
+
+        Returns:
+            The players' names, in order, e.g. ["Bedroom TV"]. Nova's own music - on any
+            satellite's device, or Spotify on any satellite's speaker - isn't counted. Empty
+            with no watcher, no Home Assistant, or while this satellite's room isn't known.
+        """
+        if self.brain.media is None or self.home is None:
+            return []
+        # This one too, in case it asks while the brain is still letting it in.
+        sessions = {*self.brain.connected_sessions(), self}
+        devices = [session.home.device_id for session in sessions if session.home]
+        # One which doesn't say plays on the brain's own - see SpotifyController.
+        speakers = [session.satellite.speaker_name or brains_speaker(self.config) for session in sessions]
+        return self.brain.media.playing_in(self.home.area, devices, speakers)
 
     # Running
 
@@ -520,7 +599,7 @@ class Session:
                 # The user spoke - the recording found them talking - so is told rather
                 # than left waiting, as they were after a lone "Pause." which Nemotron
                 # heard as nothing.
-                self._say("Sorry, I didn't catch that.")
+                self._say(NOT_CAUGHT)
             return None
 
         timeline.note(text_chars=len(text))
@@ -995,17 +1074,36 @@ class Session:
         """
         threading.Thread(target=self.announce, args=(message,), daemon=True, name="ha-speak").start()
 
+    def _room(self) -> Optional[Tuple[Optional[str], Optional[str]]]:
+        """
+        Returns:
+            This satellite's room and device in Home Assistant, as (area, device id) - or
+            None with no media watcher, as nothing else sent to the satellite depends on them.
+        """
+        if self.brain.media is None:
+            return None
+        return self.home.area, self.home.device_id
+
     def _look_up_device(self):
         """
         Keeps up with which device in Home Assistant is this satellite's, and the room
-        it's in - which Assist goes by for "turn on the lights" - until the session
-        closes. HomeAssistant.find_device logs anything that goes wrong.
+        it's in - which Assist goes by for "turn on the lights", and what's playing here
+        by, so the satellite is sent its state again when either changes - until the
+        session closes. HomeAssistant.find_device logs anything that goes wrong.
         """
         while True:
+            before = self._room()
             try:
                 found = self.home.find_device(self.device.identifier)
             except Exception as e:
                 logger.error(f"Couldn't look for the {self.satellite.name} satellite's device in Home Assistant: {e}")
                 found = False
+            if self._room() != before:
+                # What's playing here depends on the room, and nothing else would tell the satellite: a film
+                # already on when the brain restarts doesn't change what's playing, only the room found after.
+                try:
+                    self.send_state()
+                except Exception:
+                    logger.exception(f"The {self.satellite.name} satellite couldn't be sent its state for its room")
             if self._stop_looking_up.wait(DEVICE_LOOKUP_FOUND if found else DEVICE_LOOKUP):
                 return

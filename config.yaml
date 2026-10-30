@@ -16,12 +16,18 @@ llm:
   # Haiku 5.5 was as quick as 4.5 on Nova's own requests, and as accurate - see the
   # commit which switched to it.
   model: "claude-haiku-5-5"
-  # The longest a reply may be, in tokens - about 0.75 of a word each. Below 300 an
-  # ordinary reply which also calls a tool can be cut off, and a search needs more.
-  max_tokens: 300
-  max_tokens_search: 400
-  # null leaves it to the model - which Haiku 5.5 insists on, refusing any request
-  # which sets one. Only for older models.
+  # The longest a reply may be, in tokens - about 0.75 of a word each. Claude's thinking
+  # counts toward it, so these leave room to think and still say something: a long
+  # think at 300 could use them all, and a search needs more.
+  max_tokens: 1024
+  max_tokens_search: 1200
+  # How hard Claude thinks before it answers - low, medium, high, xhigh or max; the
+  # lower, the quicker. Only low was trialled. With thinking off,
+  # Haiku 5.5 wrote its working-out into the reply, which was then said aloud; in a
+  # trial of 36 replies per setup, low leaked none for 0.4 s more than off.
+  effort: "low"
+  # Leave null: Haiku 5.5 refuses any request which sets a temperature. A number is only
+  # for a model which takes one beside thinking.
   temperature: null
   # Seconds to wait for a reply before giving up, and how many times to retry.
   # Searches do more work, so they get longer.
@@ -144,8 +150,13 @@ thresholds:
   # you say. Each satellite is told it, but never records for more than 30 seconds
   # whatever it is set to.
   recording_timeout: 15.0
-  # Minimum confidence required to consider a wake word detected.
+  # How sure Nova must be that it heard its wake word, from 0.3 to 0.95. Raise it if Nova
+  # wakes when nobody said it; lower it if it misses you.
   wake_word_confidence: 0.5
+  # The same while something's playing in the satellite's room - any media player Home
+  # Assistant puts there, but not Nova's own music - as a film's speech can sound like the
+  # wake word. The higher of the two is used then.
+  media_wake_word_confidence: 0.75
 
 timers:
   # Reminders are announced twice in quick succession.

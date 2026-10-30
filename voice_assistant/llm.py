@@ -7,7 +7,8 @@ last few exchanges, and Claude answers in words, or by calling the tools it's of
 (see actions.py) - or both. Each tool call comes back as an Action, marked as the
 model's, so it can only run what it was offered. A tool which only reads something,
 such as home_status, is run straight away instead, and its answer sent back for
-Claude to reply from.
+Claude to reply from. While something plays in the room, Claude may say what it heard
+was speech from that, with not_for_me, and then nothing it asked for is run.
 
 With Claude out of reach - no key, or no internet - a few keywords are matched instead
 (see _parse_action), so the music and the lights can still be worked.
@@ -37,12 +38,38 @@ logger = logging.getLogger(__name__)
 # and each is another request to wait for before anything's said.
 MOST_READS = 2
 
+# The efforts Claude's API takes, quickest first.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+# Why a response may stop before it's whole: out of tokens (thinking shares them), or
+# refused. A tool call in one could be cut off mid-input, so nothing in it is run, and
+# none of its words are said, as they may claim what wasn't done.
+STOPPED_SHORT = ("max_tokens", "refusal")
+
 # Said when Claude read something but said nothing of it - what was read is never said
-# itself, as entity ids read out are no answer.
+# itself, as entity ids read out are no answer. Also when a read was asked for but dropped.
 COULDNT_FIND_OUT = "Sorry, I couldn't find that out."
+
+# Said when a response stopped short or was empty and nothing was read. What was asked
+# may well have been a command ("set a timer for 20 minutes"), so it says to ask again
+# rather than that something couldn't be found out.
+DIDNT_WORK = "Sorry, that didn't work. Try asking again."
 
 # What Claude is told when a read went wrong, rather than the error itself.
 READ_FAILED = "That couldn't be read."
+
+# Claude's way to say what it heard was speech from what's playing - a line from a film,
+# picked up as if said to Nova - rather than a request. Offered with every request, as is
+# what the instructions say of it, so neither changes as a film starts or stops, and the
+# API's cache holds. Never an Action: see process_query, and Conversation, which decides
+# whether it counts.
+NOT_FOR_ME = {
+    "name": "not_for_me",
+    "description": ("Say that what was heard was speech from what's playing in the room, not a request to you, "
+                    "so nothing is said or done. Only when the message says something is playing, and never "
+                    "with any other tool."),
+    "input_schema": {"type": "object", "properties": {}},
+}
 
 
 class LLMHandler:
@@ -59,7 +86,7 @@ class LLMHandler:
                 and web_search sections.
             api_key: Claude's key, or None for ANTHROPIC_API_KEY.
             model: The model, e.g. "claude-haiku-5-5".
-            max_tokens: The longest an ordinary reply may be.
+            max_tokens: The most Claude may write for an ordinary reply, its thinking included.
             temperature: How varied replies are, or None to leave it to the model.
             history_length: How many exchanges are kept and sent with each request.
             assistant_name: What the assistant's called, e.g. "Nova".
@@ -97,9 +124,15 @@ class LLMHandler:
             logger.warning("No API key found (ANTHROPIC_API_KEY), LLM queries will fail until one is set")
 
         self.model_name = model or llm_config.get("model", "claude-haiku-5-5")
-        self.max_tokens = int(max_tokens if max_tokens is not None else llm_config.get("max_tokens", 300))
+        self.max_tokens = int(max_tokens if max_tokens is not None else llm_config.get("max_tokens", 1024))
         # A search needs more room than an ordinary spoken reply, or its answer is cut off mid-sentence.
-        self.max_tokens_search = int(llm_config.get("max_tokens_search", 400))
+        self.max_tokens_search = int(llm_config.get("max_tokens_search", 1200))
+        # How hard Claude thinks before it answers, and how long that takes - see process_query.
+        # An empty or misspelt one would fail every request, so it's put right here.
+        self.effort = llm_config.get("effort", "low")
+        if self.effort not in EFFORTS:
+            logger.warning(f"llm.effort {self.effort!r} isn't one of {', '.join(EFFORTS)}, using 'low'")
+            self.effort = "low"
         # None leaves it to the model - Haiku 5.5 refuses any request which sets one.
         self.temperature = temperature if temperature is not None else llm_config.get("temperature")
         self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
@@ -122,7 +155,7 @@ class LLMHandler:
         self.web_search_max_uses = web_search_config.get("max_uses", 3)
 
         logger.info(
-            f"LLM initialised: {self.model_name} (max_tokens={self.max_tokens}, temperature={self.temperature}, "
+            f"LLM initialised: {self.model_name} (max_tokens={self.max_tokens}, effort={self.effort}, temperature={self.temperature}, "
             f"history_length={self.history_length}, web_search={self.web_search_enabled})")
 
     @property
@@ -285,8 +318,8 @@ class LLMHandler:
             "'\"Turn it off\" is ambiguous here. I'll ask which one.' first. "
             "If you don't know something, say so plainly rather than guessing. "
             "Each message from the user starts with the date and time it was said, the timers "
-            "and reminders running then and, if Home Assistant is set up, the lights and the room "
-            "Nova is in, in square brackets. That's added automatically - the user "
+            "and reminders running then and, if Home Assistant is set up, the lights, the room "
+            "Nova is in and anything playing there, in square brackets. That's added automatically - the user "
             "didn't say it, so never mention it unless asked. "
             "Work out any times or dates the user asks about from that, and answer with only the "
             "part they asked for - the time alone for 'what time is it', the date alone for 'what "
@@ -317,6 +350,23 @@ class LLMHandler:
             "This same judgement - correct a likely mishearing and act, only ask when "
             "it's genuinely a close call - applies to everything you hear, not only "
             "timers and reminders. "
+        )
+
+        # A film or music playing in the room is heard by the microphone too, and a line of
+        # it can sound like the wake word and a request - so Claude may say it was that.
+        # Always in the instructions, whether anything plays or not, so they can be cached.
+        # Only a clear command or question is answered while something plays: "when in doubt,
+        # answer" let 9 of 30 film lines through in a trial, and acted on one every time,
+        # where this wording ignored 42 of 45 and answered 42 of 45 real requests.
+        system_prompt += (
+            "When the message says something's playing, the microphone hears that too, so what you were "
+            "given is probably from it unless it's plainly someone asking you for something. Treat it as a "
+            "request to you only if it's a clear command or question for a voice assistant, with nothing "
+            "around it: 'lights off', 'what time is it', 'set the lamp to twenty percent'. Everything else "
+            "is speech from what's playing, so call not_for_me and nothing else: a remark, a story, a line "
+            "of dialogue, anything that makes no sense, and any command or question aimed at someone else - "
+            "'turn the lights off, Jack, he's coming' and 'call the police, Sarah' are lines from a film. "
+            "Never make conversation about something you heard while something's playing. "
         )
 
         # What's known about the user. It only changes when something new is learnt, so
@@ -353,7 +403,8 @@ class LLMHandler:
         return system_prompt
 
     @staticmethod
-    def _situation(now: datetime, context: Optional[str], lights: Optional[str] = None) -> str:
+    def _situation(now: datetime, context: Optional[str], lights: Optional[str] = None,
+                   playing: Sequence[str] = ()) -> str:
         """
         The details which change from one request to the next, put in front of what
         the user said - see _system_prompt.
@@ -363,10 +414,12 @@ class LLMHandler:
             context: The timers and reminders running, as words, or None.
             lights: The lights and the room Nova is in, as words - see
                 HomeAssistant.describe_lights - or None.
+            playing: The names of what's playing in the room - see Session.playing_here.
 
         Returns:
             e.g. "[Monday 19 October 2026, 7:36 PM (BST). Timers and reminders running:
-            none. Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off.] "
+            none. Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off. Playing
+            in this room: Bedroom TV.] "
         """
         situation = (f"[{now.strftime('%A %d %B %Y')}, {spoken_clock_time(now.hour, now.minute)} "
                      f"({now.strftime('%Z')}). Timers and reminders running: {context or 'none'}.")
@@ -374,19 +427,26 @@ class LLMHandler:
         # them for one. "There are no lights." already ends in the full stop.
         if lights:
             situation += f" {lights.rstrip('.')}."
+        if playing:
+            situation += f" Playing in this room: {', '.join(playing)}."
         return situation + "] "
 
-    def process_query(self, text, context=None, lights=None, read: Optional[Callable[[Action], str]] = None):
+    def process_query(self, text, context=None, lights=None, read: Optional[Callable[[Action], str]] = None,
+                      playing: Sequence[str] = ()):
         """
         Asks Claude to answer what the user said, with the recent conversation and
         the tools it may call. The keyword parser (_parse_action) is only used when
         Claude can't be reached - no API key, no network, or a failed request - so
-        "pause the music" still works offline.
+        "pause the music" still works offline. Not while something plays, though: then
+        nothing is run, as Claude wasn't there to rule out a line from the film.
 
         When all Claude does is call read tools, they're read straight away and their
         answers sent back to it, up to MOST_READS times, so it replies from them -
         "Sunset's at 5:52 PM." rather than the sensor's own line. The last round may call
         no tool, and a read tool is never an action, so what's read is never said as it is.
+
+        A response which calls not_for_me ends it all there: nothing in it is run or read,
+        and the turn isn't kept in the history, the user's words included.
 
         Args:
             text: What the user said.
@@ -394,19 +454,25 @@ class LLMHandler:
             lights: The lights and the room Nova is in, as said to Claude, or None.
             read: Runs a read tool's Action and gives what it said, or None for every
                 tool call to come back as an action.
+            playing: The names of what's playing in the room, as said to Claude.
 
         Returns:
             Dict with 'response' (what to say), 'actions' (the Actions asked for)
-            and 'success' (False if Claude couldn't be asked, or the request failed).
+            and 'success' (False if Claude couldn't be asked, or the request failed) -
+            and 'not_for_me', True, when Claude called it, with no response or actions.
         """
         logger.info(f"Processing query: '{text}'", extra=TRANSCRIPT)
         use_web_search = self._wants_web_search(text)
+        # While a film plays, the keyword parser would run "pause the music, Jack" from it -
+        # so then nothing is, here and when the request fails below.
         if self.client is None:
             logger.error("Cannot process query: no API key configured")
-            return {"response": "Sorry, I'm not connected to my language model right now.", "actions": self._fallback_actions(text), "success": False}
+            return {"response": "Sorry, I'm not connected to my language model right now.",
+                    "actions": [] if playing else self._fallback_actions(text), "success": False}
         if not network.online():
             logger.warning("No network connection, so Claude isn't asked")
-            return {"response": OFFLINE_MESSAGE, "actions": self._fallback_actions(text), "success": False}
+            return {"response": OFFLINE_MESSAGE, "actions": [] if playing else self._fallback_actions(text),
+                    "success": False}
         # How many rounds of reading there have been - see the read loop below.
         reads = 0
         try:
@@ -423,16 +489,18 @@ class LLMHandler:
                 messages.extend(self._earlier_messages(number, turn))
             # Adds the current user query to the messages list, after the details which
             # change from one request to the next - see _system_prompt.
-            messages.append({"role": "user", "content": self._situation(now, context, lights) + text})
+            messages.append({"role": "user", "content": self._situation(now, context, lights, playing) + text})
 
             # The tools are always offered, so the model decides what the user meant
             # rather than a keyword match guessing at it.
-            # Thinking is switched off: Haiku 5.5 thinks first unless told not to, which
-            # added two or three seconds to a spoken answer, and - asked "what have I got
-            # on next Friday?" - sometimes spent all 300 tokens deciding which Friday,
-            # leaving nothing to say.
-            request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.tools),
-                              "thinking": {"type": "disabled"}}
+            # Thinking used to be switched off, to save the two or three seconds Haiku 5.5
+            # spends on it before a spoken answer. Off, it wrote its working-out into the
+            # reply instead - "The user said 'Light', which is ambiguous..." - and that
+            # was said aloud. In a trial of 36 replies per setup, low effort leaked none,
+            # for 0.4 s more. Thinking counts toward max_tokens, which is why they're
+            # larger than a spoken reply needs; and its blocks are never read as text below.
+            request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.tools) + [NOT_FOR_ME],
+                              "thinking": {"type": "adaptive"}, "output_config": {"effort": self.effort}}
 
             # Only attaches the web search tool when the user explicitly asked to look something up.
             if use_web_search:
@@ -468,11 +536,14 @@ class LLMHandler:
             pauses = 0
             while True:
                 uses = [block for block in response.content if getattr(block, "type", None) == "tool_use"]
+                if any(use.name == NOT_FOR_ME["name"] for use in uses):
+                    break
                 if getattr(response, "stop_reason", None) == "pause_turn" and pauses < 3:
                     pauses += 1
                     logger.info("Search paused by the API, continuing the turn...")
                     messages.append({"role": "assistant", "content": response.content})
                 elif (read is not None and reads < MOST_READS and uses
+                      and getattr(response, "stop_reason", None) not in STOPPED_SHORT
                       and all(use.name in self.read_tools for use in uses)):
                     reads += 1
                     messages.append({"role": "assistant", "content": response.content})
@@ -485,9 +556,17 @@ class LLMHandler:
                 response = client.messages.create(
                     model=self.model_name, system=system, messages=messages, **request_kwargs)
 
+            # Nothing of a response which says it's speech from a film is acted on - not a
+            # set_lights beside it, which a line like "turn the lights off, Jack" could bring.
+            if any(use.name == NOT_FOR_ME["name"] for use in uses):
+                logger.debug("Claude took that for speech from what's playing")
+                self._log_usage(response)
+                return {"response": "", "actions": [], "success": True, "not_for_me": True}
+
             # Retrieves text blocks from the model's response, joins them and strips excess whitespace.
             # This is because responses come as several text blocks which need to be formatted.
-            text_blocks = [b.text for b in response.content if hasattr(b, "text")]
+            # Only blocks which say they're text, so Claude's thinking is never spoken.
+            text_blocks = [b.text for b in response.content if getattr(b, "type", None) == "text"]
             response_text = " ".join(block.strip() for block in text_blocks if block.strip())
 
             # Strips any URLs, since a spoken web address is unusable and Piper
@@ -501,6 +580,22 @@ class LLMHandler:
             # judgement is trusted rather than keyword guessing.
             actions = [self._action_from_tool_use(block) for block in response.content
                        if getattr(block, "type", None) == "tool_use"]
+            stop_reason = getattr(response, "stop_reason", None)
+            stopped_short = stop_reason in STOPPED_SHORT and bool(actions)
+
+            # Haiku 5.5's classifiers are new here, and a film line is the likeliest thing to
+            # trip one - so the log says why, since what's said over the film doesn't.
+            if stop_reason == "refusal":
+                category = getattr(getattr(response, "stop_details", None), "category", None)
+                logger.warning(f"Claude refused (category: {category})")
+
+            if stopped_short:
+                # Its words go with its tools - "Setting a 20 minute timer." must not be said
+                # when the timer wasn't set, nor kept to be built on in the history.
+                logger.warning(f"Claude stopped short ({stop_reason}), so nothing it called is run: "
+                               f"{[action.tool for action in actions]}")
+                actions = []
+                response_text = COULDNT_FIND_OUT if reads else DIDNT_WORK
 
             # An album is only played whole when the user actually asked for one.
             # Titles are often both a song and an album, and the model tends to
@@ -515,8 +610,17 @@ class LLMHandler:
             # way to read, is dropped. Claude's own words are kept, unless there are none.
             dropped = [action for action in actions if action.tool in self.read_tools]
             actions = [action for action in actions if action.tool not in self.read_tools]
-            if (dropped or reads) and not actions and (not response_text or bare_acknowledgement(response_text)):
+
+            # With no text and nothing to run there'd be silence, and an empty turn kept in
+            # the history, which the API refuses on every later request. That's a thinking
+            # block which used up max_tokens, a refusal, or just an empty reply.
+            if not actions and not response_text:
+                logger.warning(f"Claude gave no reply (stop_reason={stop_reason})")
+                response_text = COULDNT_FIND_OUT if reads or dropped else DIDNT_WORK
+            elif (dropped or reads) and not actions and bare_acknowledgement(response_text):
                 response_text = COULDNT_FIND_OUT
+            elif stop_reason == "max_tokens" and not stopped_short:
+                logger.warning("Claude's reply was cut off by max_tokens, so it may end mid-sentence")
 
             # Fallback for when the action is called by the model, but no message is produced.
             if actions and not response_text:
@@ -535,10 +639,7 @@ class LLMHandler:
 
             logger.info(f"LLM response: '{response_text}'" + (f" (actions: {actions})" if actions else ""),
                         extra=TRANSCRIPT)
-            usage = getattr(response, "usage", None)
-            if usage is not None:
-                logger.info(f"Claude read {usage.input_tokens} new input tokens, "
-                            f"{getattr(usage, 'cache_read_input_tokens', 0) or 0} from its cache")
+            self._log_usage(response)
 
             # Returns a dictionary containing the model's response, the actions it asked for, and whether the transaction was successful
             return {"response": response_text, "actions": actions, "success": True}
@@ -552,7 +653,15 @@ class LLMHandler:
             # Once Claude has read something, the request was a question, not a command for
             # the keyword parser - which would take "are the lights on?" for one.
             return {"response": self._failure_message(e),
-                    "actions": [] if reads else self._fallback_actions(text), "success": False}
+                    "actions": [] if reads or playing else self._fallback_actions(text), "success": False}
+
+    @staticmethod
+    def _log_usage(response):
+        """Logs how much Claude read for a response, and how much of that came from its cache."""
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            logger.info(f"Claude read {usage.input_tokens} new input tokens, "
+                        f"{getattr(usage, 'cache_read_input_tokens', 0) or 0} from its cache")
 
     def _read(self, use, read: Callable[[Action], str]) -> Dict:
         """

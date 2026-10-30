@@ -37,6 +37,7 @@ from voice_assistant import settings_page as settings_page_module
 from voice_assistant.batteries import BatteryWatcher
 from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
+from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.ntfy import Alert
 from voice_assistant.recording import RATE
 from voice_assistant.remote import RemoteSatellite
@@ -1743,6 +1744,102 @@ def test_the_brain_has_no_battery_watcher_without_home_assistant(make_brain, mon
     assert make_brain().batteries is None
 
 
+def test_the_brain_watches_whats_playing_when_home_assistant_is_set_up(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    assert isinstance(brain.media, MediaWatcher) and brain.media._home is brain.home
+    assert brain.media._on_change == brain._send_states
+    assert brain.media._every == 3.0
+    # Not running until run() starts it.
+    assert brain.media._thread is None
+
+
+def test_the_brain_has_no_media_watcher_without_home_assistant(make_brain, monkeypatch):
+    monkeypatch.delenv("HA_TOKEN", raising=False)
+    assert make_brain(home_assistant=HOME_ASSISTANT).media is None
+    assert make_brain().media is None
+
+
+class _StateCounter:
+    """Stands in for a session, counting the states it's had sent."""
+
+    def __init__(self, name):
+        self.satellite = SimpleNamespace(name=name, close=lambda: None)
+        self.sent = 0
+
+    def send_state(self):
+        self.sent += 1
+
+    def close(self):
+        pass
+
+
+def test_a_change_in_whats_playing_sends_every_satellite_its_state(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    sessions = [_StateCounter("bedroom"), _StateCounter("kitchen")]
+    brain.sessions.update({"bedroom": sessions[0], "kitchen": sessions[1]})
+    assert brain.connected_sessions() == sessions
+    brain.media._on_change()
+    brain.media._on_change()
+    assert [session.sent for session in sessions] == [2, 2]
+
+
+def test_a_satellite_joining_or_leaving_sends_the_others_their_state(brain, connect):
+    # Each satellite's view of what's playing leaves out every connected satellite's speaker and device.
+    brain.media = MediaWatcher(SimpleNamespace(playing_media=lambda: []), on_change=brain._send_states)
+    serving(brain)
+    bedroom = connect(brain)
+    connected(brain)
+    assert wait_for(lambda: len(bedroom.messages("state")) == 1)
+    kitchen = connect(brain, "kitchen", KITCHEN)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: len(bedroom.messages("state")) == 2)
+    # The one joining has its state once, as it's caught up.
+    assert len(kitchen.messages("state")) == 1
+    kitchen.go()
+    assert wait_for(lambda: brain.session_for("kitchen") is None)
+    assert wait_for(lambda: len(bedroom.messages("state")) == 3)
+
+
+def test_a_removed_satellite_sends_the_others_their_state(brain, connect, passwords):
+    brain.media = MediaWatcher(SimpleNamespace(playing_media=lambda: []), on_change=brain._send_states)
+    serving(brain)
+    bedroom = connect(brain)
+    connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: len(bedroom.messages("state")) == 2)
+    brain.remove_satellite("kitchen")
+    assert wait_for(lambda: len(bedroom.messages("state")) == 3)
+
+
+def test_without_a_media_watcher_a_satellite_joining_sends_the_others_nothing(brain, connect):
+    serving(brain)
+    bedroom = connect(brain)
+    connected(brain)
+    connect(brain, "kitchen", KITCHEN)
+    connected(brain, "kitchen")
+    time.sleep(0.2)
+    assert len(bedroom.messages("state")) == 1
+
+
+def test_the_media_watcher_runs_while_the_brain_does_and_stops_with_it(make_brain, home_assistant_token):
+    brain = make_brain(home_assistant=HOME_ASSISTANT)
+    # Nothing here may reach a real Home Assistant.
+    brain.home.batteries = lambda timeout=None: []
+    brain.home.people = lambda: []
+    brain.home.playing_media = lambda: []
+    brain.registry.refresh = lambda: True
+    running = []
+
+    def serve():
+        running.append(any(thread.name == "media" and thread.is_alive() for thread in threading.enumerate()))
+
+    brain.serve = serve
+    brain.run()
+    assert running == [True]
+    assert not any(thread.name == "media" for thread in threading.enumerate())
+
+
 def test_the_brain_has_the_weather_only_with_home_assistant(make_brain, home_assistant_token, monkeypatch,
                                                              tmp_path):
     brain = make_brain(home_assistant=HOME_ASSISTANT)
@@ -1923,6 +2020,37 @@ def test_the_brain_sends_each_satellite_its_longest_request(brain, connect):
     assert brain.apply_settings({("thresholds", "recording_timeout"): 20.0}) == []
     assert wait_for(lambda: len(bedroom.messages("state")) == len(kitchen.messages("state")) == 2)
     assert bedroom.messages("state")[1]["longest_request"] == kitchen.messages("state")[1]["longest_request"] == 20.0
+
+
+@pytest.mark.parametrize("name", ["wake_word_confidence", "media_wake_word_confidence"])
+def test_a_wake_word_confidence_saved_is_sent_to_each_satellite(brain, connect, monkeypatch, name):
+    # The real session, which works out the value it sends.
+    monkeypatch.setattr(brain_module, "Session", session_module.Session)
+    monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
+    serving(brain)
+    bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen").home = SimpleNamespace(area="Kitchen", device_id="devkitchen")
+    assert wait_for(lambda: bedroom.messages("state") and kitchen.messages("state"))
+    # A film in the kitchen only.
+    brain.media = SimpleNamespace(playing_in=lambda area, devices, speakers: ["Kitchen TV"] if area == "Kitchen" else [])
+
+    assert brain.apply_settings({("thresholds", name): 0.6}) == []
+    assert wait_for(lambda: len(bedroom.messages("state")) == len(kitchen.messages("state")) == 2)
+    sent = {"wake_word_confidence": (0.6, 0.75), "media_wake_word_confidence": (0.5, 0.6)}[name]
+    assert (bedroom.messages("state")[1]["wake_confidence"], kitchen.messages("state")[1]["wake_confidence"]) == sent
+
+
+def test_other_settings_saved_send_the_satellites_nothing(brain, connect):
+    serving(brain)
+    bedroom = connect(brain)
+    connected(brain)
+    assert wait_for(lambda: bedroom.messages("state"))
+
+    assert brain.apply_settings({("thresholds", "silence_duration"): 1.0}) == []
+    time.sleep(0.2)
+    assert len(bedroom.messages("state")) == 1
 
 
 def test_the_cant_reach_phrase_is_made_again_at_the_new_speed(brain, connect):

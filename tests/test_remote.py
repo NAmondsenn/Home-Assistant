@@ -310,6 +310,22 @@ def test_the_longest_request_goes_with_the_state_only_when_given(pair):
                              ({"type": "state", "volumes": volumes, "muted": False, "longest_request": 20.0}, b"")]
 
 
+def test_the_wake_confidence_goes_with_the_state_only_when_given(pair):
+    # Just another field, so an older satellite's state is as it was, and one which doesn't know it ignores it.
+    satellite, fake, serving = pair
+    volumes = {"general": 0.5, "alarm": 1.0, "music": 0.3}
+
+    satellite.set_state(volumes, False, 20.0)
+    satellite.set_state(volumes, False, 20.0, wake_confidence=0.75)
+    satellite.set_state(volumes, True, wake_confidence=0.5)
+
+    assert wait_for(lambda: len(fake.received) == 3)
+    assert fake.received == [
+        ({"type": "state", "volumes": volumes, "muted": False, "longest_request": 20.0}, b""),
+        ({"type": "state", "volumes": volumes, "muted": False, "longest_request": 20.0, "wake_confidence": 0.75}, b""),
+        ({"type": "state", "volumes": volumes, "muted": True, "wake_confidence": 0.5}, b"")]
+
+
 def test_audio_too_long_for_the_satellite_isnt_sent(pair):
     satellite, fake, serving = pair
     # The satellite would drop the connection over it.

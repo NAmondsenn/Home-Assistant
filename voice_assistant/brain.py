@@ -37,6 +37,7 @@ from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSock
 from voice_assistant.home_assistant import HomeAssistant
 from voice_assistant.lists import Lists
 from voice_assistant.logging_setup import TRANSCRIPT
+from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.memory import Memory
 from voice_assistant.ntfy import RETOPIC, Ntfy
 from voice_assistant.pc import PCPower
@@ -113,6 +114,11 @@ STOP_CHECK = 0.5
 # What a satellite says when it can't reach the brain, in the brain's own voice - see
 # fallback.Phrase.
 FALLBACK_PHRASE = "Sorry, I can't reach my server right now."
+
+# The settings each satellite is sent with its state - see Session.send_state - so a
+# save of any of them on the settings page sends every satellite its state again.
+SENT_IN_STATE = (("thresholds", "recording_timeout"), ("thresholds", "wake_word_confidence"),
+                 ("thresholds", "media_wake_word_confidence"))
 
 
 def _speech_to_text(config, tts: TextToSpeech):
@@ -302,6 +308,9 @@ class Brain:
         if self.home:
             self.home.registry = self.registry
         self.batteries = self._make_battery_watcher() if self.home else None
+        # What's playing, for each satellite's wake word in its own room - see media_watch.py
+        # and Session.playing_here. Started by run().
+        self.media = MediaWatcher(self.home, on_change=self._send_states) if self.home else None
         # Home Assistant's own weather, and which of its weather entities to use, for a
         # home with several - see weather.py.
         self.weather = (Weather(self.home, ChoiceStore(os.path.join(paths.DATA_DIR, "weather.json"), {"entity": None}))
@@ -402,20 +411,38 @@ class Brain:
                 unused.append(("logging", "log_transcripts"))
         if ("voice", "speed") in changes and not self._change_speed(changes[("voice", "speed")]):
             unused.append(("voice", "speed"))
-        if ("thresholds", "recording_timeout") in changes:
+        if any(key in changes for key in SENT_IN_STATE):
             self._send_states()
         return unused
 
-    def _send_states(self):
-        """Has every session connected send its satellite its state again."""
-        with self._lock:
-            sessions = list(self.sessions.values())
-        for session in sessions:
+    def _send_states(self, but: Optional[Session] = None):
+        """
+        Has every session connected send its satellite its state again.
+
+        Args:
+            but: A session to leave out - one which has just been sent its own.
+        """
+        for session in self.connected_sessions():
+            if session is but:
+                continue
             try:
                 session.send_state()
             except Exception:
-                logger.exception(f"The {session.satellite.name} satellite couldn't be sent the longest request, "
-                                 "so it keeps the old one until it reconnects")
+                logger.exception(f"The {session.satellite.name} satellite couldn't be sent its state, "
+                                 "so it keeps the old one until it's next sent")
+
+    def _satellites_changed(self, but: Optional[Session] = None):
+        """
+        Sends every other satellite its state again once one joins or leaves, as what
+        counts as playing in each room leaves out every connected satellite's own
+        speaker and device - see Session.playing_here. Only what's playing depends on
+        that, so with no media watcher nothing is sent.
+
+        Args:
+            but: The session which joined, which is sent its own as it's caught up.
+        """
+        if self.media:
+            self._send_states(but=but)
 
     def _change_speed(self, speed: float) -> bool:
         """
@@ -578,9 +605,12 @@ class Brain:
         Returns:
             The earliest of now and each session's moved_at.
         """
+        return min([time.monotonic()] + [session.moved_at for session in self.connected_sessions()])
+
+    def connected_sessions(self) -> List[Session]:
+        """Returns every satellite's session the brain has now - a copy, to go through without the lock."""
         with self._lock:
-            sessions = list(self.sessions.values())
-        return min([time.monotonic()] + [session.moved_at for session in sessions])
+            return list(self.sessions.values())
 
     def session_for(self, satellite: Optional[str]) -> Optional[Session]:
         """
@@ -689,6 +719,7 @@ class Brain:
         try:
             session = self._start_session(satellite, password)
             if session is not None and self._catch_up(session, hello_at):
+                self._satellites_changed(but=session)
                 session.run()
         except Exception:
             logger.exception(f"The {name} satellite's session failed")
@@ -821,6 +852,7 @@ class Brain:
             with self._sending_alarms:
                 emptied = session.satellite.connected and session.satellite.send_alarms([])
             self._let_go(session)
+            self._satellites_changed()
         with self._lock:
             self._emptied[name] = emptied
         if not emptied:
@@ -986,6 +1018,7 @@ class Brain:
                 return
             del self.sessions[name]
             self._caught_up.discard(name)
+        self._satellites_changed()
 
     def _give_out_orphans(self):
         """
@@ -1308,6 +1341,8 @@ class Brain:
         threading.Thread(target=self._send_alarms_hourly, daemon=True, name="alarm-copies").start()
         if self.batteries:
             self.batteries.start()
+        if self.media:
+            self.media.start()
         if self.registry:
             self.registry.start()
         if self.calendar:
@@ -1369,14 +1404,16 @@ class Brain:
     def _clean_up(self):
         """
         Closes everything down in order - the clock, so nothing else starts ringing,
-        then the batteries, ntfy and the settings page, then every satellite's session, so its device
-        in Home Assistant and its music stop - and then the Piper process kept waiting
-        for the next thing to say.
+        then the batteries, what's playing, ntfy and the settings page, then every
+        satellite's session, so its device in Home Assistant and its music stop - and
+        then the Piper process kept waiting for the next thing to say.
         """
         self.running = False
         self.clock.stop()
         if self.batteries:
             self.batteries.stop()
+        if self.media:
+            self.media.stop()
         if self.registry:
             self.registry.stop()
         if self.ntfy:

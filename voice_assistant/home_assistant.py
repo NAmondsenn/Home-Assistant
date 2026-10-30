@@ -234,6 +234,30 @@ PEOPLE_TEMPLATE = """
 {{ found.people | tojson }}
 """
 
+# Renders every media player that is playing as JSON - e.g. [{"entity_id":
+# "media_player.spotify_nathan", "name": "Spotify Nathan", "area": null, "device": null,
+# "source": "Voice-Assistant"}] - for media_watch.py, which decides in Python which of
+# them is in each satellite's room and isn't Nova's own, so nothing of Nova's is
+# written in here. A player with no area of its own is in its device's, which
+# area_name works out.
+PLAYING_MEDIA_TEMPLATE = """
+{%- set found = namespace(players=[]) -%}
+{%- for player in states.media_player | selectattr('state', 'eq', 'playing') -%}
+  {%- set found.players = found.players + [{
+    'entity_id': player.entity_id,
+    'name': player.attributes.get('friendly_name') or player.entity_id,
+    'area': area_name(player.entity_id),
+    'device': device_id(player.entity_id),
+    'source': player.attributes.get('source')
+  }] -%}
+{%- endfor -%}
+{{ found.players | tojson }}
+"""
+
+# What's playing is asked every few seconds, so Home Assistant being slow mustn't hold a
+# check up for long - the next one is only moments away.
+PLAYING_MEDIA_TIMEOUT = 2
+
 # Renders every device of the Home Assistant app - a phone, tablet or Mac - as JSON, with
 # where its tracker says it is and the place its geocoded location sensor names, e.g.
 # [{"device": "abc123", "own_name": "s25-ultra", "name_by_user": null, "maker": "samsung",
@@ -891,6 +915,27 @@ class HomeAssistant:
         return [{"id": person["entity_id"], "name": person["name"] or person["entity_id"],
                  "state": person["state"], "devices": person["devices"]}
                 for person in json.loads(self._template(PEOPLE_TEMPLATE, timeout=timeout))]
+
+    def playing_media(self) -> List[Dict]:
+        """
+        Every media player that is playing, wherever it is - for media_watch.py.
+
+        Returns:
+            One dict for each, with "entity_id" (e.g. "media_player.bedroom_tv"), "name"
+            (its friendly name, else its entity id), "area" (its area's name, else its
+            device's, or None), "device" (its device's id, or None) and "source" (its
+            source attribute, e.g. a Spotify player's "Voice-Assistant", or None).
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down - see _template.
+            ValueError: If it didn't answer with JSON. An answer of the wrong shape
+                raises KeyError or TypeError - callers catch batteries.HOME_FAILURES,
+                which has all three.
+        """
+        return [{"entity_id": player["entity_id"], "name": player["name"], "area": player["area"],
+                 "device": player["device"], "source": player["source"]}
+                for player in json.loads(self._template(PLAYING_MEDIA_TEMPLATE, timeout=PLAYING_MEDIA_TIMEOUT))]
 
     def app_devices(self) -> List[Dict]:
         """

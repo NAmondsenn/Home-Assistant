@@ -24,13 +24,14 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("soxr")
 
 from voice_assistant import clock as clock_module
-from voice_assistant import ha_device, music, paths, protocol, satellite_link, spotify_controller
+from voice_assistant import ha_device, music, network, paths, protocol, satellite_link, spotify_controller
 from voice_assistant import session as session_module
 from voice_assistant.actions import Action
 from voice_assistant.brain import Brain
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
 from voice_assistant.conversation import Reply
+from voice_assistant.media_watch import MediaWatcher
 from voice_assistant.navidrome import NavidromePlayer
 from voice_assistant.recording import RATE, AudioFeed
 from voice_assistant.remote import RemoteSatellite
@@ -240,8 +241,8 @@ def brain(tmp_path, monkeypatch, make_config):
     config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"})
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
-                           batteries=None, lists=None, pc=None, registry=None, calendar=None, tts=FakePiper(),
-                           stt=FakeSpeechToText(), sounds_folder=Path(paths.SOUNDS_DIR))
+                           batteries=None, lists=None, pc=None, registry=None, calendar=None, media=None,
+                           tts=FakePiper(), stt=FakeSpeechToText(), sounds_folder=Path(paths.SOUNDS_DIR))
 
 
 @pytest.fixture
@@ -1225,6 +1226,310 @@ def test_a_satellite_that_doesnt_say_uses_the_brains_name(brain, connect, make_s
     # As one from before satellites said - which plays where every satellite did then.
     brain.config.apply({("spotify", "device_name"): "Living Room"})
     assert make_session(connect("bedroom")[0]).music_player.device_name == "Living Room"
+
+
+# What's playing in the satellite's room
+
+def _playing(*players):
+    """A media watcher which has read these players, each as (entity, name, area, device, source)."""
+    rows = [dict(zip(("entity_id", "name", "area", "device", "source"), player)) for player in players]
+    watcher = MediaWatcher(SimpleNamespace(playing_media=lambda: rows), on_change=lambda: None)
+    watcher.check()
+    return watcher
+
+
+def _in_room(session, area, device_id):
+    """Puts a session's satellite in a room, on its own device in Home Assistant."""
+    session.home = SimpleNamespace(area=area, device_id=device_id)
+    return session
+
+
+def test_each_satellite_hears_whats_playing_in_its_own_room(brain, connect, make_session):
+    bedroom = _in_room(make_session(connect("bedroom")[0]), "Bedroom", "devbedroom")
+    kitchen = _in_room(make_session(connect("kitchen", "kitchen-pi.local")[0]), "Kitchen", "devkitchen")
+    brain.connected_sessions = lambda: [bedroom, kitchen]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None),
+                           ("media_player.radio", "Radio", "Kitchen", "devradio", None))
+    assert bedroom.playing_here() == ["Bedroom TV"]
+    assert kitchen.playing_here() == ["Radio"]
+
+
+def test_nothing_on_any_connected_satellites_device_or_speaker_counts(brain, connect, make_session):
+    brain.config.apply({("spotify", "device_name"): "Voice-Assistant"})
+    bedroom = _in_room(make_session(connect("bedroom")[0]), "Bedroom", "devbedroom")
+    kitchen = _in_room(make_session(connect("kitchen", "kitchen-pi.local", speaker="Kitchen Pi")[0]),
+                       "Kitchen", "devkitchen")
+    brain.connected_sessions = lambda: [bedroom, kitchen]
+    brain.media = _playing(
+        # The kitchen satellite's own device, though it's in the bedroom's room.
+        ("media_player.kitchen_pi", "Kitchen Pi", "Bedroom", "devkitchen", None),
+        # Spotify on the kitchen satellite's speaker, and on the brain's, which the bedroom one plays on.
+        ("media_player.spotify_a", "Spotify A", "Bedroom", None, " kitchen pi"),
+        ("media_player.spotify_b", "Spotify B", "Bedroom", None, "voice-assistant "),
+        ("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", "HDMI 1"))
+    assert bedroom.playing_here() == ["Bedroom TV"]
+
+
+def test_a_session_counts_its_own_device_before_the_brain_has_it(brain, connect, make_session):
+    bedroom = _in_room(make_session(connect("bedroom")[0]), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: []
+    brain.media = _playing(("media_player.bedroom_pi", "Bedroom Pi", "Bedroom", "devbedroom", None))
+    assert bedroom.playing_here() == []
+
+
+def test_nothing_plays_here_without_a_watcher_home_assistant_or_a_room(brain, connect, make_session):
+    session = make_session(connect("bedroom")[0])
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    # No Home Assistant set up here.
+    assert session.home is None and session.playing_here() == []
+    _in_room(session, None, None)
+    assert session.playing_here() == []
+    _in_room(session, "Bedroom", "devbedroom")
+    assert session.playing_here() == ["Bedroom TV"]
+    brain.media = None
+    assert session.playing_here() == []
+
+
+class _Claude:
+    """Stands in for the Anthropic client, answering every request with these content blocks."""
+
+    def __init__(self, *content):
+        self.content = list(content)
+        self.requests = []
+        self.messages = self
+
+    def create(self, **request):
+        self.requests.append(request)
+        return SimpleNamespace(content=self.content, stop_reason="tool_use")
+
+
+def _film_heard(brain, connect, make_session, monkeypatch, playing):
+    """
+    A session in the Bedroom hearing "Turn the lights off, Jack." with these players there, each as
+    _playing has them, which Claude takes for speech from what's playing - beside working the lights.
+    """
+    monkeypatch.setattr(network, "online", lambda: True)
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(*playing)
+    session.llm.client = _Claude(SimpleNamespace(type="tool_use", id="t1", name="not_for_me", input={}),
+                                 SimpleNamespace(type="tool_use", id="t2", name="set_lights",
+                                                 input={"on": False, "light": "light.lamp"}))
+    run, held = [], []
+    session.actions.execute = run.append
+    session.music = session.conversation.music = SimpleNamespace(
+        hold=lambda: held.append("hold"), release=lambda: held.append("release"), wait=lambda: None)
+    brain.stt.texts = ["Turn the lights off, Jack."]
+    feed = AudioFeed()
+    feed.feed(said())
+    feed.end()
+    session._converse({"talked_over": False, "feed": feed})
+    return session, pi, run, held
+
+
+def test_speech_from_whats_playing_here_is_ignored_and_the_music_comes_back(brain, connect, make_session,
+                                                                            monkeypatch):
+    session, pi, run, held = _film_heard(brain, connect, make_session, monkeypatch,
+                                         [("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None)])
+    assert "Playing in this room: Bedroom TV.] Turn the lights off, Jack." in \
+        session.llm.client.requests[0]["messages"][-1]["content"]
+    # Nothing said, played, run or listened for - and the music back as after any reply.
+    assert run == [] and brain.tts.said == [] and pi.messages("play_stream") == []
+    assert [message["name"] for message in pi.messages("play_sound")] == ["listening.wav"]
+    assert pi.messages("listen") == [] and session.llm.history == []
+    assert held == ["hold", "release"] and session.activity == "idle"
+
+
+def test_not_for_me_with_nothing_playing_here_is_said_to_be_not_caught(brain, connect, make_session, monkeypatch):
+    # Playing in the kitchen, which isn't where this satellite is.
+    session, _, run, held = _film_heard(brain, connect, make_session, monkeypatch,
+                                        [("media_player.radio", "Radio", "Kitchen", "devradio", None)])
+    assert "Playing" not in session.llm.client.requests[0]["messages"][-1]["content"]
+    assert run == [] and brain.tts.said == ["Sorry, I didn't catch that."]
+    assert held == ["hold", "release"]
+
+
+class _Finding:
+    """Stands in for a session's Home Assistant, finding its satellite in each (room, device) given in turn."""
+
+    def __init__(self, *found):
+        self.found = list(found)
+        self.area = self.device_id = None
+
+    def find_device(self, identifier):
+        self.area, self.device_id = self.found.pop(0)
+        return self.device_id is not None
+
+
+def _looked_up(session, *found):
+    """Has the session look its device up once for each (room, device) given, then close."""
+    session.home = _Finding(*found)
+    session.device = SimpleNamespace(identifier="nova_bedroom_pi", stop=lambda: None)
+    waits = []
+    session._stop_looking_up = SimpleNamespace(wait=lambda timeout: waits.append(timeout) or len(waits) == len(found),
+                                               set=lambda: None)
+    session._look_up_device()
+
+
+def test_a_satellite_whose_room_becomes_known_while_a_film_plays_is_sent_its_state(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    # As after a restart: the satellite was sent its state as it connected, before its room was known.
+    _looked_up(session, (None, None), ("Bedroom", "devbedroom"))
+    assert session.playing_here() == ["Bedroom TV"]
+    assert wait_for(lambda: len(pi.messages("state")) == 1)
+
+
+def test_a_satellite_is_sent_its_state_each_time_its_room_or_device_changes(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing()
+    _looked_up(session, ("Bedroom", "devbedroom"), ("Bedroom", "devbedroom"), ("Kitchen", "devbedroom"),
+               ("Kitchen", "devother"), ("Kitchen", "devother"))
+    assert wait_for(lambda: len(pi.messages("state")) == 3)
+    time.sleep(0.2)
+    assert len(pi.messages("state")) == 3
+
+
+def test_a_room_found_without_a_media_watcher_sends_nothing(brain, connect, make_session):
+    satellite, pi = connect()
+    _looked_up(make_session(satellite), ("Bedroom", "devbedroom"))
+    time.sleep(0.2)
+    assert pi.messages("state") == []
+
+
+# How sure the satellite must be of its wake word
+
+def _wake_confidence_sent(session, pi):
+    """Has the session send its state, and returns the wake confidence the satellite got."""
+    before = len(pi.messages("state"))
+    assert session.send_state()
+    assert wait_for(lambda: len(pi.messages("state")) == before + 1)
+    return pi.messages("state")[-1]["wake_confidence"]
+
+
+def test_the_satellite_is_sent_a_surer_wake_word_while_something_plays_in_its_room(brain, connect, make_session):
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing()
+    assert _wake_confidence_sent(session, pi) == 0.5
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    assert _wake_confidence_sent(session, pi) == 0.75
+    # Something playing in another room doesn't count here.
+    brain.media = _playing(("media_player.radio", "Radio", "Kitchen", "devradio", None))
+    assert _wake_confidence_sent(session, pi) == 0.5
+
+
+def test_the_wake_confidence_is_never_lower_while_something_plays(brain, connect, make_session):
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    # Read as it's sent, as the longest request is, so a save reaches it with no restart.
+    brain.config.apply({("thresholds", "wake_word_confidence"): 0.6,
+                        ("thresholds", "media_wake_word_confidence"): 0.4})
+    assert _wake_confidence_sent(session, pi) == 0.6
+
+
+def test_without_a_media_watcher_the_satellite_is_sent_the_normal_wake_confidence(brain, connect, make_session):
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    # No Home Assistant, so no watcher.
+    assert brain.media is None
+    assert _wake_confidence_sent(session, pi) == 0.5
+    brain.config.apply({("thresholds", "wake_word_confidence"): 0.7})
+    assert _wake_confidence_sent(session, pi) == 0.7
+
+
+@pytest.mark.parametrize("left", [None, True, "0.6", float("nan")])
+def test_a_wake_setting_thats_not_a_number_is_taken_as_its_default(brain, connect, make_session, left):
+    # Left empty in config.yaml by hand, max() would raise as a film played - and with it
+    # the catch-up of a satellite connecting, which couldn't then reach the brain at all.
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    film = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+
+    brain.config.apply({("thresholds", "wake_word_confidence"): left,
+                        ("thresholds", "media_wake_word_confidence"): 0.8})
+    brain.media = _playing()
+    assert _wake_confidence_sent(session, pi) == 0.5
+    brain.media = film
+    assert _wake_confidence_sent(session, pi) == 0.8
+
+    brain.config.apply({("thresholds", "wake_word_confidence"): 0.6,
+                        ("thresholds", "media_wake_word_confidence"): left})
+    assert _wake_confidence_sent(session, pi) == 0.75
+    brain.media = _playing()
+    assert _wake_confidence_sent(session, pi) == 0.6
+
+
+def test_what_plays_in_a_satellites_room_is_logged_as_it_starts_and_stops(brain, connect, make_session, caplog):
+    # So a satellite that was hard to wake can be traced to what Home Assistant said was
+    # playing - a browser tab left on, say.
+    caplog.set_level(logging.INFO, logger="voice_assistant.session")
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+
+    def logged():
+        return [message for message in caplog.messages if "playing in the" in message]
+
+    brain.media = _playing()
+    _wake_confidence_sent(session, pi)
+    assert logged() == []
+    brain.media = _playing(("media_player.firefox", "Firefox", "Bedroom", "devpc", None),
+                           ("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    _wake_confidence_sent(session, pi)
+    _wake_confidence_sent(session, pi)
+    brain.media = _playing(("media_player.firefox", "Firefox", "Bedroom", "devpc", None))
+    _wake_confidence_sent(session, pi)
+    brain.media = _playing()
+    _wake_confidence_sent(session, pi)
+    _wake_confidence_sent(session, pi)
+    assert logged() == [
+        "Something's playing in the bedroom satellite's room (Bedroom TV, Firefox), so its wake word needs 0.75",
+        "Nothing's playing in the bedroom satellite's room now, so its wake word needs 0.5"]
+
+
+def test_two_states_sent_at_once_arrive_in_the_order_they_were_read(brain, connect, make_session):
+    # The media watcher, the settings page and the device lookup each send on a thread of their own. Were
+    # one's older state to arrive after another's newer one, the normal wake word would stay on for a film.
+    satellite, pi = connect()
+    session = _in_room(make_session(satellite), "Bedroom", "devbedroom")
+    brain.connected_sessions = lambda: [session]
+    brain.media = _playing()
+    sent, sending, carry_on = [], threading.Event(), threading.Event()
+
+    def set_state(volumes, muted, longest_request=None, wake_confidence=None):
+        # The first send stalls on the way, as one to a satellite slow to read can.
+        if not sending.is_set():
+            sending.set()
+            carry_on.wait(5)
+        sent.append(wake_confidence)
+        return True
+
+    satellite.set_state = set_state
+    first = threading.Thread(target=session.send_state)
+    first.start()
+    assert sending.wait(5)
+    # A film starts while the first is on its way.
+    brain.media = _playing(("media_player.bedroom_tv", "Bedroom TV", "Bedroom", "devtv", None))
+    second = threading.Thread(target=session.send_state)
+    second.start()
+    # Long enough for the second to have been sent, had it not waited for the first.
+    second.join(0.3)
+    carry_on.set()
+    first.join(5)
+    second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert sent == [0.5, 0.75]
 
 
 def test_closing_a_session_ends_every_thread_it_started(connect, make_session, monkeypatch):

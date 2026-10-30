@@ -55,7 +55,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 - [x] PERF-05 librosa and PyAudio gone · PERF-07 fewer Spotify calls · DEP-05 watchdog · SEC-07 service hardening
 - [x] ARCH-02, ARCH-03 settings, keys and data outside the repository, checked as they're read · DEP-04 install, update and uninstall
 - [x] On the Pi: `HA_TOKEN` and `NAVIDROME_PASSWORD` in `~/.config/nova/.env`, the addresses in `~/.config/nova/config.yaml`
-- [x] Claude Haiku 5.5, with thinking off
+- [x] Claude Haiku 5.5, thinking adaptive at low effort
 - [x] Moonshine for speech-to-text - 0.83s and 1.5% of words wrong, against Whisper's 2.16s and 4.5%, measured on the Pi
 - [x] Echo cancelling, so "Hey Nova" is heard over music, and over Nova's own replies, which stop when it's said
 - [x] Work and uni times from the calendar, and the next shift or the next few · one thing looked for, "when's my MOT?" · calendar answers kept short

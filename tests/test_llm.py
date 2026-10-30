@@ -310,6 +310,109 @@ def test_a_read_tool_beside_another_tool_is_dropped():
     assert llm.history[-1]["tools"] == [("set_timer", {"duration_seconds": 600})]
 
 
+# Speech from what's playing
+
+def test_whats_playing_is_told_only_while_something_plays():
+    assert LLMHandler._situation(LUNCHTIME, None, LAMP, ["Firefox", "Windows PC"]) == (
+        "[Wednesday 21 October 2026, 11:50 AM (BST). Timers and reminders running: none. "
+        "Nova is in the Bedroom. Lights: Lamp (light.lamp, Bedroom) off. Playing in this room: Firefox, Windows PC.] ")
+    assert "Playing" not in LLMHandler._situation(LUNCHTIME, None, LAMP, [])
+    assert "Playing" not in LLMHandler._situation(LUNCHTIME, None, LAMP)
+
+
+def test_whats_playing_reaches_claude_with_the_message(llm):
+    llm.client = FakeClient(_reply("It's 11:50 AM."))
+    llm.process_query("what time is it", lights=LAMP, playing=["Bedroom TV"])
+    llm.process_query("what time is it", lights=LAMP)
+    first, second = (request["messages"][-1]["content"] for request in llm.client.requests)
+    assert first.endswith("off. Playing in this room: Bedroom TV.] what time is it")
+    assert "Playing" not in second
+
+
+def test_claude_is_always_told_about_not_for_me_so_the_cache_holds(llm):
+    # Told only while something plays, the instructions and tools would change as a film
+    # starts and stops, and be read through again in full.
+    llm.tools = [{"name": "set_lights", "description": "Lights.", "input_schema": {"type": "object"}}]
+    llm.client = FakeClient(_reply("Okay."))
+    llm.process_query("what time is it", playing=["Bedroom TV"])
+    llm.process_query("what time is it")
+    first, second = llm.client.requests
+    assert first["system"] == second["system"] and first["tools"] == second["tools"]
+    assert "call not_for_me and nothing else" in first["system"][0]["text"]
+    assert "when in doubt" not in first["system"][0]["text"].lower()
+    assert "clear command or question for a voice assistant" in first["system"][0]["text"]
+    assert "Never make conversation" in first["system"][0]["text"]
+    assert "never with any other tool" in first["tools"][-1]["description"]
+    assert "doubt" not in first["tools"][-1]["description"]
+    assert [tool["name"] for tool in first["tools"]] == ["set_lights", "not_for_me"]
+    assert first["tools"][-1]["input_schema"] == {"type": "object", "properties": {}}
+
+
+def test_not_for_me_runs_nothing_else_from_the_same_response(llm):
+    # A line from a film - "turn the lights off, Jack" - must never work the lights, even if
+    # Claude asked for them beside it.
+    llm.history = [{"user": "what time is it", "assistant": "It's 7:36 PM.", "at": 0.0}]
+    kept = [dict(turn) for turn in llm.history]
+    llm.client = FakeClient(_reply("Okay.", _tool("not_for_me", use_id="t1"),
+                                   _tool("set_lights", use_id="t2", on=False, light="light.lamp")))
+    result = llm.process_query("turn the lights off, Jack", playing=["Bedroom TV"])
+    assert result == {"response": "", "actions": [], "success": True, "not_for_me": True}
+    # Not in the thread, the user's words included.
+    assert llm.history == kept
+    assert len(llm.client.requests) == 1
+
+
+def test_not_for_me_beside_a_read_reads_nothing():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset"),
+                                    _tool("not_for_me", use_id="t2"))])
+    read = []
+    result = llm.process_query("when's sunset?", read=read.append, playing=["Bedroom TV"])
+    assert read == [] and len(llm.client.requests) == 1
+    assert result["not_for_me"] is True and result["actions"] == []
+
+
+def test_not_for_me_after_reading_keeps_nothing_of_the_reads():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _reply("", _tool("not_for_me", use_id="t2"))])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET, playing=["Bedroom TV"])
+    assert len(llm.client.requests) == 2
+    assert (result["not_for_me"], result["actions"], llm.history) == (True, [], [])
+
+
+def test_an_ordinary_answer_isnt_marked_not_for_me(llm):
+    llm.client = FakeClient(_reply("It's 7:36 PM."))
+    assert "not_for_me" not in llm.process_query("what time is it", playing=["Bedroom TV"])
+
+
+# Claude can't be reached while something plays: the keyword parser would act on a line
+# from the film - "pause the music, Jack" - that Claude was never there to rule out.
+
+def test_no_api_key_runs_no_fallback_action_while_something_plays(llm):
+    result = llm.process_query("pause the music", playing=["Bedroom TV"])
+    assert result == {"response": "Sorry, I'm not connected to my language model right now.",
+                      "actions": [], "success": False}
+    assert llm.process_query("pause the music")["actions"] == [Action("control_playback", {"action": "pause"})]
+
+
+def test_offline_runs_no_fallback_action_while_something_plays(llm, monkeypatch):
+    monkeypatch.setattr(llm_module.network, "online", lambda: False)
+    llm.client = FakeClient(_reply("Okay."))
+    result = llm.process_query("pause the music", playing=["Bedroom TV"])
+    assert result == {"response": llm_module.OFFLINE_MESSAGE, "actions": [], "success": False}
+    assert llm.process_query("pause the music")["actions"] == [Action("control_playback", {"action": "pause"})]
+
+
+def test_a_failed_request_runs_no_fallback_action_while_something_plays(llm, monkeypatch):
+    monkeypatch.setattr(llm_module.network, "online", lambda: True)
+    error = _error(anthropic.APIConnectionError)
+    llm.client = FakeClient(error)
+    result = llm.process_query("pause the music", playing=["Bedroom TV"])
+    assert result == {"response": llm._failure_message(error), "actions": [], "success": False}
+    assert llm.process_query("pause the music")["actions"] == [Action("control_playback", {"action": "pause"})]
+
+
 def test_home_assistant_down_reaches_claude_rather_than_being_said():
     llm = _reader()
     llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
@@ -450,18 +553,248 @@ def test_reply_lengths_are_the_ones_set(make_config):
     assert [request["max_tokens"] for request in llm.client.requests] == [200, 500]
 
 
-def test_thinking_is_off_and_temperature_only_sent_when_set(llm):
-    # Haiku 5.5 thinks first unless told not to - seconds, for a spoken answer - and
-    # refuses any request which sets a temperature.
+def test_thinking_is_adaptive_at_low_effort_and_no_temperature_is_sent(llm):
+    # Haiku 5.5 refuses any request which sets a temperature, so none is sent unless
+    # one is configured.
     llm.client = FakeClient(_reply("Paris."))
-    llm.temperature = None
     llm.process_query("what's the capital of France")
     request = llm.client.requests[-1]
-    assert request["thinking"] == {"type": "disabled"} and "temperature" not in request
+    assert request["thinking"] == {"type": "adaptive"} and request["output_config"] == {"effort": "low"}
+    assert "temperature" not in request
 
-    llm.temperature = 0.7
-    llm.process_query("and Spain")
-    assert llm.client.requests[-1]["temperature"] == 0.7
+
+def test_a_temperature_which_is_set_is_sent(make_config):
+    llm = LLMHandler(config=make_config(llm={"temperature": 0.3}), api_key=None)
+    llm.client = FakeClient(_reply("Paris."))
+    llm.process_query("what's the capital of France")
+    assert llm.client.requests[-1]["temperature"] == 0.3
+
+
+def test_the_effort_is_the_one_set(make_config):
+    llm = LLMHandler(config=make_config(llm={"effort": "medium"}), api_key=None)
+    llm.client = FakeClient(_reply("Paris."))
+    llm.process_query("what's the capital of France")
+    assert llm.client.requests[-1]["output_config"] == {"effort": "medium"}
+
+
+@pytest.mark.parametrize("effort", [None, "", "mediun", 3])
+def test_an_effort_which_isnt_one_falls_back_to_low_with_a_warning(make_config, caplog, effort):
+    with caplog.at_level("WARNING"):
+        llm = LLMHandler(config=make_config(llm={"effort": effort}), api_key=None)
+    llm.client = FakeClient(_reply("Paris."))
+    llm.process_query("what's the capital of France")
+    assert llm.client.requests[-1]["output_config"] == {"effort": "low"}
+    assert any("effort" in record.getMessage() for record in caplog.records if record.levelname == "WARNING")
+
+
+# Claude's working-out is never said
+
+def _thinking(text="The user said 'Light', which is ambiguous..."):
+    """
+    A thinking block, with the fields the API's have and no text. Its text is filled in
+    here, which is stricter than the API's own default of an empty one.
+    """
+    return SimpleNamespace(type="thinking", thinking=text, signature="sig")
+
+
+def _thought(response, *blocks):
+    """The response with thinking blocks put before what it holds."""
+    response.content = list(blocks) + response.content
+    return response
+
+
+def test_a_thinking_block_is_not_said(llm):
+    llm.client = FakeClient(_thought(_reply("Paris."), _thinking()))
+    assert llm.process_query("what's the capital of France")["response"] == "Paris."
+
+
+def test_a_block_which_carries_text_but_isnt_text_is_not_said(llm):
+    # Only a block which says it's text is taken for speech, so a future kind of block
+    # with a text field - or a thinking one given one - can't be spoken.
+    odd = SimpleNamespace(type="thinking", text="Working out which Friday...", thinking="x", signature="s")
+    llm.client = FakeClient(_thought(_reply("Paris."), odd))
+    assert llm.process_query("what's the capital of France")["response"] == "Paris."
+
+
+def test_a_thinking_block_never_reaches_the_history(llm):
+    llm.client = FakeClient(_thought(_reply("Paris."), _thinking("Working out which city...")))
+    llm.process_query("what's the capital of France")
+    assert "Working out" not in repr(llm.history)
+    llm.client = FakeClient(_reply("Yes."))
+    llm.process_query("and is it big")
+    assert "Working out" not in repr(llm.client.requests[0]["messages"])
+
+
+def test_a_thinking_block_then_not_for_me_is_silent(llm):
+    llm.client = FakeClient(_thought(_reply("", _tool("not_for_me", use_id="t1")), _thinking()))
+    result = llm.process_query("turn the lights off, Jack", playing=["Bedroom TV"])
+    assert result == {"response": "", "actions": [], "success": True, "not_for_me": True}
+    assert llm.history == []
+
+
+def test_a_thinking_block_goes_back_unchanged_beside_a_reads_answer():
+    llm = _reader()
+    thought = _thinking()
+    first = _thought(_reply("", _tool("home_status", use_id="t1", about="sunset")), thought)
+    llm.client = FakeClient([first, _thought(_reply("Sunset's at 5:52 PM."), _thinking("Done."))])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["response"] == "Sunset's at 5:52 PM."
+    sent = llm.client.requests[1]["messages"]
+    assistant = sent[-2]
+    assert assistant["role"] == "assistant" and assistant["content"][0] is thought
+    assert assistant["content"] == first.content and assistant["content"][0].thinking == _thinking().thinking
+
+
+def _warnings(caplog):
+    return [record.getMessage() for record in caplog.records if record.levelname == "WARNING"]
+
+
+def _no_empty_assistant_turn(request):
+    """Whether no assistant message in the request has nothing in it, which the API refuses."""
+    return all(message["content"] for message in request["messages"] if message["role"] == "assistant")
+
+
+@pytest.mark.parametrize("response", [
+    _thought(_reply("", stop_reason="max_tokens"), _thinking()),
+    _thought(_reply("", stop_reason="end_turn"), SimpleNamespace(type="redacted_thinking", data="x")),
+    _reply("", stop_reason="refusal"),
+    _reply("", stop_reason="end_turn"),
+], ids=["thinking cut off", "redacted thinking alone", "refusal", "plain empty"])
+def test_a_reply_with_nothing_in_it_says_something_and_warns(llm, caplog, response):
+    llm.client = FakeClient([response, _reply("Yes.")])
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("what have I got on next Friday")
+    assert result["response"] == llm_module.DIDNT_WORK and result["actions"] == []
+    assert any(response.stop_reason in warning for warning in _warnings(caplog))
+
+    # What's said is what's kept, so the next request doesn't send an empty turn.
+    llm.process_query("and the Friday after")
+    assert _no_empty_assistant_turn(llm.client.requests[-1])
+    assert llm.history[0]["assistant"] == llm_module.DIDNT_WORK
+
+
+def test_a_reply_cut_off_while_thinking_after_a_read_says_something_and_warns(caplog):
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _thought(_reply("", stop_reason="max_tokens"), _thinking())])
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["response"] == llm_module.COULDNT_FIND_OUT
+    assert any("max_tokens" in warning for warning in _warnings(caplog))
+
+
+def test_thinking_on_the_last_round_after_two_reads_is_sent_back_and_answered():
+    llm = _reader()
+    llm.client = FakeClient([_thought(_reply("", _tool("home_status", use_id="t1", about="sunset")), _thinking("One")),
+                             _thought(_reply("", _tool("home_status", use_id="t2", about="sunrise")), _thinking("Two")),
+                             _thought(_reply("Sunset's at 5:52 PM."), _thinking("Three"))])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["response"] == "Sunset's at 5:52 PM."
+    first, second, last = llm.client.requests
+    assert "tool_choice" not in first and last["tool_choice"] == {"type": "none"}
+    assert last["thinking"] == {"type": "adaptive"}
+    assistant_turns = [m["content"] for m in last["messages"] if m["role"] == "assistant"]
+    assert [turn[0].thinking for turn in assistant_turns[-2:]] == ["One", "Two"]
+
+
+def test_a_reply_cut_off_in_its_text_is_said_but_warned_about(llm, caplog):
+    llm.client = FakeClient(_reply("It's a very long story, so", stop_reason="max_tokens"))
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("tell me a story")
+    assert result["response"] == "It's a very long story, so"
+    assert any("max_tokens" in warning for warning in _warnings(caplog))
+
+
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
+@pytest.mark.parametrize("call, said", [
+    (_tool("set_timer", duration_seconds=1200), "Setting a 20 minute timer."),
+    (_tool("home_status", about="sunset"), "Let me check."),
+    (_tool("remember", fact="Likes tea"), "I'll remember that."),
+], ids=["set_timer", "home_status", "remember"])
+def test_nothing_is_run_or_claimed_from_a_reply_which_stopped_short(caplog, stop_reason, call, said):
+    # Its words go with its tools, whichever tool: "Setting a 20 minute timer." said with no timer set.
+    llm = _reader()
+    llm.client = FakeClient([_reply(said, call, stop_reason=stop_reason), _reply("Yes.")])
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("set a timer for 20 minutes")
+    assert result["actions"] == [] and result["response"] == llm_module.DIDNT_WORK
+    assert any(stop_reason in warning for warning in _warnings(caplog))
+    assert len(llm.client.requests) == 1
+    assert llm.history[0]["tools"] == [] and llm.history[0]["assistant"] == llm.history[0]["model_text"]
+    assert said not in llm.history[0]["assistant"]
+
+    llm.process_query("and a second")
+    assert said not in repr(llm.client.requests[-1]["messages"])
+
+
+def test_a_reply_which_stopped_short_after_a_read_says_it_couldnt_find_out(caplog):
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sun")),
+                             _reply("Setting it.", _tool("set_timer", duration_seconds=60), stop_reason="max_tokens")])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["actions"] == [] and result["response"] == llm_module.COULDNT_FIND_OUT
+
+
+def test_a_reply_which_stopped_short_isnt_also_said_to_be_cut_off_mid_sentence(llm, caplog):
+    llm.client = FakeClient(_reply("Setting it.", _tool("set_timer", duration_seconds=60), stop_reason="max_tokens"))
+    with caplog.at_level("WARNING"):
+        llm.process_query("set a timer for a minute")
+    assert not any("mid-sentence" in warning for warning in _warnings(caplog))
+
+
+def test_a_refusal_is_warned_of_with_its_category_even_with_words_beside_it(llm, caplog):
+    details = SimpleNamespace(type="refusal", category="general_harms")
+    response = _reply("I can't help with that.", stop_reason="refusal")
+    response.stop_details = details
+    llm.client = FakeClient(response)
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("call the police, Sarah")
+    assert result["response"] == "I can't help with that."
+    assert any("refus" in warning and "general_harms" in warning for warning in _warnings(caplog))
+
+
+def test_a_refusal_with_no_details_is_still_warned_of(llm, caplog):
+    llm.client = FakeClient(_reply("I can't help with that.", stop_reason="refusal"))
+    with caplog.at_level("WARNING"):
+        llm.process_query("call the police, Sarah")
+    assert any("refus" in warning for warning in _warnings(caplog))
+
+
+def test_a_read_isnt_made_from_a_reply_which_stopped_short():
+    llm = _reader()
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sun"), stop_reason="max_tokens")])
+    read = []
+    result = llm.process_query("when's sunset?", read=read.append)
+    assert read == [] and len(llm.client.requests) == 1
+    assert result["response"] == llm_module.DIDNT_WORK
+
+
+def test_thinking_on_a_web_search_reply_isnt_said(llm):
+    search = [SimpleNamespace(type="server_tool_use", id="s1", name="web_search", input={"query": "weather"}),
+              SimpleNamespace(type="web_search_tool_result", tool_use_id="s1", content=[])]
+    llm.client = FakeClient(_thought(_reply("It's sunny in Bristol."), _thinking("Checking the results..."), *search))
+    result = llm.process_query("search for the weather in Bristol")
+    assert result["response"] == "It's sunny in Bristol."
+    assert "web_search" in [tool["name"] for tool in llm.client.requests[0]["tools"]]
+    assert "Checking" not in repr(llm.history)
+
+
+def test_thinking_goes_back_unchanged_on_a_pause_turn_continuation(llm):
+    thought = _thinking("Looking it up...")
+    paused = _thought(_reply("", stop_reason="pause_turn"), thought,
+                      SimpleNamespace(type="server_tool_use", id="s1", name="web_search", input={"query": "weather"}))
+    llm.client = FakeClient([paused, _thought(_reply("It's sunny in Bristol."), _thinking("Done."))])
+    result = llm.process_query("search for the weather in Bristol")
+    assert result["response"] == "It's sunny in Bristol."
+    assert len(llm.client.requests) == 2
+    assistant = llm.client.requests[1]["messages"][-1]
+    assert assistant["role"] == "assistant" and assistant["content"] == paused.content
+    assert assistant["content"][0] is thought and thought.thinking == "Looking it up..."
+
+
+def test_a_thinking_block_with_text_isnt_taken_for_empty(llm):
+    llm.client = FakeClient(_thought(_reply("Okay."), _thinking()))
+    assert llm.process_query("thanks")["response"] == "Okay."
 
 
 @pytest.mark.parametrize("said, item, where", [
