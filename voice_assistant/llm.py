@@ -112,9 +112,12 @@ class LLMHandler:
             logger.warning("No API key found (ANTHROPIC_API_KEY), LLM queries will fail until one is set")
 
         self.model_name = model or llm_config.get("model", "claude-haiku-5-5")
-        self.max_tokens = int(max_tokens if max_tokens is not None else llm_config.get("max_tokens", 300))
+        self.max_tokens = int(max_tokens if max_tokens is not None else llm_config.get("max_tokens", 1024))
         # A search needs more room than an ordinary spoken reply, or its answer is cut off mid-sentence.
-        self.max_tokens_search = int(llm_config.get("max_tokens_search", 400))
+        self.max_tokens_search = int(llm_config.get("max_tokens_search", 1200))
+        # How hard Claude thinks before it answers - "low" is the quickest, and the least
+        # likely to put its working-out into the reply. See process_query.
+        self.effort = llm_config.get("effort", "low")
         # None leaves it to the model - Haiku 5.5 refuses any request which sets one.
         self.temperature = temperature if temperature is not None else llm_config.get("temperature")
         self.history_length = history_length if history_length is not None else conversation_config.get("history_length", 5)
@@ -468,12 +471,14 @@ class LLMHandler:
 
             # The tools are always offered, so the model decides what the user meant
             # rather than a keyword match guessing at it.
-            # Thinking is switched off: Haiku 5.5 thinks first unless told not to, which
-            # added two or three seconds to a spoken answer, and - asked "what have I got
-            # on next Friday?" - sometimes spent all 300 tokens deciding which Friday,
-            # leaving nothing to say.
+            # Thinking used to be switched off, to save the two or three seconds Haiku 5.5
+            # spends on it before a spoken answer. Off, it wrote its working-out into the
+            # reply instead - "The user said 'Light', which is ambiguous..." - and that
+            # was said aloud. In a trial of 36 replies per setup, low effort leaked none,
+            # for 0.4 s more. Thinking counts toward max_tokens, which is why they're
+            # larger than a spoken reply needs; and its blocks are never read as text below.
             request_kwargs = {"max_tokens": self.max_tokens, "tools": list(self.tools) + [NOT_FOR_ME],
-                              "thinking": {"type": "disabled"}}
+                              "thinking": {"type": "adaptive"}, "output_config": {"effort": self.effort}}
 
             # Only attaches the web search tool when the user explicitly asked to look something up.
             if use_web_search:
@@ -537,7 +542,8 @@ class LLMHandler:
 
             # Retrieves text blocks from the model's response, joins them and strips excess whitespace.
             # This is because responses come as several text blocks which need to be formatted.
-            text_blocks = [b.text for b in response.content if hasattr(b, "text")]
+            # Only blocks which say they're text, so Claude's thinking is never spoken.
+            text_blocks = [b.text for b in response.content if getattr(b, "type", None) == "text"]
             response_text = " ".join(block.strip() for block in text_blocks if block.strip())
 
             # Strips any URLs, since a spoken web address is unusable and Piper
@@ -571,6 +577,13 @@ class LLMHandler:
             # Fallback for when the action is called by the model, but no message is produced.
             if actions and not response_text:
                 response_text = "Okay."
+
+            # Thinking counts toward max_tokens, so a long think can use all of them and
+            # leave no text and no tool call - which would otherwise be silence.
+            if not actions and not response_text and any(
+                    getattr(block, "type", None) == "thinking" for block in response.content):
+                logger.warning(f"Claude thought but said nothing (stop_reason={getattr(response, 'stop_reason', None)})")
+                response_text = COULDNT_FIND_OUT
 
             # The tools it called, and its own text with them, are kept too, so the next
             # request can show them as called - see _earlier_messages.

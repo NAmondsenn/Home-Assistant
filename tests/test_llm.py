@@ -548,18 +548,94 @@ def test_reply_lengths_are_the_ones_set(make_config):
     assert [request["max_tokens"] for request in llm.client.requests] == [200, 500]
 
 
-def test_thinking_is_off_and_temperature_only_sent_when_set(llm):
-    # Haiku 5.5 thinks first unless told not to - seconds, for a spoken answer - and
-    # refuses any request which sets a temperature.
+def test_thinking_is_adaptive_at_low_effort_and_temperature_only_sent_when_set(llm):
+    # Haiku 5.5 refuses any request which sets a temperature.
     llm.client = FakeClient(_reply("Paris."))
     llm.temperature = None
     llm.process_query("what's the capital of France")
     request = llm.client.requests[-1]
-    assert request["thinking"] == {"type": "disabled"} and "temperature" not in request
+    assert request["thinking"] == {"type": "adaptive"} and request["output_config"] == {"effort": "low"}
+    assert "temperature" not in request
 
     llm.temperature = 0.7
     llm.process_query("and Spain")
     assert llm.client.requests[-1]["temperature"] == 0.7
+
+
+def test_the_effort_is_the_one_set(make_config):
+    llm = LLMHandler(config=make_config(llm={"effort": "medium"}), api_key=None)
+    llm.client = FakeClient(_reply("Paris."))
+    llm.process_query("what's the capital of France")
+    assert llm.client.requests[-1]["output_config"] == {"effort": "medium"}
+
+
+# Claude's working-out is never said
+
+def _thinking(text="The user said 'Light', which is ambiguous..."):
+    """A thinking block, shaped like the ones the API returns - it has no text."""
+    return SimpleNamespace(type="thinking", thinking=text, signature="sig")
+
+
+def _thought(response, *blocks):
+    """The response with thinking blocks put before what it holds."""
+    response.content = list(blocks) + response.content
+    return response
+
+
+def test_a_thinking_block_is_not_said(llm):
+    llm.client = FakeClient(_thought(_reply("Paris."), _thinking()))
+    assert llm.process_query("what's the capital of France")["response"] == "Paris."
+
+
+def test_a_block_which_carries_text_but_isnt_text_is_not_said(llm):
+    # Only a block which says it's text is taken for speech, so a future kind of block
+    # with a text field - or a thinking one given one - can't be spoken.
+    odd = SimpleNamespace(type="thinking", text="Working out which Friday...", thinking="x", signature="s")
+    llm.client = FakeClient(_thought(_reply("Paris."), odd))
+    assert llm.process_query("what's the capital of France")["response"] == "Paris."
+
+
+def test_a_thinking_block_never_reaches_the_history(llm):
+    llm.client = FakeClient(_thought(_reply("Paris."), _thinking("Working out which city...")))
+    llm.process_query("what's the capital of France")
+    assert "Working out" not in repr(llm.history)
+    llm.client = FakeClient(_reply("Yes."))
+    llm.process_query("and is it big")
+    assert "Working out" not in repr(llm.client.requests[0]["messages"])
+
+
+def test_a_thinking_block_then_not_for_me_is_silent(llm):
+    llm.client = FakeClient(_thought(_reply("", _tool("not_for_me", use_id="t1")), _thinking()))
+    result = llm.process_query("turn the lights off, Jack", playing=["Bedroom TV"])
+    assert result == {"response": "", "actions": [], "success": True, "not_for_me": True}
+    assert llm.history == []
+
+
+def test_a_thinking_block_goes_back_unchanged_beside_a_reads_answer():
+    llm = _reader()
+    thought = _thinking()
+    first = _thought(_reply("", _tool("home_status", use_id="t1", about="sunset")), thought)
+    llm.client = FakeClient([first, _thought(_reply("Sunset's at 5:52 PM."), _thinking("Done."))])
+    result = llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert result["response"] == "Sunset's at 5:52 PM."
+    sent = llm.client.requests[1]["messages"]
+    assistant = sent[-2]
+    assert assistant["role"] == "assistant" and assistant["content"][0] is thought
+    assert assistant["content"] == first.content and assistant["content"][0].thinking == _thinking().thinking
+
+
+def test_a_reply_cut_off_while_thinking_says_something_and_warns(llm, caplog):
+    # Thinking counts toward max_tokens, so a long think can leave nothing to say.
+    llm.client = FakeClient(_thought(_reply("", stop_reason="max_tokens"), _thinking()))
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("what have I got on next Friday")
+    assert result["response"] == llm_module.COULDNT_FIND_OUT and result["actions"] == []
+    assert any("max_tokens" in record.getMessage() for record in caplog.records if record.levelname == "WARNING")
+
+
+def test_a_thinking_block_with_text_isnt_taken_for_cut_off(llm):
+    llm.client = FakeClient(_thought(_reply("Okay."), _thinking()))
+    assert llm.process_query("thanks")["response"] == "Okay."
 
 
 @pytest.mark.parametrize("said, item, where", [
