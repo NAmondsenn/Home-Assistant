@@ -17,9 +17,11 @@ There are three kinds, one for each run, and none of them ask you to type:
     hey-nova --count N --label close   Nova blips, then listens for 3 seconds, N
                                        times, about 5 seconds apart. Say "Hey Nova"
                                        after each blip. Each take's best wake word
-                                       score is shown, and one under 0.2 - nothing
-                                       said, or too far away - is taken again, at
-                                       most twice more.
+                                       score is shown, and one under 0.5 is taken
+                                       again, at most twice more, keeping the best.
+                                       0.5 is what training keeps - a take under it
+                                       wouldn't have woken Nova either - so the run
+                                       ends by saying how many reached it.
     film --seconds N                   Records N seconds of a film playing, with
                                        nobody talking, in 10 second files.
     talk --seconds N                   The same, for you talking normally without
@@ -37,6 +39,7 @@ finished.
 """
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -53,7 +56,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from record_samples import save_wav
 from voice_assistant import paths
-from voice_assistant.wake_word import CHUNK_SAMPLES
 
 RATE = 16000
 
@@ -65,8 +67,15 @@ TAKE_SECONDS = 3.0
 # after the last one did.
 PAUSE_SECONDS = 2.0
 
-# A take whose best wake word score is under this wasn't heard saying it at all.
-MIN_SCORE = 0.2
+# A take whose best wake word score is under this is no use to train on: openWakeWord
+# only learns from the frames the model scores at 0.5 or more, so one under it
+# wouldn't have woken Nova either - whether it was said at all, or from too far away.
+MIN_SCORE = 0.5
+
+# Seconds waited after the blip has left the speaker. The microphone runs behind it
+# by 50ms or so, and the echo canceller by a little more, so a take starting that
+# moment would have the end of the blip in it.
+BLIP_TAIL_SECONDS = 0.15
 
 # How many more times a take under MIN_SCORE is tried, before it's kept as it is.
 RETAKES = 2
@@ -81,15 +90,19 @@ NOT_HEY_NOVA_FOLDER = "not_hey_nova"
 def _private_folder(path: str):
     """
     Makes a folder readable by this user only, and any above it which is missing too -
-    makedirs would leave those to the umask.
+    makedirs would leave those to the umask. One already there is made private as
+    well, but not those above it.
 
     Args:
         path: The folder to make, which can already be there.
     """
     parent = os.path.dirname(path)
-    if not os.path.isdir(parent):
+    # Empty for a relative path with nothing above it, which is already there.
+    if parent and not os.path.isdir(parent):
         _private_folder(parent)
     os.makedirs(path, mode=0o700, exist_ok=True)
+    # makedirs leaves a folder which was already there as it was.
+    os.chmod(path, 0o700)
 
 
 def next_number(folder: str, label: str) -> int:
@@ -115,45 +128,61 @@ def _save(folder: str, label: str, audio: np.ndarray) -> str:
     return name
 
 
+def _plural(count: int, thing: str) -> str:
+    """For example "1 file" or "2 files"."""
+    return f"{count} {thing}" + ("" if count == 1 else "s")
+
+
 def record_hey_nova(count: int, label: str, wake_folder: str, blip: Callable[[], None],
                     take: Callable[[], Tuple[np.ndarray, float]], pause: Callable[[float], None] = time.sleep,
                     show: Callable[[str], None] = print) -> int:
     """
-    Records "Hey Nova" said a number of times, a blip before each, keeping each take as
-    soon as it's made.
+    Records "Hey Nova" said a number of times, a blip before each, keeping each one as
+    soon as it's made. A take scoring under MIN_SCORE is taken again, at most RETAKES
+    more times, and the best of the goes is the one kept.
 
     Args:
-        count: How many takes to keep.
+        count: How many to keep.
         label: Part of each file's name.
         wake_folder: The folder holding hey_nova and not_hey_nova.
         blip: Plays the sound saying to start, and waits until it's over.
         take: Records one take - float32 samples at 16kHz, and the best wake word
             score heard during it.
         pause: Waits this many seconds between takes.
-        show: Shows the user a line.
+        show: Shows the user a line, each take's and a last one saying how it ended.
 
     Returns:
-        How many were kept. A take which is still scoring too low after its retakes
-        is kept all the same, so this is always count, unless it was stopped.
+        How many were kept. A take still under MIN_SCORE after its retakes is kept all
+        the same, so this is count unless it was stopped - the last line says how many
+        of them are good enough to train on.
     """
     folder = os.path.join(wake_folder, HEY_NOVA_FOLDER)
+    _private_folder(wake_folder)
     _private_folder(folder)
-    kept = 0
+    kept = good = 0
     try:
         for number in range(1, count + 1):
-            for attempt in range(RETAKES + 1):
+            best_audio, best_score = None, -1.0
+            for attempt in range(1, RETAKES + 2):
                 blip()
                 audio, score = take()
-                if score >= MIN_SCORE or attempt == RETAKES:
+                if score > best_score:
+                    best_audio, best_score = audio, score
+                if score >= MIN_SCORE or attempt == RETAKES + 1:
                     break
-                show(f"{number} of {count}: {score:.2f} - too low, taking it again")
-            _save(folder, label, audio)
+                show(f"{number} of {count}: {score:.2f} - under {MIN_SCORE}, taking it again")
+            _save(folder, label, best_audio)
             kept += 1
-            show(f"{number} of {count}: {score:.2f}" + ("" if score >= MIN_SCORE else " - kept, though low"))
+            good += best_score >= MIN_SCORE
+            show(f"{number} of {count}: {best_score:.2f}" + (f" (best of {attempt})" if attempt > 1 else "")
+                 + ("" if best_score >= MIN_SCORE else " - too low to train on"))
             if number < count:
                 pause(PAUSE_SECONDS)
     except KeyboardInterrupt:
-        show(f"Stopped - kept {kept} of {count} in {folder}.")
+        show(f"Stopped - kept {kept} of {count}, and {good} of {kept} are good enough to train on. "
+             f"They're in {folder}.")
+    else:
+        show(f"Done - {good} of {kept} are good enough to train on. Kept in {folder}.")
     return kept
 
 
@@ -177,6 +206,7 @@ def record_stretch(seconds: float, label: str, wake_folder: str, read: Callable[
         How many files were kept.
     """
     folder = os.path.join(wake_folder, NOT_HEY_NOVA_FOLDER)
+    _private_folder(wake_folder)
     _private_folder(folder)
     total = round(seconds * RATE)
     kept = 0
@@ -190,11 +220,13 @@ def record_stretch(seconds: float, label: str, wake_folder: str, read: Callable[
             kept += 1
             show(f"{min(done + FILE_SECONDS * RATE, total) / RATE:g} of {seconds:g} seconds")
     except KeyboardInterrupt:
-        show(f"Stopped - kept {kept} files in {folder}.")
+        show(f"Stopped - kept {_plural(kept, 'file')} in {folder}.")
+    else:
+        show(f"Done - kept {_plural(kept, 'file')} in {folder}.")
     return kept
 
 
-def listen_for_take(microphone, model, wake_word_key: str) -> Tuple[np.ndarray, float]:
+def listen_for_take(microphone, model, wake_word_key: str, chunk_samples: int) -> Tuple[np.ndarray, float]:
     """
     Records one take, scoring it as Nova's wake word model does while it goes: 80ms at
     a time, from a model which has been reset, so what came before isn't remembered.
@@ -203,6 +235,8 @@ def listen_for_take(microphone, model, wake_word_key: str) -> Tuple[np.ndarray, 
         microphone: The shared Microphone, read from now onwards.
         model: The openWakeWord model.
         wake_word_key: The model's name in what it predicts.
+        chunk_samples: How many samples the model scores at a time - wake_word.py's
+            CHUNK_SAMPLES, which is passed in so this file needn't load the model.
 
     Returns:
         TAKE_SECONDS of float32 samples at 16kHz, and the highest score of any 80ms.
@@ -211,13 +245,28 @@ def listen_for_take(microphone, model, wake_word_key: str) -> Tuple[np.ndarray, 
     reader = microphone.listen()
     chunks, best = [], 0.0
     # Whole chunks, so the last is scored with the rest - and trimmed afterwards.
-    for _ in range(-(-round(TAKE_SECONDS * RATE) // CHUNK_SAMPLES)):
-        chunk = reader.read(CHUNK_SAMPLES)
+    for _ in range(math.ceil(TAKE_SECONDS * RATE / chunk_samples)):
+        chunk = reader.read(chunk_samples)
         chunks.append(chunk)
         best = max(best, float(model.predict(chunk).get(wake_word_key, 0)))
     # The microphone gives 16-bit samples, which save_wav wants as floats.
     audio = np.concatenate(chunks)[:round(TAKE_SECONDS * RATE)].astype(np.float32) / 32768.0
     return audio, best
+
+
+def play_blip(speaker, sleep: Callable[[float], None] = time.sleep):
+    """
+    Plays the listening sound, as after "Hey Nova", to say when to start - and waits
+    until it's over, and a moment more, so a take starting then doesn't have it in.
+
+    Args:
+        speaker: The Speaker, with the same output Nova uses.
+        sleep: Waits this many seconds.
+    """
+    playback = speaker.play_file(os.path.join(paths.SOUNDS_DIR, "listening.wav"), volume=0.5)
+    if playback is not None:
+        playback.wait()
+    sleep(BLIP_TAIL_SECONDS)
 
 
 def _label(text: str) -> str:
@@ -265,16 +314,17 @@ def main():
     arguments = parser.parse_args()
     wake_folder = os.path.join(paths.DATA_DIR, "voice-samples", "wake")
 
-    # Imported here rather than at the top, so the rest can be tested on a machine
-    # without the Pi's sound packages.
+    # Imported here rather than at the top, so --help and the rest can be used and
+    # tested on a machine without the Pi's sound and wake word packages.
     from voice_assistant.config import Config
     from voice_assistant.echo import make_echo_canceller
     from voice_assistant.microphone import Microphone
     from voice_assistant.speaker import Speaker
-    from voice_assistant.wake_word import WakeWordDetector
+    from voice_assistant.wake_word import CHUNK_SAMPLES, WakeWordDetector
 
     def show(line: str):
-        # The controller reads this over ssh as it comes, so it isn't held back.
+        # Over ssh, Python holds output back until a line's worth has built up, which
+        # would leave the user waiting to hear how a take went.
         print(line, flush=True)
 
     # The same microphone and echo cancelling as Nova, with its settings - see session.py.
@@ -288,22 +338,17 @@ def main():
             detector = WakeWordDetector(config=config, microphone=microphone)
             show(f"Scoring with the '{detector.wake_word_key}' model. Say \"Hey Nova\" after each blip.")
 
-            def blip():
-                # The listening sound, as after "Hey Nova". Waited for, so a take starts
-                # once it's over and doesn't have it in the recording.
-                playback = speaker.play_file(os.path.join(paths.SOUNDS_DIR, "listening.wav"), volume=0.5)
-                if playback is not None:
-                    playback.wait()
-
-            kept = record_hey_nova(arguments.count, arguments.label, wake_folder, blip,
-                                   lambda: listen_for_take(microphone, detector.model, detector.wake_word_key),
-                                   show=show)
-            show(f"Kept {kept} in {wake_folder}. Delete them once you're done with them.")
+            record_hey_nova(arguments.count, arguments.label, wake_folder, lambda: play_blip(speaker),
+                            lambda: listen_for_take(microphone, detector.model, detector.wake_word_key,
+                                                    CHUNK_SAMPLES),
+                            show=show)
         else:
+            how = ("keep it quiet of anything but the film" if arguments.kind == "film"
+                   else "talk as you normally would, without saying Hey Nova")
+            show(f"Recording {arguments.seconds:g} seconds as {arguments.label} - {how}.")
             reader = microphone.listen()
-            kept = record_stretch(arguments.seconds, arguments.label, wake_folder,
-                                  lambda count: reader.read(count).astype(np.float32) / 32768.0, show=show)
-            show(f"Kept {kept} files in {wake_folder}. Delete them once you're done with them.")
+            record_stretch(arguments.seconds, arguments.label, wake_folder,
+                           lambda count: reader.read(count).astype(np.float32) / 32768.0, show=show)
     finally:
         microphone.close()
         speaker.close()
