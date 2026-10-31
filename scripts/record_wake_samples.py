@@ -55,7 +55,7 @@ sys.path.insert(0, PROJECT_DIRECTORY)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from record_samples import save_wav
-from voice_assistant import paths
+from voice_assistant import paths, storage
 
 RATE = 16000
 
@@ -85,24 +85,6 @@ FILE_SECONDS = 10
 
 HEY_NOVA_FOLDER = "hey_nova"
 NOT_HEY_NOVA_FOLDER = "not_hey_nova"
-
-
-def _private_folder(path: str):
-    """
-    Makes a folder readable by this user only, and any above it which is missing too -
-    makedirs would leave those to the umask. One already there is made private as
-    well, but not those above it.
-
-    Args:
-        path: The folder to make, which can already be there.
-    """
-    parent = os.path.dirname(path)
-    # Empty for a relative path with nothing above it, which is already there.
-    if parent and not os.path.isdir(parent):
-        _private_folder(parent)
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    # makedirs leaves a folder which was already there as it was.
-    os.chmod(path, 0o700)
 
 
 def next_number(folder: str, label: str) -> int:
@@ -157,8 +139,8 @@ def record_hey_nova(count: int, label: str, wake_folder: str, blip: Callable[[],
         of them are good enough to train on.
     """
     folder = os.path.join(wake_folder, HEY_NOVA_FOLDER)
-    _private_folder(wake_folder)
-    _private_folder(folder)
+    storage.private_folder(wake_folder)
+    storage.private_folder(folder)
     kept = good = 0
     try:
         for number in range(1, count + 1):
@@ -206,8 +188,8 @@ def record_stretch(seconds: float, label: str, wake_folder: str, read: Callable[
         How many files were kept.
     """
     folder = os.path.join(wake_folder, NOT_HEY_NOVA_FOLDER)
-    _private_folder(wake_folder)
-    _private_folder(folder)
+    storage.private_folder(wake_folder)
+    storage.private_folder(folder)
     total = round(seconds * RATE)
     kept = 0
     try:

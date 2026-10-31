@@ -8,11 +8,13 @@ loaded. Needs numpy installed (as it is on the Pi), and is skipped anywhere it i
 
 import datetime
 import json
+import logging
 import os
 import queue
 import socket
 import threading
 import time
+import wave
 from functools import partial
 
 import pytest
@@ -22,6 +24,7 @@ np = pytest.importorskip("numpy")
 import satellite
 from voice_assistant import fallback, paths, protocol, satellite_link
 from voice_assistant.fallback import AlarmCopy, Phrase, StateCopy
+from voice_assistant.wake_clips import WakeClips
 
 PASSWORD = "the-bedroom-satellites-password"
 RATE = 16000
@@ -295,6 +298,7 @@ def make(tmp_path, monkeypatch, make_config):
     monkeypatch.setattr(satellite, "AlarmCopy", partial(AlarmCopy, str(tmp_path / "alarm_copy.json")))
     monkeypatch.setattr(satellite, "StateCopy", partial(StateCopy, str(tmp_path / "state.json")))
     monkeypatch.setattr(satellite, "Phrase", partial(Phrase, str(tmp_path / "phrase.wav"), PHRASE))
+    monkeypatch.setattr(satellite, "WakeClips", partial(WakeClips, folder=str(tmp_path / "clips")))
     running = []
 
     def begin(made):
@@ -940,6 +944,232 @@ def test_mute_from_the_brain_stops_the_wake_word(brain, make, tmp_path):
     made.wake.say()
     time.sleep(0.1)
     assert brain.messages("wake") == []
+
+
+class FakeClips:
+    """Keeps what it's handed - or, once told to, raises as it's handed it."""
+
+    def __init__(self, microphone, muted, **settings):
+        self.microphone = microphone
+        self.muted = muted
+        self.settings = settings
+        self.kept = []
+        self.failure = None
+
+    def keep(self, heard_at, score):
+        self.kept.append((heard_at, score))
+        if self.failure is not None:
+            raise self.failure
+
+
+def test_a_wake_hands_its_position_and_score_over_to_be_kept(brain, make, monkeypatch):
+    monkeypatch.setattr(satellite, "WakeClips", FakeClips)
+    made = make(wake_clips={"keep": True, "most": 7})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    heard_at = made.wake.say()
+    assert wait_for(lambda: made.clips.kept)
+    brain.say("stop_listening")
+
+    assert made.clips.kept == [(heard_at, 0.9)]
+    assert made.clips.microphone is made.microphone
+    assert made.clips.settings == {"most": 7}
+
+
+@pytest.mark.parametrize("sections", [{}, {"wake_clips": {"keep": False, "most": 400}}])
+def test_with_clips_switched_off_nothing_is_kept(brain, make, tmp_path, sections):
+    made = make(**sections)
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: brain.recordings())
+    brain.say("stop_listening")
+    # Long enough for a clip to have been finished, at the fake microphone's speed.
+    time.sleep(0.2)
+
+    assert made.clips is None
+    assert not (tmp_path / "clips").exists()
+
+
+def test_a_wake_keeps_a_clip_with_nothing_but_those_seconds_in_it(brain, make, tmp_path):
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    # Past the first two seconds, so there's all of a clip to keep.
+    assert wait_for(lambda: made.microphone.position > 3 * RATE)
+    heard_at = made.wake.say()
+    assert wait_for(lambda: (tmp_path / "clips").exists() and os.listdir(tmp_path / "clips"))
+    brain.say("stop_listening")
+    assert wait_for(lambda: not made.clips._keeping.locked())
+
+    (name,) = os.listdir(tmp_path / "clips")
+    assert name.endswith("-0.90.wav")
+    with wave.open(str(tmp_path / "clips" / name), "rb") as file:
+        audio = np.frombuffer(file.readframes(file.getnframes()), np.int16)
+    assert np.array_equal(audio, samples(heard_at - 2 * RATE, heard_at + RATE))
+
+
+def test_a_muted_satellite_keeps_nothing(brain, make, tmp_path):
+    StateCopy(str(tmp_path / "state.json")).update({"volumes": {}, "muted": True})
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: made.wake.listening)
+    made.wake.say()
+    time.sleep(0.2)
+
+    assert not (tmp_path / "clips").exists()
+
+
+@pytest.fixture
+def real_time(monkeypatch):
+    """Has the fake microphone hear at the speed the real one does, so a second lasts one."""
+    monkeypatch.setitem(globals(), "SPEED", 1)
+
+
+def wake_clip_files(tmp_path):
+    return [name for name in os.listdir(tmp_path / "clips") if name.endswith(".wav")]
+
+
+def set_mute(brain, made, muted):
+    brain.say("state", volumes={}, muted=muted)
+    assert wait_for(lambda: made.wake.muted is muted)
+
+
+def test_a_wake_just_after_unmuting_keeps_nothing_and_goes_on_as_usual(brain, make, monkeypatch, caplog, real_time):
+    monkeypatch.setattr(satellite, "WakeClips", FakeClips)
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    set_mute(brain, made, True)
+    set_mute(brain, made, False)
+    with caplog.at_level(logging.INFO, logger="satellite"):
+        made.wake.say()
+        assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+
+    assert made.clips.kept == []
+    assert "Wake clip not kept, muted" in [record.getMessage() for record in caplog.records]
+
+
+def test_a_wake_long_enough_after_unmuting_is_kept(brain, make, monkeypatch):
+    monkeypatch.setattr(satellite, "WakeClips", FakeClips)
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    set_mute(brain, made, True)
+    set_mute(brain, made, False)
+    unmuted_at = made.microphone.position
+    # The 2 seconds before the wake, the margin an unmute is given, and a moment.
+    assert wait_for(lambda: made.microphone.position > unmuted_at + 2 * RATE + 4800 + RATE // 10)
+    heard_at = made.wake.say()
+    assert wait_for(lambda: made.clips.kept)
+    brain.say("stop_listening")
+
+    assert made.clips.kept == [(heard_at, 0.9)]
+
+
+def test_an_unmute_is_noted_0_3_s_late_for_the_audio_still_on_its_way(brain, make, real_time):
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    set_mute(brain, made, True)
+    before = made.microphone.position
+    set_mute(brain, made, False)
+    after = made.microphone.position
+
+    assert before + 4800 <= made._unmuted_at <= after + 4800
+
+
+def test_what_counts_as_muted_ends_at_the_position_of_the_unmute(brain, make):
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    assert made.clips.muted(0) is False
+    set_mute(brain, made, True)
+    assert made.clips.muted(made.microphone.position + RATE) is True
+    set_mute(brain, made, False)
+    unmuted_at = made._unmuted_at
+
+    assert unmuted_at > 0
+    assert made.clips.muted(unmuted_at - 1) is True
+    assert made.clips.muted(unmuted_at) is False
+
+
+def test_a_state_which_doesnt_unmute_moves_nothing(brain, make):
+    # The brain sends its state whole, for a volume as much as for a mute.
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, longest_request=12)
+    assert wait_for(lambda: made.longest_request == 12)
+    assert made._unmuted_at == 0
+
+    set_mute(brain, made, True)
+    set_mute(brain, made, False)
+    unmuted_at = made._unmuted_at
+    brain.say("state", volumes={}, muted=False, longest_request=13)
+    assert wait_for(lambda: made.longest_request == 13)
+
+    assert made._unmuted_at == unmuted_at
+
+
+def test_a_mute_in_the_second_after_a_wake_keeps_nothing(brain, make, tmp_path, real_time):
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: made.clips._keeping.locked())
+    set_mute(brain, made, True)
+    assert wait_for(lambda: not made.clips._keeping.locked())
+    brain.say("stop_listening")
+
+    assert wake_clip_files(tmp_path) == []
+
+
+def test_a_mute_whose_message_lands_just_after_the_clip_was_heard_keeps_nothing(brain, make, tmp_path, real_time):
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    heard_at = made.wake.say()
+    assert wait_for(lambda: made.microphone.position >= heard_at + RATE + RATE // 10)
+    set_mute(brain, made, True)
+    assert made.clips._keeping.locked()
+    assert wait_for(lambda: not made.clips._keeping.locked())
+    brain.say("stop_listening")
+
+    assert wake_clip_files(tmp_path) == []
+
+
+def test_a_satellite_keeping_clips_says_so_as_it_starts(brain, make, tmp_path, caplog):
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        make(start=False, wake_clips={"keep": True, "most": 400})
+
+    assert str(tmp_path / "clips") in caplog.text
+
+
+def test_a_satellite_not_keeping_clips_says_nothing_of_them(brain, make, caplog):
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        make(start=False)
+
+    assert caplog.records == []
+
+
+def test_a_mute_and_unmute_both_in_the_second_after_a_wake_keep_nothing(brain, make, tmp_path, real_time):
+    # Unmuted again by the time the clip looks, so asking whether it's muted now isn't enough.
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: made.clips._keeping.locked())
+    set_mute(brain, made, True)
+    set_mute(brain, made, False)
+    assert made.clips._keeping.locked()
+    assert wait_for(lambda: not made.clips._keeping.locked())
+    brain.say("stop_listening")
+
+    assert wake_clip_files(tmp_path) == []
+
+
+def test_clips_which_raise_leave_the_wake_going(brain, make, monkeypatch, caplog):
+    monkeypatch.setattr(satellite, "WakeClips", FakeClips)
+    made = make(wake_clips={"keep": True, "most": 400})
+    made.clips.failure = RuntimeError("Nothing can be kept")
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    heard_at = made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": False, "pre_roll": 4800}]
+    assert np.array_equal(brain.recordings()[0], samples(heard_at - 4800, heard_at))
+    assert "Nothing can be kept" in caplog.text
 
 
 def test_a_restart_from_the_brain_exits_for_systemd_to_start_it_again(brain, make, tmp_path):

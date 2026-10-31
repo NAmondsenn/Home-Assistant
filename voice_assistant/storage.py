@@ -79,6 +79,27 @@ def save_text(path: str, text: str):
         os.close(descriptor)
 
 
+def private_folder(path: str):
+    """
+    Makes a folder readable by this user only, and any above it which is missing too -
+    makedirs would leave those to the umask. One already there is made private as
+    well, but not those above it.
+
+    Args:
+        path: The folder to make, which can already be there.
+
+    Raises:
+        OSError if it couldn't be made, or made private.
+    """
+    parent = os.path.dirname(path)
+    # Empty for a relative path with nothing above it, which is already there.
+    if parent and not os.path.isdir(parent):
+        private_folder(parent)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    # makedirs leaves a folder which was already there as it was.
+    os.chmod(path, 0o700)
+
+
 def load_json(path: str, default: Any = None) -> Any:
     """
     Reads a JSON file.
