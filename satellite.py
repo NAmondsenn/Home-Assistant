@@ -34,6 +34,7 @@ from voice_assistant.microphone import RATE, Microphone
 from voice_assistant.satellite_link import SILENT_FOR, SatelliteLink
 from voice_assistant.speaker import Playback, Speaker
 from voice_assistant.timeline import Timeline
+from voice_assistant.wake_clips import WakeClips
 from voice_assistant.wake_word import WakeWordDetector
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,10 @@ class Satellite:
         self.speaker = Speaker(sample_rate=self.sample_rate, echo_reference=self.echo.played if self.echo else None)
         self.microphone = Microphone(sample_rate=self.sample_rate, echo=self.echo)
         self.wake = WakeWordDetector(config=config, microphone=self.microphone)
+        # Only made when switched on, as it keeps the user's voice - see wake_clips.py.
+        clips_config = config.section("wake_clips")
+        self.clips = (WakeClips(self.microphone, most=clips_config.get("most", 400))
+                      if clips_config.get("keep") else None)
 
         # What the brain last sent, for while it can't be reached - see fallback.py.
         self.alarms = AlarmCopy()
@@ -299,6 +304,7 @@ class Satellite:
                 heard = self.wake.listen_once(until=self._interrupted)
                 self._exit_if_asked()
                 if heard is not None:
+                    self._keep_clip(heard)
                     self._woken()
                 else:
                     self._send_follow_up()
@@ -307,6 +313,21 @@ class Satellite:
             except Exception as e:
                 logger.error(f"Error: {e}", exc_info=True)
                 time.sleep(1)
+
+    def _keep_clip(self, score: float):
+        """
+        Hands the wake over to be kept, if that's switched on. A problem with a clip
+        mustn't cost the wake itself, which would wait a second and hear nothing.
+
+        Args:
+            score: How sure the wake word detector was.
+        """
+        if self.clips is None:
+            return
+        try:
+            self.clips.keep(self.wake.heard_at, score)
+        except Exception as e:
+            logger.error(f"Couldn't keep a clip of a wake: {e}")
 
     def _woken(self):
         """

@@ -193,6 +193,17 @@ sounds:
   listening_enabled: true
   volume_step: 10
 
+wake_clips:
+  # Whether the satellite keeps 3 seconds of audio around each wake - 2 before the wake
+  # word was heard and 1 after - so the voice check can learn from real false wakes.
+  # They stay on the Pi, readable by you only, in
+  # ~/.local/share/nova/voice-samples/wake/clips, and are never sent anywhere. Each is
+  # named for the wake's time and score, like 20261031-120501-0.73.wav. Switch it on in
+  # the Pi's own settings for as long as it's needed, then off again.
+  keep: false
+  # At this many clips it stops keeping them and logs a warning. Nova never deletes any.
+  most: 400
+
 logging:
   # Whether what's said to the assistant, and its replies, are written to the logs
   # (backend.log on the brain, in ~/.local/share/nova/logs, and the system journal). Handy
