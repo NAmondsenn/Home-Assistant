@@ -9,6 +9,7 @@ aren't.
 
 import calendar
 import errno
+import inspect
 import io
 import logging
 import os
@@ -24,7 +25,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("soxr")
 
 from voice_assistant import microphone as microphone_module
-from voice_assistant import paths, wake_clips
+from voice_assistant import paths, storage, wake_clips
 from voice_assistant.microphone import Microphone
 from voice_assistant.wake_clips import WakeClips
 
@@ -32,6 +33,22 @@ RATE = 16000
 HEARD_AT = 10 * RATE
 BEFORE = 2 * RATE
 AFTER = RATE
+
+
+def not_muted(start):
+    return False
+
+
+class Mute:
+    """Stands in for the satellite's mute, noting what it was asked about."""
+
+    def __init__(self):
+        self.on = False
+        self.asked = []
+
+    def __call__(self, start):
+        self.asked.append(start)
+        return self.on
 
 
 def samples(start, end):
@@ -120,7 +137,7 @@ def folder(tmp_path):
 
 @pytest.fixture
 def clips(microphone, folder):
-    return WakeClips(microphone, folder=str(folder))
+    return WakeClips(microphone, not_muted, folder=str(folder))
 
 
 @pytest.fixture
@@ -242,8 +259,8 @@ def test_keep_returns_while_the_read_is_still_blocked(clips, microphone, folder)
 
 def test_nothing_touches_the_disk_or_the_microphone_on_the_listening_loop(clips, microphone, folder, monkeypatch):
     used_from = set()
-    real_folder = wake_clips._private_folder
-    monkeypatch.setattr(wake_clips, "_private_folder",
+    real_folder = storage.private_folder
+    monkeypatch.setattr(storage, "private_folder",
                         lambda path: (used_from.add(threading.current_thread().name), real_folder(path)))
     clips.keep(HEARD_AT, 0.9)
     finish()
@@ -290,7 +307,7 @@ def test_at_most_nothing_more_is_kept_and_it_warns_once(microphone, folder, capl
         (folder / f"clip-{number}.wav").write_bytes(b"")
     # Not clips, so they don't count towards the limit.
     (folder / "notes.txt").write_bytes(b"")
-    clips = WakeClips(microphone, folder=str(folder), most=3)
+    clips = WakeClips(microphone, not_muted, folder=str(folder), most=3)
     with caplog.at_level(logging.WARNING, logger="voice_assistant.wake_clips"):
         clips.keep(HEARD_AT, 0.7)
         finish()
@@ -311,7 +328,7 @@ def test_at_most_nothing_more_is_kept_and_it_warns_once(microphone, folder, capl
 def test_nothing_is_deleted_at_most(microphone, folder):
     folder.mkdir()
     (folder / "the-oldest.wav").write_bytes(b"still here")
-    clips = WakeClips(microphone, folder=str(folder), most=1)
+    clips = WakeClips(microphone, not_muted, folder=str(folder), most=1)
     clips.keep(HEARD_AT, 0.8)
     finish()
 
@@ -321,7 +338,7 @@ def test_nothing_is_deleted_at_most(microphone, folder):
 
 def test_a_new_folder_is_made_private_and_so_are_those_made_above_it(microphone, tmp_path, nothing_masked):
     folder = tmp_path / "voice-samples" / "wake" / "clips"
-    WakeClips(microphone, folder=str(folder)).keep(HEARD_AT, 0.8)
+    WakeClips(microphone, not_muted, folder=str(folder)).keep(HEARD_AT, 0.8)
     finish()
 
     assert len(clips_in(folder)) == 1
@@ -336,7 +353,7 @@ def test_a_folder_already_there_is_made_private_but_not_those_above_it(microphon
     folder.mkdir(parents=True)
     os.chmod(above, 0o755)
     os.chmod(folder, 0o755)
-    WakeClips(microphone, folder=str(folder)).keep(HEARD_AT, 0.8)
+    WakeClips(microphone, not_muted, folder=str(folder)).keep(HEARD_AT, 0.8)
     finish()
 
     assert mode(folder) == 0o700
@@ -358,7 +375,7 @@ def test_a_folder_opened_up_since_the_last_clip_is_made_private_again(clips, fol
 def test_a_relative_folder_works(microphone, tmp_path, monkeypatch, folder):
     # NOVA_DATA can be relative, and a bare name has nothing above it to make.
     monkeypatch.chdir(tmp_path)
-    WakeClips(microphone, folder=folder).keep(HEARD_AT, 0.8)
+    WakeClips(microphone, not_muted, folder=folder).keep(HEARD_AT, 0.8)
     finish()
 
     assert len(clips_in(tmp_path / folder)) == 1
@@ -367,7 +384,7 @@ def test_a_relative_folder_works(microphone, tmp_path, monkeypatch, folder):
 def test_making_it_touches_nothing_so_a_bad_folder_cant_stop_the_satellite_starting(microphone, tmp_path):
     blocked = tmp_path / "a-file"
     blocked.write_bytes(b"")
-    WakeClips(microphone, folder=str(blocked / "clips"))
+    WakeClips(microphone, not_muted, folder=str(blocked / "clips"))
 
     assert blocked.read_bytes() == b""
 
@@ -428,7 +445,7 @@ def test_a_raising_reader_is_logged_and_the_next_wake_works(clips, microphone, f
 def test_a_folder_which_cant_be_made_is_logged_and_the_next_wake_works(microphone, tmp_path, caplog):
     blocked = tmp_path / "a-file"
     blocked.write_bytes(b"")
-    clips = WakeClips(microphone, folder=str(blocked / "clips"))
+    clips = WakeClips(microphone, not_muted, folder=str(blocked / "clips"))
     clips.keep(HEARD_AT, 0.7)
     finish()
 
@@ -496,7 +513,7 @@ def test_a_dead_microphone_is_only_ever_reopened_by_the_main_loop(real_microphon
     beats = []
     monkeypatch.setattr(microphone_module.watchdog, "beat", lambda: beats.append(1))
     heard_at = real_microphone.position
-    WakeClips(real_microphone, folder=str(folder)).keep(heard_at, 0.7)
+    WakeClips(real_microphone, not_muted, folder=str(folder)).keep(heard_at, 0.7)
     finish()
 
     assert len(real_microphone.opened) == 1
@@ -511,7 +528,7 @@ def test_audio_which_has_already_gone_isnt_kept_in_its_place(real_microphone, fo
     real_microphone._append(samples(0, 3 * RATE))
     heard_at = real_microphone.position
     real_microphone._append(samples(3 * RATE, 8 * RATE))
-    WakeClips(real_microphone, folder=str(folder)).keep(heard_at, 0.7)
+    WakeClips(real_microphone, not_muted, folder=str(folder)).keep(heard_at, 0.7)
     finish()
 
     assert clips_in(folder) == []
@@ -527,11 +544,91 @@ def test_a_read_which_started_late_isnt_kept(clips, microphone, folder, caplog):
     assert "too late" in caplog.text
 
 
+def test_a_mute_before_the_last_sample_arrives_keeps_nothing(microphone, folder, caplog):
+    mute = Mute()
+    clips = WakeClips(microphone, mute, folder=str(folder))
+    microphone.position = HEARD_AT + AFTER - 1
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        clips.keep(HEARD_AT, 0.7)
+        assert not wait_for(lambda: microphone.starts, seconds=0.1)
+        mute.on = True
+        microphone.position = HEARD_AT + AFTER
+        finish()
+
+    # Not read at all, and all that's said of it is that.
+    assert microphone.starts == []
+    assert clips_in(folder) == []
+    assert [record.getMessage() for record in caplog.records] == ["Wake clip not kept, muted"]
+
+
+def test_a_mute_during_the_read_keeps_nothing(microphone, folder, caplog):
+    mute = Mute()
+    clips = WakeClips(microphone, mute, folder=str(folder))
+    microphone.released.clear()
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        clips.keep(HEARD_AT, 0.7)
+        assert microphone.reading.wait(timeout=5)
+        mute.on = True
+        microphone.released.set()
+        finish()
+
+    assert clips_in(folder) == []
+    assert [record.getMessage() for record in caplog.records] == ["Wake clip not kept, muted"]
+
+
+@pytest.mark.parametrize("heard_at, start", [(HEARD_AT, HEARD_AT - BEFORE), (RATE // 2, 0)])
+def test_the_mute_is_asked_about_all_of_the_clip_before_reading_and_before_writing(microphone, folder, heard_at, start):
+    mute = Mute()
+    WakeClips(microphone, mute, folder=str(folder)).keep(heard_at, 0.7)
+    finish()
+
+    assert mute.asked == [start, start]
+    assert len(clips_in(folder)) == 1
+
+
+def test_a_mute_which_cant_be_told_keeps_nothing(microphone, folder, caplog):
+    def broken(start):
+        raise RuntimeError("Can't tell")
+
+    WakeClips(microphone, broken, folder=str(folder)).keep(HEARD_AT, 0.7)
+    finish()
+
+    assert microphone.starts == []
+    assert clips_in(folder) == []
+    assert "Can't tell" in caplog.text
+
+
+def test_the_wait_is_counted_from_the_wake_not_from_when_the_thread_got_to_it(clips, microphone, folder, monkeypatch,
+                                                                              caplog):
+    monkeypatch.setattr(wake_clips, "GIVE_UP_SECONDS", 0.05)
+    real_folder = storage.private_folder
+
+    def slowly(path):
+        monkeypatch.setattr(storage, "private_folder", real_folder)
+        time.sleep(0.1)
+        real_folder(path)
+
+    monkeypatch.setattr(storage, "private_folder", slowly)
+    clips.keep(HEARD_AT, 0.7)
+    finish()
+
+    assert microphone.starts == []
+    assert clips_in(folder) == []
+    assert "microphone" in caplog.text
+
+
+def test_a_stream_reopened_after_a_stall_is_too_late_to_finish_a_clip():
+    # The main loop's read reopens a quiet stream after this long, and what it hears from
+    # then on isn't the second after the wake.
+    stall_timeout = inspect.signature(Microphone).parameters["stall_timeout"].default
+    assert AFTER / RATE < wake_clips.GIVE_UP_SECONDS < stall_timeout
+
+
 def test_a_real_microphone_gives_the_clip_its_own_samples(real_microphone, folder):
     real_microphone._append(samples(0, 3 * RATE))
     heard_at = real_microphone.position
     real_microphone._append(samples(3 * RATE, heard_at + AFTER))
-    WakeClips(real_microphone, folder=str(folder)).keep(heard_at, 0.7)
+    WakeClips(real_microphone, not_muted, folder=str(folder)).keep(heard_at, 0.7)
     finish()
 
     (name,) = clips_in(folder)

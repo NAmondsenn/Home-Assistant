@@ -5,7 +5,8 @@ Keeps the few seconds around each wake, when switched on with wake_clips.keep, s
 voice check can be trained on real false wakes as well as the samples recorded for it.
 They're of the user's voice, so they stay on this machine, readable by this user only,
 in ~/.local/share/nova/voice-samples/wake/clips, and are never sent anywhere. Only a wake
-keeps anything, and a muted microphone never wakes, so nothing else is ever kept.
+keeps anything, and mute wins: it only stops the wake word being heard, while the audio
+goes on flowing, so a clip which would take in any of a muted stretch isn't kept.
 
 All of it sits beside the wake word, which matters far more than any clip, so the
 listening loop does nothing here but hand over a position. Everything else - the wait
@@ -18,8 +19,9 @@ import os
 import threading
 import time
 import wave
+from typing import Callable
 
-from voice_assistant import paths
+from voice_assistant import paths, storage
 from voice_assistant.recording import RATE
 
 # Logger setup
@@ -32,49 +34,52 @@ FOLDER = os.path.join(paths.DATA_DIR, "voice-samples", "wake", "clips")
 BEFORE_SECONDS = 2
 AFTER_SECONDS = 1
 
-# How long the audio after a wake has to arrive, in seconds - the second of it, and
-# some to spare. It only takes longer if the microphone has stopped, and audio from
-# whenever it starts again would be nothing to do with the wake.
-GIVE_UP_SECONDS = 3.0
+# How long the audio after a wake has to arrive, in seconds from the wake - the second
+# of it, and some to spare. It only takes longer if the microphone has stopped, and
+# audio from whenever it starts again would be nothing to do with the wake. It's under
+# the 2 seconds the main loop waits before reopening a stream, so a reopened stream
+# can never finish a clip.
+GIVE_UP_SECONDS = 1.5
 
 # How often that wait checks how far the microphone has got, in seconds.
 CHECK_SECONDS = 0.05
 
 
-def _private_folder(path: str):
+def clip_start(heard_at: int) -> int:
     """
-    Makes a folder readable by this user only, and any above it which is missing too -
-    makedirs would leave those to the umask. One already there is made private as
-    well, but not those above it.
+    Where a wake's clip starts. Only the very first seconds of a run have less before
+    them - reading before the first sample would be silence.
 
     Args:
-        path: The folder to make, which can already be there.
+        heard_at: The microphone position the wake word was heard at.
+
+    Returns:
+        A microphone position.
     """
-    parent = os.path.dirname(path)
-    # Empty for a relative path with nothing above it, which is already there.
-    if parent and not os.path.isdir(parent):
-        _private_folder(parent)
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    # makedirs leaves a folder which was already there as it was.
-    os.chmod(path, 0o700)
+    return max(0, heard_at - BEFORE_SECONDS * RATE)
 
 
 class WakeClips:
     """Keeps the seconds around a wake on a thread of their own, one clip at a time."""
 
-    def __init__(self, microphone, folder: str = FOLDER, most: int = 400):
+    def __init__(self, microphone, muted: Callable[[int], bool], folder: str = FOLDER, most: int = 400):
         """
         Touches nothing yet, so a folder which can't be made can't stop the satellite
         starting - it's only found out when a clip is kept, and only costs that clip.
 
         Args:
             microphone: The shared Microphone.
+            muted: Given a position, says whether any of the audio from there on was
+                heard muted - at any moment since, not just now, as a mute and an
+                unmute can both come in the second a clip waits for. There's no default,
+                so nothing can leave it out and keep what was said while muted.
             folder: Where the clips go.
             most: How many clips there can be. At that many no more are kept, and it
                 warns once. Nova never deletes any - having recordings disappear by
                 themselves would be a surprise.
         """
         self.microphone = microphone
+        self.muted = muted
         self.folder = folder
         self.most = most
         # Held while a clip is being kept, from the wake until its thread ends.
@@ -93,24 +98,32 @@ class WakeClips:
         if not self._keeping.acquire(blocking=False):
             return
         try:
-            threading.Thread(target=self._keep, args=(heard_at, score, time.time()),
+            threading.Thread(target=self._keep, args=(heard_at, score, time.time(), time.monotonic() + GIVE_UP_SECONDS),
                              daemon=True, name="wake-clip").start()
         except Exception as e:
             self._keeping.release()
             logger.error(f"Couldn't start keeping a clip of a wake: {e}")
 
-    def _keep(self, heard_at: int, score: float, woken_at: float):
-        """Keeps one clip, or logs why it couldn't be. Runs on the clip's own thread."""
+    def _keep(self, heard_at: int, score: float, woken_at: float, give_up_at: float):
+        """
+        Keeps one clip, or logs why it couldn't be. Runs on the clip's own thread.
+
+        Args:
+            heard_at: The microphone position the wake word was heard at.
+            score: How sure the wake word detector was.
+            woken_at: When that was, by time.time().
+            give_up_at: When the audio stops being worth waiting for, by time.monotonic().
+        """
         try:
-            _private_folder(self.folder)
+            storage.private_folder(self.folder)
             if self._full():
                 return
-            # Only the very first seconds of a run have less before them, as _woken's
-            # pre-roll allows for - reading before the first sample would be silence.
-            start = max(0, heard_at - BEFORE_SECONDS * RATE)
+            start = clip_start(heard_at)
             end = heard_at + AFTER_SECONDS * RATE
-            if not self._arrives(end):
+            if not self._arrives(end, give_up_at):
                 logger.warning("The microphone stopped just after a wake, so its clip wasn't kept")
+                return
+            if self._muted(start):
                 return
             reader = self.microphone.listen(start=start)
             audio = reader.read(end - start)
@@ -119,12 +132,21 @@ class WakeClips:
             if reader.position != end:
                 logger.warning("Got to the audio of a wake too late, so its clip wasn't kept")
                 return
+            if self._muted(start):
+                return
             when = time.strftime("%Y%m%d-%H%M%S", time.localtime(woken_at))
             self._write(os.path.join(self.folder, f"{when}-{score:.2f}.wav"), audio)
         except Exception as e:
             logger.error(f"Couldn't keep a clip of a wake: {e}")
         finally:
             self._keeping.release()
+
+    def _muted(self, start: int) -> bool:
+        """Whether a clip takes in anything heard muted, saying so if it does - and no more than that."""
+        if not self.muted(start):
+            return False
+        logger.info("Wake clip not kept, muted")
+        return True
 
     def _full(self) -> bool:
         """Whether there are as many clips as there can be, warning the first time there are."""
@@ -137,7 +159,7 @@ class WakeClips:
                            f"kept until some are moved away from {self.folder}")
         return True
 
-    def _arrives(self, position: int) -> bool:
+    def _arrives(self, position: int, give_up_at: float) -> bool:
         """
         Waits for the microphone to reach a position, without reading from it.
 
@@ -146,20 +168,24 @@ class WakeClips:
         watchdog all is well. Beside the main loop's own read, that's two threads
         opening a stream at once, which PortAudio doesn't allow for, and a stream left
         open for good if it survives that - and a main loop which had hung wouldn't be
-        restarted. So reading waits until there's nothing to wait for.
+        restarted. So reading waits until there's nothing to wait for. The one read
+        still beats the watchdog once, before it looks at anything, which does no harm:
+        a clip only follows a wake the main loop has just delivered, and the watchdog
+        allows it minutes.
 
         Args:
             position: The position to wait for.
+            give_up_at: When to stop waiting, by time.monotonic().
 
         Returns:
-            True once it's been reached, or False if it hasn't been in GIVE_UP_SECONDS.
+            True once it's been reached, or False if it wasn't by then - even if it's
+            there now, since that could be a reopened stream's audio.
         """
-        give_up_at = time.monotonic() + GIVE_UP_SECONDS
-        while self.microphone.position < position:
-            if time.monotonic() >= give_up_at:
-                return False
+        while time.monotonic() < give_up_at:
+            if self.microphone.position >= position:
+                return True
             time.sleep(CHECK_SECONDS)
-        return True
+        return False
 
     @staticmethod
     def _write(path: str, audio):

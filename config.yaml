@@ -198,8 +198,10 @@ wake_clips:
   # word was heard and 1 after - so the voice check can learn from real false wakes.
   # They stay on the Pi, readable by you only, in
   # ~/.local/share/nova/voice-samples/wake/clips, and are never sent anywhere. Each is
-  # named for the wake's time and score, like 20261031-120501-0.73.wav. Switch it on in
-  # the Pi's own settings for as long as it's needed, then off again.
+  # named for the wake's time and score, like 20261031-120501-0.73.wav. A clip which would
+  # take in anything from while the microphone's muted isn't kept. Switch it on in the
+  # Pi's own settings for as long as it's needed, then off again. Used once Nova
+  # restarts, so it goes on keeping them until then.
   keep: false
   # At this many clips it stops keeping them and logs a warning. Nova never deletes any.
   most: 400

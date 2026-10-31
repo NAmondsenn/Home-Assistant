@@ -34,7 +34,7 @@ from voice_assistant.microphone import RATE, Microphone
 from voice_assistant.satellite_link import SILENT_FOR, SatelliteLink
 from voice_assistant.speaker import Playback, Speaker
 from voice_assistant.timeline import Timeline
-from voice_assistant.wake_clips import WakeClips
+from voice_assistant.wake_clips import WakeClips, clip_start
 from voice_assistant.wake_word import WakeWordDetector
 
 logger = logging.getLogger(__name__)
@@ -175,8 +175,11 @@ class Satellite:
         self.wake = WakeWordDetector(config=config, microphone=self.microphone)
         # Only made when switched on, as it keeps the user's voice - see wake_clips.py.
         clips_config = config.section("wake_clips")
-        self.clips = (WakeClips(self.microphone, most=clips_config.get("most", 400))
+        self.clips = (WakeClips(self.microphone, self._muted_since, most=clips_config.get("most", 400))
                       if clips_config.get("keep") else None)
+        # The microphone position of the last unmute, so a clip can tell it doesn't reach
+        # back into what was said while muted. The audio flows on through a mute.
+        self._unmuted_at = 0
 
         # What the brain last sent, for while it can't be reached - see fallback.py.
         self.alarms = AlarmCopy()
@@ -325,9 +328,27 @@ class Satellite:
         if self.clips is None:
             return
         try:
-            self.clips.keep(self.wake.heard_at, score)
+            heard_at = self.wake.heard_at
+            if self._muted_since(clip_start(heard_at)):
+                logger.info("Wake clip not kept, muted")
+                return
+            self.clips.keep(heard_at, score)
         except Exception as e:
             logger.error(f"Couldn't keep a clip of a wake: {e}")
+
+    def _muted_since(self, position: int) -> bool:
+        """
+        Whether any of the audio from a position on was heard muted - muted now, or
+        unmuted after it. The second covers a mute and an unmute which both came and
+        went since then, as long as _take_state notes the position first.
+
+        Args:
+            position: A microphone position.
+
+        Returns:
+            True if a clip from there would take in some of a mute.
+        """
+        return self.wake.muted or position < self._unmuted_at
 
     def _woken(self):
         """
@@ -575,6 +596,10 @@ class Satellite:
             # score at a time, and a change taking effect on the next one is fine.
             self.wake.sensitivity = confidence
             logger.info(f"Listening for the wake word at {confidence} now")
+        # Before the unmute takes effect, so no wake or clip can ever see it unmuted with
+        # this not yet noted. The brain sends this with every state, so only a real change counts.
+        if self.wake.muted and not self.state.muted:
+            self._unmuted_at = self.microphone.position
         self.wake.set_muted(self.state.muted)
 
     def _away_settled(self, message: Dict, payload: bytes):
