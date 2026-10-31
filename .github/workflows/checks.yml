@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install what the tests need
-        run: pip install pytest==9.1.1 ruff==0.17.1 numpy==2.4.6 soxr==1.1.0 soundfile==0.14.0 PyYAML==6.0.3 requests==2.34.2
+        run: pip install pytest==9.1.1 ruff==0.17.1 numpy==2.4.6 soxr==1.1.0 soundfile==0.14.0 PyYAML==6.0.3 requests==2.34.2 python-dotenv==1.2.2
       - name: Lint
         run: ruff check .
       - name: Tests
