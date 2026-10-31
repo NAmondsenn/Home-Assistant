@@ -6,7 +6,8 @@ voice check can be trained on real false wakes as well as the samples recorded f
 They're of the user's voice, so they stay on this machine, readable by this user only,
 in ~/.local/share/nova/voice-samples/wake/clips, and are never sent anywhere. Only a wake
 keeps anything, and mute wins: it only stops the wake word being heard, while the audio
-goes on flowing, so a clip which would take in any of a muted stretch isn't kept.
+goes on flowing, so a clip is dropped if the microphone was muted around it, as far as
+the satellite has heard by then.
 
 All of it sits beside the wake word, which matters far more than any clip, so the
 listening loop does nothing here but hand over a position. Everything else - the wait
@@ -35,11 +36,17 @@ BEFORE_SECONDS = 2
 AFTER_SECONDS = 1
 
 # How long the audio after a wake has to arrive, in seconds from the wake - the second
-# of it, and some to spare. It only takes longer if the microphone has stopped, and
-# audio from whenever it starts again would be nothing to do with the wake. It's under
-# the 2 seconds the main loop waits before reopening a stream, so a reopened stream
-# can never finish a clip.
+# of it, and some to spare. It only takes longer if the microphone has stopped, or this
+# thread was held up, and audio from whenever it starts again would be nothing to do
+# with the wake. It's under the 2 seconds the main loop waits before reopening a stream,
+# so a reopened stream can never finish a clip.
 GIVE_UP_SECONDS = 1.5
+
+# How long a clip waits before it's written, in seconds, for news of a mute. A mute
+# reaches the satellite well after the tap - through Home Assistant or the settings
+# page, the brain, the network and a save to each machine's disk - so one made in the
+# last moments of the second after a wake can still be on its way once that's been heard.
+MUTE_NEWS_SECONDS = 0.5
 
 # How often that wait checks how far the microphone has got, in seconds.
 CHECK_SECONDS = 0.05
@@ -82,6 +89,8 @@ class WakeClips:
         self.muted = muted
         self.folder = folder
         self.most = most
+        # Said every start, so a switch left on can't go unnoticed.
+        logger.info(f"Keeping a clip around each wake, up to {most}, in {folder}")
         # Held while a clip is being kept, from the wake until its thread ends.
         self._keeping = threading.Lock()
         self._warned = False
@@ -121,7 +130,7 @@ class WakeClips:
             start = clip_start(heard_at)
             end = heard_at + AFTER_SECONDS * RATE
             if not self._arrives(end, give_up_at):
-                logger.warning("The microphone stopped just after a wake, so its clip wasn't kept")
+                logger.warning("The second after a wake didn't arrive in time, so its clip wasn't kept")
                 return
             if self._muted(start):
                 return
@@ -132,10 +141,13 @@ class WakeClips:
             if reader.position != end:
                 logger.warning("Got to the audio of a wake too late, so its clip wasn't kept")
                 return
+            time.sleep(MUTE_NEWS_SECONDS)
             if self._muted(start):
                 return
             when = time.strftime("%Y%m%d-%H%M%S", time.localtime(woken_at))
-            self._write(os.path.join(self.folder, f"{when}-{score:.2f}.wav"), audio)
+            name = f"{when}-{score:.2f}.wav"
+            self._write(os.path.join(self.folder, name), audio)
+            logger.info(f"Kept a wake clip, {name}, score {score:.2f}")
         except Exception as e:
             logger.error(f"Couldn't keep a clip of a wake: {e}")
         finally:

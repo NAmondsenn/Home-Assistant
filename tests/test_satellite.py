@@ -1053,12 +1053,24 @@ def test_a_wake_long_enough_after_unmuting_is_kept(brain, make, monkeypatch):
     set_mute(brain, made, True)
     set_mute(brain, made, False)
     unmuted_at = made.microphone.position
-    assert wait_for(lambda: made.microphone.position > unmuted_at + 2 * RATE + RATE // 10)
+    # The 2 seconds before the wake, the margin an unmute is given, and a moment.
+    assert wait_for(lambda: made.microphone.position > unmuted_at + 2 * RATE + 4800 + RATE // 10)
     heard_at = made.wake.say()
     assert wait_for(lambda: made.clips.kept)
     brain.say("stop_listening")
 
     assert made.clips.kept == [(heard_at, 0.9)]
+
+
+def test_an_unmute_is_noted_0_3_s_late_for_the_audio_still_on_its_way(brain, make, real_time):
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    set_mute(brain, made, True)
+    before = made.microphone.position
+    set_mute(brain, made, False)
+    after = made.microphone.position
+
+    assert before + 4800 <= made._unmuted_at <= after + 4800
 
 
 def test_what_counts_as_muted_ends_at_the_position_of_the_unmute(brain, make):
@@ -1102,6 +1114,33 @@ def test_a_mute_in_the_second_after_a_wake_keeps_nothing(brain, make, tmp_path, 
     brain.say("stop_listening")
 
     assert wake_clip_files(tmp_path) == []
+
+
+def test_a_mute_whose_message_lands_just_after_the_clip_was_heard_keeps_nothing(brain, make, tmp_path, real_time):
+    made = make(wake_clips={"keep": True, "most": 400})
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    heard_at = made.wake.say()
+    assert wait_for(lambda: made.microphone.position >= heard_at + RATE + RATE // 10)
+    set_mute(brain, made, True)
+    assert made.clips._keeping.locked()
+    assert wait_for(lambda: not made.clips._keeping.locked())
+    brain.say("stop_listening")
+
+    assert wake_clip_files(tmp_path) == []
+
+
+def test_a_satellite_keeping_clips_says_so_as_it_starts(brain, make, tmp_path, caplog):
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        make(start=False, wake_clips={"keep": True, "most": 400})
+
+    assert str(tmp_path / "clips") in caplog.text
+
+
+def test_a_satellite_not_keeping_clips_says_nothing_of_them(brain, make, caplog):
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        make(start=False)
+
+    assert caplog.records == []
 
 
 def test_a_mute_and_unmute_both_in_the_second_after_a_wake_keep_nothing(brain, make, tmp_path, real_time):

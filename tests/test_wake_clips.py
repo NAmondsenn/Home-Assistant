@@ -125,6 +125,11 @@ class FakeMicrophone:
         return FakeReader(self, start)
 
 
+@pytest.fixture(autouse=True)
+def quick(monkeypatch):
+    monkeypatch.setattr(wake_clips, "MUTE_NEWS_SECONDS", 0)
+
+
 @pytest.fixture
 def microphone():
     return FakeMicrophone()
@@ -308,6 +313,7 @@ def test_at_most_nothing_more_is_kept_and_it_warns_once(microphone, folder, capl
     # Not clips, so they don't count towards the limit.
     (folder / "notes.txt").write_bytes(b"")
     clips = WakeClips(microphone, not_muted, folder=str(folder), most=3)
+    caplog.clear()
     with caplog.at_level(logging.WARNING, logger="voice_assistant.wake_clips"):
         clips.keep(HEARD_AT, 0.7)
         finish()
@@ -499,7 +505,7 @@ def test_a_dead_microphone_gives_up_rather_than_waiting_for_ever(clips, micropho
     # Audio from long after the wake isn't the wake's: nothing was read, and nothing kept.
     assert microphone.starts == []
     assert clips_in(folder) == []
-    assert "microphone" in caplog.text
+    assert "The second after a wake didn't arrive in time" in caplog.text
     microphone.position = HEARD_AT + 5 * RATE
     clips.keep(HEARD_AT + RATE, 0.8)
     finish()
@@ -547,6 +553,7 @@ def test_a_read_which_started_late_isnt_kept(clips, microphone, folder, caplog):
 def test_a_mute_before_the_last_sample_arrives_keeps_nothing(microphone, folder, caplog):
     mute = Mute()
     clips = WakeClips(microphone, mute, folder=str(folder))
+    caplog.clear()
     microphone.position = HEARD_AT + AFTER - 1
     with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
         clips.keep(HEARD_AT, 0.7)
@@ -564,6 +571,7 @@ def test_a_mute_before_the_last_sample_arrives_keeps_nothing(microphone, folder,
 def test_a_mute_during_the_read_keeps_nothing(microphone, folder, caplog):
     mute = Mute()
     clips = WakeClips(microphone, mute, folder=str(folder))
+    caplog.clear()
     microphone.released.clear()
     with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
         clips.keep(HEARD_AT, 0.7)
@@ -574,6 +582,28 @@ def test_a_mute_during_the_read_keeps_nothing(microphone, folder, caplog):
 
     assert clips_in(folder) == []
     assert [record.getMessage() for record in caplog.records] == ["Wake clip not kept, muted"]
+
+
+def test_a_mute_whose_message_is_on_its_way_still_drops_the_clip(microphone, folder, monkeypatch):
+    # All of the clip has been heard and read before the brain's message lands.
+    monkeypatch.setattr(wake_clips, "MUTE_NEWS_SECONDS", 0.5)
+    mute = Mute()
+    read_by_then = []
+    real_sleep = time.sleep
+
+    def message_lands(seconds):
+        if seconds == 0.5:
+            read_by_then.append(list(microphone.starts))
+            mute.on = True
+        else:
+            real_sleep(seconds)
+
+    monkeypatch.setattr(wake_clips.time, "sleep", message_lands)
+    WakeClips(microphone, mute, folder=str(folder)).keep(HEARD_AT, 0.7)
+    finish()
+
+    assert read_by_then == [[HEARD_AT - BEFORE]]
+    assert clips_in(folder) == []
 
 
 @pytest.mark.parametrize("heard_at, start", [(HEARD_AT, HEARD_AT - BEFORE), (RATE // 2, 0)])
@@ -614,7 +644,7 @@ def test_the_wait_is_counted_from_the_wake_not_from_when_the_thread_got_to_it(cl
 
     assert microphone.starts == []
     assert clips_in(folder) == []
-    assert "microphone" in caplog.text
+    assert "The second after a wake didn't arrive in time" in caplog.text
 
 
 def test_a_stream_reopened_after_a_stall_is_too_late_to_finish_a_clip():
@@ -622,6 +652,42 @@ def test_a_stream_reopened_after_a_stall_is_too_late_to_finish_a_clip():
     # then on isn't the second after the wake.
     stall_timeout = inspect.signature(Microphone).parameters["stall_timeout"].default
     assert AFTER / RATE < wake_clips.GIVE_UP_SECONDS < stall_timeout
+
+
+def test_making_it_says_clips_are_being_kept_and_where(microphone, folder, caplog):
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        WakeClips(microphone, not_muted, folder=str(folder))
+
+    (line,) = caplog.records
+    assert line.levelno == logging.INFO
+    assert "Keeping" in line.getMessage()
+    assert str(folder) in line.getMessage()
+
+
+def test_each_clip_says_its_name_and_score(clips, folder, caplog):
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        clips.keep(HEARD_AT, 0.73)
+        finish()
+
+    (name,) = clips_in(folder)
+    (line,) = caplog.records
+    assert line.levelno == logging.INFO
+    assert name in line.getMessage()
+    assert "score 0.73" in line.getMessage()
+
+
+def test_a_clip_which_wasnt_written_doesnt_say_it_was(clips, folder, monkeypatch, caplog):
+    def fail(*args):
+        raise OSError("The card has gone read-only")
+
+    monkeypatch.setattr(wake_clips.wave, "open", fail)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="voice_assistant.wake_clips"):
+        clips.keep(HEARD_AT, 0.7)
+        finish()
+
+    assert [record.levelno for record in caplog.records] == [logging.ERROR]
 
 
 def test_a_real_microphone_gives_the_clip_its_own_samples(real_microphone, folder):

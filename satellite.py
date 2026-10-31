@@ -62,6 +62,12 @@ MOST_SECONDS = 30
 FALLBACK_CHECK = 1.0
 PROGRESS_EVERY = 1.0
 
+# How far past an unmute a clip has to start, in seconds. Sound heard while muted can
+# still be on its way to the microphone's buffer when the unmute is noted: up to about
+# 0.25 s between ALSA, the stream's blocks, the resampler and the echo canceller, since
+# any more than that overflows and is lost.
+IN_FLIGHT_SECONDS = 0.3
+
 # How long the brain has to say it has what the satellite told it on connecting
 # (away_settled), in seconds, before the satellite gives up on the connection as it
 # would on a silent brain. Until then the satellite rings on from its copy, though
@@ -177,8 +183,9 @@ class Satellite:
         clips_config = config.section("wake_clips")
         self.clips = (WakeClips(self.microphone, self._muted_since, most=clips_config.get("most", 400))
                       if clips_config.get("keep") else None)
-        # The microphone position of the last unmute, so a clip can tell it doesn't reach
-        # back into what was said while muted. The audio flows on through a mute.
+        # Just past the microphone position of the last unmute, so a clip can tell it
+        # doesn't reach back into what was said while muted. The audio flows on through
+        # a mute. See IN_FLIGHT_SECONDS.
         self._unmuted_at = 0
 
         # What the brain last sent, for while it can't be reached - see fallback.py.
@@ -599,7 +606,7 @@ class Satellite:
         # Before the unmute takes effect, so no wake or clip can ever see it unmuted with
         # this not yet noted. The brain sends this with every state, so only a real change counts.
         if self.wake.muted and not self.state.muted:
-            self._unmuted_at = self.microphone.position
+            self._unmuted_at = self.microphone.position + round(IN_FLIGHT_SECONDS * RATE)
         self.wake.set_muted(self.state.muted)
 
     def _away_settled(self, message: Dict, payload: bytes):
