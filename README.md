@@ -62,13 +62,12 @@ bash setup.sh --brain          # as root
 
 In order, it:
 
-1. Checks this is Debian with Python 3.11 or newer.
+1. Checks this is Debian with Python 3.11 or newer - though the exact versions in step 2 are for Python 3.13, which Debian 13 has.
 2. Installs the system packages (ffmpeg among them), makes a Python environment in `venv/`, and installs the Python packages - the exact versions in `requirements-backend.txt`.
-3. Moves anything an older install kept in the repository folder to its new place (see Configuring).
-4. Asks for the assistant's name, wake word and Spotify speaker name, saving any you change to `~/.config/nova/config.yaml`.
-5. Asks for your API keys and writes them to `~/.config/nova/.env`, readable only by you. An existing one is left as it is.
-6. Downloads Piper, the voice (`en_US-hfc_female-medium`), the Nemotron speech-to-text model, Parakeet (a second, small one, asked when Nemotron hears nothing in a lone word such as "Pause.") and openWakeWord's own models into `models/`. They're checked against pinned SHA-256 hashes, so a tampered download stops setup rather than being run. Nemotron needs about 1.5GB free, and Parakeet about 400MB more - without room for Parakeet, or the internet to fetch it, setup carries on without it. `models/` can be a link to a folder somewhere with more room, and everything follows it.
-7. Installs the brain as the `nova-backend` system service, which runs as that user and starts at boot, and starts it.
+3. Asks for the assistant's name, wake word and Spotify speaker name, saving any you change to `~/.config/nova/config.yaml`.
+4. Asks for your API keys and writes them to `~/.config/nova/.env`, readable only by you. An existing one is left as it is.
+5. Downloads Piper, the voice (`en_US-hfc_female-medium`), the Nemotron speech-to-text model and Parakeet (a second, small one, asked when Nemotron hears nothing in a lone word such as "Pause.") into `models/`. They're checked against pinned SHA-256 hashes, so a tampered download stops setup rather than being run. Nemotron needs about 1.5GB free, and Parakeet about 400MB more - without room for Parakeet, or the internet to fetch it, setup carries on without it. `models/` can be a link to a folder somewhere with more room, and everything follows it. openWakeWord's own models (the brain uses one for its voice activity check) are fetched by its package, into `venv/`, with no hash check of Nova's.
+6. Installs the brain as the `nova-backend` system service, which runs as that user and starts at boot, and starts it.
 
 Then let each satellite in, by its machine's name: on the settings page (see [The settings page](#the-settings-page)), under Satellites, type it in and Add a satellite. The page shows a password for it once, so keep it for the satellite's setup. Without the page, `add-satellite` does the same, printing the password - run it as the brain's user, not root, as the passwords are kept in that user's `~/.config/nova/satellites.json`, which is where the service reads them.
 
@@ -102,14 +101,13 @@ bash setup.sh
 In order, it:
 
 1. Checks this is Raspberry Pi OS or Debian, with Python 3.11 or newer, a speaker and a microphone.
-2. Installs the system packages, makes a Python environment in `venv/`, and installs the Python packages - the exact versions in `requirements.lock`, which is only what the microphone, speaker and wake word need.
-3. Moves anything an older install kept in the repository folder to its new place (see Configuring).
-4. Asks for the assistant's name, wake word, Spotify speaker name and the brain's address (`nova:10400`), saving them to `~/.config/nova/config.yaml`.
-5. Says the name the brain knows this satellite by - its machine's name - and asks for the password the settings page gave for it (not shown as it's typed), writing it to `~/.config/nova/.env` as `NOVA_BACKEND_TOKEN`, readable only by you. It's the only secret a satellite holds. Left blank, the satellite won't start until it has one, which setup says - give it one later with `bash setup.sh --new-password`.
-6. Finds your wake word model (see below) and copies it into `models/`, and downloads openWakeWord's own models there. A satellite downloads no speech or voice models - the brain does the hearing and the speaking.
-7. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone - in short bursts, so a sound stops quickly and the wake word reacts sooner - backing up the old one.
-8. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker.
-9. Sets the satellite to start at boot, as the `voice-assistant` user service, and starts it.
+2. Installs the system packages, makes a Python environment in `venv/`, and installs the Python packages - on Python 3.13 the exact versions in `requirements.lock`, on 3.11 the newest ones `requirements.txt` allows. Either is only what the microphone, speaker and wake word need.
+3. Asks for the assistant's name, wake word, Spotify speaker name and the brain's address (`nova:10400`), saving them to `~/.config/nova/config.yaml`.
+4. Says the name the brain knows this satellite by - its machine's name - and asks for the password the settings page gave for it (not shown as it's typed), writing it to `~/.config/nova/.env` as `NOVA_BACKEND_TOKEN`, readable only by you. It's the only secret a satellite holds. Left blank, the satellite won't start until it has one, which setup says - give it one later with `bash setup.sh --new-password`.
+5. Looks for your wake word model (see [The wake word model](#the-wake-word-model)) and copies it into `models/` - without one, the satellite listens for "Hey Jarvis" - and has openWakeWord download its own models, which its package keeps in `venv/`. A satellite downloads no speech or voice models - the brain does the hearing and the speaking.
+6. Offers to write `/etc/asound.conf`, so the assistant and Spotify can share the speaker and microphone - in short bursts, so a sound stops quickly and the wake word reacts sooner - backing up the old one. It looks for a speaker and a microphone on two different sound cards, leaving out the Pi's own HDMI and headphone outputs, and writes nothing if it can't find both.
+7. Offers to install raspotify, so the Pi shows up as a Spotify Connect speaker (see "Spotify on a satellite", under Music).
+8. Sets the satellite to start at boot, as the `voice-assistant` user service, and starts it.
 
 Each satellite is named by its own machine's name, which the brain knows its password by - the same name given to `add-satellite`. Set `backend.satellite` in `config.yaml` to use another. Either way, it must fit the rule `add-satellite` and the settings page keep to: lower-case letters, digits and hyphens, not starting or ending with a hyphen.
 

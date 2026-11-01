@@ -81,7 +81,8 @@ PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models
 # As for Nemotron: the archive and what's unpacked from it, with plenty to spare.
 PARAKEET_KILOBYTES_NEEDED=400000
 
-# The SHA-256 of everything downloaded and then run or trusted, so a tampered
+# The SHA-256 of everything this script downloads and then runs or trusts - all but
+# openWakeWord's own models, which its package fetches itself into venv/ - so a tampered
 # release or mirror stops setup rather than being run on the Pi. Taken from the
 # files themselves - Piper's on 20 October 2026, when the binary inside the aarch64
 # archive matched the one Nova had been using, the voice's on 22 October 2026, when
@@ -567,10 +568,11 @@ EOF
 write_asound_conf() {
     step "Shared audio (/etc/asound.conf)"
     local playback capture
-    # Leaves out the Pi's own HDMI outputs.
+    # Leaves out the Pi's own HDMI and headphone outputs.
     playback=$(aplay -l 2> /dev/null | grep "^card" | grep -viE "vc4hdmi|bcm2835" \
         | sed -E 's/^card [0-9]+: ([^ ]+) .*/\1/' | sort -u | head -1 || true)
-    # Prefers a microphone which isn't also the speaker - a headset's halves share a name.
+    # Needs a microphone which isn't also the speaker - a headset's halves share a name, so a
+    # headset on its own isn't found.
     capture=$(arecord -l 2> /dev/null | grep "^card" | grep -viE "vc4hdmi|bcm2835" \
         | sed -E 's/^card [0-9]+: ([^ ]+) .*/\1/' | sort -u | grep -v "^${playback}$" | head -1 || true)
     if [ -z "$playback" ] || [ -z "$capture" ]; then
