@@ -17,6 +17,7 @@ import logging
 # no matter where the scripts are run from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from voice_assistant import paths
 from voice_assistant.config import Config
 from voice_assistant.llm import LLMHandler
 from voice_assistant.actions import ActionExecutor
@@ -24,7 +25,8 @@ from voice_assistant.text_to_speech import TextToSpeech
 from voice_assistant.spotify_controller import SpotifyController
 
 # Sample queries covering the main paths through the system: a plain
-# conversational query, a Spotify action, and a Home Assistant action.
+# conversational query, a Spotify action, and a request for the lights - which is only
+# answered in words here, as no Home Assistant is wired in below.
 TEST_QUERIES = [
     "Hello, how are you?",
     "Play some pop music",
@@ -43,15 +45,14 @@ def test_integration():
     print("VOICE ASSISTANT INTEGRATION TEST")
     print("=" * 60 + "\n")
 
-    # Load config.yaml
+    # Load config.yaml, and the keys in ~/.config/nova/.env, which the services load too -
+    # without them there's no key for Claude or Spotify.
     print("Loading configuration...")
+    paths.load_secrets()
     config = Config()
 
     # Initialise modules
     print("Initialising modules...")
-
-    # LLMHandler pulls its own model / max_tokens / temperature / history_length / assistant_name from config
-    llm = LLMHandler(config=config, api_key=None)
 
     # Spotify and TTS are both optional, the test still runs and reports
     # results even if either is unavailable.
@@ -61,7 +62,12 @@ def test_integration():
         print(f"Spotify not available: {e}")
         spotify = None
 
-    actions = ActionExecutor(spotify=spotify)
+    # The music player is the executor's music, as it is in a session.
+    actions = ActionExecutor(music=spotify)
+
+    # LLMHandler pulls its own model / max_tokens / temperature / history_length / assistant_name from config.
+    # It's offered the tools the executor can run, as a session's is - with none, it could never ask for an action.
+    llm = LLMHandler(config=config, api_key=None, tools=actions.tool_schemas())
 
     # TTS is optional, meaning no Piper TTS install won't fail the test.
     try:
@@ -88,7 +94,6 @@ def test_integration():
             # Step 1: LLM
             llm_response = llm.process_query(query)
             response_text = llm_response.get('response', '')
-            action = llm_response.get('action')
 
             if llm_response.get('success') and response_text:
                 query_result["llm_ok"] = True
@@ -96,12 +101,13 @@ def test_integration():
             else:
                 print("LLM did not return a usable response")
 
-            if action:
+            # Step 2: Action execution, for each tool the model called. Each comes back as an
+            # ActionResult, a failure of which with nothing to say is the one nobody would hear of.
+            for action in llm_response.get('actions', []):
                 print(f"Detected action: {action}")
 
-                # Step 2: Action execution
                 action_result = actions.execute(action)
-                if not action_result.get("success") and not action_result.get("message"):
+                if not action_result.ok and not action_result.say:
                     query_result["action_ok"] = False
                 print(f"   Action result: {action_result}")
 
