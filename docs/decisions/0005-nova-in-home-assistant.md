@@ -1,6 +1,6 @@
 # 5. Nova as a device in Home Assistant, which decides its room and does the controlling
 
-21 October 2026 · Phase 5 · Agreed with the user, not yet built
+21 October 2026 · Phase 5 · Agreed with the user, and built
 
 **Context.** Phase 5 starts with the lights. This morning "lights on" got "Sorry, I couldn't understand that" from Home Assistant, while "turn on my bedroom lights" worked. A look at Home Assistant (2026.10.2) found two lights, Lamp and Bedroom Light, both TP-Link, both full colour and warm-to-cool white (2500-6500K), in an area called Bedroom. Assist, Home Assistant's own understanding of commands, already gets "lamp off" and "main light on" ("main light" is Bedroom Light's other name). "Lights on" fails only because Assist isn't told where it was said. Told it came from a device in the Bedroom, Assist chose exactly those two lights. It doesn't understand "dim the lights" or "turn everything off" at all.
 

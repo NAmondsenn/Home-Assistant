@@ -1,6 +1,6 @@
 # 9. The settings page: everything the user would change
 
-24 October 2026 · Phase 5 · Agreed with the user, not yet built
+24 October 2026 · Phase 5 · Agreed with the user, and built
 
 **The user's answer (24 October)**
 

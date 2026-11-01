@@ -1,6 +1,6 @@
 # 7. Battery levels and warnings, for every device Home Assistant knows has a battery
 
-23 October 2026 · Phase 5 · Agreed with the user, not yet built
+23 October 2026 · Phase 5 · Agreed with the user, and built
 
 **Context.** Phase 5's next item is battery levels. Asked when they'd last wanted one, the user said: "maybe if im away from my mac and its running something, id wanna see battery". They agreed the real want is to be warned before the Mac dies mid-job, rather than having to remember to ask. Asking should still work, for every device.
 

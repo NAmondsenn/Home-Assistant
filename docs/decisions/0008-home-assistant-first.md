@@ -1,6 +1,6 @@
 # 8. Home Assistant first: new things by voice
 
-24 October 2026 · Phase 5 · Agreed with the user, not yet built
+24 October 2026 · Phase 5 · Agreed with the user, and built
 
 **The user's answers (24 October)**
 

@@ -7,3 +7,5 @@
 **Decision.** `speaker.py` opens one output stream at startup and mixes whatever is playing; each sound is a Playback which can be waited for or stopped. The wake word silences every timer and alarm sound at once. The clock only decides what should ring, and each round plays on a thread of its own, one announcement at a time. Announcements pause the music too, through the same counted hold as a conversation.
 
 **Consequences.** Stopping is immediate, give or take the output's 125ms buffer. Talking over Nova's own reply (barge-in) still isn't possible - that needs echo cancellation, and the wake word listening while Nova speaks.
+
+**Since.** Superseded on that last point: `echo.py` takes what the speaker plays back out of what the microphone hears, so "Hey Nova" is now heard over Nova's own replies and its music, and stops the reply.
