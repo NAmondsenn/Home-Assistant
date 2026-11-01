@@ -33,8 +33,9 @@ The everyday commands - timers, pause, skip, volume, the time, the weather, the 
 
 ```
  on the satellite                                           over the tailnet                on the brain
-microphone ─► wake word ─► record until you stop talking ─────────────────────► Nemotron ─► local command, or Claude ─► action ─► Piper ─► speaker
-               (openWakeWord)   (Silero voice activity)    <───── the voice ──────  (hears as you speak)                (timers, music, ...)
+microphone ─► wake word ─► sends what you say ────────────────────────────────► Nemotron ─► local command, or Claude ─► action ─► Piper ─► speaker
+               (openWakeWord)                              <───── the voice ──────  (hears as you speak)                (timers, music, ...)
+                                                                                    (Silero says when you've stopped)
 ```
 
 - `satellite.py` runs the satellite: it listens, sends the recording to the brain as it's made, and plays what comes back.
