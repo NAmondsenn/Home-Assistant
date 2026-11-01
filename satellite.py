@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Left while the satellite runs, and taken away when it stops properly - so finding it
 # when starting means the last run didn't, which the brain is told as it connects. The
-# same mark main.py left.
+# same mark the Pi left before it was a satellite.
 RUNNING_MARK = os.path.join(paths.DATA_DIR, "running")
 
 # The pieces a recording is sent in, in seconds of it - small, so the brain hears the
@@ -173,8 +173,8 @@ class Satellite:
         self.sounds_folder = paths.SOUNDS_DIR
         self.latency_file = os.path.join(paths.LOGS_DIR, "latency.jsonl")
 
-        # The one speaker and the one microphone, as main.py had them, with what's
-        # played taken back out of what's heard - see echo.py.
+        # The one speaker and the one microphone, with what's played taken back out of
+        # what's heard - see echo.py.
         self.echo = make_echo_canceller(config, self.sample_rate)
         self.speaker = Speaker(sample_rate=self.sample_rate, echo_reference=self.echo.played if self.echo else None)
         self.microphone = Microphone(sample_rate=self.sample_rate, echo=self.echo)
@@ -281,9 +281,9 @@ class Satellite:
 
     def shutdown(self, *args):
         """
-        Ctrl+C or systemd's stop, as main.py's _shutdown: raises SystemExit in whatever
-        the main loop was doing, and run() cleans up once that has unwound. A second
-        signal while it's shutting down is ignored, so it can't cut the cleanup short.
+        Ctrl+C or systemd's stop: raises SystemExit in whatever the main loop was doing,
+        and run() cleans up once that has unwound. A second signal while it's shutting
+        down is ignored, so it can't cut the cleanup short.
         """
         if self._stopping:
             return
@@ -703,7 +703,7 @@ class Satellite:
 
     def _note_start(self) -> bool:
         """
-        Leaves RUNNING_MARK, which _clean_up takes away, as main.py's _note_start did.
+        Leaves RUNNING_MARK, which _clean_up takes away.
 
         Returns:
             Whether the last run left one too, so never stopped properly - which the
@@ -744,7 +744,7 @@ class Satellite:
 
 if __name__ == "__main__":
     paths.make_folders()
-    # The same log main.py kept, which the README and the soak monitor point to.
+    # The log the README and the soak monitor point to.
     setup_logging(os.path.join(paths.LOGS_DIR, "smart_assistant.log"))
     # The satellite's password, the one secret it keeps - see paths.py.
     paths.load_secrets()

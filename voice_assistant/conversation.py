@@ -7,7 +7,7 @@ goes to Claude, which actions to run, and how they're confirmed - a sound, or wo
 and whether to listen for an answer afterwards. Or, when Claude takes it for speech from
 a film playing in the room, that nothing is done at all.
 
-This used to be tangled up with the recording and playback in main.py, with its
+This used to be tangled up with the recording and playback, with its
 ordering rules held in comments and instance flags, so none of it could be tested
 without a microphone - or reused for anything which hears the user another way, like
 a desktop push-to-talk or a satellite. Now each satellite's session (see session.py)

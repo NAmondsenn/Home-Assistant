@@ -8,7 +8,7 @@ out the answer (see conversation.py), and says it through the satellite's speake
 also says what goes off by itself there - the timers and alarms set from it, Home
 Assistant's messages and the user's routines.
 
-This was main.py's SmartAssistant, when the Pi was the whole of Nova. Now the Pi is a
+This is what the Pi ran, when it was the whole of Nova. Now the Pi is a
 satellite (see satellite.py), and each satellite connected to the brain has a session
 of its own, with its own volumes, mute, music, room in Home Assistant and
 conversation. What they all share - the clock, memory, routines, ntfy, the weather,

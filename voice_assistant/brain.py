@@ -10,7 +10,7 @@ It's only reachable over the tailnet: it listens on its own machine alone, and
 Tailscale passes the tailnet's connections on to it. Each satellite proves its own
 password first - see protocol.admit, and add-satellite in backend.py.
 
-This was the part of main.py's SmartAssistant which wasn't one satellite's: its
+This was the part of Nova which wasn't one satellite's, when the Pi ran all of it: its
 running mark and restart notice, its signals and shutdown, the watchdog, routines at
 their time, and the reminder nobody answered sent to the user's phone.
 """
@@ -100,8 +100,8 @@ AWAY_WAIT = 2.0
 # That's said to be when the stillest session last moved (see Brain.last_moved), so a
 # session stuck part way through a turn - its satellite still connected and pinging,
 # and every wake word there getting silence - is caught by the watchdog's allowance:
-# watchdog.ALLOWANCE, 150 seconds, the same as main.py had on the Pi, whose watchdog
-# went quiet as soon as a turn hung, as the microphone was no longer read. That's more
+# watchdog.ALLOWANCE, 150 seconds, the same as the Pi had when it ran all of Nova, whose
+# watchdog went quiet as soon as a turn hung, as the microphone was no longer read. That's more
 # than a turn legitimately goes between steps which count as moving - a web search
 # retried once (two lots of llm.search_timeout) after a recording of up to 30 seconds,
 # the most a satellite sends whatever the brain says - while a session between wake
