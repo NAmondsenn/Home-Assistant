@@ -3,10 +3,12 @@ Setup Script Test
 Checks setup.sh --new-password gives a set-up satellite the password the settings page
 made for it - replacing only that line of its .env, keeping the file private, and
 never showing the password - that setup sends the user to the page for one, and that
-the brain's second speech model, Parakeet, is downloaded and checked as Nemotron is.
+the brain's second speech model, Parakeet, is downloaded and checked as Nemotron is -
+and that uninstall.sh leaves a brain alone, and takes raspotify's settings away with it.
 """
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -398,3 +400,101 @@ def test_only_the_brain_downloads_parakeet(tmp_path, role):
 
     assert result.returncode == 0, result.stderr
     assert ("parakeet" in result.stdout.splitlines()) == (role == "brain")
+
+
+# uninstall.sh
+
+UNINSTALL = SETUP.parent / "uninstall.sh"
+
+
+def run_uninstall(tmp_path, role, arguments=("--yes",), stdin="", change=None):
+    """
+    Runs a copy of uninstall.sh, in a project folder of its own with a venv and models to
+    lose and a home of its own, against stand-ins for sudo, systemctl and apt-get which only
+    note what they were asked - so nothing on the machine running the tests is touched.
+
+    Args:
+        tmp_path: The test's own folder.
+        role: What the scratch install's role file says, "satellite" or "brain".
+        arguments: What's given to uninstall.sh.
+        stdin: What's typed in, for its questions.
+        change: (old, new), swapped in the copy of the script - to point a path under /etc at
+            the test's own folder.
+
+    Returns:
+        The finished process, the project folder, and the file that notes what the stand-ins
+        were asked (which isn't there if they weren't).
+    """
+    project = tmp_path / "project"
+    (project / "venv").mkdir(parents=True)
+    (project / "venv" / "marker").write_text("")
+    (project / "models").mkdir()
+    shutil.copy(SETUP, project / "setup.sh")
+    script = UNINSTALL.read_text()
+    if change:
+        assert change[0] in script
+        script = script.replace(*change)
+    (project / "uninstall.sh").write_text(script)
+
+    home = tmp_path / "home"
+    (home / ".config" / "systemd" / "user").mkdir(parents=True)
+    (home / ".config" / "systemd" / "user" / "voice-assistant.service").write_text("")
+    config = tmp_path / "config"
+    config.mkdir(mode=0o700)
+    (config / "role").write_text(role + "\n")
+
+    log = tmp_path / "asked.log"
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir()
+    for name in ["sudo", "systemctl", "apt-get"]:
+        stand_in = bin_directory / name
+        stand_in.write_text(f'#!/bin/bash\necho "{name} $*" >> "{log}"\n')
+        stand_in.chmod(0o755)
+    # Not root, whoever runs the tests.
+    stand_in = bin_directory / "id"
+    stand_in.write_text('#!/bin/bash\n[ "$1" = -u ] && echo 1000 || exec /usr/bin/id "$@"\n')
+    stand_in.chmod(0o755)
+
+    env = dict(os.environ, PATH=f"{bin_directory}:{os.environ['PATH']}", HOME=str(home), NOVA_CONFIG=str(config))
+    for name in ("NOVA_SETUP_ROLE", "NOVA_DATA"):
+        env.pop(name, None)
+    result = subprocess.run(["bash", str(project / "uninstall.sh"), *arguments], input=stdin, env=env,
+                            capture_output=True, text=True)
+    return result, project, log
+
+
+def test_uninstall_leaves_a_brain_alone(tmp_path):
+    # It only knows a satellite: on a brain it would leave nova-backend enabled and look for
+    # the settings in root's home - and, asked for its venv, delete it.
+    result, project, log = run_uninstall(tmp_path, "brain")
+
+    assert result.returncode == 1
+    assert "This is a brain" in result.stderr
+    assert "nova-backend" in result.stderr
+    assert (project / "venv" / "marker").exists() and (project / "models").is_dir()
+    assert not log.exists()
+
+
+def test_uninstall_still_takes_a_satellite_off(tmp_path):
+    result, project, log = run_uninstall(tmp_path, "satellite")
+
+    assert result.returncode == 0, result.stderr
+    assert not (project / "venv").exists()
+    assert (project / "models").is_dir()
+    assert "systemctl --user disable -q --now voice-assistant" in log.read_text()
+
+
+def test_uninstall_purges_raspotify_so_its_settings_go_too(tmp_path):
+    conf = tmp_path / "raspotify-conf"
+    conf.write_text('LIBRESPOT_NAME="Voice-Assistant"\n')
+    # Asked in order: the venv, the models, the settings and saved data, then raspotify.
+    result, project, log = run_uninstall(tmp_path, "satellite", arguments=(), stdin="n\nn\nn\ny\nn\n",
+                                         change=("/etc/raspotify/conf", str(conf)))
+
+    assert result.returncode == 0, result.stderr
+    asked = log.read_text().splitlines()
+    # Removing it leaves /etc/raspotify/conf, which setup.sh then takes for raspotify
+    # already being set up.
+    assert "sudo apt-get purge -y -qq raspotify" in asked
+    assert not any(line.startswith("sudo apt-get remove") for line in asked)
+    assert (project / "venv" / "marker").exists()
