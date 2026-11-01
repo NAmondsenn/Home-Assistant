@@ -398,10 +398,10 @@ If something isn't working, [docs/troubleshooting.md](docs/troubleshooting.md) g
 
 ## Developing
 
-The tests run anywhere - on a PC without a microphone, speaker or any of the heavy packages - since `tests/conftest.py` stands in for whatever isn't installed:
+The tests run anywhere - on a PC without a microphone, speaker or any of the heavy packages - since `tests/conftest.py` stands in for whatever isn't installed. The few tests which start a fresh Python are the exception, so `python-dotenv` has to be really installed:
 
 ```bash
-pip install pytest ruff numpy soxr soundfile pyyaml requests
+pip install pytest ruff numpy soxr soundfile pyyaml requests python-dotenv
 ```
 ```bash
 python -m pytest
