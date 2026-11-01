@@ -49,6 +49,9 @@ Thumbs.db
 
 # Models - too large for git and should be downloaded from official sources
 models/
+# On the brain, models/ can be a link to a folder with more room. Git doesn't take a
+# link for a folder, so the line above doesn't match it.
+/models
 *.onnx
 *.bin
 piper/
