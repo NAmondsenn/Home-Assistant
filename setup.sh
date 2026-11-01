@@ -357,7 +357,8 @@ ANTHROPIC_API_KEY=${anthropic}
 SPOTIFY_CLIENT_ID=${spotify_id}
 SPOTIFY_CLIENT_SECRET=${spotify_secret}
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
-# For the lights and calendar - a long-lived token from Nova's own Home Assistant user:
+# For the lights and the rest of what Nova does through Home Assistant - a long-lived token
+# from Nova's own Home Assistant user:
 # HA_TOKEN=
 # For music from Navidrome:
 # NAVIDROME_PASSWORD=

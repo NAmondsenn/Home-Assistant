@@ -1,5 +1,6 @@
-# Project tooling settings. Dependencies are still installed from requirements.txt
-# by setup.sh - this file only configures the tools used during development.
+# Project tooling settings. Dependencies are installed by setup.sh, from requirements.lock
+# on a satellite, requirements-backend.txt on the brain, or requirements.txt for a
+# satellite not on Python 3.13 - this file only configures the tools used during development.
 
 [tool.pytest.ini_options]
 # Only tests/ holds automated tests. The scripts in scripts/manual/ need a real
@@ -10,8 +11,8 @@ pythonpath = ["."]
 addopts = "-q"
 
 [tool.ruff]
-# Matches the Python on the Pi (Raspberry Pi OS Trixie), while still checking that
-# nothing newer than Bookworm's 3.11 creeps in.
+# Bookworm's 3.11, the oldest Python the code is tested on, so nothing newer than that
+# creeps in. Trixie, which the Pi and the brain have, comes with 3.13.
 target-version = "py311"
 
 [tool.ruff.lint]

@@ -18,7 +18,7 @@ Description=Voice Assistant
 
 # There's no waiting for the network: a user service can't wait on the system's
 # network-online.target, and the assistant manages without the network anyway,
-# saying so when something needs it (see voice_assistant/network.py).
+# saying it can't reach its brain, and ringing its timers from its copy (see satellite.py).
 
 [Service]
 # The assistant tells systemd once it's loaded, and then every so often that it's

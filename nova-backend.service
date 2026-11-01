@@ -28,8 +28,8 @@ ExecStart=__PROJECT_DIRECTORY__/venv/bin/python __PROJECT_DIRECTORY__/backend.py
 # What it writes - its log, and the user's timers, alarms, memory and routines - is
 # readable by its own user only, and it can never gain more privileges than it starts
 # with. Everything but its own settings and data folders is read-only to it - those two
-# it needs to write, as the settings page saves settings and keys in the first, and the
-# brain keeps timers, memory and passwords in the second.
+# it needs to write, as the settings page saves settings, keys and the satellites'
+# passwords in the first, and the brain keeps timers, memory and logs in the second.
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

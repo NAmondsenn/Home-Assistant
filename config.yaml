@@ -173,7 +173,7 @@ timers:
   # Measured in time, not rounds, since a round's length varies with the message.
   timer_give_up_after: 600
   # Alarms ring in cycles rather than continuously. This has a 2.5 minute sound phase, followed by 2.5 minutes of silence.
-  # This repeats 3 time, lasting about 15 minutes in total.
+  # This repeats 3 times, lasting about 15 minutes in total.
   alarm_ring_duration: 150
   alarm_gap_duration: 150
   alarm_max_cycles: 3
@@ -219,10 +219,11 @@ home_assistant:
   # made by a Home Assistant user of its own who is an administrator - Home Assistant
   # only tells an administrator which room each device is in, which Nova's room and
   # Claude's lights need. An administrator's token can do anything in Home Assistant,
-  # so it's Nova's own code which keeps it to the lights, and scripts and scenes run
-  # from the settings page, and never anything which locks, unlocks or opens. Assist,
-  # for the requests passed on in plain words, only reaches the devices exposed to it.
-  # See the README.
+  # so it's Nova's own code which keeps it to the lights, finding and ringing your
+  # phone, the PC's own buttons, reading how things are for Claude, and the scripts and
+  # scenes run from the settings page or by Claude, and never anything which locks,
+  # unlocks or opens. Assist, for the requests passed on in plain words, only reaches
+  # the devices exposed to it. See the README.
   url: ""
 
 batteries:

@@ -192,8 +192,8 @@ def summarise(rows: List[Dict], brain: bool = False) -> List[str]:
 
     Args:
         rows: The readings, oldest first.
-        brain: Whether the brain was watched. Only the satellite writes latency.jsonl, so
-            its interactions are left out for the brain.
+        brain: Whether the brain was watched. The brain's summary leaves interactions
+            out, though its latency.jsonl has a line for each one too.
     """
     running = [row for row in rows if row.get("pid")]
     if not running:

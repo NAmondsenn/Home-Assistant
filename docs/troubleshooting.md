@@ -178,7 +178,7 @@ The log of whichever it was - the brain or the satellite - ends with what's wron
 
 ## Nova restarted by itself
 
-Both have a watchdog: if one stops getting on for two and a half minutes - stuck on something which should have timed out - systemd restarts it, rather than leaving it deaf. The log says `The main loop hasn't moved for ...s` just before, and systemd `Watchdog timeout` - or only the second, if the whole of it froze. Whatever it was doing then is the thing to look at.
+Both have a watchdog: if one stops getting on for two and a half minutes - stuck on something which should have timed out - it stops telling systemd it's well, and systemd restarts it within a minute after that (so three and a half minutes at most), rather than leaving it deaf. The log says `The main loop hasn't moved for ...s` just before, and systemd `Watchdog timeout` - or only the second, if the whole of it froze. Whatever it was doing then is the thing to look at.
 
 - **On the brain**, that's most often one satellite's request, stuck part way - the lines before show how far it got. Most waits there give up by themselves instead: a recording Nemotron `hadn't finished` is said as "Sorry, something went wrong there", and a satellite which `never said a ... sound had finished` has that sound stopped and logged, with nothing said. While the brain restarts, which takes about 20 seconds, its satellites ring from their copies, and say they can't reach it.
 - **On the satellite**, it's the microphone's loop.

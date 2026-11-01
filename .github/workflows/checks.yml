@@ -1,10 +1,11 @@
 # Runs on every push and pull request: ruff, for the mistakes it can spot without
 # running anything, and the test suite. The tests only need a handful of packages -
 # conftest.py stands in for the hardware and network ones - so this doesn't install
-# the whole of requirements.txt, and takes well under a minute.
+# the whole of requirements.txt, and takes a minute or two.
 #
-# Once a week it also checks requirements.lock and requirements-backend.txt for packages with known security
-# problems, since those turn up without the code changing at all.
+# It also checks requirements.lock and requirements-backend.txt for packages with known
+# security problems, on every push and once a week, since those turn up without the code
+# changing at all.
 name: Checks
 
 on:

@@ -5,7 +5,8 @@ Summarises latency.jsonl, in the logs folder (see voice_assistant/paths.py), and
 latency.jsonl.1 beside it, if there is one: for each stage of an interaction, how long it
 usually takes (p50), how long it takes on a bad day (p95), and the worst seen.
 
-Run on the Pi once the assistant has been used for a while:
+Run on the brain once the assistant has been used for a while, as the brain's user
+(a satellite's latency.jsonl has one line for each wake word, which this doesn't sum up):
     venv/bin/python scripts/latency_report.py
 or point it at another copy of the log:
     venv/bin/python scripts/latency_report.py path/to/latency.jsonl
