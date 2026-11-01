@@ -66,6 +66,14 @@ On the satellite, which takes what it plays back out of what it hears:
 - **It only takes out what Nova plays itself** - Navidrome, its voice and timers. Spotify plays through raspotify, which Nova doesn't hear, so it can't be taken out.
 - **It takes the music down, not away** - about 5 to 14dB on the Pi, more the longer it plays. Loud music right next to the microphone can still drown you out; turning it down a little helps a lot.
 
+## Nova ignores me while something is playing
+
+While a media player which Home Assistant puts in the satellite's room is playing - a video on the PC, say - the wake word has to be surer, and Claude is told, so it can tell speech from what's playing from a request for Nova. Nova's own music doesn't count.
+
+- **The brain's log says `Taken as speech from what's playing, so ignored`** - Claude took what it heard for speech from what's playing, and Nova said and did nothing. It only answers a clear command or question for a voice assistant then. Say it again as one, or pause what's playing. Stop, pause, volume, timers and the other everyday commands don't go to Claude, so they aren't ignored this way.
+- **The brain's log says `Something's playing in the ... satellite's room (...)`** and later `Nothing's playing ... now` - the names in brackets are the media players Home Assistant says are playing there, which may be one you didn't expect, such as a browser tab left on. Paused, idle and off players don't count.
+- **Hard to wake while it plays** - the wake word then needs the higher of two settings on the settings page, under Listening: "How sure Nova must be it heard its wake word", and the same "while something's playing in the room". Lowering the second makes Nova easier to wake then, but lets more of what's playing wake it too.
+
 ## Nova cuts me off, or keeps listening
 
 The brain decides when you've stopped, so these are its settings, in its `~/.config/nova/config.yaml`:
