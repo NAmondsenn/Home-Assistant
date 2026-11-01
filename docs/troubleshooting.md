@@ -97,7 +97,7 @@ The brain plays Navidrome's music to the satellite, and drives Spotify, so these
 - **"Navidrome didn't accept my password"** - check `NAVIDROME_PASSWORD` in the brain's `~/.config/nova/.env` against the Navidrome user named in `navidrome.username`.
 - **A song is skipped straight away** - the brain's log says `Couldn't play '...'` with ffmpeg's reason. Usually a file Navidrome can't convert to MP3; check its transcoding settings.
 - **"Spotify needs signing in again on the settings page"** - sign in again on the settings page, under Music - or, without the page, on the brain: `runuser -u nova -- venv/bin/python -m voice_assistant.spotify_controller`.
-- **"I can't find the ... speaker"** - raspotify, on the satellite, isn't running, or its name doesn't match `spotify.device_name` in the brain's settings. Check `systemctl status raspotify` on the satellite. It's restarted every night anyway (`raspotify-restart.timer`), since its connection can drop silently.
+- **"I can't find the ... speaker"** - raspotify, on the satellite, isn't running or isn't signed in (see the README's "Spotify on a satellite"), or its name doesn't match `spotify.device_name` in the satellite's settings, which must be the same as raspotify's `LIBRESPOT_NAME`. Check `systemctl status raspotify` on the satellite. It's restarted every night anyway (`raspotify-restart.timer`), since its connection can drop silently.
 
 ## The lights don't work
 
