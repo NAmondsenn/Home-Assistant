@@ -714,7 +714,7 @@ install_raspotify() {
     sudo systemctl enable --now raspotify-restart.timer
     sudo systemctl restart raspotify
     done_ "raspotify plays as '${speaker}'"
-    echo "  It needs signing in to Spotify once - see the README."
+    echo "  It needs signing in to Spotify once - see 'Spotify on a satellite' in the README."
 }
 
 # Writes the service from its template, with this install's paths filled in - the
