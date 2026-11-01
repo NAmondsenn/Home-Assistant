@@ -1,14 +1,26 @@
 # Release checklist
 
-Run through this on the Pi whenever a branch is put on it, before relying on it. It takes about 15 minutes. Jot down roughly what time anything odd happens, so it can be matched against the log.
+Run through this whenever a branch is put on Nova, before relying on it. It takes about 15 minutes. Jot down roughly what time anything odd happens, so it can be matched against the log.
 
-## Putting a branch on the Pi
+## Putting a branch on Nova
+
+Almost everything below runs on the brain - the hearing, Claude, the voice, music, timers and Home Assistant - and a satellite only hears the wake word and plays what it's sent. So the branch goes on the brain first, then on each satellite.
+
+On the brain, as your own account (`nova`'s home is closed to your account, so every path is a full one):
+
+```bash
+sudo -u nova -H git -C /home/nova/Home-Assistant fetch
+sudo -u nova -H git -C /home/nova/Home-Assistant switch <branch>
+sudo bash /home/nova/Home-Assistant/update.sh
+```
+
+Then on each satellite, from its clone:
 
 ```bash
 git fetch && git switch <branch> && bash update.sh
 ```
 
-`update.sh` brings the branch up to date, installs `requirements.lock`, fetches any new models, rewrites the service file and restarts Nova, then shows the end of the log. It should end with `Satellite '<name>' ready, for its brain at ...` and `Listening for 'Hey Nova'...`, with no errors above. To go back, switch to the previous branch or tag and run it again.
+`update.sh` brings the branch up to date, installs the packages (`requirements-backend.txt` on the brain, `requirements.lock` on a satellite), fetches any new models, rewrites the service file and restarts Nova, then shows the end of the log. The brain's should show `Nova's brain is ready` and `Listening for satellites on port 10400`, and a satellite's `Satellite '<name>' ready, for its brain at ...` and `Listening for 'Hey Nova'...`, with no errors above. To go back, switch to the previous branch or tag and run `bash update.sh --no-pull`, which uses the code as it is - a tag can't be pulled.
 
 ## Hearing you
 
@@ -45,15 +57,30 @@ With Navidrome (`music.player: navidrome`), and again with Spotify if you still 
 
 ## Everything else
 
-19. "Hey Nova, what's the weather?" (with `weather.location` set).
+19. "Hey Nova, what's the weather?"
 19a. "Hey Nova, turn off the kitchen lights" (whatever yours are called in Home Assistant) - chime, and they go off. "Set the living room lights to 30 percent." "Unlock the front door" - it refuses.
 19b. "Hey Nova, what have I got on Thursday?" and "am I busy this weekend?" - read from your Google Calendar, with the times. "What have I got on this week?" - an overview without the times, in about 15 seconds. "When's my next shift?" and "when's my MOT?" (or anything else on it). Anything at midnight is said as "midnight", not "12 AM".
 19c. "Hey Nova, remember that my favourite colour is green" - "I'll remember that". "What do you know about me?" includes it; "forget my favourite colour" - and it's gone.
+19d. With something playing in the satellite's room - a video on the PC, with HASS.Agent's media player on, say - the brain's log says `Something's playing in the <name> satellite's room (...), so its wake word needs 0.75`, and `Nothing's playing in the <name> satellite's room now, so its wake word needs 0.5` once it stops (unless those settings were changed). While it plays, "Hey Nova, what time is it?" is still answered, and "Hey Nova, stop" still stops. If a line from the video wakes it, it's ignored without a word, and the log says `Taken as speech from what's playing, so ignored`.
 20. Unplug the microphone for 5 seconds, plug it back in, wait 10, then "Hey Nova" - it works without a restart.
-21. Unplug the network cable, wait 10 seconds, then "Hey Nova", wait for the blip, "set a one minute timer" - it's set straight away. "Hey Nova, how far away is the moon?" - straight away, it says it can't reach the internet. Plug the cable back in.
-21a. With the network cable out: "turn on the lamp" says straight away that it can't reach Home Assistant, and Navidrome that it can't reach Navidrome - with no network at all, neither can be. With only the internet down (the router's own connection out, the Pi still on the network), the lights and Navidrome still work.
+21. Set a one minute timer, then unplug the Pi's network cable and wait 10 seconds. "Hey Nova" - it says "Sorry, I can't reach my server right now", and nothing new can be set, as it understands nothing without the brain. When the timer is due it rings from the Pi's own copy, and "Hey Nova" stops it. Plug the cable back in, and once it has reconnected "Hey Nova, what time is it?" is answered again.
+21a. The internet down, but not the network: take the router's connection to the internet out (its WAN cable), leaving the home network up, and wait 10 seconds. "Hey Nova, set a one minute timer" - it's set straight away. "Hey Nova, how far away is the moon?" - straight away, it says it can't reach the internet. The lights ("turn on the lamp") and Navidrome still work, as they're on the home network. Plug the connection back in.
 22. `systemctl --user restart voice-assistant` - it stops within a second or two, rather than hanging for 20.
 23. `kill -STOP $(systemctl --user show -p MainPID --value voice-assistant)` - within about a minute, systemd restarts it (`journalctl --user-unit voice-assistant` says "Watchdog timeout").
+
+## The manual scripts
+
+`scripts/manual/` has four checks which need real hardware or accounts, so nothing runs them for you. None is needed for every release; run one when what it checks has changed. Each is run from the clone with `venv/bin/python`, and the brain's two as the brain's user (with `runuser -u nova -- ` in front, as the README says).
+
+On a satellite:
+
+- `scripts/manual/check_audio.py` - lists the sound devices, records until you stop talking, saves it as `test_audio.wav` and plays it back, through the same microphone and speaker Nova uses. For a new microphone or speaker, or a new `/etc/asound.conf`.
+- `scripts/manual/check_wake_word.py` - counts the wake word's detections until Ctrl+C, and `--sensitivity 0.6`, say, tries another confidence for the run without changing any setting. For tuning `thresholds.wake_word_confidence`.
+
+On the brain:
+
+- `scripts/manual/check_actions.py` - runs sample actions through the ActionExecutor without Claude, and says whether each came back as an ActionResult. Music plays for real if Spotify is signed in.
+- `scripts/manual/check_integration.py` - runs a few sample queries through Claude, the actions they ask for and Piper, and says PASS or FAIL for each. It needs the Claude key in `~/.config/nova/.env`, Spotify signed in for the music query, and Piper's models for the speech, which it writes as `test_integration_N.wav` in the folder it's run from. For a change to Claude's tools or the actions.
 
 ## Leaving it running
 
