@@ -86,7 +86,7 @@ tailscale serve --bg --tcp 10400 tcp://localhost:10400
 
 The brain itself only listens on its own machine, so that's the one way in. The brain's own settings and keys, and everything it saves, are in `~/.config/nova` and `~/.local/share/nova` on its machine, and are where the rest of this README says "the brain".
 
-The brain's log is `journalctl -u nova-backend -f`, and `systemctl restart nova-backend` (as root) restarts it. To update it, run `bash update.sh` there, as root, from its clone.
+The brain's log is `journalctl -u nova-backend -f`, and `systemctl restart nova-backend` (as root) restarts it. To update it, run `bash update.sh` there, as root, from its clone - or `bash update.sh --no-pull` to use the code as it is, after switching branch, say, instead of fetching first.
 
 ### A satellite
 
@@ -122,7 +122,7 @@ bash setup.sh --new-password
 
 It asks for the new password (not shown as it's typed), puts it in `~/.config/nova/.env` in place of the old one, leaving the rest of the file as it was, and restarts the satellite. A Pi with a new machine, or a new SD card, is set up as above with the same name, after New password - adding it again isn't needed, and removing it would move its timers, alarms and routines to the default satellite.
 
-To update to the latest code later - it never touches your settings, keys or saved data - run this on the brain (as root) and on each satellite (as its user):
+To update to the latest code later - it never touches your settings, keys or saved data - run this on the brain (as root) and on each satellite (as its user), adding `--no-pull` to use the code as it is rather than fetching first - after switching branch by hand, say, or to go back to a tag, which can't be pulled:
 
 ```bash
 bash update.sh
