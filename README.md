@@ -90,7 +90,7 @@ The brain's log is `journalctl -u nova-backend -f`, and `systemctl restart nova-
 
 ### A satellite
 
-You'll need a Raspberry Pi with Raspberry Pi OS (64-bit), a USB microphone and a speaker, on the same tailnet as the brain, and the password the settings page (or `add-satellite`) gave for it.
+You'll need a Raspberry Pi with Raspberry Pi OS (64-bit), a USB microphone and a speaker, on the same tailnet as the brain, and the password the settings page (or `add-satellite`) gave for it. There's no standalone mode: without its brain a satellite can only ring its timers and alarms, and say it can't reach it. The speaker and the microphone have to be two separate sound cards, and not the Pi's own HDMI or headphone output, which setup's shared audio step leaves out. For "Hey Nova" itself you'll need a wake word model of your own - see [The wake word model](#the-wake-word-model) - or the satellite answers to "Hey Jarvis" instead.
 
 ```bash
 git clone https://github.com/NAmondsenn/Home-Assistant.git
@@ -309,7 +309,15 @@ Then open `https://nova.<your domain>`. Until you log in, it shows only a login 
 
 ### The wake word model
 
-"Hey Nova" is a custom [openWakeWord](https://github.com/dscripka/openWakeWord) model, `hey_nova.onnx`, and it isn't in this repository - keep a copy somewhere safe, and copy it onto the satellite before running `setup.sh`. Only satellites listen for it. Without it, Nova still starts, but listens for openWakeWord's stock "Hey Jarvis" until `models/hey_nova.onnx` is there.
+"Hey Nova" is a custom [openWakeWord](https://github.com/dscripka/openWakeWord) model, `models/hey_nova.onnx`. It isn't in this repository, and none comes with Nova, so you train one or supply your own. Only satellites listen for it.
+
+**Without it**, Nova still starts, but the satellite listens for openWakeWord's own stock "Hey Jarvis" instead - saying "Hey Nova" does nothing - until `models/hey_nova.onnx` is there. Its log says `No wake word model at ...` as it starts, and setup says the same.
+
+**To train one**, openWakeWord has an automated training utility: a Google Colab notebook which makes a model in under an hour, though its README warns that the model may do poorly in some settings, and a fuller notebook, `notebooks/automatic_model_training.ipynb` in openWakeWord's repository, which can make a better one but needs more development experience. Its README, under "Training new models", has both. Nova needs the `.onnx` file.
+
+**To supply your own**, copy the file into `models/` on each satellite, before running `setup.sh` or after (then restart the satellite). Name it after the wake word, in lower case with each space an underscore, so "Hey Nova" is `hey_nova.onnx`. For another phrase, give `assistant.wake_word` that phrase on the satellite - setup asks for it - and name the model to match, as `hey_computer.onnx` for "Hey Computer". The brain takes the wake word off the front of what it hears using its own `assistant.wake_word`, so give it the same phrase.
+
+Keep a copy of the file somewhere safe, as nothing else has it.
 
 ### Exact package versions
 

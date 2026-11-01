@@ -54,7 +54,7 @@ On the satellite, which plays everything:
 
 - **Is the wake word being heard at all?** Look for `Wake word detected` in the satellite's log. If it never appears, raise your voice or lower `thresholds.wake_word_confidence` in the satellite's settings.
 - **Was the microphone unplugged?** The satellite reopens it by itself - its log says `No audio from the microphone ... reopening it`, then `Microphone working again` - trying again every few seconds at first, then every 30. If it never comes back, check `arecord -l` and the capture card in `/etc/asound.conf`.
-- **Listening for "Hey Jarvis" instead?** Then `models/hey_nova.onnx` is missing on the satellite - its log says so at startup.
+- **Listening for "Hey Jarvis" instead?** Then `models/hey_nova.onnx` is missing on the satellite - its log says so at startup. See the README's "The wake word model" for making or supplying one.
 - **From across the room, quietly** - "Hey Nova" may still be heard, then nothing (`No speech within 3.0s`, in the brain's log), or the wrong words. A small USB microphone only picks up so much; closer, or louder, is the fix.
 - **Muted?** A satellite muted from Home Assistant or the settings page doesn't hear the wake word at all, and stays muted through restarts at either end.
 
