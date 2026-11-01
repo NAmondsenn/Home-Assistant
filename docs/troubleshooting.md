@@ -52,7 +52,7 @@ On the satellite, which plays everything:
 
 ## Nova doesn't hear me
 
-- **Is the wake word being heard at all?** Look for `Wake word detected` in the satellite's log. If it never appears, raise your voice or lower `thresholds.wake_word_confidence` in the satellite's settings.
+- **Is the wake word being heard at all?** Look for `Wake word detected` in the satellite's log. If it never appears, raise your voice or lower "How sure Nova must be it heard its wake word" on the settings page, under Listening - the brain sends that to each satellite, so it isn't set in the satellite's own file.
 - **Was the microphone unplugged?** The satellite reopens it by itself - its log says `No audio from the microphone ... reopening it`, then `Microphone working again` - trying again every few seconds at first, then every 30. If it never comes back, check `arecord -l` and the capture card in `/etc/asound.conf`.
 - **Listening for "Hey Jarvis" instead?** Then `models/hey_nova.onnx` is missing on the satellite - its log says so at startup. See the README's "The wake word model" for making or supplying one.
 - **From across the room, quietly** - "Hey Nova" may still be heard, then nothing (`No speech within 3.0s`, in the brain's log), or the wrong words. A small USB microphone only picks up so much; closer, or louder, is the fix.
@@ -78,7 +78,7 @@ The brain decides when you've stopped, so these are its settings, in its `~/.con
 
 - **The brain's log shows what was heard**, as `Transcription complete (...): '...'`. The known slips are allowed for - a lone "stop" heard as "soap", "sop" or "so" still stops things, and "skip" heard as "scap" still skips.
 - **A lone word, such as "Pause.", ignored** - Nemotron often hears nothing in one, so the brain asks its second model, Parakeet, logged as `Heard nothing, so asked the second model: '...'`. If the brain's log says at startup `The second speech model couldn't be loaded`, it's missing from `models/`: run `update.sh` on the brain to download it. Until then, such words are heard again more slowly, and some are missed.
-- **Words found in noise** - the obvious ones ("Thank you.", "Thanks for watching") are thrown away, logged as `Ignoring '...'`. If a false wake word is the cause, raise `thresholds.wake_word_confidence` in the satellite's settings.
+- **Words found in noise** - the obvious ones ("Thank you.", "Thanks for watching") are thrown away, logged as `Ignoring '...'`. If a false wake word is the cause, raise "How sure Nova must be it heard its wake word" on the settings page, under Listening - the brain sends that to each satellite.
 
 ## Music doesn't play
 

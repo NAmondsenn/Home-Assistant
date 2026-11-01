@@ -351,7 +351,9 @@ The settings most likely to need changing:
 | `backend.address` | On a satellite, its brain, as `name:port`. |
 | `thresholds.vad_threshold` | How sure Nova must be that it's hearing speech. Raise it if noise keeps it listening; lower it if quiet speech is missed. |
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |
-| `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. |
+| `thresholds.wake_word_confidence` | How sure the wake word model must be. Raise it if Nova wakes by itself. The brain's setting, not the satellite's own: on the settings page, under Listening, as "How sure Nova must be it heard its wake word", and the brain sends it to each satellite. Used straight away. |
+| `thresholds.media_wake_word_confidence` | The same while a media player which Home Assistant puts in the satellite's room is playing, as a film's speech can sound like the wake word. Nova's own music doesn't count, and the higher of the two is used then. On the settings page, under Listening, and used straight away. |
+| `wake_clips.keep` | Whether the satellite keeps 3 seconds of audio around each wake (2 before the wake word was heard, 1 after), so that a voice check can be trained on real false wakes. Off unless you switch it on in the satellite's own settings, for as long as it's needed. The clips stay on the Pi, readable by you only, and are never sent anywhere. Used once the satellite restarts. |
 | `logging.log_transcripts` | Whether what's said is kept in the logs. |
 | `sounds.listening_enabled`, `sounds.chime_enabled`, `sounds.reminder_enabled`, `web_search.enabled`, `conversation.history_max_age`, `spotify.pause_while_speaking` | The blip, the chime for done, and the sound before alerts and warnings (alarms, timers and reminders always sound), searching the web, how long a conversation's thread is kept, and pausing Spotify while Nova talks. On the settings page, and used straight away. |
 | `ntfy.quiet_from`, `ntfy.quiet_until` | The night, when only the most urgent alerts are read out. |
