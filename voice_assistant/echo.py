@@ -8,9 +8,9 @@ across the room, and the wake word was often missed under it.
 
 The speaker keeps a copy of everything it plays (PlayedAudio), and the microphone
 passes what it hears through speexdsp's echo canceller (EchoCanceller), the one
-Linux voice software has long used, with that copy lined up against it. speexdsp
-comes with the Pi's own audio packages, so nothing is installed for it; without it,
-the microphone is simply left as it was.
+Linux voice software has long used, with that copy lined up against it. setup.sh
+installs speexdsp (libspeexdsp1) rather than counting on the Pi having it; without
+it, the microphone is simply left as it was.
 
 Lining them up is the hard part, for two reasons found on the Pi:
 

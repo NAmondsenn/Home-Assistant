@@ -235,8 +235,10 @@ install_system_packages() {
         root_do apt-get install -y -qq --no-install-recommends python3-pip python3-venv \
             libsndfile1 ffmpeg bzip2 wget curl tar git ca-certificates
     else
-        root_do apt-get install -y -qq python3-pip python3-venv libportaudio2 libsndfile1 alsa-utils \
-            curl tar git
+        # libspeexdsp1 is the echo canceller's library (see voice_assistant/echo.py). Without
+        # it Nova carries on, but "Hey Nova" isn't heard over the music or its own replies.
+        root_do apt-get install -y -qq python3-pip python3-venv libportaudio2 libsndfile1 libspeexdsp1 \
+            alsa-utils curl tar git
     fi
     done_ "Installed"
 }

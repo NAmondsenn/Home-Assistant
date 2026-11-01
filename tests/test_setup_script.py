@@ -215,6 +215,16 @@ def test_setup_sends_the_user_to_the_page_to_add_a_satellite(tmp_path):
     assert "add-satellite" in closing.stdout
 
 
+def test_a_satellite_installs_the_echo_cancellers_library(tmp_path):
+    # Named rather than counted on the Pi already having it: without it "Hey Nova" isn't
+    # heard over the music or Nova's own replies.
+    result = run_setup(tmp_path, 'root_do() { echo "$*"; }; install_system_packages')
+
+    assert result.returncode == 0, result.stderr
+    installs = next(line for line in result.stdout.splitlines() if line.startswith("apt-get install"))
+    assert "libspeexdsp1" in installs.split()
+
+
 def test_new_password_isnt_for_the_brain(tmp_path):
     env = write_env(tmp_path, "ANTHROPIC_API_KEY=a-key\n")
 
