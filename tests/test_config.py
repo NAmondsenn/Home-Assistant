@@ -242,6 +242,7 @@ IN_AND_OUT = {
     ("thresholds", "recording_timeout"): ([5, 30, 15, 7.5], [4, 30.1, True, 0, -1]),
     ("thresholds", "wake_word_confidence"): ([0.3, 0.95, 0.5], [0.2, 0.29, 0.97, 1, True, 0]),
     ("thresholds", "media_wake_word_confidence"): ([0.3, 0.95, 0.75], [0.2, 0.29, 0.97, 1, True, 0]),
+    ("thresholds", "voice_check"): ([0, 0.2, 0.95], [-0.1, 0.96, 1, True]),
     ("conversation", "history_max_age"): ([0, 3600, 300], [-1, 3601, 1.5]),
     ("mqtt", "host"): (["192.168.1.20", "ha.local", ""], ["http://ha.local", "ha local"]),
     ("mqtt", "port"): ([1, 1883, 65535], [0, 65536, 1883.5]),

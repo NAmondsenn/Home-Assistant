@@ -1765,6 +1765,32 @@ def test_a_wake_word_confidence_saved_is_sent_to_every_satellite(files, name):
     assert [session.states_sent for session in sessions.values()] == [1, 1]
 
 
+def test_the_voice_check_is_on_the_page_from_0_to_0_95(files):
+    label = "How sure Nova must be it's your voice (0 for no check)"
+    page = _page()
+    (shown,) = [setting for setting in page.state()["settings"] if setting["key"] == "thresholds.voice_check"]
+    assert shown["label"] == label and shown["value"] == 0.2 and shown["used"] == "Used straight away"
+    assert (shown["min"], shown["max"], shown["whole"]) == (0, 0.95, False)
+    for refused in (-0.1, 0.96):
+        assert page.save_settings({"thresholds.voice_check": refused}, LOGIN) == {
+            "success": False, "message": f"{label} should be from 0 to 0.95."}
+    assert not (files / "config.yaml").exists()
+
+    # 0 is no check, and it's a setting which is saved like any other.
+    assert page.save_settings({"thresholds.voice_check": 0}, LOGIN)["success"]
+    assert yaml.safe_load((files / "config.yaml").read_text())["thresholds"]["voice_check"] == 0
+
+
+def test_a_voice_check_saved_is_sent_to_every_satellite(files):
+    sessions = {"bedroom": FakeSession(), "kitchen": FakeSession()}
+    page, running = _running(files, sessions=sessions)
+    result = page.save_settings({"thresholds.voice_check": 0.4}, LOGIN)
+
+    assert result == {"success": True, "message": "Saved. It's used straight away.", "restart_needed": False}
+    assert running.section("thresholds")["voice_check"] == 0.4
+    assert [session.states_sent for session in sessions.values()] == [1, 1]
+
+
 def test_hear_it_refuses_a_speed_out_of_range(files):
     page = _page()
     for speed in (2, 0.5, "fast", float("inf"), True, None):

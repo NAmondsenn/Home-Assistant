@@ -549,7 +549,7 @@ class RemoteSatellite:
         self.send("stop_listening")
 
     def set_state(self, volumes: Dict[str, float], muted: bool, longest_request: Optional[float] = None,
-                  wake_confidence: Optional[float] = None) -> bool:
+                  wake_confidence: Optional[float] = None, voice_check: Optional[float] = None) -> bool:
         """
         Sends the satellite its volumes and its mute, which the brain owns - for it to
         mute its wake word by, and ring its alarms by while it can't reach the brain.
@@ -562,6 +562,9 @@ class RemoteSatellite:
                 to leave it as it is - an older satellite ignores it.
             wake_confidence: How sure, from 0 to 1, it must be that it heard its wake
                 word, or None to leave it as it is - an older satellite ignores it.
+            voice_check: How sure, from 0 to 0.99, it must be that a wake word is in the
+                user's voice, 0 being no check, or None to leave it as it is - an older
+                satellite ignores it.
 
         Returns:
             Whether it was sent.
@@ -569,6 +572,8 @@ class RemoteSatellite:
         fields = {} if longest_request is None else {"longest_request": longest_request}
         if wake_confidence is not None:
             fields["wake_confidence"] = wake_confidence
+        if voice_check is not None:
+            fields["voice_check"] = voice_check
         return self.send("state", volumes=volumes, muted=muted, **fields)
 
     def send_alarms(self, entries: List[Dict]) -> bool:

@@ -86,6 +86,13 @@ IN_FLIGHT_SECONDS = 0.3
 # satellite already waits on a brain which says nothing at all.
 SETTLE_WAIT = SILENT_FOR
 
+# How long the satellite's own sound counts as still being heard once it has stopped,
+# in seconds. The voice check judges about the last 2 seconds - 16 of openWakeWord's
+# 80ms frames, each made from 775ms of audio - so "Hey Nova" said in the 3-second gap
+# between a timer's rings still has the ring in it. The rest is the microphone's own
+# delay, and the echo canceller's.
+OWN_SOUND_LINGERS = 2.5
+
 
 class _FromBrain:
     """One of the brain's playbacks, which it knows by its id."""
@@ -178,7 +185,7 @@ class Satellite:
         self.echo = make_echo_canceller(config, self.sample_rate)
         self.speaker = Speaker(sample_rate=self.sample_rate, echo_reference=self.echo.played if self.echo else None)
         self.microphone = Microphone(sample_rate=self.sample_rate, echo=self.echo)
-        self.wake = WakeWordDetector(config=config, microphone=self.microphone)
+        self.wake = WakeWordDetector(config=config, microphone=self.microphone, playing=self._making_sound)
         # Only made when switched on, as it keeps the user's voice - see wake_clips.py.
         clips_config = config.section("wake_clips")
         self.clips = (WakeClips(self.microphone, self._muted_since, most=clips_config.get("most", 400))
@@ -197,8 +204,10 @@ class Satellite:
         self.phrase = Phrase()
         self.ringer = FallbackRinger(self.speaker, self.sounds_folder, self.alarms, self.state)
         # The brain owns the mute, but a satellite which was muted when the brain went
-        # down stays muted until it's back to say otherwise.
+        # down stays muted until it's back to say otherwise. The same goes for how sure
+        # the voice check must be.
         self.wake.set_muted(self.state.muted)
+        self._check_voice_at(self.state.voice_check)
 
         # Made in run(), once it's known whether the last run stopped properly.
         self.link: Optional[SatelliteLink] = None
@@ -342,6 +351,21 @@ class Satellite:
             self.clips.keep(heard_at, score)
         except Exception as e:
             logger.error(f"Couldn't keep a clip of a wake: {e}")
+
+    def _making_sound(self) -> bool:
+        """
+        Whether the satellite is making a sound of its own, or just was - for the wake
+        word, which then counts without the voice check. Called on the listening thread,
+        so it never takes the satellite's lock, which is held while the brain is sent to
+        and while an alarm starts ringing. The speaker's answer takes no lock, and the
+        ringer's only one held for a moment.
+
+        Returns:
+            True while anything plays - an alarm, a reply, music, a chime, from the brain
+            or from the copy - or did within OWN_SOUND_LINGERS, or the copy is ringing
+            an alarm, as it is right through its ring.
+        """
+        return self.speaker.sounded_within(OWN_SOUND_LINGERS) or self.ringer.ringing
 
     def _muted_since(self, position: int) -> bool:
         """
@@ -603,11 +627,33 @@ class Satellite:
             # score at a time, and a change taking effect on the next one is fine.
             self.wake.sensitivity = confidence
             logger.info(f"Listening for the wake word at {confidence} now")
+        # From the copy, which has just taken the message's, if it made sense.
+        self._check_voice_at(self.state.voice_check)
         # Before the unmute takes effect, so no wake or clip can ever see it unmuted with
         # this not yet noted. The brain sends this with every state, so only a real change counts.
         if self.wake.muted and not self.state.muted:
             self._unmuted_at = self.microphone.position + round(IN_FLIGHT_SECONDS * RATE)
         self.wake.set_muted(self.state.muted)
+
+    def _check_voice_at(self, sureness: Optional[float]):
+        """
+        Has the wake word count only when the voice check is this sure it's the user's voice.
+
+        Args:
+            sureness: From 0, for no check, to 0.99, as the state copy keeps it - having
+                left out anything else. None, before the brain has ever said, changes nothing.
+        """
+        if sureness is None or sureness == self.wake.voice_check_threshold:
+            return
+        # A plain assignment, as with the sensitivity.
+        self.wake.voice_check_threshold = sureness
+        if not sureness:
+            logger.info("Not checking it's your voice now")
+        elif self.wake.voice_check is None:
+            # Not "now", which would mislead the first look at the log.
+            logger.info(f"Checking it's your voice at {sureness} once a voice check's been trained")
+        else:
+            logger.info(f"Checking it's your voice at {sureness} now")
 
     def _away_settled(self, message: Dict, payload: bytes):
         # The brain has saved what it was told as the satellite connected, and rings on

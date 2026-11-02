@@ -101,14 +101,19 @@ class Reader:
 class Wake:
     """Hears the wake word whenever the test says - as long as it's listening for it then."""
 
-    def __init__(self, config=None, microphone=None):
+    def __init__(self, config=None, microphone=None, playing=None):
         self.microphone = microphone
         self.heard_at = None
         self.listening = False
+        # What the satellite's state message sets, as on the real one.
+        self.muted = False
+        self.sensitivity = 0.5
+        self.voice_check = None
+        self.voice_check_threshold = 0.2
         self._said = queue.Queue()
 
     def set_muted(self, muted):
-        pass
+        self.muted = muted
 
     def say(self):
         self._said.put(self.microphone.position)
@@ -341,13 +346,13 @@ def world(tmp_path, monkeypatch, make_config):
 
     brains, satellites = [], []
 
-    def make_brain(port=0, clock=False):
+    def make_brain(port=0, clock=False, thresholds=None):
         """
         A brain, listening for satellites - its clock ringing what comes due, if asked,
-        started first, as Brain.run starts it.
+        started first, as Brain.run starts it - with config.yaml's thresholds, if given.
         """
         config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"}, backend={"port": port},
-                             timers={"alarm_ring_duration": 10})
+                             timers={"alarm_ring_duration": 10}, thresholds=thresholds or {})
         made = brain_module.Brain(config)
         brains.append(made)
         if clock:
@@ -433,6 +438,13 @@ def test_a_question_is_asked_and_its_answer_heard(world):
     # Both said, and played on the satellite as they arrived.
     assert world.piper.said[1:] == ["Pasta or curry?", "Pasta it is."]
     assert all(reply.pieces and not reply.stopped for reply in replies("reply"))
+
+
+def test_the_voice_check_setting_reaches_the_satellites_wake_word(world):
+    brain = world.make_brain(thresholds={"voice_check": 0.35})
+    satellite = world.make_satellite(brain)
+    assert wait_for(lambda: caught_up(brain) and satellite.wake.listening)
+    assert wait_for(lambda: satellite.wake.voice_check_threshold == 0.35)
 
 
 def test_an_alarm_rung_while_the_brain_restarted_rings_on_from_it(world):

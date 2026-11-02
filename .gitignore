@@ -62,6 +62,10 @@ bin/
 *.flac
 *.ogg
 
+# The voice check's labels file, if one is ever made in the checkout - it says when the
+# user talked to Nova at home (see scripts/train_voice_check.py).
+labels*.txt
+
 # Saved timers and other runtime state
 data/
 

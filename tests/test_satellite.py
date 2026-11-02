@@ -149,10 +149,15 @@ class FakeMicrophone:
 class FakeWake:
     """Hears the wake word whenever the test says it - as long as it's listening for it then."""
 
-    def __init__(self, config=None, microphone=None):
+    def __init__(self, config=None, microphone=None, playing=None):
         self.microphone = microphone
+        # What the satellite says whether it's making a sound of its own with.
+        self.playing = playing
         self.muted = False
         self.sensitivity = 0.5
+        # A trained check, as the user's Pi has - None for none.
+        self.voice_check = "a trained check"
+        self.voice_check_threshold = 0.2
         self.heard_at = None
         self.listening = False
         self._said = queue.Queue()
@@ -245,6 +250,12 @@ class FakeSpeaker:
 
         threading.Thread(target=feed, daemon=True).start()
         return playback
+
+    def sounded_within(self, seconds):
+        # Only what's playing now - the real one also counts what stopped up to so many
+        # seconds ago, which needs a real output stream.
+        self.lingers = seconds
+        return any(not playback.done and not playback.paused for playback in self.playing)
 
     def files(self):
         return [playback.filename for playback in self.playing if playback.filename]
@@ -465,6 +476,132 @@ def test_a_wake_confidence_which_makes_no_sense_is_ignored(brain, make, sent):
     # And a good one afterwards still counts, so the bad one didn't wedge the state.
     brain.say("state", volumes={}, muted=False, wake_confidence=0.6)
     assert wait_for(lambda: made.wake.sensitivity == 0.6)
+
+
+def test_the_satellite_checks_the_voice_as_surely_as_the_brain_says(brain, make, caplog):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    assert made.wake.voice_check_threshold == 0.2
+    with caplog.at_level("INFO", logger="satellite"):
+        brain.say("state", volumes={}, muted=False, voice_check=0.35)
+        assert wait_for(lambda: made.wake.voice_check_threshold == 0.35)
+        # The brain repeats its state often, and the log shouldn't fill with the same value.
+        brain.say("state", volumes={}, muted=False, voice_check=0.35)
+        brain.say("state", volumes={}, muted=True, voice_check=0.35)
+        assert wait_for(lambda: made.wake.muted is True)
+    assert len([record for record in caplog.records
+                if "Checking it's your voice at 0.35 now" in record.getMessage()]) == 1
+
+    # A state without it changes nothing: an old brain.
+    brain.say("state", volumes={}, muted=False)
+    assert wait_for(lambda: made.wake.muted is False)
+    assert made.wake.voice_check_threshold == 0.35
+
+
+@pytest.mark.parametrize("edge", [0, 0.0, 0.99, 0.5], ids=["int-zero", "zero", "top", "half"])
+def test_a_voice_check_from_0_to_0_99_is_taken(brain, make, edge):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, voice_check=edge)
+    assert wait_for(lambda: made.wake.voice_check_threshold == edge)
+
+
+def test_a_voice_check_of_0_says_its_off(brain, make, caplog):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    with caplog.at_level("INFO", logger="satellite"):
+        brain.say("state", volumes={}, muted=False, voice_check=0)
+        assert wait_for(lambda: made.wake.voice_check_threshold == 0)
+    assert any("Not checking it's your voice now" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("sent", [{"voice_check": "0.3"}, {"voice_check": True}, {"voice_check": False},
+                                  {"voice_check": float("nan")}, {"voice_check": float("inf")},
+                                  {"voice_check": -0.1}, {"voice_check": 1}, {"voice_check": 1.5},
+                                  {"voice_check": None}],
+                         ids=["text", "true", "false", "nan", "inf", "negative", "one", "over-one", "null"])
+def test_a_voice_check_which_makes_no_sense_is_ignored(brain, make, sent):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, voice_check=0.4)
+    assert wait_for(lambda: made.wake.voice_check_threshold == 0.4)
+    brain.say("state", volumes={}, muted=True, **sent)
+    assert wait_for(lambda: made.wake.muted is True)
+
+    assert made.wake.voice_check_threshold == 0.4
+    # And a good one afterwards still counts, so the bad one didn't wedge the state.
+    brain.say("state", volumes={}, muted=False, voice_check=0.3)
+    assert wait_for(lambda: made.wake.voice_check_threshold == 0.3)
+
+
+def test_before_a_check_is_trained_its_setting_says_so(brain, make, caplog):
+    # Not that a check is in force, which would mislead the first look at the log.
+    made = make()
+    made.wake.voice_check = None
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    with caplog.at_level("INFO", logger="satellite"):
+        brain.say("state", volumes={}, muted=False, voice_check=0.35)
+        assert wait_for(lambda: made.wake.voice_check_threshold == 0.35)
+    said = [record.getMessage() for record in caplog.records if "your voice" in record.getMessage()]
+    assert said == ["Checking it's your voice at 0.35 once a voice check's been trained"]
+
+
+def test_the_voice_check_setting_lasts_through_a_restart_while_the_brain_is_away(brain, make, tmp_path):
+    # 0 is the way out if the check stops the user, and the brain being away is when the
+    # wake word alone dismisses an alarm.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, voice_check=0)
+    assert wait_for(lambda: made.wake.voice_check_threshold == 0)
+    assert StateCopy(str(tmp_path / "state.json")).voice_check == 0
+
+    brain.up = False
+    restarted = make(start=False)
+    assert restarted.wake.voice_check_threshold == 0
+
+
+def test_whats_playing_is_told_to_the_wake_word(brain, make):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    assert made.wake.playing() is False
+    # Over the voice check's window, and a little more, after it has stopped.
+    assert made.speaker.lingers == satellite.OWN_SOUND_LINGERS
+
+    brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=1.0, kind="reply", paused=False)
+    assert wait_for(lambda: made.speaker.streams())
+    reply = made.speaker.streams()[0]
+    assert made.wake.playing() is True
+    reply.finish()
+    assert made.wake.playing() is False
+
+    # Paused music makes no sound.
+    brain.say("play_stream", id="song-1", rate=44100, channels=2, volume=1.0, kind="music", paused=True)
+    assert wait_for(lambda: len(made.speaker.streams()) == 2)
+    assert made.wake.playing() is False
+
+
+def test_an_alarm_ringing_from_the_copy_counts_as_its_own_sound(brain, make, tmp_path):
+    # With the brain away, the wake word is the only way to dismiss it - so it's known
+    # from the ringer itself, as well as from the speaker.
+    brain.up = False
+    AlarmCopy(str(tmp_path / "alarm_copy.json")).replace([entry(time.time() - 1)])
+    made = make()
+    assert wait_for(lambda: made.ringer.ringing)
+    made.speaker.sounded_within = lambda seconds: False
+    assert made.wake.playing() is True
+
+
+def test_whats_playing_is_told_without_waiting_for_the_satellites_lock(brain, make):
+    # The lock is held while the brain is sent to, which can take seconds - and the
+    # wake word is asked on the listening thread, with the user waiting.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    told = []
+    with made._lock:
+        asking = threading.Thread(target=lambda: told.append(made.wake.playing()), daemon=True)
+        asking.start()
+        asking.join(timeout=1)
+        assert told == [False]
 
 
 def test_an_old_satellite_ignores_the_longest_request(tmp_path):

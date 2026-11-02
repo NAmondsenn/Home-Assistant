@@ -1,9 +1,12 @@
 """Tests for what the satellite does while it can't reach its brain."""
 
+import json
 import os
 import threading
 import time
 import wave
+
+import pytest
 
 from voice_assistant import fallback
 from voice_assistant.fallback import AlarmCopy, FallbackRinger, Phrase, StateCopy
@@ -279,6 +282,37 @@ def test_the_copy_lasts_through_a_restart(tmp_path):
     assert restored.muted is False
     restored.update({"volumes": {"alarm": 0.2}, "muted": True})
     assert StateCopy(str(tmp_path / "state.json")).muted is True
+
+
+def test_the_voice_check_setting_is_kept_and_nothing_else_new(tmp_path):
+    state = StateCopy(str(tmp_path / "state.json"))
+    assert state.voice_check is None
+    state.update({"volumes": {"alarm": 0.2}, "muted": False, "voice_check": 0, "wake_confidence": 0.75})
+    assert state.voice_check == 0
+    assert json.loads((tmp_path / "state.json").read_text()) == {"volumes": {"alarm": 0.2}, "muted": False,
+                                                                 "voice_check": 0}
+    assert StateCopy(str(tmp_path / "state.json")).voice_check == 0
+
+
+@pytest.mark.parametrize("sent", [{}, {"voice_check": "0.3"}, {"voice_check": True}, {"voice_check": None},
+                                  {"voice_check": float("nan")}, {"voice_check": -0.1}, {"voice_check": 1}],
+                         ids=["old-brain", "text", "bool", "null", "nan", "negative", "one"])
+def test_a_state_without_a_good_voice_check_setting_keeps_the_last(tmp_path, sent):
+    state = StateCopy(str(tmp_path / "state.json"))
+    state.update({"volumes": {}, "muted": False, "voice_check": 0.35})
+    state.update({"volumes": {}, "muted": True, **sent})
+    assert state.voice_check == 0.35 and state.muted is True
+    assert StateCopy(str(tmp_path / "state.json")).voice_check == 0.35
+
+
+@pytest.mark.parametrize("saved", [True, "0", 1.5, -1, None, [0.2]])
+def test_a_saved_voice_check_setting_is_checked_as_the_brains_is(tmp_path, saved):
+    # The file can be edited by hand.
+    (tmp_path / "state.json").write_text(json.dumps({"volumes": {"alarm": 0.3}, "muted": True,
+                                                     "voice_check": saved}))
+    state = StateCopy(str(tmp_path / "state.json"))
+    assert state.voice_check is None
+    assert state.volume("alarm") == 0.3 and state.muted is True
 
 
 def test_the_phrase_is_the_default_until_the_brain_sends_one(tmp_path):

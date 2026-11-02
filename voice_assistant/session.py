@@ -40,6 +40,7 @@ from voice_assistant.settings_page import change_volume, volume_levels
 from voice_assistant.spotify_controller import brains_speaker
 from voice_assistant.timeline import Timeline
 from voice_assistant.vad import make_detector
+from voice_assistant.voice_check import DEFAULT_THRESHOLD as DEFAULT_VOICE_CHECK
 from voice_assistant.volume import VolumeControl
 from voice_assistant.wake_phrase import DEFAULT_WAKE_WORD, strip_wake_word
 
@@ -297,9 +298,10 @@ class Session:
         Sends the satellite its volumes and its mute, which the brain owns: whenever
         either changes, and as it connects. It mutes its wake word by them, and rings
         by them while it can't reach the brain. With them go the longest request and
-        how sure to be of its wake word, which aren't the satellite's to keep but are
-        sent here so a save on the settings page can reach it in the same way - see
-        Brain.apply_settings - as can something starting or stopping in its room.
+        how sure to be of its wake word and of the user's voice, which aren't the
+        satellite's to keep but are sent here so a save on the settings page can reach
+        it in the same way - see Brain.apply_settings - as can something starting or
+        stopping in its room.
 
         Returns:
             Whether it was sent.
@@ -309,6 +311,8 @@ class Session:
             volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
             playing = self.playing_here()
             wake_confidence = self._wake_confidence(playing)
+            # Its default when it's been left empty in config.yaml by hand, as the wake setting falls back to its own.
+            voice_check = _number(self.thresholds.get("voice_check"), DEFAULT_VOICE_CHECK)
             # Said each time it starts and stops, so a satellite that was hard to wake can be
             # traced to what Home Assistant said was playing - a browser tab left on, say.
             if bool(playing) != self._something_played:
@@ -320,7 +324,7 @@ class Session:
                     logger.info(f"Nothing's playing in the {self.satellite.name} satellite's room now, "
                                 f"so its wake word needs {wake_confidence:g}")
             return self.satellite.set_state(volumes, self._muted, self.thresholds.get("recording_timeout", 15.0),
-                                            wake_confidence=wake_confidence)
+                                            wake_confidence=wake_confidence, voice_check=voice_check)
 
     def _wake_confidence(self, playing: List[str]) -> float:
         """

@@ -64,6 +64,8 @@ LIMITS: Dict[Tuple[str, str], Limit] = {
     # Below 0.3 almost anything wakes Nova, and above 0.95 hardly anything does.
     ("thresholds", "wake_word_confidence"): Limit("number", 0.3, 0.95),
     ("thresholds", "media_wake_word_confidence"): Limit("number", 0.3, 0.95),
+    # 0 is no check, and above 0.95 hardly any wake would pass it.
+    ("thresholds", "voice_check"): Limit("number", 0, 0.95),
     ("conversation", "history_max_age"): Limit("number", 0, 3600, True),
     ("mqtt", "host"): Limit("host"),
     ("mqtt", "port"): Limit("number", 1, 65535, True),

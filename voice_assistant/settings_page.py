@@ -108,6 +108,7 @@ EDITABLE = [
     ("thresholds", "wake_word_confidence", "How sure Nova must be it heard its wake word", "now"),
     ("thresholds", "media_wake_word_confidence",
      "How sure Nova must be it heard its wake word while something's playing in the room", "now"),
+    ("thresholds", "voice_check", "How sure Nova must be it's your voice (0 for no check)", "now"),
     ("logging", "log_transcripts", "Keep what's said in the logs", "now"),
     ("sounds", "listening_enabled", "The blip when Nova's listening", "now"),
     ("sounds", "chime_enabled", "The chime for done", "now"),
