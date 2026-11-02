@@ -8,7 +8,8 @@ satellite kept, and saves it where the satellite loads it from. Run it on the Pi
     venv/bin/python scripts/train_voice_check.py labels.txt
     systemctl --user restart voice-assistant
 
-It learns from the wake word model's own features, 80ms at a time, as Nova hears them:
+It learns from the wake word model's own features, 80ms at a time, as Nova hears them,
+each file after 2 seconds of silence:
 
     you            the moments scoring 0.5 or more, of each recording in
                    wake/hey_nova and each clip marked pos
@@ -25,10 +26,11 @@ then pos (you, asking Nova something), neg (it woke with nobody talking to it) o
 Before training on everything, it says how the check does on clips it hasn't learnt
 from: --rounds times, a quarter of each kind of clip is held back and the rest trained
 on, and a held-back clip counts as kept if any moment of it the wake model scored 0.5
-or more passes the check - at 0.2, 0.3 and 0.5, the settings worth choosing between.
-The recordings are always trained on. Then it trains on everything and saves the check,
-readable by you only, as ~/.local/share/nova/voice_check.json. The satellite loads it
-when it starts.
+or more passes the check - at 0.2, 0.3 and 0.5, the settings worth choosing between. A
+clip with no such moment when it's scored again is counted on its own line. The
+recordings are always trained on, and each run gives the same results as the last.
+Then it trains on everything and saves the check, readable by you only, as
+~/.local/share/nova/voice_check.json. The satellite loads it when it starts.
 
 It deletes nothing. Once you're happy with the check, the recordings and the clips can
 be deleted, and wake_clips.keep switched back off.
@@ -49,9 +51,11 @@ sys.path.insert(0, PROJECT_DIRECTORY)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from record_wake_samples import HEY_NOVA_FOLDER, MIN_SCORE, NOT_HEY_NOVA_FOLDER, RATE
-from voice_assistant import paths, voice_check
+from voice_assistant import voice_check, wake_clips
 
-CLIPS_FOLDER = "clips"
+# Where record_wake_samples.py and the satellite keep what's trained on.
+WAKE_FOLDER = os.path.dirname(wake_clips.FOLDER)
+CLIPS_FOLDER = os.path.basename(wake_clips.FOLDER)
 
 LABELS = ("pos", "neg", "drop")
 
@@ -66,6 +70,13 @@ SETTINGS = (0.2, 0.3, 0.5)
 # openWakeWord works through audio 80ms at a time - wake_word.py's CHUNK_SAMPLES, which
 # isn't imported, so this file needn't load openWakeWord for --help or its tests.
 CHUNK_SAMPLES = 1280
+
+# Seconds of silence the model hears after a reset, before each file. A reset leaves it
+# remembering random noise, which the next second or so of features would be partly
+# made of - and different every run - while the satellite has always heard the room
+# for a couple of seconds before anything can wake it. 2 seconds clears it all, as
+# openWakeWord's own predict_clip pads a clip with silence.
+LEAD_IN_SECONDS = 2
 
 # Each 80ms of a file: the wake word model's score, and its features for that moment.
 Steps = List[Tuple[float, np.ndarray]]
@@ -124,7 +135,8 @@ def read_wav(path: str) -> np.ndarray:
 def steps(audio: np.ndarray, model, key: str) -> Steps:
     """
     Scores a file as the satellite listens, 80ms at a time from a model which has been
-    reset, keeping the features of each moment - what the satellite scores the check on.
+    reset and then heard LEAD_IN_SECONDS of silence, keeping the features of each
+    moment - what the satellite scores the check on.
 
     Args:
         audio: 16-bit samples at 16kHz.
@@ -136,6 +148,9 @@ def steps(audio: np.ndarray, model, key: str) -> Steps:
         scored, as openWakeWord's own training leaves it.
     """
     model.reset()
+    silence = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+    for _ in range(LEAD_IN_SECONDS * RATE // CHUNK_SAMPLES):
+        model.predict(silence)
     found = []
     for start in range(0, len(audio) - CHUNK_SAMPLES + 1, CHUNK_SAMPLES):
         score = float(model.predict(audio[start:start + CHUNK_SAMPLES]).get(key, 0))
@@ -197,7 +212,9 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
               rounds: int, fit: Callable, show: Callable[[str], None]):
     """
     Says how the check does on clips it hasn't learnt from, holding back a quarter of
-    each kind of clip a number of times, at each of SETTINGS.
+    each kind of clip a number of times, at each of SETTINGS. A held-back clip with no
+    moment at MIN_SCORE or more, scored again from silence, couldn't have woken Nova
+    whatever the check said, so it's counted on its own rather than as kept or stopped.
 
     Args:
         recordings: The steps of the "Hey Nova" recordings and of the others, always trained on.
@@ -213,9 +230,11 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
         return
     show(f"Held back a quarter of the clips {rounds} times - {held_requests} requests and "
          f"{held_false_wakes} false wakes each time:")
-    # The same clips each run, so a change to the labels is all that changes the results.
+    # The same clips held back each run - and the features and the training are the same
+    # each run too - so the results only change when the files or the labels do.
     rng = np.random.default_rng(0)
     kept = {setting: [0, 0] for setting in SETTINGS}
+    reached, unheard = [0, 0], [0, 0]
     for _ in range(rounds):
         out_requests = set(rng.permutation(len(requests))[:held_requests])
         out_false_wakes = set(rng.permutation(len(false_wakes))[:held_false_wakes])
@@ -225,12 +244,19 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
         for clips, held, side in ((requests, out_requests, 0), (false_wakes, out_false_wakes, 1)):
             for i in held:
                 best = best_check_score(pipeline, clips[i])
+                if best is None:
+                    unheard[side] += 1
+                    continue
+                reached[side] += 1
                 for setting in SETTINGS:
-                    kept[setting][side] += best is not None and best >= setting
+                    kept[setting][side] += best >= setting
     for setting in SETTINGS:
         requests_kept, false_wakes_kept = kept[setting]
-        show(f"  at {setting}, kept {_share(requests_kept, rounds * held_requests, 'requests')} and stopped "
-             f"{_share(rounds * held_false_wakes - false_wakes_kept, rounds * held_false_wakes, 'false wakes')}")
+        show(f"  at {setting}, kept {_share(requests_kept, reached[0], 'requests')} and stopped "
+             f"{_share(reached[1] - false_wakes_kept, reached[1], 'false wakes')}")
+    if any(unheard):
+        show(f"  {unheard[0]} requests and {unheard[1]} false wakes held back never scored {MIN_SCORE} or more "
+             f"again, so they're left out")
 
 
 def _wavs(folder: str) -> List[str]:
@@ -320,7 +346,6 @@ def main():
     parser.add_argument("--rounds", type=_rounds, default=ROUNDS,
                         help=f"how many times clips are held back to say how it does (default {ROUNDS})")
     arguments = parser.parse_args()
-    wake_folder = os.path.join(paths.DATA_DIR, "voice-samples", "wake")
 
     # Imported here rather than at the top, so --help and the rest can be used and
     # tested on a machine without the Pi's wake word packages.
@@ -335,7 +360,7 @@ def main():
     # The same wake word model as Nova, so the features are the ones it scores the check on.
     detector = WakeWordDetector(config=Config())
     try:
-        train(wake_folder, arguments.labels, voice_check.FILE, detector.wake_word_key,
+        train(WAKE_FOLDER, arguments.labels, voice_check.FILE, detector.wake_word_key,
               lambda path: steps(read_wav(path), detector.model, detector.wake_word_key),
               rounds=arguments.rounds, show=show)
     except (OSError, ValueError) as e:

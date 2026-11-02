@@ -93,7 +93,12 @@ def _everything(folder):
 
 
 class FakeModel:
-    """Stands in for openWakeWord's Model, scoring each 80ms as told and keeping what it was given."""
+    """
+    Stands in for openWakeWord's Model, scoring each 80ms of sound as told - silence
+    scores 0 - and keeping what it was given. Like the real one, a reset fills what it
+    remembers with random noise, and the features of a moment are the last 16 80ms it
+    heard, each marked with the first sample of its 80ms.
+    """
 
     def __init__(self, scores):
         self.scores = list(scores)
@@ -103,15 +108,15 @@ class FakeModel:
 
     def reset(self):
         self.calls.append("reset")
+        self.heard = list(np.random.default_rng().uniform(-1000, 1000, FRAMES))
 
     def predict(self, chunk):
-        self.calls.append(len(chunk))
-        self.last = chunk
-        return {"hey_nova": self.scores.pop(0)}
+        self.calls.append(("sound" if chunk.any() else "silence", len(chunk)))
+        self.heard = self.heard[1:] + [float(chunk[0])]
+        return {"hey_nova": self.scores.pop(0) if chunk.any() else 0.0}
 
     def get_features(self, frames):
-        # The features of a moment as openWakeWord gives them, marked with the audio it last heard.
-        return np.full((1, frames, FEATURES), float(self.last[0]), dtype=np.float32)
+        return np.repeat(np.array(self.heard[-frames:], dtype=np.float32)[:, None], FEATURES, axis=1)[None]
 
 
 def test_the_labels_are_read(tmp_path):
@@ -133,17 +138,29 @@ def test_labels_which_dont_make_sense_are_refused(tmp_path, text, wanted):
         train.read_labels(str(labels))
 
 
-def test_each_80ms_is_scored_from_a_reset_model_with_that_moments_features(tmp_path):
+def test_each_80ms_is_scored_after_a_reset_and_2_seconds_of_silence_with_that_moments_features():
     model = FakeModel([0.1, 0.7, 0.4])
     # Three whole chunks, each a different level, and a part chunk left over.
     audio = np.concatenate([np.full(1280, level, dtype=np.int16) for level in (1, 2, 3)] + [np.zeros(500, np.int16)])
 
     steps = train.steps(audio, model, "hey_nova")
 
-    assert model.calls == ["reset", 1280, 1280, 1280]
+    # Silence first, as the satellite has heard the room before anything can wake it,
+    # and none of it is a step.
+    assert model.calls == ["reset"] + [("silence", 1280)] * (2 * RATE // 1280) + [("sound", 1280)] * 3
     assert [score for score, _ in steps] == [0.1, 0.7, 0.4]
     assert [features.shape for _, features in steps] == [(FRAMES, FEATURES)] * 3
-    assert [features[0, 0] for _, features in steps] == [1, 2, 3]
+    assert [features[-1, 0] for _, features in steps] == [1, 2, 3]
+    # The first step's moment has silence before it, not what the reset left.
+    assert list(steps[0][1][:-1, 0]) == [0] * (FRAMES - 1)
+
+
+def test_a_file_scored_twice_gives_the_same_features_every_time():
+    audio = np.concatenate([np.full(1280, level, dtype=np.int16) for level in (1, 2, 3)])
+    first = train.steps(audio, FakeModel([0.1, 0.7, 0.4]), "hey_nova")
+    second = train.steps(audio, FakeModel([0.1, 0.7, 0.4]), "hey_nova")
+    for (_, one), (_, other) in zip(first, second):
+        assert np.array_equal(one, other)
 
 
 def test_a_wav_is_read_as_16_bit_samples(tmp_path):
@@ -208,6 +225,7 @@ def test_it_trains_from_the_labels_says_how_held_back_clips_did_and_writes_the_c
     assert "Held back a quarter of the clips 3 times - 2 requests and 3 false wakes each time:" in shown
     for setting in ("0.2", "0.3", "0.5"):
         assert f"  at {setting}, kept 6 of 6 requests (100%) and stopped 9 of 9 false wakes (100%)" in shown
+    assert not any("never scored" in line for line in shown)
     assert any("1 marked drop and 1 not listed" in line for line in shown)
 
     # The check written loads, and tells the user's voice from the rest.
@@ -292,3 +310,33 @@ def test_a_labelled_clip_which_isnt_there_is_refused(tmp_path):
         train.train(str(wake), str(labels), str(tmp_path / "voice_check.json"), "hey_nova", Extract(users),
                     show=lambda line: None, fit=FakeFit())
     assert not os.path.exists(tmp_path / "voice_check.json")
+
+
+def test_training_twice_on_the_same_files_gives_the_same_results(tmp_path):
+    pytest.importorskip("openwakeword.custom_verifier_model")
+    wake, labels, users = _wake_folder(tmp_path)
+    runs = []
+    for _ in range(2):
+        shown = []
+        data = train.train(str(wake), str(labels), str(tmp_path / "voice_check.json"), "hey_nova", Extract(users),
+                           rounds=3, show=shown.append)
+        runs.append((shown, data))
+    assert runs[0] == runs[1]
+
+
+def test_held_back_clips_which_never_reach_0_5_again_are_counted_on_their_own(tmp_path):
+    wake, labels, users = _wake_folder(tmp_path)
+
+    def extract(path):
+        # The requests reach 0.5 when scored again, and the false wakes never do.
+        score = 0.9 if os.path.basename(path) in users else 0.3
+        return [(score, np.zeros((FRAMES, FEATURES), dtype=np.float32))]
+
+    shown = []
+    train.train(str(wake), str(labels), str(tmp_path / "voice_check.json"), "hey_nova", extract, rounds=4,
+                show=shown.append, fit=FakeFit())
+
+    # 2 requests and 3 false wakes held back each round, for 4 rounds - and FakeFit
+    # passes everything.
+    assert "  at 0.2, kept 8 of 8 requests (100%) and stopped 0 of 0 false wakes" in shown
+    assert "  0 requests and 12 false wakes held back never scored 0.5 or more again, so they're left out" in shown

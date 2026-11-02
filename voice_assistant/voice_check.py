@@ -33,8 +33,10 @@ FILE = os.path.join(paths.DATA_DIR, "voice_check.json")
 
 VERSION = 1
 
-# The wake word model Nova's own wake word has - as wake_word.py names it.
+# The wake word model Nova's own wake word has - as wake_word.py names it - and how many
+# frames of features it judges each moment on.
 DEFAULT_MODEL = "hey_nova"
+DEFAULT_FRAMES = 16
 
 # How many numbers openWakeWord's features have for each frame, whatever the wake word.
 # A fitted pipeline only knows how many there are in all, so this splits them into frames.
@@ -56,6 +58,8 @@ class VoiceCheck:
         self.scale = np.asarray(scale, dtype=np.float64)
         self.weights = np.asarray(weights, dtype=np.float64)
         self.bias = float(bias)
+        # Whether the last score wasn't a number, so a run of them is warned of once.
+        self._broken = False
 
     def score(self, features: np.ndarray) -> float:
         """
@@ -67,7 +71,8 @@ class VoiceCheck:
                 get_features gives them - shaped (1, 16, 96) for hey_nova.
 
         Returns:
-            From 0 to 1.
+            From 0 to 1 - and 1, so it passes, if the numbers overflow, as the
+            user shut out is worse than a film waking Nova.
 
         Raises:
             ValueError: The features aren't as many as the check was trained on.
@@ -75,7 +80,17 @@ class VoiceCheck:
         x = np.asarray(features, dtype=np.float64).reshape(-1)
         if x.size != self.weights.size:
             raise ValueError(f"{x.size} features, but the voice check was trained on {self.weights.size}")
-        z = float(np.dot(self.weights, (x - self.mean) / self.scale)) + self.bias
+        # Finite numbers can still overflow - a scale of 1e-320 makes any feature
+        # infinite - which is told apart below, so numpy needn't warn of it as well.
+        with np.errstate(all="ignore"):
+            z = float(np.dot(self.weights, (x - self.mean) / self.scale)) + self.bias
+        if not math.isfinite(z):
+            if not self._broken:
+                logger.warning("The voice check's numbers overflowed, so it's letting the wake word through "
+                               "until they don't")
+            self._broken = True
+            return 1.0
+        self._broken = False
         # math.exp overflows past about 709, so it's only ever given a z at or under 0 - a
         # moment that far from the user's voice, or that close to it, is simply 0 or 1.
         if z >= 0:
@@ -106,7 +121,7 @@ def _numbers(data: dict, key: str, length: int) -> np.ndarray:
     return array
 
 
-def _from_data(data, model: str) -> VoiceCheck:
+def _from_data(data, model: str, window: int) -> VoiceCheck:
     """
     A check from what its file holds, if every part of it is as it should be.
 
@@ -123,6 +138,10 @@ def _from_data(data, model: str) -> VoiceCheck:
     frames, features = data.get("frames"), data.get("features")
     if not _is_count(frames) or not _is_count(features):
         raise ValueError("its 'frames' and 'features' aren't both whole numbers above 0")
+    if (frames, features) != (window, FEATURES):
+        # It would load, and then fail on every moment the wake model scored.
+        raise ValueError(f"it's for {frames} frames of {features} features, not the wake word model's "
+                         f"{window} of {FEATURES}")
     length = frames * features
     mean = _numbers(data, "mean", length)
     scale = _numbers(data, "scale", length)
@@ -136,7 +155,7 @@ def _from_data(data, model: str) -> VoiceCheck:
     return VoiceCheck(mean, scale, weights, bias)
 
 
-def load(path: str, model: str = DEFAULT_MODEL) -> Optional[VoiceCheck]:
+def load(path: str, model: str = DEFAULT_MODEL, frames: int = DEFAULT_FRAMES) -> Optional[VoiceCheck]:
     """
     Loads the trained check. Never raises: anything wrong means no check, so Nova
     wakes on the wake word alone rather than not at all.
@@ -145,16 +164,23 @@ def load(path: str, model: str = DEFAULT_MODEL) -> Optional[VoiceCheck]:
         path: Where the check is saved - FILE, unless it's a test.
         model: The wake word model listened with, which the check must have been
             trained on.
+        frames: How many frames of features that model judges each moment on - its
+            model_inputs in openWakeWord.
 
     Returns:
         The check, or None if there isn't one, or it won't load - which logs a warning.
     """
+    missing = object()
     try:
-        data = storage.load_json(path)
-        if data is None:
+        # A file of JSON null is broken, not missing, so it mustn't look like no file.
+        data = storage.load_json(path, default=missing)
+        if data is missing:
             return None
-        return _from_data(data, model)
-    except (OSError, ValueError) as e:
+        return _from_data(data, model, frames)
+    except Exception as e:
+        # Anything at all, since it's loaded as the satellite starts and must never stop
+        # it - a number too big for a float raises OverflowError, and JSON nested too
+        # deeply RecursionError.
         logger.warning(f"Couldn't use the voice check in {path}, so any voice saying the wake word "
                        f"wakes Nova: {e}")
         return None
@@ -211,5 +237,5 @@ def save(data: dict, path: str):
         ValueError: It wouldn't load - nothing is written, so the last check, if any, stays.
         OSError: It couldn't be written, and the last check, if any, is left as it was.
     """
-    _from_data(data, data.get("model"))
+    _from_data(data, data.get("model"), data.get("frames"))
     storage.save_json(path, data)
