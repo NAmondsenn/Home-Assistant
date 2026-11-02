@@ -280,3 +280,28 @@ def test_the_times_it_ran_dry_are_counted(streams):
     streams[0].callback(out, 480, None, SimpleNamespace(output_underflow=True))
     streams[0].callback(out, 480, None, SimpleNamespace(output_underflow=False))
     assert speaker.ran_dry.total == 1
+
+
+def test_it_says_whether_its_own_sound_has_been_heard_lately(streams):
+    # So the wake word can tell the microphone may be hearing Nova as well as the user.
+    speaker = Speaker(sample_rate=RATE)
+    assert not speaker.sounded_within(60)
+    streams[0].pull()
+    # Asked for audio with nothing to play.
+    assert not speaker.sounded_within(60)
+
+    speaker.play(np.full(480, 0.5))
+    streams[0].pull()
+    # Still coming out of the speaker: the stream holds 50ms ahead, and the block is 10ms.
+    assert speaker.sounded_within(0)
+    time.sleep(0.1)
+    assert not speaker.sounded_within(0)
+    assert speaker.sounded_within(5)
+
+
+def test_a_paused_sound_isnt_heard(streams):
+    speaker = Speaker(sample_rate=RATE)
+    playback = speaker.play(np.full(960, 0.5))
+    playback.paused = True
+    streams[0].pull()
+    assert not speaker.sounded_within(60)

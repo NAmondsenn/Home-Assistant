@@ -46,8 +46,11 @@ class FakePreprocessor:
 
     def __init__(self, model):
         self.model = model
+        # How many frames each moment's features were asked for.
+        self.asked = []
 
     def get_features(self, frames):
+        self.asked.append(frames)
         return np.full((1, frames, voice_check_module.FEATURES), float(len(self.model.chunks)))
 
 
@@ -114,7 +117,7 @@ def stream(monkeypatch):
     return microphone, feed
 
 
-def save_check(models, score, model="hey_nova"):
+def save_check(models, score, model="hey_nova", frames=voice_check_module.DEFAULT_FRAMES):
     """
     Saves a check which gives every moment the same score, as a real one would be saved.
 
@@ -122,10 +125,11 @@ def save_check(models, score, model="hey_nova"):
         models: The models folder, from the models fixture - the check goes beside it.
         score: The score it gives, from 0 to 1, but neither.
         model: The wake word model it's for.
+        frames: How many frames of features it judges.
     """
-    length = voice_check_module.DEFAULT_FRAMES * voice_check_module.FEATURES
+    length = frames * voice_check_module.FEATURES
     voice_check_module.save({
-        "version": 1, "model": model, "frames": voice_check_module.DEFAULT_FRAMES,
+        "version": 1, "model": model, "frames": frames,
         "features": voice_check_module.FEATURES,
         "mean": [0.0] * length, "scale": [1.0] * length, "weights": [0.0] * length,
         # With no weights, the score is the bias alone, put through the sigmoid.
@@ -377,7 +381,8 @@ def test_a_check_which_goes_wrong_lets_the_wake_through(make_config, models, str
     with caplog.at_level(logging.INFO, logger=wake_word_module.__name__):
         assert detector.listen_once() == 0.9
     warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
-    assert len(warnings) == 1 and "1536 features" in warnings[0]
+    # With the kind of fault, as a KeyError's message alone is just the key.
+    assert len(warnings) == 1 and "ValueError('1536 features" in warnings[0]
     assert wake_word_log(caplog)[-1] == "Wake word detected! (confidence: 0.90)"
 
 
@@ -396,3 +401,109 @@ def test_a_check_for_another_wake_word_model_isnt_used(make_config, models, stre
 
     feed(1)
     assert detector.listen_once() == 0.9
+
+
+def test_the_check_is_given_the_wake_word_models_own_window(make_config, models, stream, monkeypatch):
+    # A wake word model which judges 8 frames, not the usual 16, so a 16 written in
+    # anywhere would ask for the wrong window - and the check, failing on it, would let
+    # the wake through.
+    microphone, feed = stream
+    monkeypatch.setattr(FakeModel, "frames", 8)
+    save_check(models, 0.04, frames=8)
+    FakeModel.scores = [0.9, 0.1]
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    assert detector.voice_check is not None
+
+    feed(2)
+    assert detector.listen_once(until=lambda: len(detector.model.chunks) == 2) is None
+    assert detector.model.preprocessor.asked == [8]
+
+
+def test_a_stopped_hey_nova_is_logged_once_however_many_moments_it_scores(make_config, models, stream, caplog):
+    # One "Hey Nova" scores over several 80ms moments in a row, and each is judged - but
+    # it's one utterance to count. The next, after the score has dropped, is logged again.
+    microphone, feed = stream
+    FakeModel.scores = [0.81, 0.9, 0.85, 0.1, 0.8, 0.7]
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    detector.voice_check = check = FakeCheck([0.04, 0.06, 0.05, 0.03, 0.02])
+    caplog.clear()
+
+    feed(6)
+    with caplog.at_level(logging.INFO, logger=wake_word_module.__name__):
+        assert detector.listen_once(until=lambda: len(detector.model.chunks) == 6) is None
+    # Every moment over the wake setting is still asked about.
+    assert len(check.asked) == 5
+    assert wake_word_log(caplog) == ["Heard 'Hey Nova' (0.81) but not in your voice (0.04), so not waking",
+                                     "Heard 'Hey Nova' (0.80) but not in your voice (0.03), so not waking"]
+
+
+def test_a_later_moment_in_the_users_voice_still_wakes_it_after_a_stopped_one(make_config, models, stream):
+    microphone, feed = stream
+    FakeModel.scores = [0.81, 0.9]
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone)
+    detector.voice_check = FakeCheck([0.04, 0.5])
+
+    feed(2)
+    assert detector.listen_once() == 0.9
+
+
+def detector_over(make_config, microphone, playing):
+    """A detector whose satellite says whether it's making a sound with playing, and a check which says no."""
+    detector = WakeWordDetector(config=make_config(assistant={"wake_word": "Hey Nova"}), microphone=microphone,
+                                playing=playing)
+    detector.voice_check = FakeCheck([0.04])
+    return detector
+
+
+def test_over_novas_own_sound_the_wake_word_alone_wakes_it(make_config, models, stream, caplog):
+    # An alarm ringing, a reply or music: the user's voice is mixed with the speaker's,
+    # and the wake word is how they stop it - with the brain away, the only way.
+    microphone, feed = stream
+    FakeModel.scores = [0.81]
+    detector = detector_over(make_config, microphone, lambda: True)
+    caplog.clear()
+
+    feed(1)
+    with caplog.at_level(logging.INFO, logger=wake_word_module.__name__):
+        assert detector.listen_once() == 0.81
+    assert wake_word_log(caplog)[-1] == ("Wake word detected! (confidence: 0.81, voice: 0.04 - not checked, "
+                                         "over Nova's own sound)")
+
+
+def test_with_nothing_of_its_own_playing_the_check_applies(make_config, models, stream):
+    microphone, feed = stream
+    FakeModel.scores = [0.81]
+    detector = detector_over(make_config, microphone, lambda: False)
+
+    feed(1)
+    assert detector.listen_once(until=lambda: len(detector.model.chunks) == 1) is None
+    assert detector.heard_at is None
+
+
+def test_when_it_cant_tell_whether_nova_is_making_a_sound_the_wake_word_counts(make_config, models, stream, caplog):
+    def playing():
+        raise RuntimeError("the speaker has gone")
+
+    microphone, feed = stream
+    FakeModel.scores = [0.81]
+    detector = detector_over(make_config, microphone, playing)
+
+    feed(1)
+    with caplog.at_level(logging.INFO, logger=wake_word_module.__name__):
+        assert detector.listen_once() == 0.81
+    warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "RuntimeError('the speaker has gone')" in warnings[0]
+
+
+def test_whats_playing_is_only_asked_when_the_check_would_stop_a_wake(make_config, models, stream):
+    # It's asked on the listening thread, so never on an ordinary moment, nor when the
+    # check lets the wake through anyway.
+    asked = []
+    microphone, feed = stream
+    FakeModel.scores = [0.1, 0.2, 0.9, 0.95]
+    detector = detector_over(make_config, microphone, lambda: asked.append(1) or False)
+    detector.voice_check = FakeCheck([0.04, 0.6])
+
+    feed(4)
+    assert detector.listen_once() == 0.95
+    assert asked == [1]

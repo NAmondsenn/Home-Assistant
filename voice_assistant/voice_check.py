@@ -109,6 +109,23 @@ def _is_number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def is_threshold(value) -> bool:
+    """
+    Whether a setting for how sure the check must be can be used - the brain's, or the
+    satellite's saved copy of it, which can be edited by hand. Held to the same care as
+    the wake word's, as the Pi has nobody at the keyboard to notice.
+
+    Args:
+        value: The setting.
+
+    Returns:
+        True for a number from 0, which switches the check off, to 0.99. At 1 or over it
+        would stop the user too, as the check is never that sure. Text such as "0.3",
+        True and NaN are refused.
+    """
+    return _is_number(value) and 0 <= value <= 0.99
+
+
 def _is_count(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 

@@ -5,7 +5,7 @@ Trains Nova's voice check - a check that it's you saying "Hey Nova", to tell you
 film - on what scripts/record_wake_samples.py recorded and on the wake clips the
 satellite kept, and saves it where the satellite loads it from. Run it on the Pi:
 
-    venv/bin/python scripts/train_voice_check.py labels.txt
+    venv/bin/python scripts/train_voice_check.py
     systemctl --user restart voice-assistant
 
 It learns from the wake word model's own features, 80ms at a time, as Nova hears them,
@@ -16,9 +16,11 @@ each file after 2 seconds of silence:
     not you        every moment of each recording in wake/not_hey_nova and each
                    clip marked neg
 
-The labels file says what each clip in wake/clips was, one to a line - its file name,
-then pos (you, asking Nova something), neg (it woke with nobody talking to it) or drop
-(not sure, so left out). Clips which aren't listed are left out too.
+The labels file, ~/.local/share/nova/voice-samples/wake/labels.txt beside the clips
+unless another is given, says what each clip in wake/clips was, one to a line - its file
+name, then pos (you, asking Nova something), neg (it woke with nobody talking to it) or
+drop (not sure, so left out). Clips which aren't listed are left out too. It's kept out of
+the repository's checkout, which is public, as it says when you talked to Nova at home.
 
     2026-11-01-191502-0.81.wav pos
     2026-11-01-203317-0.66.wav neg
@@ -30,7 +32,9 @@ or more passes the check - at 0.2, 0.3 and 0.5, the settings worth choosing betw
 clip with no such moment when it's scored again is counted on its own line. The
 recordings are always trained on, and each run gives the same results as the last.
 Then it trains on everything and saves the check, readable by you only, as
-~/.local/share/nova/voice_check.json. The satellite loads it when it starts.
+~/.local/share/nova/voice_check.json, keeping the one before as voice_check.json.previous.
+The satellite loads it when it starts - any start, so a check which kept under 90% of the
+held-back requests at 0.2 isn't saved at all, unless --force says to.
 
 It deletes nothing. Once you're happy with the check, the recordings and the clips can
 be deleted, and wake_clips.keep switched back off.
@@ -51,11 +55,14 @@ sys.path.insert(0, PROJECT_DIRECTORY)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from record_wake_samples import HEY_NOVA_FOLDER, MIN_SCORE, NOT_HEY_NOVA_FOLDER, RATE
-from voice_assistant import voice_check, wake_clips
+from voice_assistant import storage, voice_check, wake_clips
 
 # Where record_wake_samples.py and the satellite keep what's trained on.
 WAKE_FOLDER = os.path.dirname(wake_clips.FOLDER)
 CLIPS_FOLDER = os.path.basename(wake_clips.FOLDER)
+
+# The labels file, unless another is given - beside the clips it labels.
+LABELS_FILE = os.path.join(WAKE_FOLDER, "labels.txt")
 
 LABELS = ("pos", "neg", "drop")
 
@@ -66,6 +73,12 @@ ROUNDS = 20
 # The settings the held-back results are given at - from letting every one of the
 # user's requests through in the trial (0.2) to stopping the most false wakes (0.5).
 SETTINGS = (0.2, 0.3, 0.5)
+
+# The share of the held-back requests a check must keep at Nova's default setting to be
+# saved, without --force. A labels file with pos and neg swapped keeps none, and the
+# satellite would load it at its next restart of any kind - a reboot, the watchdog - and
+# stop the user. The trial's kept all 140.
+KEEP_AT_LEAST = 0.9
 
 # openWakeWord works through audio 80ms at a time - wake_word.py's CHUNK_SAMPLES, which
 # isn't imported, so this file needn't load openWakeWord for --help or its tests.
@@ -209,7 +222,7 @@ def _share(count: int, total: int, things: str) -> str:
 
 
 def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps], false_wakes: List[Steps],
-              rounds: int, fit: Callable, show: Callable[[str], None]):
+              rounds: int, fit: Callable, show: Callable[[str], None]) -> Tuple[int, int]:
     """
     Says how the check does on clips it hasn't learnt from, holding back a quarter of
     each kind of clip a number of times, at each of SETTINGS. A held-back clip with no
@@ -223,17 +236,21 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
         rounds: How many times.
         fit: openWakeWord's train_verifier_model.
         show: Shows the user a line.
+
+    Returns:
+        How many held-back requests were kept at Nova's default setting, and out of how
+        many which could have woken it.
     """
     held_requests, held_false_wakes = len(requests) // 4, len(false_wakes) // 4
     if not held_requests and not held_false_wakes:
         show("Too few clips to hold any back, so there's nothing to say how the check does.")
-        return
+        return 0, 0
     show(f"Held back a quarter of the clips {rounds} times - {held_requests} requests and "
          f"{held_false_wakes} false wakes each time:")
     # The same clips held back each run - and the features and the training are the same
     # each run too - so the results only change when the files or the labels do.
     rng = np.random.default_rng(0)
-    kept = {setting: [0, 0] for setting in SETTINGS}
+    kept = {setting: [0, 0] for setting in (*SETTINGS, voice_check.DEFAULT_THRESHOLD)}
     reached, unheard = [0, 0], [0, 0]
     for _ in range(rounds):
         out_requests = set(rng.permutation(len(requests))[:held_requests])
@@ -257,6 +274,58 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
     if any(unheard):
         show(f"  {unheard[0]} requests and {unheard[1]} false wakes held back never scored {MIN_SCORE} or more "
              f"again, so they're left out")
+    return kept[voice_check.DEFAULT_THRESHOLD][0], reached[0]
+
+
+def enough_kept(kept: int, reached: int, force: bool, show: Callable[[str], None]):
+    """
+    Refuses a check which kept too few of the held-back requests to be saved, unless forced.
+
+    Args:
+        kept: How many held-back requests it kept at Nova's default setting.
+        reached: Out of how many.
+        force: Save it whatever, as --force says.
+        show: Shows the user a line.
+
+    Raises:
+        ValueError: It kept under KEEP_AT_LEAST of them, or there were none to tell by,
+            and it isn't forced.
+    """
+    if not reached:
+        problem = "there were no held-back requests to tell how it does"
+    elif kept < KEEP_AT_LEAST * reached:
+        problem = (f"kept only {_share(kept, reached, 'held-back requests')} at {voice_check.DEFAULT_THRESHOLD}, "
+                   f"under {round(100 * KEEP_AT_LEAST)}%")
+    else:
+        return
+    if not force:
+        raise ValueError(f"{problem}, so the check wasn't saved, as it could stop you - check the labels, or "
+                         f"run it again with --force to save it anyway")
+    show(f"{problem[0].upper()}{problem[1:]}, but saving the check anyway, as --force says.")
+
+
+def keep_previous(check_path: str) -> Optional[str]:
+    """
+    Keeps the check there now, if any, as check_path + ".previous", readable by you only -
+    so one which turns out worse can be put back by hand.
+
+    Args:
+        check_path: Where the check is saved.
+
+    Returns:
+        Where the last one was kept, or None if there wasn't one.
+
+    Raises:
+        OSError: It couldn't be read or kept.
+    """
+    try:
+        with open(check_path) as file:
+            text = file.read()
+    except FileNotFoundError:
+        return None
+    previous = check_path + ".previous"
+    storage.save_text(previous, text)
+    return previous
 
 
 def _wavs(folder: str) -> List[str]:
@@ -267,10 +336,12 @@ def _wavs(folder: str) -> List[str]:
 
 
 def train(wake_folder: str, labels_path: str, check_path: str, model: str, extract: Callable[[str], Steps],
-          rounds: int = ROUNDS, show: Callable[[str], None] = print, fit: Optional[Callable] = None) -> dict:
+          rounds: int = ROUNDS, show: Callable[[str], None] = print, fit: Optional[Callable] = None,
+          force: bool = False) -> dict:
     """
     Trains the check on the recordings and the labelled clips, says how it does on
-    held-back clips, and saves it. Deletes nothing.
+    held-back clips, and saves it - if it kept enough of them - keeping the last one.
+    Deletes nothing.
 
     Args:
         wake_folder: The folder holding hey_nova, not_hey_nova and clips.
@@ -281,13 +352,14 @@ def train(wake_folder: str, labels_path: str, check_path: str, model: str, extra
         rounds: How many times clips are held back.
         show: Shows the user a line.
         fit: openWakeWord's train_verifier_model, unless it's a test.
+        force: Save it even if it kept too few held-back requests - see enough_kept.
 
     Returns:
         The check's data, as saved.
 
     Raises:
-        ValueError: A label doesn't make sense, a labelled clip isn't there, or there's
-            nothing to learn from.
+        ValueError: A label doesn't make sense, a labelled clip isn't there, there's
+            nothing to learn from, or the check kept too few held-back requests.
         OSError: A file couldn't be read, or the check couldn't be saved.
     """
     if fit is None:
@@ -315,17 +387,19 @@ def train(wake_folder: str, labels_path: str, check_path: str, model: str, extra
     requests = [extract(os.path.join(clips_folder, name)) for name in pos]
     false_wakes = [extract(os.path.join(clips_folder, name)) for name in neg]
 
-    held_back(recordings, requests, false_wakes, rounds, fit, show)
+    enough_kept(*held_back(recordings, requests, false_wakes, rounds, fit, show), force, show)
 
     pipeline = fit(*training_set(recordings[0] + requests, recordings[1] + false_wakes))
     counts = {HEY_NOVA_FOLDER: len(hey_nova), NOT_HEY_NOVA_FOLDER: len(not_hey_nova), "pos": len(pos),
               "neg": len(neg)}
     data = voice_check.from_pipeline(pipeline, model, counts)
+    previous = keep_previous(check_path)
     voice_check.save(data, check_path)
     show(f"Trained on {len(hey_nova)} recordings of \"Hey Nova\", {len(not_hey_nova)} of other sounds, "
          f"{len(pos)} clips marked pos and {len(neg)} marked neg - {dropped} marked drop and {unlisted} not "
          f"listed were left out.")
-    show(f"Saved the check as {check_path}. Restart Nova to use it.")
+    show(f"Saved the check as {check_path}{f', and kept the last one as {previous}' if previous else ''}. "
+         f"Restart Nova to use it.")
     return data
 
 
@@ -340,12 +414,28 @@ def _rounds(text: str) -> int:
     return number
 
 
-def main():
+def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """
+    Args:
+        argv: The command line's arguments - sys.argv's, unless it's a test.
+
+    Returns:
+        labels, rounds and force.
+    """
     parser = argparse.ArgumentParser(description="Trains Nova's voice check - see the top of this file.")
-    parser.add_argument("labels", help="the labels file, a clip's file name and pos, neg or drop to a line")
+    parser.add_argument("labels", nargs="?", default=LABELS_FILE,
+                        help=f"the labels file, a clip's file name and pos, neg or drop to a line "
+                             f"(default {LABELS_FILE})")
     parser.add_argument("--rounds", type=_rounds, default=ROUNDS,
                         help=f"how many times clips are held back to say how it does (default {ROUNDS})")
-    arguments = parser.parse_args()
+    parser.add_argument("--force", action="store_true",
+                        help=f"save the check even if it keeps under {round(100 * KEEP_AT_LEAST)}%% of the "
+                             f"held-back requests at {voice_check.DEFAULT_THRESHOLD}")
+    return parser.parse_args(argv)
+
+
+def main():
+    arguments = parse_arguments()
 
     # Imported here rather than at the top, so --help and the rest can be used and
     # tested on a machine without the Pi's wake word packages.
@@ -362,7 +452,7 @@ def main():
     try:
         train(WAKE_FOLDER, arguments.labels, voice_check.FILE, detector.wake_word_key,
               lambda path: steps(read_wav(path), detector.model, detector.wake_word_key),
-              rounds=arguments.rounds, show=show)
+              rounds=arguments.rounds, show=show, force=arguments.force)
     except (OSError, ValueError) as e:
         sys.exit(f"Couldn't train the voice check: {e}")
 

@@ -14,6 +14,7 @@ a Playback which can be stopped, and only PortAudio's own thread ever writes.
 """
 
 import logging
+import math
 import os
 import threading
 import time
@@ -207,6 +208,9 @@ class Speaker:
         self._stream = None
         self._latency = OUTPUT_LATENCY
         self._last_callback = time.monotonic()
+        # The time.monotonic() moment the last of the assistant's own sound handed over
+        # will have left the speaker - see sounded_within.
+        self._sounding_until = -math.inf
         self.ran_dry = Dropouts("The speaker ran dry, which crackles")
         self._open()
 
@@ -272,6 +276,7 @@ class Speaker:
 
             mix = np.zeros((frames, CHANNELS), dtype=np.float32)
             finished = []
+            sounded = False
             for playback in playing:
                 if playback.stopped:
                     finished.append(playback)
@@ -283,11 +288,14 @@ class Speaker:
                     # Mono goes to both sides.
                     mix[filled:filled + len(part)] += (part[:, None] if part.ndim == 1 else part) * playback.volume
                     filled += len(part)
+                sounded = sounded or filled > 0
                 # One still streaming in which has caught up with what's arrived
                 # just goes quiet until the next piece does.
                 if playback.position >= playback._total and not playback.streaming:
                     finished.append(playback)
 
+            if sounded:
+                self._sounding_until = time.monotonic() + self._latency + frames / self.sample_rate
             np.clip(mix, -1.0, 1.0, out=mix)
             outdata[:] = mix
             if self.echo_reference is not None:
@@ -302,6 +310,23 @@ class Speaker:
         except Exception as e:
             outdata.fill(0)
             logger.error(f"Speaker audio dropped: {e}")
+
+    def sounded_within(self, seconds: float) -> bool:
+        """
+        Whether any of the assistant's own sound is coming out of the speaker, or came
+        out in the last so many seconds - so the microphone may be hearing it. Paused
+        music, and a reply waiting for its next piece, make no sound.
+
+        Takes no lock, so it never waits on whatever is playing or being stopped: one
+        number, which only the speaker's own thread sets.
+
+        Args:
+            seconds: How long ago it may have stopped and still count.
+
+        Returns:
+            True if it's sounding, or was that recently.
+        """
+        return time.monotonic() < self._sounding_until + seconds
 
     def play(self, audio: np.ndarray, sample_rate: Optional[int] = None,
              volume: float = 1.0, kind: str = "reply", streaming: bool = False) -> Playback:

@@ -10,7 +10,7 @@ it wakes Nova (see voice_check.py).
 import os
 import re
 import logging
-from typing import Optional
+from typing import Callable, Optional
 from openwakeword.model import Model
 from voice_assistant import paths, storage, voice_check
 from voice_assistant.microphone import RATE, Microphone
@@ -50,10 +50,12 @@ class WakeWordDetector:
     The sensitivity can be adjusted to make detection more or less strict, with a value
     between 0 and 1. Muted, from Home Assistant or the settings page, it never hears the
     wake word - but alarms and timers still ring, and Home Assistant's messages are
-    still said. With a voice check, the wake word counts only in the user's voice.
+    still said. With a voice check, the wake word counts only in the user's voice -
+    except over Nova's own sound.
     """
 
-    def __init__(self, config=None, sensitivity=None, microphone=None):
+    def __init__(self, config=None, sensitivity=None, microphone=None,
+                 playing: Optional[Callable[[], bool]] = None):
         """
         Args:
             config: Configs loaded from config.yaml.
@@ -61,6 +63,10 @@ class WakeWordDetector:
             microphone: The shared Microphone to listen through. Left out, one is
                 opened on first use - for running the detector on its own, as
                 scripts/manual/check_wake_word.py does.
+            playing: Says whether the satellite is making a sound of its own - an
+                alarm, a reply, music - when the voice check would stop a wake. Over
+                one, the wake word alone counts. Called on the listening thread, so it
+                must answer at once. Left out, nothing is.
         """
         # Pulls sensitivity from config.yaml's "thresholds" section, the wake word
         # phrase from "assistant", and the mic sample rate from "audio".
@@ -71,6 +77,7 @@ class WakeWordDetector:
         # Mic settings come from the same audio section the rest of the app uses.
         self.mic_rate = audio_config.get("sample_rate", 48000)
         self.microphone = microphone
+        self.playing = playing
         # The microphone position at which the wake word was last heard - see listen_once.
         self.heard_at = None
 
@@ -145,8 +152,28 @@ class WakeWordDetector:
             return float(self.voice_check.score(features))
         except Exception as e:
             # The user shut out by a fault is worse than a film waking Nova.
-            logger.warning(f"Couldn't check it's your voice, so the wake word counts: {e}")
+            logger.warning(f"Couldn't check it's your voice, so the wake word counts: {e!r}")
             return None
+
+    def _over_own_sound(self) -> bool:
+        """
+        Whether the satellite is making a sound of its own, so the user's voice comes
+        mixed with it - an alarm at full volume, most of all. The check was never
+        trained on that, and the wake word is how the user stops it: with the brain
+        away, the only way. A film can't make Nova ring, so a false wake then only stops
+        something already sounding.
+
+        Returns:
+            True if it is - or if it can't be told, as the user shut out by a fault is
+            worse than a film waking Nova.
+        """
+        if self.playing is None:
+            return False
+        try:
+            return bool(self.playing())
+        except Exception as e:
+            logger.warning(f"Couldn't tell whether Nova's making a sound, so the wake word counts: {e!r}")
+            return True
 
     @property
     def muted(self) -> bool:
@@ -206,6 +233,10 @@ class WakeWordDetector:
         # comes after now can wake it.
         now = self.microphone.position
         reader = self.microphone.listen(start=max(0, now - int(CATCH_UP_SECONDS * RATE), self.heard_at or 0))
+        # Whether the check has stopped a moment of this run of moments scoring sensitivity
+        # or more. One "Hey Nova" scores over several 80ms moments, so a stopped one is
+        # logged once rather than 2 to 5 times, which made counting them fiddly.
+        stopped = False
         while True:
             if until is not None and until():
                 return None
@@ -214,6 +245,8 @@ class WakeWordDetector:
             if reader.position <= now:
                 continue
             score = prediction.get(self.wake_word_key, 0)
+            if score < self.sensitivity:
+                stopped = False
 
             # Returns the confidence score and logs it if the wake word is detected.
             # Muted, the wake word is ignored here, rather than the audio going
@@ -224,16 +257,25 @@ class WakeWordDetector:
                 # Read once, as the brain may change it part way through.
                 threshold = self.voice_check_threshold
                 voice = self._voice_score(threshold)
-                if voice is not None and voice < threshold:
+                refused = voice is not None and voice < threshold
+                # Only asked once the check would stop it, so an ordinary moment never waits on it.
+                over_own_sound = refused and self._over_own_sound()
+                if refused and not over_own_sound:
                     # Not a wake at all, so nothing's played, sent or kept as a clip, and
                     # the next moment - often the same "Hey Nova", still scoring - is
                     # judged afresh.
-                    logger.info(f"Heard '{self.wake_word_phrase}' ({score:.2f}) but not in your voice "
-                                f"({voice:.2f}), so not waking")
+                    if not stopped:
+                        logger.info(f"Heard '{self.wake_word_phrase}' ({score:.2f}) but not in your voice "
+                                    f"({voice:.2f}), so not waking")
+                    stopped = True
                     continue
                 self.heard_at = reader.position
                 if voice is None:
                     logger.info(f"Wake word detected! (confidence: {score:.2f})")
+                elif over_own_sound:
+                    # With the voice score all the same, to see how the check does over Nova's sound.
+                    logger.info(f"Wake word detected! (confidence: {score:.2f}, voice: {voice:.2f} - not checked, "
+                                f"over Nova's own sound)")
                 else:
                     logger.info(f"Wake word detected! (confidence: {score:.2f}, voice: {voice:.2f})")
                 return float(score)

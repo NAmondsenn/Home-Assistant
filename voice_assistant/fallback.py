@@ -18,7 +18,7 @@ import time
 import wave
 from typing import Dict, List, Optional
 
-from voice_assistant import paths
+from voice_assistant import paths, voice_check
 from voice_assistant.speaker import Playback, Speaker
 from voice_assistant.storage import load_json, save_json
 
@@ -188,7 +188,12 @@ class AlarmCopy:
 
 
 class StateCopy:
-    """The volumes and mute the brain last sent for this satellite."""
+    """
+    The volumes, mute and voice check setting the brain last sent for this satellite.
+    The voice check's is kept so a 0 set on the page - the way out if the check stops
+    the user - lasts through a restart while the brain is away, when the wake word alone
+    dismisses an alarm.
+    """
 
     def __init__(self, path: str = os.path.join(paths.DATA_DIR, "satellite_state.json")):
         """
@@ -201,16 +206,25 @@ class StateCopy:
         try:
             loaded = load_json(path, {})
             self._state = {"volumes": dict(loaded.get("volumes", {})), "muted": bool(loaded.get("muted", False))}
+            if voice_check.is_threshold(loaded.get("voice_check")):
+                self._state["voice_check"] = loaded["voice_check"]
         except (OSError, ValueError, TypeError, AttributeError) as e:
             logger.error(f"Could not read the satellite's saved state, using defaults: {e}")
 
     def update(self, state: Dict):
         """
         Args:
-            state: {"volumes": {category: 0-1}, "muted": bool}, as the brain sends it.
+            state: {"volumes": {category: 0-1}, "muted": bool, "voice_check"?: 0-0.99},
+                as the brain sends it. A voice check setting which is missing - from an
+                old brain - or makes no sense leaves the last one as it was.
         """
         with self._lock:
+            sureness = state.get("voice_check")
+            if not voice_check.is_threshold(sureness):
+                sureness = self._state.get("voice_check")
             self._state = {"volumes": dict(state.get("volumes", {})), "muted": bool(state.get("muted", False))}
+            if sureness is not None:
+                self._state["voice_check"] = sureness
             try:
                 save_json(self.path, self._state)
             except (OSError, TypeError) as e:
@@ -232,6 +246,12 @@ class StateCopy:
     def muted(self) -> bool:
         with self._lock:
             return self._state["muted"]
+
+    @property
+    def voice_check(self) -> Optional[float]:
+        """How sure the voice check must be it's the user's voice, from 0 to 0.99 - None if the brain never said."""
+        with self._lock:
+            return self._state.get("voice_check")
 
 
 class FallbackRinger:

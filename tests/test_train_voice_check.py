@@ -8,6 +8,7 @@ openWakeWord's trainer with scikit-learn where the training is real, and is skip
 anywhere they aren't.
 """
 
+import datetime
 import importlib.util
 import os
 import stat
@@ -18,7 +19,7 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from voice_assistant import voice_check
+from voice_assistant import paths, voice_check
 
 spec = importlib.util.spec_from_file_location(
     "train_voice_check", os.path.join(os.path.dirname(__file__), "..", "scripts", "train_voice_check.py"))
@@ -241,10 +242,11 @@ def test_it_trains_from_the_labels_says_how_held_back_clips_did_and_writes_the_c
 
 
 class FakeFit:
-    """Stands in for openWakeWord's trainer, keeping what each round was trained on."""
+    """Stands in for openWakeWord's trainer, keeping what each round was trained on - its check gives every moment one score."""
 
-    def __init__(self):
+    def __init__(self, score=1.0):
         self.trained = []
+        self.score = score
 
     def __call__(self, features, labels):
         # Each made-up moment is filled with its file's number, so it can be told whose it was.
@@ -252,7 +254,7 @@ class FakeFit:
         return self
 
     def predict_proba(self, features):
-        return np.array([[0.0, 1.0]] * len(features))
+        return np.array([[1 - self.score, self.score]] * len(features))
 
     def __getitem__(self, index):
         # Indexed as a pipeline is, for the check saved at the end: its scaler, then its regression.
@@ -312,15 +314,22 @@ def test_a_labelled_clip_which_isnt_there_is_refused(tmp_path):
     assert not os.path.exists(tmp_path / "voice_check.json")
 
 
-def test_training_twice_on_the_same_files_gives_the_same_results(tmp_path):
+def test_training_twice_on_the_same_files_gives_the_same_results(tmp_path, monkeypatch):
     pytest.importorskip("openwakeword.custom_verifier_model")
+    # Either side of midnight, which is all that may differ.
+    days = iter([datetime.date(2026, 11, 2), datetime.date(2026, 11, 3)])
+    monkeypatch.setattr(voice_check, "datetime", types.SimpleNamespace(date=types.SimpleNamespace(
+        today=lambda: next(days))))
     wake, labels, users = _wake_folder(tmp_path)
     runs = []
     for _ in range(2):
         shown = []
         data = train.train(str(wake), str(labels), str(tmp_path / "voice_check.json"), "hey_nova", Extract(users),
                            rounds=3, show=shown.append)
+        assert data.pop("trained")
         runs.append((shown, data))
+        # Each run from no check, as the first was, so neither keeps one as the last.
+        os.remove(tmp_path / "voice_check.json")
     assert runs[0] == runs[1]
 
 
@@ -340,3 +349,74 @@ def test_held_back_clips_which_never_reach_0_5_again_are_counted_on_their_own(tm
     # passes everything.
     assert "  at 0.2, kept 8 of 8 requests (100%) and stopped 0 of 0 false wakes" in shown
     assert "  0 requests and 12 false wakes held back never scored 0.5 or more again, so they're left out" in shown
+
+
+def test_the_last_check_is_kept_beside_the_new_one(tmp_path):
+    # So a new check which turns out worse can be swapped back by hand.
+    wake, labels, users = _wake_folder(tmp_path)
+    check_path = tmp_path / "data" / "voice_check.json"
+    check_path.parent.mkdir()
+    check_path.write_text('{"made": "up"}')
+    os.chmod(check_path, 0o644)
+    shown = []
+
+    train.train(str(wake), str(labels), str(check_path), "hey_nova", Extract(users), rounds=2, show=shown.append,
+                fit=FakeFit())
+
+    previous = tmp_path / "data" / "voice_check.json.previous"
+    assert previous.read_text() == '{"made": "up"}'
+    assert stat.S_IMODE(os.stat(previous).st_mode) == 0o600
+    assert voice_check.load(str(check_path)) is not None
+    assert f"Saved the check as {check_path}, and kept the last one as {previous}. Restart Nova to use it." in shown
+
+
+def test_with_no_check_before_there_is_nothing_kept(tmp_path):
+    wake, labels, users = _wake_folder(tmp_path)
+    check_path = tmp_path / "voice_check.json"
+    shown = []
+    train.train(str(wake), str(labels), str(check_path), "hey_nova", Extract(users), rounds=2, show=shown.append,
+                fit=FakeFit())
+    assert not os.path.exists(str(check_path) + ".previous")
+    assert f"Saved the check as {check_path}. Restart Nova to use it." in shown
+
+
+def test_a_check_which_stops_the_users_held_back_requests_isnt_saved(tmp_path):
+    # A labels file with pos and neg swapped, say - installed, it would shut the user
+    # out at the next restart of any kind.
+    wake, labels, users = _wake_folder(tmp_path)
+    check_path = tmp_path / "voice_check.json"
+    check_path.write_text('{"made": "up"}')
+    with pytest.raises(ValueError, match=r"kept only 0 of 8 held-back requests \(0%\) at 0.2.*--force"):
+        train.train(str(wake), str(labels), str(check_path), "hey_nova", Extract(users), rounds=4,
+                    show=lambda line: None, fit=FakeFit(score=0.1))
+    assert check_path.read_text() == '{"made": "up"}'
+    assert not os.path.exists(str(check_path) + ".previous")
+
+
+def test_with_too_few_clips_to_tell_it_isnt_saved(tmp_path):
+    wake, labels, users = _wake_folder(tmp_path, pos=3)
+    check_path = tmp_path / "voice_check.json"
+    with pytest.raises(ValueError, match="no held-back requests.*--force"):
+        train.train(str(wake), str(labels), str(check_path), "hey_nova", Extract(users), rounds=4,
+                    show=lambda line: None, fit=FakeFit())
+    assert not check_path.exists()
+
+
+def test_forced_it_is_saved_anyway_and_says_so(tmp_path):
+    wake, labels, users = _wake_folder(tmp_path)
+    check_path = tmp_path / "voice_check.json"
+    shown = []
+    train.train(str(wake), str(labels), str(check_path), "hey_nova", Extract(users), rounds=4, show=shown.append,
+                fit=FakeFit(score=0.1), force=True)
+    assert voice_check.load(str(check_path)) is not None
+    assert ("Kept only 0 of 8 held-back requests (0%) at 0.2, under 90%, but saving the check anyway, "
+            "as --force says.") in shown
+
+
+def test_the_labels_file_is_beside_the_clips_unless_another_is_given():
+    # Never in the repository's checkout, which is public: it says when the user talked to Nova.
+    assert train.LABELS_FILE == os.path.join(paths.DATA_DIR, "voice-samples", "wake", "labels.txt")
+    arguments = train.parse_arguments([])
+    assert (arguments.labels, arguments.force) == (train.LABELS_FILE, False)
+    arguments = train.parse_arguments(["elsewhere.txt", "--force"])
+    assert (arguments.labels, arguments.force) == ("elsewhere.txt", True)
