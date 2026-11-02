@@ -153,6 +153,7 @@ class FakeWake:
         self.microphone = microphone
         self.muted = False
         self.sensitivity = 0.5
+        self.voice_check_threshold = 0.2
         self.heard_at = None
         self.listening = False
         self._said = queue.Queue()
@@ -465,6 +466,62 @@ def test_a_wake_confidence_which_makes_no_sense_is_ignored(brain, make, sent):
     # And a good one afterwards still counts, so the bad one didn't wedge the state.
     brain.say("state", volumes={}, muted=False, wake_confidence=0.6)
     assert wait_for(lambda: made.wake.sensitivity == 0.6)
+
+
+def test_the_satellite_checks_the_voice_as_surely_as_the_brain_says(brain, make, caplog):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    assert made.wake.voice_check_threshold == 0.2
+    with caplog.at_level("INFO", logger="satellite"):
+        brain.say("state", volumes={}, muted=False, voice_check=0.35)
+        assert wait_for(lambda: made.wake.voice_check_threshold == 0.35)
+        # The brain repeats its state often, and the log shouldn't fill with the same value.
+        brain.say("state", volumes={}, muted=False, voice_check=0.35)
+        brain.say("state", volumes={}, muted=True, voice_check=0.35)
+        assert wait_for(lambda: made.wake.muted is True)
+    assert len([record for record in caplog.records
+                if "Checking it's your voice at 0.35 now" in record.getMessage()]) == 1
+
+    # A state without it changes nothing: an old brain.
+    brain.say("state", volumes={}, muted=False)
+    assert wait_for(lambda: made.wake.muted is False)
+    assert made.wake.voice_check_threshold == 0.35
+
+
+@pytest.mark.parametrize("edge", [0, 0.0, 0.99, 0.5], ids=["int-zero", "zero", "top", "half"])
+def test_a_voice_check_from_0_to_0_99_is_taken(brain, make, edge):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, voice_check=edge)
+    assert wait_for(lambda: made.wake.voice_check_threshold == edge)
+
+
+def test_a_voice_check_of_0_says_its_off(brain, make, caplog):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    with caplog.at_level("INFO", logger="satellite"):
+        brain.say("state", volumes={}, muted=False, voice_check=0)
+        assert wait_for(lambda: made.wake.voice_check_threshold == 0)
+    assert any("Not checking it's your voice now" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("sent", [{"voice_check": "0.3"}, {"voice_check": True}, {"voice_check": False},
+                                  {"voice_check": float("nan")}, {"voice_check": float("inf")},
+                                  {"voice_check": -0.1}, {"voice_check": 1}, {"voice_check": 1.5},
+                                  {"voice_check": None}],
+                         ids=["text", "true", "false", "nan", "inf", "negative", "one", "over-one", "null"])
+def test_a_voice_check_which_makes_no_sense_is_ignored(brain, make, sent):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("state", volumes={}, muted=False, voice_check=0.4)
+    assert wait_for(lambda: made.wake.voice_check_threshold == 0.4)
+    brain.say("state", volumes={}, muted=True, **sent)
+    assert wait_for(lambda: made.wake.muted is True)
+
+    assert made.wake.voice_check_threshold == 0.4
+    # And a good one afterwards still counts, so the bad one didn't wedge the state.
+    brain.say("state", volumes={}, muted=False, voice_check=0.3)
+    assert wait_for(lambda: made.wake.voice_check_threshold == 0.3)
 
 
 def test_an_old_satellite_ignores_the_longest_request(tmp_path):

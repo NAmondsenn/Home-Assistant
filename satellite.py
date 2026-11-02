@@ -603,6 +603,14 @@ class Satellite:
             # score at a time, and a change taking effect on the next one is fine.
             self.wake.sensitivity = confidence
             logger.info(f"Listening for the wake word at {confidence} now")
+        sureness = message.get("voice_check")
+        # The same care again, but from 0, which switches the check off. At 1 or over it
+        # would stop the user too, as the check is never that sure.
+        if (isinstance(sureness, (int, float)) and not isinstance(sureness, bool)
+                and 0 <= sureness <= 0.99 and sureness != self.wake.voice_check_threshold):
+            self.wake.voice_check_threshold = sureness
+            logger.info(f"Checking it's your voice at {sureness} now" if sureness
+                        else "Not checking it's your voice now")
         # Before the unmute takes effect, so no wake or clip can ever see it unmuted with
         # this not yet noted. The brain sends this with every state, so only a real change counts.
         if self.wake.muted and not self.state.muted:

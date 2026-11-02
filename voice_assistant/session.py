@@ -40,6 +40,7 @@ from voice_assistant.settings_page import change_volume, volume_levels
 from voice_assistant.spotify_controller import brains_speaker
 from voice_assistant.timeline import Timeline
 from voice_assistant.vad import make_detector
+from voice_assistant.voice_check import DEFAULT_THRESHOLD as DEFAULT_VOICE_CHECK
 from voice_assistant.volume import VolumeControl
 from voice_assistant.wake_phrase import DEFAULT_WAKE_WORD, strip_wake_word
 
@@ -310,8 +311,8 @@ class Session:
             volumes = {category: self.volume.get(category) for category in VolumeControl.CATEGORIES}
             playing = self.playing_here()
             wake_confidence = self._wake_confidence(playing)
-            # 0.2 when it's been left empty in config.yaml by hand, as the wake setting falls back to its default.
-            voice_check = _number(self.thresholds.get("voice_check"), 0.2)
+            # Its default when it's been left empty in config.yaml by hand, as the wake setting falls back to its own.
+            voice_check = _number(self.thresholds.get("voice_check"), DEFAULT_VOICE_CHECK)
             # Said each time it starts and stops, so a satellite that was hard to wake can be
             # traced to what Home Assistant said was playing - a browser tab left on, say.
             if bool(playing) != self._something_played:

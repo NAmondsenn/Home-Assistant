@@ -3,14 +3,16 @@ Wake Word Module.
 
 Listens on the satellite for the wake word - "Hey Nova", unless config.yaml names
 another - with openWakeWord, through the microphone, which is opened once and never
-closed (see microphone.py).
+closed (see microphone.py). Once a voice check has been trained, only the user saying
+it wakes Nova (see voice_check.py).
 """
 
 import os
 import re
 import logging
+from typing import Optional
 from openwakeword.model import Model
-from voice_assistant import paths, storage
+from voice_assistant import paths, storage, voice_check
 from voice_assistant.microphone import RATE, Microphone
 from voice_assistant.wake_phrase import DEFAULT_WAKE_WORD
 
@@ -48,7 +50,7 @@ class WakeWordDetector:
     The sensitivity can be adjusted to make detection more or less strict, with a value
     between 0 and 1. Muted, from Home Assistant or the settings page, it never hears the
     wake word - but alarms and timers still ring, and Home Assistant's messages are
-    still said.
+    still said. With a voice check, the wake word counts only in the user's voice.
     """
 
     def __init__(self, config=None, sensitivity=None, microphone=None):
@@ -94,9 +96,57 @@ class WakeWordDetector:
         self.model = Model(wakeword_models=[model_path], inference_framework="onnx")
         logger.info(f"openWakeWord initialised with '{self.wake_word_key}' model")
 
+        self.voice_check = self._load_voice_check()
+        # How sure the check must be that it's the user's voice, until the brain says -
+        # 0 for no check. Set from the brain's thread as sensitivity is, which is safe as
+        # listen_once only reads it.
+        self.voice_check_threshold = voice_check.DEFAULT_THRESHOLD
+
         self._muted = self._load_muted()
         if self._muted:
             logger.info(f"The microphone's muted, so '{self.wake_word_phrase}' won't be heard until it's unmuted")
+
+    def _load_voice_check(self) -> Optional[voice_check.VoiceCheck]:
+        """
+        The trained check of the user's voice, if there's one for this wake word's model.
+
+        Returns:
+            The check, or None for none, so any voice saying the wake word wakes Nova.
+        """
+        # Never allowed to stop the satellite starting, which would shut the user out
+        # altogether - load itself never raises, and this guards what it's given.
+        try:
+            frames = self.model.model_inputs[self.wake_word_key]
+        except Exception as e:
+            logger.warning(f"Couldn't tell how many frames the '{self.wake_word_key}' model judges, so any "
+                           f"voice saying the wake word wakes Nova: {e}")
+            return None
+        check = voice_check.load(voice_check.FILE, model=self.wake_word_key, frames=frames)
+        if check is not None:
+            logger.info(f"Waking only for your voice saying '{self.wake_word_phrase}', with the voice check "
+                        f"in {voice_check.FILE}")
+        return check
+
+    def _voice_score(self, threshold: float) -> Optional[float]:
+        """
+        How sure the voice check is that the moment just heard is the user's voice.
+
+        Args:
+            threshold: How sure it must be - 0 for no check.
+
+        Returns:
+            The check's score, or None if it isn't asked - there's no check, it's set
+            to 0, or it went wrong - and the wake counts.
+        """
+        if self.voice_check is None or threshold <= 0:
+            return None
+        try:
+            features = self.model.preprocessor.get_features(self.model.model_inputs[self.wake_word_key])
+            return float(self.voice_check.score(features))
+        except Exception as e:
+            # The user shut out by a fault is worse than a film waking Nova.
+            logger.warning(f"Couldn't check it's your voice, so the wake word counts: {e}")
+            return None
 
     @property
     def muted(self) -> bool:
@@ -131,7 +181,8 @@ class WakeWordDetector:
     def listen_once(self, until=None):
         """
         Listens for the wake word, reading the shared microphone stream 80ms at a
-        time from the moment this is called. Loops until the wake word is heard.
+        time from the moment this is called. Loops until the wake word is heard - in
+        the user's voice, with a voice check.
 
         Args:
             until: Called between each 80ms - listening stops once it returns True.
@@ -170,6 +221,19 @@ class WakeWordDetector:
             # the moment it's unmuted. The same goes for the wake word said over a
             # reply - see satellite.py.
             if score >= self.sensitivity and not self._muted:
+                # Read once, as the brain may change it part way through.
+                threshold = self.voice_check_threshold
+                voice = self._voice_score(threshold)
+                if voice is not None and voice < threshold:
+                    # Not a wake at all, so nothing's played, sent or kept as a clip, and
+                    # the next moment - often the same "Hey Nova", still scoring - is
+                    # judged afresh.
+                    logger.info(f"Heard '{self.wake_word_phrase}' ({score:.2f}) but not in your voice "
+                                f"({voice:.2f}), so not waking")
+                    continue
                 self.heard_at = reader.position
-                logger.info(f"Wake word detected! (confidence: {score:.2f})")
+                if voice is None:
+                    logger.info(f"Wake word detected! (confidence: {score:.2f})")
+                else:
+                    logger.info(f"Wake word detected! (confidence: {score:.2f}, voice: {voice:.2f})")
                 return float(score)

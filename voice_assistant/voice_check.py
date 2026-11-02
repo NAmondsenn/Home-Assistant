@@ -38,6 +38,11 @@ VERSION = 1
 DEFAULT_MODEL = "hey_nova"
 DEFAULT_FRAMES = 16
 
+# How sure the check must be it's the user's voice, until the brain says - and the brain's
+# own setting, if config.yaml's has been left empty by hand. In the trial, 0.2 kept all 140
+# of the user's held-back requests and stopped 91% of false wakes (docs/decisions/0011).
+DEFAULT_THRESHOLD = 0.2
+
 # How many numbers openWakeWord's features have for each frame, whatever the wake word.
 # A fitted pipeline only knows how many there are in all, so this splits them into frames.
 FEATURES = 96
