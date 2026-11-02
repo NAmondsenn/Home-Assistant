@@ -118,7 +118,7 @@ FALLBACK_PHRASE = "Sorry, I can't reach my server right now."
 # The settings each satellite is sent with its state - see Session.send_state - so a
 # save of any of them on the settings page sends every satellite its state again.
 SENT_IN_STATE = (("thresholds", "recording_timeout"), ("thresholds", "wake_word_confidence"),
-                 ("thresholds", "media_wake_word_confidence"))
+                 ("thresholds", "media_wake_word_confidence"), ("thresholds", "voice_check"))
 
 
 def _speech_to_text(config, tts: TextToSpeech):

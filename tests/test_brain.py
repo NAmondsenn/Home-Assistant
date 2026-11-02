@@ -2042,6 +2042,22 @@ def test_a_wake_word_confidence_saved_is_sent_to_each_satellite(brain, connect, 
     assert (bedroom.messages("state")[1]["wake_confidence"], kitchen.messages("state")[1]["wake_confidence"]) == sent
 
 
+def test_a_voice_check_saved_is_sent_to_each_satellite(brain, connect, monkeypatch):
+    monkeypatch.setattr(brain_module, "Session", session_module.Session)
+    monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
+    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
+    serving(brain)
+    bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
+    connected(brain)
+    connected(brain, "kitchen")
+    assert wait_for(lambda: bedroom.messages("state") and kitchen.messages("state"))
+    assert bedroom.messages("state")[0]["voice_check"] == kitchen.messages("state")[0]["voice_check"] == 0.2
+
+    assert brain.apply_settings({("thresholds", "voice_check"): 0.5}) == []
+    assert wait_for(lambda: len(bedroom.messages("state")) == len(kitchen.messages("state")) == 2)
+    assert bedroom.messages("state")[1]["voice_check"] == kitchen.messages("state")[1]["voice_check"] == 0.5
+
+
 def test_other_settings_saved_send_the_satellites_nothing(brain, connect):
     serving(brain)
     bedroom = connect(brain)

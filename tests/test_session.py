@@ -1498,6 +1498,37 @@ def test_what_plays_in_a_satellites_room_is_logged_as_it_starts_and_stops(brain,
         "Nothing's playing in the bedroom satellite's room now, so its wake word needs 0.5"]
 
 
+# How sure the satellite must be it's the user's voice
+
+def _voice_check_sent(session, pi):
+    """Has the session send its state, and returns the voice check the satellite got."""
+    before = len(pi.messages("state"))
+    assert session.send_state()
+    assert wait_for(lambda: len(pi.messages("state")) == before + 1)
+    return pi.messages("state")[-1]["voice_check"]
+
+
+def test_the_satellite_is_sent_the_voice_check_as_it_is_set_each_time(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.connected_sessions = lambda: [session]
+    assert _voice_check_sent(session, pi) == 0.2
+    # Read as it's sent, so a save reaches it with no restart - and 0, no check, is sent as 0.
+    brain.config.apply({("thresholds", "voice_check"): 0.6})
+    assert _voice_check_sent(session, pi) == 0.6
+    brain.config.apply({("thresholds", "voice_check"): 0})
+    assert _voice_check_sent(session, pi) == 0
+
+
+@pytest.mark.parametrize("left", [None, True, "0.6", float("nan")])
+def test_a_voice_check_thats_not_a_number_is_taken_as_its_default(brain, connect, make_session, left):
+    # Left empty in config.yaml by hand, it would otherwise stop the state from being sent at all.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.config.apply({("thresholds", "voice_check"): left})
+    assert _voice_check_sent(session, pi) == 0.2
+
+
 def test_two_states_sent_at_once_arrive_in_the_order_they_were_read(brain, connect, make_session):
     # The media watcher, the settings page and the device lookup each send on a thread of their own. Were
     # one's older state to arrive after another's newer one, the normal wake word would stay on for a film.
@@ -1507,7 +1538,7 @@ def test_two_states_sent_at_once_arrive_in_the_order_they_were_read(brain, conne
     brain.media = _playing()
     sent, sending, carry_on = [], threading.Event(), threading.Event()
 
-    def set_state(volumes, muted, longest_request=None, wake_confidence=None):
+    def set_state(volumes, muted, longest_request=None, wake_confidence=None, voice_check=None):
         # The first send stalls on the way, as one to a satellite slow to read can.
         if not sending.is_set():
             sending.set()

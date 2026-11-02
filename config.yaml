@@ -157,6 +157,11 @@ thresholds:
   # Assistant puts there, but not Nova's own music - as a film's speech can sound like the
   # wake word. The higher of the two is used then.
   media_wake_word_confidence: 0.75
+  # How sure Nova must be that a wake word is in your voice, from 0.0 to 0.95, once a
+  # check has been trained on it - see docs/decisions/0011-the-voice-check.md. A wake
+  # word below it is ignored. Raise it if Nova still wakes for others; lower it if it
+  # misses you. 0 is no check, as is having none trained.
+  voice_check: 0.2
 
 timers:
   # Reminders are announced twice in quick succession.
