@@ -1586,15 +1586,17 @@ class SettingsPage:
         """
         # Only the page's own confirm() sends True, so a stray POST or an old tab's - or a
         # "true" that's merely truthy - is turned down before Home Assistant is asked.
+        # The id is logged with !r, as it's whatever the POST said and a newline in it
+        # would start a line of the log's own.
         if str(entity_id).startswith("script.") and confirmed is not True:
-            logger.warning(f"Settings page: refused running {entity_id} for {who} without a yes")
+            logger.warning(f"Settings page: refused running {entity_id!r} for {who} without a yes")
             return {"success": False, "message": "A script only runs once you've said yes. Reload the page to be asked."}
         session, name = self._session(satellite)
         if session is None:
             return self._not_connected(name)
         if session.home is None:
             return {"success": False, "message": "Nova isn't connected to Home Assistant."}
-        logger.info(f"Settings page: {who} ran {entity_id}")
+        logger.info(f"Settings page: {who} ran {entity_id!r}")
         return session.home.run(str(entity_id))
 
     def save_routine(self, routine: Dict, who: str) -> Dict:

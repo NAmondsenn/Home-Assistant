@@ -1658,10 +1658,21 @@ def test_a_script_runs_only_with_a_yes(served, caplog):
     with caplog.at_level(logging.WARNING, logger="voice_assistant.settings_page"):
         assert served.run("script.movie_night", LOGIN) == refused
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
-        (logging.WARNING, f"Settings page: refused running script.movie_night for {LOGIN} without a yes")]
+        (logging.WARNING, f"Settings page: refused running 'script.movie_night' for {LOGIN} without a yes")]
     assert bedroom.home.changed == []
     assert run({"id": "script.movie_night", "confirmed": True})["success"]
     assert bedroom.home.changed == [("script.movie_night", "run", None)]
+
+
+def test_what_is_run_is_logged_on_one_line_however_it_is_sent(served, caplog):
+    # The id is whatever the page's POST says, so a newline in it mustn't start a line of the log's own.
+    _bedroom(served).home = FakeHome()
+    with caplog.at_level(logging.INFO, logger="voice_assistant.settings_page"):
+        served.run("script.a\nWARNING - fake line", LOGIN)
+        served.run("scene.b\nWARNING - fake line", LOGIN)
+    said = [record.getMessage() for record in caplog.records]
+    assert len(said) == 2 and not any("\n" in line for line in said)
+    assert "'scene.b\\nWARNING - fake line'" in said[1]
 
 
 def test_a_scene_still_runs_with_one_tap(served):
