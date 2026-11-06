@@ -1271,7 +1271,9 @@ class HomeAssistant:
         """
         Works the lights through Home Assistant's own services, for what Claude was asked.
         Only ever lights: a light is checked to be one, and an area is only passed to
-        light.turn_on and light.turn_off, which do nothing to a lock in it.
+        light.turn_on and light.turn_off, which do nothing to a lock in it - bar any light
+        Nova never works (see _never_worked): a room holding one is given as its other
+        lights.
 
         Args:
             on: Whether to switch them on, or off. Off ignores everything else.

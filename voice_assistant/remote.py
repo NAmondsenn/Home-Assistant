@@ -411,7 +411,8 @@ class RemoteSpeaker:
 
         Only those the satellite has been sent the start of. One which another thread is
         still starting - kept in _playing, its message not yet sent - may reach the
-        satellite after the stop, and then plays there, so isn't finished here. If its
+        satellite after the stop, so isn't finished here: after a stop it then plays there,
+        and after a silence it's refused there and reported finished, not played. If its
         message went out before the stop the satellite stops it and says so, and it ends
         here then, a moment later than the others.
 

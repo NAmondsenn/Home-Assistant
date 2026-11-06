@@ -441,7 +441,8 @@ def test_a_sound_started_while_a_stop_is_sent_isnt_finished_by_it(stopping):
 def test_a_sound_whose_play_is_still_being_sent_isnt_finished_by_a_stop_which_gets_there_first(stopping):
     # Another thread's reply is kept by its id, and its play message is queued behind a
     # stop from a thread which wins the satellite's lock first: the stop reaches the
-    # satellite before the play, so the sound plays there and mustn't be taken as stopped.
+    # satellite before the play, so the sound plays there - or, after a silence, is refused
+    # there and reported finished - and mustn't be taken here as stopped.
     wire = []
     started = []
 

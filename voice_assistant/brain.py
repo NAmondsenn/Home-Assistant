@@ -928,9 +928,14 @@ class Brain:
         with self._lock:
             self._emptied[name] = emptied
         if not emptied:
-            why = "but couldn't be sent an empty copy" if was_connected else "while it wasn't connected"
+            # One still connected is let go of straight after, so it rings from its copy as
+            # each comes due - one which wasn't, once it's switched on.
+            if was_connected:
+                why, rings = "but couldn't be sent an empty copy", "as they come due once it's let go"
+            else:
+                why, rings = "while it wasn't connected", "if it's switched on before then"
             logger.warning(f"The {name} satellite was removed {why}, so it still has a copy of its alarms for the "
-                           f"next week, and rings them if it's switched on before then")
+                           f"next week, and rings them {rings}")
         default = names[0] if names else None
         if default is None:
             with self._lock:

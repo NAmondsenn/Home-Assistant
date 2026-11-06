@@ -1,9 +1,9 @@
 # Exact versions of every package Nova's brain needs - backend.py, in its own container
 # on PVE2 (Debian 13, Python 3.13) - see docs/decisions/0006. It's everything but
 # the satellite's microphone, speaker and wake word: Claude, Spotify, Home Assistant's
-# MQTT and WebSocket API, Nemotron, and openWakeWord (for its Silero voice activity check only). The
-# versions are those in the satellite's requirements.lock before it was trimmed, which
-# the whole of Nova was tested with on the Pi, except sherpa-onnx.
+# MQTT and WebSocket API, Nemotron, and openWakeWord (for its Silero voice activity
+# check only). The versions are those in the satellite's requirements.lock before it
+# was trimmed, which the whole of Nova was tested with on the Pi, except sherpa-onnx.
 #
 # Install it without dependency resolution, since it already lists everything -
 # resolving would pull in openwakeword's tflite-runtime, which has no wheels for

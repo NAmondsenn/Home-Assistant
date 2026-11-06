@@ -233,8 +233,8 @@ home_assistant:
 
 batteries:
   # Nova finds every device Home Assistant has a battery level for, and warns you once as
-  # each falls past a mark. Warnings go to your phone through ntfy.phone and, while
-  # you're home outside ntfy's quiet hours, are said out loud as well - see
+  # each one falls to each of its marks. Warnings go to your phone through ntfy.phone
+  # and, while you're home outside ntfy's quiet hours, are said out loud as well - see
   # docs/decisions/0007. Home Assistant is needed for this. These are the marks to start
   # with - exactly one for a phone or tablet and two for anything else, and the settings
   # page keeps to the same; each device's own are changed there.

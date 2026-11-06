@@ -24,11 +24,14 @@ WatchdogSec=60
 User=__USER__
 WorkingDirectory=__PROJECT_DIRECTORY__
 ExecStart=__PROJECT_DIRECTORY__/venv/bin/python __PROJECT_DIRECTORY__/backend.py
-# glibc gives each thread an arena of its own to allocate from, and keeps what the thread
-# frees rather than handing it back. Each song's decode runs on fresh threads, which land
-# on different arenas, so during a long music session the arenas grew by about 20 MB every
-# ten minutes (48 MB to 253 MB in 100 minutes, with 29 arenas) while the main heap stayed
-# flat. With only two arenas the threads share them, so what one frees the next reuses.
+
+# glibc spreads threads over arenas to allocate from - up to 8 for each core - and what's
+# freed in an arena below a block still in use stays with that arena rather than going
+# back. Each song brings fresh threads (its download, the hand-off to ffmpeg and the feed
+# to the satellite - the decoding is ffmpeg's own process), which land on different
+# arenas, so during a long music session the arenas grew by about 20 MB every ten minutes
+# (48 MB to 253 MB in 100 minutes, with 29 arenas) while the main heap stayed flat. With
+# only two arenas the threads share them, so what one frees the next can reuse.
 Environment=MALLOC_ARENA_MAX=2
 
 # What it writes - its log, and the user's timers, alarms, memory and routines - is

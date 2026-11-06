@@ -1860,7 +1860,7 @@ def test_a_stop_in_the_conversation_a_wake_word_over_an_alerts_sound_started_is_
 
 def test_an_alert_waiting_on_a_conversation_is_said_after_it_whatever_was_stopped_in_it(brain, connect,
                                                                                       make_session):
-    # Only a Stop or a wake word once its sound has started is the user stopping it.
+    # Only a Stop once its sound has started is the user stopping it.
     satellite, pi = connect()
     session = make_session(satellite)
     session.conversation = _Talking()
