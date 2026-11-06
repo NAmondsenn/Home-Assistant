@@ -698,12 +698,24 @@ def test_get_batteries_finds_nothing_called_that():
     assert (result.ok, result.say) == (False, "I can't find a battery called that.")
 
 
-@pytest.mark.parametrize("failure", [
-    requests.ConnectionError("down"), ValueError("not JSON"), KeyError("unit"), TypeError("not a list")])
-def test_get_batteries_with_home_assistant_down_says_so(failure):
-    # A wrong-shaped answer raises KeyError or TypeError, not only ValueError.
-    result = ActionExecutor(batteries=FakeBatteries(fails=failure)).execute(Action("get_batteries"))
+def test_get_batteries_with_home_assistant_down_says_so():
+    result = ActionExecutor(batteries=FakeBatteries(fails=requests.ConnectionError("down"))).execute(
+        Action("get_batteries"))
     assert (result.ok, result.say) == (False, "I can't reach Home Assistant right now.")
+
+
+def test_get_batteries_with_a_token_home_assistant_refuses_says_so_not_that_its_down():
+    refused = requests.HTTPError("401", response=SimpleNamespace(status_code=401))
+    result = ActionExecutor(batteries=FakeBatteries(fails=refused)).execute(Action("get_batteries"))
+    assert (result.ok, result.say) == (
+        False, "Home Assistant didn't accept my token. HA_TOKEN in the .env file needs checking.")
+
+
+@pytest.mark.parametrize("failure", [ValueError("not JSON"), KeyError("unit"), TypeError("not a list")])
+def test_get_batteries_with_an_answer_home_assistant_got_wrong_says_so(failure):
+    # A wrong-shaped answer raises KeyError or TypeError, not only ValueError. Home Assistant was reached.
+    result = ActionExecutor(batteries=FakeBatteries(fails=failure)).execute(Action("get_batteries"))
+    assert (result.ok, result.say) == (False, "Home Assistant had a problem with that.")
 
 
 def test_a_bug_reading_batteries_isnt_taken_for_home_assistant_being_down():

@@ -1240,7 +1240,7 @@ class ActionExecutor:
             batteries = self.batteries.read()
         except HOME_FAILURES as e:
             logger.warning(f"Couldn't read the batteries: {e}")
-            return {"success": False, "message": CANT_REACH}
+            return {"success": False, "message": HomeAssistant._failure_message(e)}
         found = find(batteries, device or "")
         if not found:
             return {"success": False, "message": "I can't find a battery called that."}
