@@ -64,7 +64,7 @@ PVE2, looked at today:
 | The microphone, its pre-roll, echo cancelling | Speech-to-text - Nemotron, as now |
 | The wake word | Deciding when the user has stopped talking |
 | The speaker: the one owner of what plays - speech, chimes, music - with ducking and volume | The conversation: everyday commands, Claude, Home Assistant, the calendar, weather, memory, routines |
-| Stopping what's playing, at once | Nova's voice - Piper, in Nova's voice |
+| Stopping what's playing, at once | Nova's voice - Piper |
 | Ringing timers and alarms, from its own copy | Timers and alarms - the one list |
 | raspotify, the speaker Spotify plays to | Music: choosing it; Navidrome's decoded and sent to the satellite; Spotify driven through its Web API |
 | Mute | The settings page, ntfy both ways, Nova's devices in Home Assistant |
