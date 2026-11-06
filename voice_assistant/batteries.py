@@ -633,16 +633,16 @@ class BatteryWatcher:
         them. Once quiet hours are over it also says any held warning which is still true.
 
         If Home Assistant doesn't answer, that is logged once until it does, and
-        nothing else happens. A bug in saying the held warnings, or in delivering one,
-        is logged with its traceback and the pass goes on with the rest.
+        nothing else happens. A bug in working out the warnings, in saying the held
+        ones, or in delivering one, is logged with its traceback and the pass goes on
+        with the rest.
 
         Args:
             now: The current epoch time.
 
         Raises:
-            Exception: Any other bug, such as one in reading the batteries (apart from
-                Home Assistant not answering) or in working out the warnings. The
-                thread's pass logs it, and the pass is over.
+            Exception: A bug in reading the batteries (apart from Home Assistant not
+                answering). The thread's pass logs it, and the pass is over.
         """
         try:
             batteries = self.read()
@@ -655,10 +655,16 @@ class BatteryWatcher:
         if self._down:
             logger.info("Home Assistant answers again, batteries are being watched.")
             self._down = False
-        # Worked out first, as it lets go of a held warning which a new one for the same device replaces.
-        warnings = self._choices.due(batteries)
+        # Worked out first, as it lets go of a held warning which a new one for the same device replaces. Each
+        # step is wrapped, so a bug in one doesn't lose the warnings the others would give - one here still
+        # leaves the held warnings to be said.
+        try:
+            warnings = self._choices.due(batteries)
+        except Exception:
+            logger.exception("Working out the battery warnings failed")
+            warnings = []
         # Held ones go before the new ones are delivered, so a warning held in this pass isn't also looked at
-        # again in it. Each step is wrapped, so a bug in one doesn't lose the warnings the others would give.
+        # again in it.
         try:
             self._say_held(batteries, now)
         except Exception:

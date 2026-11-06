@@ -881,6 +881,22 @@ def test_a_bug_after_the_read_is_logged_with_its_traceback_not_as_home_assistant
     assert rig.watcher._down is False
 
 
+def test_a_bug_working_out_the_new_warnings_still_lets_the_held_ones_be_said(tmp_path, caplog):
+    # Worked out first, it raised before the held step, so a warning held all night was
+    # never said while the bug lasted.
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    rig.quiet = False
+
+    def broken(batteries):
+        raise KeyError("mark")
+
+    rig.choices.due = broken
+    with caplog.at_level(logging.WARNING):
+        rig.watcher.check(NOW)
+    assert rig.said == [MAC_MESSAGE] and rig.choices.held() == {}
+    assert [r for r in caplog.records if r.exc_info and r.exc_info[0] is KeyError]
+
+
 def test_a_say_which_raises_is_a_bug_not_home_assistant_down(tmp_path, caplog):
     rig = _fallen(tmp_path)
     rig.watcher._say = lambda message: (_ for _ in ()).throw(KeyError("oops"))
