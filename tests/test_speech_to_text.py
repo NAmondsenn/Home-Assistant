@@ -157,6 +157,72 @@ def test_a_nemotron_which_hangs_is_given_up_on(monkeypatch):
         nemotron.busy.set()
 
 
+class _Hanging(FakeNemotron):
+    """A Nemotron which hangs on each piece it's given while hanging is set - until the test lets it go."""
+
+    def __init__(self):
+        import threading
+
+        super().__init__()
+        self.hanging = True
+        self.let_go = threading.Event()
+
+    def add(self, stream, audio):
+        if self.hanging:
+            self.let_go.wait(10)
+        super().add(stream, audio)
+
+
+def _given_up_on(stt):
+    """One recording, which the Nemotron given never finishes in time."""
+    transcription = stt.listen()
+    transcription.add(_pieces(0.1)[0])
+    with pytest.raises(TimeoutError):
+        transcription.finish(_pieces(0.1)[0])
+
+
+def test_a_nemotron_given_up_on_in_a_row_and_never_finishing_has_hung(monkeypatch):
+    # Every request was apologised for after FINISH_LIMIT, for good, and nothing
+    # restarted the brain to load it again - see Session._moved.
+    import time
+
+    monkeypatch.setattr(speech_to_text, "FINISH_LIMIT", 0.1)
+    nemotron = _Hanging()
+    stt = speech_to_text.NemotronSpeechToText(nemotron)
+    try:
+        for _ in range(speech_to_text.GIVE_UPS):
+            assert not stt.hung
+            _given_up_on(stt)
+        assert stt.hung
+    finally:
+        nemotron.let_go.set()
+    # A machine merely slow finishes them in the end, so it hasn't.
+    for _ in range(400):
+        if not stt.hung:
+            break
+        time.sleep(0.005)
+    assert not stt.hung
+
+
+def test_a_recording_heard_in_time_means_nemotron_hasnt_hung(monkeypatch):
+    monkeypatch.setattr(speech_to_text, "FINISH_LIMIT", 0.1)
+    nemotron = _Hanging()
+    stt = speech_to_text.NemotronSpeechToText(nemotron)
+    try:
+        for _ in range(speech_to_text.GIVE_UPS - 1):
+            _given_up_on(stt)
+        nemotron.hanging = False
+        transcription = stt.listen()
+        transcription.add(_pieces(0.1)[0])
+        assert transcription.finish(_pieces(0.1)[0])["text"] == "Set a timer for ten minutes."
+        nemotron.hanging = True
+        # Not in a row, then.
+        _given_up_on(stt)
+        assert not stt.hung
+    finally:
+        nemotron.let_go.set()
+
+
 # A lone short word - "Pause.", "Wait.", "Play." - which Nemotron so often hears as nothing.
 
 def _heard_after_nothing(*heard, please=None, timeline=None, quiet_after=0.0, first="", wake_word=None):

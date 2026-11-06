@@ -108,6 +108,7 @@ class FakeSpeechToText:
     """Stands in for Nemotron, hearing in each recording the next of the texts the test gives."""
 
     loaded = True
+    hung = False
 
     def __init__(self):
         self.texts = []

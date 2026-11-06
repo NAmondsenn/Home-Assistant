@@ -17,8 +17,9 @@ import logging
 import queue
 import re
 import threading
+from collections import deque
 import numpy as np
-from typing import Any, Optional, Dict, Tuple, Union
+from typing import Any, Deque, Optional, Dict, Tuple, Union
 import time
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant.parakeet import Parakeet
@@ -44,6 +45,14 @@ GAP = 0.3
 # How loud Piper's "Please" has to be to count as the word rather than the quiet
 # around it, which is trimmed off.
 PLEASE_QUIET = 0.01
+
+# How many recordings in a row Nemotron is given up on, each still unfinished, before
+# it's taken to have hung for good - see NemotronSpeechToText.hung. The third is given
+# up on two more requests of FINISH_LIMIT after the first, which by then has gone over
+# a minute without finishing what takes 0.3 seconds - and the watchdog's 150 seconds
+# still have to run out before the brain is restarted. Any of them finishing meanwhile
+# - over three minutes in all - is a machine merely slow, which isn't restarted.
+GIVE_UPS = 3
 
 # The longest speech heard again, in seconds, without the quiet it stopped after. The
 # lone words which came back as nothing were 0.23 to 0.95 s of speech (see
@@ -183,11 +192,37 @@ class NemotronSpeechToText:
         self.nemotron = nemotron
         self.please = please
         self.fallback = fallback
+        # The threads of the last GIVE_UPS recordings given up on, until one is heard in
+        # time - see hung.
+        self._given_up: Deque[threading.Thread] = deque(maxlen=GIVE_UPS)
+        self._given_up_lock = threading.Lock()
 
     @property
     def loaded(self) -> bool:
         """Whether there's a model to hear with - what Home Assistant's Backend shows."""
         return self.nemotron is not None
+
+    @property
+    def hung(self) -> bool:
+        """
+        Whether Nemotron looks to have hung for good: the last GIVE_UPS recordings were
+        each given up on, with none heard in time between, and none of them has
+        finished since. Each request is only apologised for then, so the sessions stop
+        counting as moving, for the watchdog to restart the brain - see Session._moved.
+        """
+        with self._given_up_lock:
+            given_up = list(self._given_up)
+        return len(given_up) == GIVE_UPS and all(thread.is_alive() for thread in given_up)
+
+    def _gave_up(self, thread: threading.Thread):
+        """Notes a recording given up on, its Nemotron still working on it on this thread."""
+        with self._given_up_lock:
+            self._given_up.append(thread)
+
+    def _heard_in_time(self):
+        """Notes a recording Nemotron finished in time, so whatever was given up on before wasn't in a row."""
+        with self._given_up_lock:
+            self._given_up.clear()
 
     def listen(self) -> "NemotronTranscription":
         """Speech-to-text for the next recording, worked out as it's heard."""
@@ -362,7 +397,9 @@ class NemotronTranscription:
         self._waiting.put(_FINISHED)
         self._thread.join(FINISH_LIMIT)
         if self._thread.is_alive():
+            self._stt._gave_up(self._thread)
             raise TimeoutError(f"Nemotron hadn't finished the recording after {FINISH_LIMIT:.0f}s")
+        self._stt._heard_in_time()
         if self._failed is not None:
             logger.warning(f"Couldn't transcribe the recording as it was made, so starting again "
                            f"on the whole of it: {self._failed}")
@@ -407,6 +444,7 @@ class NemotronTranscription:
         again.start()
         again.join(FINISH_LIMIT)
         if again.is_alive():
+            self._stt._gave_up(again)
             raise TimeoutError(f"Nemotron hadn't heard the recording again after {FINISH_LIMIT:.0f}s")
         text, how = outcome.get("heard", ("", "nothing"))
         if timeline:

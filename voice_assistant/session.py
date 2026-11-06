@@ -776,8 +776,14 @@ class Session:
         return True
 
     def _moved(self):
-        """Notes that the session's own thread is getting on - see moved_at."""
-        self.moved_at = time.monotonic()
+        """
+        Notes that the session's own thread is getting on - see moved_at. Not while
+        Nemotron looks to have hung for good (see NemotronSpeechToText.hung), when every
+        request would only be apologised for: the session is still then, for the
+        watchdog to restart the brain, which loads it again.
+        """
+        if not self.brain.stt.hung:
+            self.moved_at = time.monotonic()
 
     def _not_heard(self):
         """

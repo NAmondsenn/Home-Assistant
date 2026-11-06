@@ -154,6 +154,7 @@ class FakeSpeechToText:
     """Stands in for the brain's Nemotron, hearing in each recording the next of the texts the test gives."""
 
     loaded = True
+    hung = False
 
     def __init__(self):
         self.texts = []
@@ -693,6 +694,22 @@ def test_a_session_stuck_in_a_turn_stops_moving(brain, connect, make_session):
         assert session.moved_at == moved_at
     finally:
         let_go.set()
+
+
+def test_a_session_stops_moving_while_speech_to_text_has_hung(brain, connect, make_session):
+    # Every request was only apologised for, after FINISH_LIMIT, and nothing restarted the
+    # brain, which loads it again - see NemotronSpeechToText.hung.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    brain.stt.hung = True
+    moved_at = session.moved_at
+    running(session)
+    time.sleep(3 * session_module.WAKE_CHECK)
+    assert session.moved_at == moved_at
+
+    # One finished in the end, so it's getting on again.
+    brain.stt.hung = False
+    assert wait_for(lambda: session.moved_at > moved_at)
 
 
 def test_a_long_turn_moves_as_each_of_claudes_replies_comes(make_session, monkeypatch):
