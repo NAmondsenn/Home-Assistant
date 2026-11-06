@@ -42,7 +42,8 @@ def manage_satellites(argv: List[str]):
 
     Raises:
         SystemExit: If the arguments are wrong, or the name isn't a machine name or is
-            already there, or the password given is too short.
+            already there, or the password given is too short, or remove-satellite can't
+            read or write the passwords file.
     """
     parser = argparse.ArgumentParser(prog="backend.py")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -55,7 +56,12 @@ def manage_satellites(argv: List[str]):
 
     passwords = SatellitePasswords()
     if args.command == "remove-satellite":
-        if not passwords.remove(args.name):
+        try:
+            removed = passwords.remove(args.name)
+        except (OSError, ValueError) as e:
+            # Whatever is wrong with the file, said plainly as add-satellite does - not a traceback.
+            sys.exit(f"Couldn't change {passwords.path}: {e}")
+        if not removed:
             sys.exit(f"There is no satellite called {args.name}")
         print(f"Removed {args.name}")
         return

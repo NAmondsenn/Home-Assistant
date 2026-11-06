@@ -119,6 +119,27 @@ def test_remove_satellite_stops_admitting_it(passwords):
     assert passwords.names() == []
 
 
+def corrupt(path):
+    with open(path, "w") as file:
+        file.write("{not json")
+
+
+def a_folder_instead(path):
+    os.mkdir(path)
+
+
+@pytest.mark.parametrize("spoil", [corrupt, a_folder_instead], ids=["not json", "a folder"])
+def test_remove_satellite_says_when_the_passwords_cant_be_read(passwords, spoil):
+    # In a sentence, as add-satellite does for a file it can't read, rather than a traceback.
+    spoil(passwords.path)
+
+    with pytest.raises(SystemExit) as refused:
+        backend.main(["remove-satellite", "bedroom"])
+
+    assert isinstance(refused.value.code, str)
+    assert refused.value.code.startswith(f"Couldn't change {passwords.path}: ")
+
+
 def test_add_satellite_on_the_command_line_uses_the_same_rule(passwords, capsys):
     from voice_assistant.satellite_passwords import name_problem
 
