@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import statistics
+import threading
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -28,6 +29,11 @@ logger = logging.getLogger(__name__)
 # and how much of it is read at a time from its end, in bytes.
 MAX_BYTES = 5_000_000
 TAIL_BLOCK = 65536
+
+# Held while the log is checked, moved and appended to. Sessions save from threads of
+# their own, and without it two saves could both find the file full: the second would
+# then move the new, nearly empty file over the old one just kept, and lose it.
+_save_lock = threading.Lock()
 
 # The stages reported on, each as the gap between two marks. Where a stage could
 # start from more than one mark - speech synthesis starts once the action has run,
@@ -94,10 +100,11 @@ class Timeline:
             return
         try:
             line = {"at": datetime.now().isoformat(timespec="seconds"), "marks_ms": self.marks, **self.notes}
-            if os.path.isfile(path) and os.path.getsize(path) >= MAX_BYTES:
-                os.replace(path, path + ".1")
-            with open(path, "a") as f:
-                f.write(json.dumps(line) + "\n")
+            with _save_lock:
+                if os.path.isfile(path) and os.path.getsize(path) >= MAX_BYTES:
+                    os.replace(path, path + ".1")
+                with open(path, "a") as f:
+                    f.write(json.dumps(line) + "\n")
         except Exception as e:
             logger.warning(f"Could not save the latency timeline: {e}")
 

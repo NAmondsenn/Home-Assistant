@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 
 from voice_assistant import timeline as timeline_module
 from voice_assistant.timeline import Timeline, load, summarise
@@ -78,6 +79,54 @@ def test_the_log_is_started_afresh_once_its_big_keeping_one_old_one(tmp_path, mo
     # Nothing's lost from the newest, nor out of order across the two.
     numbers = [line["number"] for line in load(str(old)) + load(str(path))]
     assert numbers == sorted(numbers) and numbers[-1] == 29
+
+
+def test_two_saves_at_the_size_limit_start_the_log_afresh_once(tmp_path, monkeypatch):
+    # Sessions save from threads of their own. Each checked the size and then moved the
+    # file: if both found it full, the second moved the new, nearly empty file over the
+    # old one, and the old interactions were lost.
+    monkeypatch.setattr(timeline_module, "MAX_BYTES", 100)
+    path = tmp_path / "latency.jsonl"
+    path.write_text("an old line\n" * 10)
+    old = path.read_text()
+    replaced = []
+    first_replacing, second_replacing = threading.Event(), threading.Event()
+
+    def replace(source, target):
+        replaced.append(source)
+        if len(replaced) == 1:
+            # Long enough for a second save, started now, to get as far as its own move.
+            first_replacing.set()
+            second_replacing.wait(0.3)
+        else:
+            second_replacing.set()
+        os.replace(source, target)
+
+    class SlowReplacingOs:
+        """The os module, with the moving of a file slowed down."""
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    SlowReplacingOs.replace = staticmethod(replace)
+    monkeypatch.setattr(timeline_module, "os", SlowReplacingOs())
+
+    def save(number):
+        timeline = Timeline(number=number)
+        timeline.mark("wake")
+        timeline.save(str(path))
+
+    first = threading.Thread(target=save, args=(1,))
+    first.start()
+    assert first_replacing.wait(5)
+    second = threading.Thread(target=save, args=(2,))
+    second.start()
+    first.join(5)
+    second.join(5)
+
+    assert replaced == [str(path)]
+    assert (tmp_path / "latency.jsonl.1").read_text() == old
+    assert sorted(line["number"] for line in load(str(path))) == [1, 2]
 
 
 def test_only_the_last_few_need_be_read(tmp_path, monkeypatch):
