@@ -825,8 +825,7 @@ class HomeAssistant:
                 routines.append({"id": entity, "name": name, "kind": entity.split(".")[0],
                                  "by_voice": snapshot.exposed(entity) if snapshot is not None else False})
         return {"success": True,
-                "lights": [{**light, "dimmable": any(mode != "onoff" for mode in light["colour_modes"])}
-                           for light in self._in_order(lights)],
+                "lights": [{**light, "dimmable": _dims(light)} for light in self._in_order(lights)],
                 "routines": sorted(routines, key=lambda routine: routine["name"].lower())}
 
     def lights(self, timeout: Optional[float] = None) -> List[Dict]:
