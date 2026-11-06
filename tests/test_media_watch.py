@@ -177,13 +177,41 @@ def test_whats_playing_is_up_to_date_when_on_change_is_called():
 
 @pytest.mark.parametrize("error", [requests.ConnectionError("down"), ValueError("not JSON"), KeyError("area"),
                                    TypeError("not a list")])
-def test_nothing_counts_while_home_assistant_cant_be_read(error):
+def test_nothing_counts_while_home_assistant_cant_be_read_twice_in_a_row(error):
     rig = Rig(_player())
     rig.watcher.check()
     rig.home.fails = error
     rig.watcher.check()
+    rig.watcher.check()
     assert rig.watcher.playing() == [] and rig.watcher.playing_in("Bedroom", [], []) == []
     assert rig.changes == 2
+
+
+def test_one_read_which_fails_leaves_what_was_playing_counting():
+    # One over its two seconds, say, mustn't drop the stronger wake word for a cycle.
+    rig = Rig(_player())
+    rig.watcher.check()
+    rig.home.fails = requests.ConnectionError("slow")
+    rig.watcher.check()
+    assert rig.watcher.playing_in("Bedroom", [], []) == ["Bedroom TV"]
+    rig.home.fails = None
+    rig.watcher.check()
+    assert rig.watcher.playing_in("Bedroom", [], []) == ["Bedroom TV"]
+    # Told once, as it began.
+    assert rig.changes == 1
+
+
+def test_failed_reads_with_one_that_works_between_are_never_in_a_row(caplog):
+    rig = Rig(_player())
+    rig.watcher.check()
+    with caplog.at_level(logging.INFO, logger="voice_assistant.media_watch"):
+        for _ in range(3):
+            rig.home.fails = requests.ConnectionError("slow")
+            rig.watcher.check()
+            rig.home.fails = None
+            rig.watcher.check()
+    assert rig.watcher.playing_in("Bedroom", [], []) == ["Bedroom TV"] and rig.changes == 1
+    assert caplog.records == []
 
 
 def test_home_assistant_down_is_warned_of_once_and_its_return_said(caplog):
@@ -201,6 +229,7 @@ def test_home_assistant_down_is_warned_of_once_and_its_return_said(caplog):
         assert len([r for r in caplog.records if r.levelno == logging.INFO]) == 1
         assert rig.watcher.playing_in("Bedroom", [], []) == ["Bedroom TV"]
         rig.home.fails = requests.ConnectionError("down again")
+        rig.watcher.check()
         rig.watcher.check()
         assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
 
@@ -222,6 +251,7 @@ def test_a_player_of_the_wrong_shape_leaves_nothing_counting():
     rig = Rig(_player())
     rig.watcher.check()
     rig.home.players = [_player(), _player(entity=None)]
+    rig.watcher.check()
     rig.watcher.check()
     assert rig.watcher.playing() == [] and rig.changes == 2
 

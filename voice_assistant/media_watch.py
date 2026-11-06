@@ -32,8 +32,8 @@ class MediaWatcher:
     """
     Reads every few seconds which media players are playing, wherever they are, and says
     when that changes. Which of them count is worked out for each satellite as it asks -
-    see playing_in. Whenever Home Assistant can't be read, nothing is playing - Nova keeps
-    its normal wake word, as it would with no watcher.
+    see playing_in. Whenever Home Assistant can't be read twice in a row, nothing is playing -
+    Nova keeps its normal wake word, as it would with no watcher.
     """
 
     def __init__(self, home: HomeAssistant, on_change: Callable[[], None], every: float = 3.0):
@@ -49,6 +49,8 @@ class MediaWatcher:
         self._every = every
         self._players: List[Dict] = []
         self._down = False
+        # How many reads of Home Assistant in a row have failed - see _read.
+        self._misses = 0
         # The kind of error the thread, and the read, last logged, while it keeps happening - see _pass and _read.
         self._failing: Optional[type] = None
         self._read_failing: Optional[type] = None
@@ -59,7 +61,7 @@ class MediaWatcher:
         """
         Returns:
             Every player playing, as HomeAssistant.playing_media() last gave them - empty
-            before the first read, or after one which failed.
+            before the first read, or after two in a row which failed.
         """
         return list(self._players)
 
@@ -96,7 +98,8 @@ class MediaWatcher:
         """
         Reads what's playing once, and calls on_change if it has changed. A read which
         fails - Home Assistant not answering, or a bug - counts as nothing playing, and is
-        logged once until a read works again.
+        logged once until a read works again. The first Home Assistant read to fail keeps
+        the last answer, so one that is merely slow changes nothing.
 
         Raises:
             Exception: Whatever on_change raises - a bug, which the thread logs.
@@ -141,15 +144,22 @@ class MediaWatcher:
     def _read(self) -> List[Dict]:
         """
         Returns:
-            Every player playing - none if Home Assistant can't be read, or anything else
-            goes wrong reading it.
+            Every player playing. For a read of Home Assistant which fails, the last
+            answer - or none, if the read before failed too. None if anything else goes
+            wrong reading it.
         """
         try:
             found = self._home.playing_media()
-            # Put in order here, so a player of the wrong shape fails the read - with nothing counting - rather
-            # than check(), which would keep the last list, and the stronger wake word with it.
+            # Put in order here, so a player of the wrong shape fails the read - and, read after read, leaves
+            # nothing counting - rather than check(), which would keep the last list, and the stronger wake
+            # word with it, for good.
             _what_counts(found)
         except HOME_FAILURES as e:
+            self._misses += 1
+            if self._misses == 1:
+                # One read over its two seconds, say, mustn't drop the stronger wake word for a whole cycle:
+                # the last answer stands until the next read fails too.
+                return list(self._players)
             # A line every three seconds for a night of Home Assistant being restarted would bury the log.
             if not self._down:
                 logger.warning(f"Couldn't read what's playing from Home Assistant, so nothing counts as playing: {e}")
@@ -162,6 +172,7 @@ class MediaWatcher:
             self._read_failing = type(e)
             return []
         self._read_failing = None
+        self._misses = 0
         if self._down:
             logger.info("Home Assistant answers again, so what's playing is watched again.")
             self._down = False
