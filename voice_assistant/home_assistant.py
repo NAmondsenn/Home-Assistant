@@ -1090,6 +1090,35 @@ class HomeAssistant:
             return in_room or None
         return None
 
+    def _lights_to_work(self, words: str) -> Tuple[List[Dict], Optional[Dict]]:
+        """
+        The lights some words mean, for dim and switch_lights to work - or, if there are
+        none to work, what to say instead.
+
+        Args:
+            words: The lights, as the user called them - see lights_called.
+
+        Returns:
+            (the lights, None) when Nova knows them and at least one can be reached - else
+            ([], the reply): one with a 'not_understood' of True when Nova doesn't know the
+            lights, so that Claude is asked, "Which room?" for the room's lights with Nova's
+            room unknown, or that Home Assistant can't reach them.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If it didn't answer with the lights.
+        """
+        found = self.lights_called(words, self._in_order(self.lights()))
+        if found is None or (not found and self.area):
+            return [], {"success": False, "message": "I don't know a light called that.", "not_understood": True}
+        if not found:
+            return [], {"success": False, "message": "Which room?"}
+        # Said, rather than "Done." or "They're as dim as they go." for a lamp switched off
+        # at the wall, with nothing done and the room still dark.
+        if not any(light["reachable"] for light in found):
+            return [], _out_of_reach(found)
+        return found, None
+
     def dim(self, direction: str, words: str) -> Dict:
         """
         Makes lights dimmer or brighter by a step, from where each one is now - "dim the
@@ -1108,17 +1137,9 @@ class HomeAssistant:
             is asked.
         """
         try:
-            lights = self._in_order(self.lights())
-            found = self.lights_called(words, lights)
-            if found is None or (not found and self.area):
-                return {"success": False, "message": "I don't know a light called that.", "not_understood": True}
-            if not found:
-                return {"success": False, "message": "Which room?"}
-
-            # Said rather than "as dim as they go", which would tell the user a lamp
-            # switched off at the wall is as bright as it goes while the room is dark.
-            if not any(light["reachable"] for light in found):
-                return _out_of_reach(found)
+            found, reply = self._lights_to_work(words)
+            if reply:
+                return reply
 
             by_brightness: Dict[int, List[str]] = {}
             for light in found:
@@ -1156,14 +1177,9 @@ class HomeAssistant:
             doesn't know the lights, so that Claude is asked.
         """
         try:
-            found = self.lights_called(words, self._in_order(self.lights()))
-            if found is None or (not found and self.area):
-                return {"success": False, "message": "I don't know a light called that.", "not_understood": True}
-            if not found:
-                return {"success": False, "message": "Which room?"}
-            # Rather than "Done." for a lamp switched off at the wall, with nothing done.
-            if not any(light["reachable"] for light in found):
-                return _out_of_reach(found)
+            found, reply = self._lights_to_work(words)
+            if reply:
+                return reply
             data = {"entity_id": [light["id"] for light in found]}
             if on and brightness is not None:
                 data["brightness_pct"] = max(1, min(100, int(brightness)))
