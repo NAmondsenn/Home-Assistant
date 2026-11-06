@@ -176,8 +176,9 @@ LIGHTS_TEMPLATE = """
 # "charging": "discharging", "app": true}]. Only what Home Assistant has is rendered: whether the state is
 # a level, and in percent, is left to batteries(). A sensor made by a template has no device,
 # so those come out as null. The charging entity is the device's binary_sensor of device class
-# battery_charging if it has one, else its sensor whose id ends in battery_state - the phone has
-# the second, saying "charging", "discharging" or "full".
+# battery_charging if it says on or off, else its sensor whose id ends in battery_state - the phone
+# has the second, saying "charging", "discharging" or "full". A binary sensor which is unavailable
+# is passed over, or it would hide a battery_state sensor that can still be read.
 BATTERIES_TEMPLATE = """
 {%- set found = namespace(batteries=[]) -%}
 {%- for battery in states.sensor | selectattr('attributes.device_class', 'eq', 'battery') -%}
@@ -185,7 +186,7 @@ BATTERIES_TEMPLATE = """
   {%- set charging = namespace(state=none, fallback=none) -%}
   {%- if device -%}
     {%- for entity in device_entities(device) -%}
-      {%- if is_state_attr(entity, 'device_class', 'battery_charging') and entity.startswith('binary_sensor.') -%}
+      {%- if is_state_attr(entity, 'device_class', 'battery_charging') and entity.startswith('binary_sensor.') and states(entity) in ['on', 'off'] -%}
         {%- set charging.state = states(entity) -%}
       {%- elif entity.startswith('sensor.') and entity.endswith('battery_state') -%}
         {%- set charging.fallback = states(entity) -%}

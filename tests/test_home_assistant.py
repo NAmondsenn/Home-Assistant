@@ -2261,6 +2261,15 @@ def test_batteries_are_read_with_their_device_and_charging_state(make_home):
     assert "last_changed" not in sent["json"]["template"]
 
 
+def test_a_charging_sensor_that_isnt_on_or_off_leaves_the_battery_state_to_say(make_home):
+    # An unavailable battery_charging binary sensor would otherwise be the charging word, and hide
+    # the readable battery_state sensor beside it. Jinja can't be rendered here, so the guard is read.
+    home = make_home({"/api/template": FakeResponse(json.dumps([_rendered_battery()]))})
+    home.batteries()
+    template = home._session.requests[0][2]["json"]["template"]
+    assert "entity.startswith('binary_sensor.') and states(entity) in ['on', 'off']" in template
+
+
 def test_an_unreadable_battery_is_left_out(make_home):
     rows = [_rendered_battery(f"sensor.b{n}", state) for n, state in enumerate(["unavailable", "unknown", "", "nan"])]
     rows.append(_rendered_battery("sensor.fine", "80"))
