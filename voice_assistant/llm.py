@@ -47,7 +47,9 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 STOPPED_SHORT = ("max_tokens", "refusal")
 
 # Said when Claude read something but said nothing of it - what was read is never said
-# itself, as entity ids read out are no answer. Also when a read was asked for but dropped.
+# itself, as entity ids read out are no answer. Also when a read was asked for but dropped,
+# with nothing else said or done - though not from a response that stopped short, which
+# says DIDNT_WORK unless something was read before it.
 COULDNT_FIND_OUT = "Sorry, I couldn't find that out."
 
 # Said when a response stopped short or was empty and nothing was read. What was asked
