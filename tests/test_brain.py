@@ -1511,6 +1511,21 @@ def test_stop_counts_what_rings_on_no_satellite_as_the_defaults(brain, connect):
     assert not brain.stoppable()
 
 
+def test_a_stop_for_what_nova_says_alone_leaves_the_defaults_missed_timers(brain, connect):
+    # Dismissing on the default, with nothing ringing there, would let go of what it missed
+    # unheard - so it's only done when something rings.
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    brain.clock._record_unacknowledged({"id": 1, "due_at": time.time() - 60, "duration": 600, "label": None,
+                                        "satellite": "bedroom"})
+    bedroom.activity = "speaking"
+
+    assert brain.stop_everywhere() == ["bedroom"]
+    assert bedroom.stopped == 1
+    assert brain.clock.missed()["message"].startswith("You missed 10 minute timer")
+
+
 def test_an_unclean_satellite_is_told_to_the_phone(brain, connect):
     brain.ntfy = FakeNtfy()
     serving(brain)
