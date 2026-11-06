@@ -484,6 +484,36 @@ def test_a_failed_step_with_no_pull_leaves_the_code_as_it_is(tmp_path):
     assert git("rev-parse", "HEAD") == after and git("symbolic-ref", "--short", "HEAD") == "main"
 
 
+def test_a_failure_before_any_package_is_installed_doesnt_say_packages_stay_installed(tmp_path):
+    # A role file that can't be read fails the run started again on the new code before
+    # any step has run, so there is nothing yet for the line to be true of.
+    clone, before, git = _updated_clone(tmp_path)
+    early = _run_steps(tmp_path, "false", clone, updated_from=before)
+    late = _run_steps(tmp_path, "packages_started=true\nfalse", clone, updated_from=before)
+
+    assert early.returncode != 0 and "taken back out" in early.stderr
+    assert "Python packages" not in early.stderr
+    assert late.returncode != 0 and "taken back out" in late.stderr
+    assert "Python packages it installed stay installed" in late.stderr
+
+
+def test_the_take_back_message_always_ends_its_sentence(tmp_path):
+    # Said on its own when nothing follows it, as after a step failed, so it can't end in a
+    # colon which leads nowhere.
+    clone, before, git = _updated_clone(tmp_path)
+    runs = [
+        _run_steps(tmp_path, "false", clone, updated_from=before),
+        _run_steps(tmp_path, "packages_started=true\nfalse", clone, updated_from=before),
+        _run_steps(tmp_path, "false", clone),
+        _run_update_check(tmp_path, "thresholds:\n  silence_duration: 5\n", project=clone, updated_from=before),
+        _run_update_check(tmp_path, "thresholds:\n  silence_duration: 5\n", project=clone),
+    ]
+
+    for run in runs:
+        assert "PROBLEM" in run.stderr
+        assert not [line for line in run.stderr.splitlines() if line.rstrip().endswith(":")], run.stderr
+
+
 @pytest.mark.parametrize("sig, status", [(signal.SIGHUP, 129), (signal.SIGINT, 130), (signal.SIGTERM, 143)],
                          ids=["hangup", "interrupt", "terminate"])
 def test_an_update_cut_off_mid_step_takes_the_new_code_back_out(tmp_path, sig, status):

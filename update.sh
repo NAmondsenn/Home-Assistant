@@ -34,17 +34,18 @@ take_back() {
     # The reset comes before any message, so a session that's gone loses only that.
     if [ -z "${NOVA_UPDATED_FROM:-}" ]; then
         # Run with --no-pull, on code checked out by hand, so there's nothing to go back to.
-        problem "${why} The code checked out is in place, but Nova is still running the code it started with until it next restarts:"
+        problem "${why} The code checked out is in place, but Nova is still running the code it started with until it next restarts."
     elif as_user git -C "$PROJECT_DIRECTORY" reset -q --keep "$NOVA_UPDATED_FROM"; then
         # --keep refuses, rather than throws away, local changes to the files it would move.
-        problem "${why} The new code has been taken back out, so Nova goes on running the code it had before, even once it restarts:"
+        problem "${why} The new code has been taken back out, so Nova goes on running the code it had before, even once it restarts."
     else
-        problem "${why} The new code couldn't be taken back out, so check out ${NOVA_UPDATED_FROM} before Nova next restarts:"
+        problem "${why} The new code couldn't be taken back out, so check out ${NOVA_UPDATED_FROM} before Nova next restarts."
     fi
 }
 
 watch_steps() {
     steps_done=false
+    packages_started=false
     trap failed_after_pull EXIT
     # With no trap of their own, a dropped session's hangup or a Ctrl+C would end bash
     # with the EXIT trap seeing $? at 0, as if the steps had all gone through.
@@ -69,7 +70,11 @@ failed_after_pull() {
     # packages might not suit.
     if [ -n "${NOVA_UPDATED_FROM:-}" ]; then
         take_back "A step after fetching the new code failed - Nova is still running the code it had before."
-        problem "Python packages it installed stay installed, so put right what failed and run this again soon - until then the old code may not start with them."
+        # Only once they have started: a failure before that, such as a role file that can't
+        # be read, has installed nothing.
+        if [ "$packages_started" = true ]; then
+            problem "Python packages it installed stay installed, so put right what failed and run this again soon - until then the old code may not start with them."
+        fi
     else
         take_back "A step of the update failed - put right what failed, then run this again."
     fi
@@ -106,7 +111,10 @@ done_ "On $(as_user git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref HEAD) at 
 watch_steps
 
 # An install from before roles has none saved yet, so what decide_role worked out is.
-run_steps save_role install_python_packages download_models
+run_steps save_role
+# From here a failure may leave packages installed, which failed_after_pull says.
+packages_started=true
+run_steps install_python_packages download_models
 
 # /etc/asound.conf is only ever written by setup.sh, so one written before the
 # shorter audio bursts is pointed out rather than changed behind the user's back. Only
