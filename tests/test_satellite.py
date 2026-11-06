@@ -957,6 +957,23 @@ def test_with_no_brain_due_alarms_ring_and_the_wake_word_dismisses_them(brain, m
     assert "announcement" not in made.speaker.silenced
 
 
+def test_a_check_of_the_alarm_copy_which_fails_is_logged_with_where_it_failed(brain, make, caplog):
+    brain.up = False
+    made = make(start=False)
+
+    def broken(now):
+        raise RuntimeError("The copy can't be read")
+
+    made.ringer.check = broken
+    with caplog.at_level(logging.ERROR, logger="satellite"):
+        make.begin(made)
+        assert wait_for(lambda: any("Couldn't check the alarm copy" in record.getMessage()
+                                    for record in caplog.records))
+
+    record = next(record for record in caplog.records if "Couldn't check the alarm copy" in record.getMessage())
+    assert record.exc_info is not None and "The copy can't be read" in caplog.text
+
+
 def test_the_away_report_is_sent_on_connecting(brain, make, tmp_path):
     brain.up = False
     # The last run never stopped properly.

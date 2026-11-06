@@ -757,8 +757,8 @@ class Satellite:
                 with self._lock:
                     if not self.link.connected:
                         self.ringer.check(time.time())
-            except Exception as e:
-                logger.error(f"Couldn't check the alarm copy: {e}")
+            except Exception:
+                logger.exception("Couldn't check the alarm copy")
 
     def _note_start(self) -> bool:
         """
