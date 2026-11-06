@@ -1412,12 +1412,19 @@ class ActionExecutor:
         # Any phones among them go by ntfy, as the phone always has; the rest by notify.
         by_ntfy = phone_only or any(app_device.phone for app_device in found)
         others = [app_device for app_device in found if not app_device.phone]
-        if by_ntfy and self.ntfy is None:
-            return {"success": False, "message": UNAVAILABLE["ntfy"]}
-        # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
-        phone = self.ntfy.phone if by_ntfy else ""
-        if by_ntfy and not phone:
-            return {"success": False, "message": "There's nowhere set up to send things to your phone."}
+        phone, trouble = "", None
+        if by_ntfy:
+            if self.ntfy is None:
+                trouble = UNAVAILABLE["ntfy"]
+            else:
+                # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
+                phone = self.ntfy.phone
+                if not phone:
+                    trouble = "There's nowhere set up to send things to your phone."
+        # Said at once if the phone is all there is to send to - else after the others have it,
+        # which don't need ntfy.
+        if trouble and not others:
+            return {"success": False, "message": trouble}
         if not text:
             if self.last_answer is None:
                 return {"success": False, "message": "There's nothing to send yet."}
@@ -1426,7 +1433,9 @@ class ActionExecutor:
         title = (title or "From Nova")[:100]
 
         sent, failed = [], []
-        if by_ntfy:
+        if trouble:
+            failed.append(f"I couldn't send that to your phone. {trouble}")
+        elif by_ntfy:
             if self.ntfy.send(phone, text, title=title):
                 sent.append("phone")
             else:

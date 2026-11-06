@@ -944,6 +944,32 @@ def test_a_partial_send_says_which_device_got_it():
         False, "speak", "Sent to your MacBook Pro. Your MacBook Air hasn't got the Home Assistant app's notifications.")
 
 
+@pytest.mark.parametrize("ntfy, trouble", [
+    (None, "Notifications aren't set up yet."),
+    (FakeNtfy(phone=""), "There's nowhere set up to send things to your phone."),
+])
+def test_the_rest_are_sent_to_when_the_phone_among_them_cant_be(ntfy, trouble):
+    # "All" finds the phone and the Mac, and the Mac doesn't need ntfy.
+    home = FakeAppHome([_app_device(), _mac()])
+    executor = ActionExecutor(home=home, ntfy=ntfy)
+    executor.last_answer = ("asked", "said")
+    result = executor.execute(Action("send_to_phone", {"device": "all"}))
+    assert home.sent == [("mobile_app_macbook_pro", "said", None)]
+    assert (result.ok, result.confirm, result.say) == (
+        False, "speak", f"Sent to your MacBook Pro. I couldn't send that to your phone. {trouble}")
+    # Asked for the phone alone, or by its name, there is nothing else to send to.
+    for asked in ("phone", "s25"):
+        result = executor.execute(Action("send_to_phone", {"device": asked}))
+        assert (result.ok, result.say) == (False, trouble)
+    assert len(home.sent) == 1
+
+
+def test_with_nothing_to_send_that_is_said_before_the_phone_cant_be_sent_to():
+    home = FakeAppHome([_app_device(), _mac()])
+    result = ActionExecutor(home=home).execute(Action("send_to_phone", {"device": "all"}))
+    assert (result.ok, result.say, home.sent) == (False, "There's nothing to send yet.", [])
+
+
 def test_send_to_phone_is_offered_with_ntfy_or_home_assistant():
     def offered(executor):
         return {s["name"]: s for s in executor.tool_schemas()}
