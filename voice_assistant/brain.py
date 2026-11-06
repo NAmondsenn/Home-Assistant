@@ -372,7 +372,7 @@ class Brain:
             quiet hours - or, with no ntfy, the brain's own night's.
         """
         settings = self.config.section("batteries")
-        # The marks are config.yaml's, which a Config always has, so there's no copy of them here to keep in step.
+        # Every one is config.yaml's, which a Config always has, so there's no copy of them here to keep in step.
         choices = BatteryChoices(os.path.join(paths.DATA_DIR, "batteries.json"),
                                  settings["mobile_marks"], settings["other_marks"])
 
@@ -384,8 +384,7 @@ class Brain:
 
         quiet = (self.ntfy or self._night).quiet
         return BatteryWatcher(self.home, choices, say=self._say_battery, send=send, quiet=quiet,
-                              check_every=settings.get("check_every", 60),
-                              stale_after=settings.get("stale_after", 3600))
+                              check_every=settings["check_every"], stale_after=settings["stale_after"])
 
     def apply_settings(self, changes: Dict[Tuple[str, str], Any]) -> List[Tuple[str, str]]:
         """
