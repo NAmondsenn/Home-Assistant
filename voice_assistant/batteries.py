@@ -192,6 +192,24 @@ def spoken_name(name: str) -> str:
     return " ".join(said_words)
 
 
+def _asked_word(word: str) -> str:
+    """
+    Takes the possessive or plural off a word someone asked with.
+
+    Args:
+        word: One lower-case word, e.g. "mac's" or "phones".
+
+    Returns:
+        The word as a name or kind word would have it - "mac", "phone". A plural s is
+        only taken off a kind word, since any other word ending in s may be a name's own.
+        A word which would be left empty ("'s" on its own) is kept as it is.
+    """
+    stem = word[:-2] if word.endswith("'s") else word
+    if stem.endswith("s") and stem[:-1] in _KIND_WORDS:
+        stem = stem[:-1]
+    return stem or word
+
+
 def find(batteries: List[Battery], asked: str) -> List[Battery]:
     """
     Finds the devices someone meant by what they said.
@@ -205,9 +223,10 @@ def find(batteries: List[Battery], asked: str) -> List[Battery]:
         any word in a name ("mac" finds "MacBook Pro"), or is a kind word:
         phone, tablet, laptop, computer or mac. Only the batteries matching the
         most asked words are kept, so "s25 ultra" doesn't also find the Tab S11
-        Ultra. Empty if nothing matches.
+        Ultra. A possessive or plural is understood - "mac's" or "phones". Empty if
+        nothing matches.
     """
-    words = [w for w in asked.lower().split() if w != "all"]
+    words = [w for w in map(_asked_word, asked.lower().split()) if w != "all"]
     if not words:
         return list(batteries)
 

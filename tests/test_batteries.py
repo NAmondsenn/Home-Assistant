@@ -110,6 +110,20 @@ def test_asking_finds_the_device_meant():
     assert find(three, "toaster") == []
 
 
+def test_a_possessive_or_a_plural_finds_the_device_meant():
+    three = _todays_three()
+    mac, phone, tablet = three
+    assert find(three, "mac's") == [mac]
+    assert find(three, "macbook's") == [mac]
+    assert find(three, "my phone's") == [phone]
+    assert find(three, "phones") == [phone]
+    assert find(three, "tablets") == [tablet]
+    assert find(three, "laptops") == [mac]
+    assert find(three, "macs") == [mac]
+    # Nothing is left of a bare "'s", and an empty word would match every name.
+    assert find(three, "'s") == []
+
+
 def test_a_full_name_finds_only_that_device():
     mac, phone, tablet = _todays_three()
     assert find([mac, phone, tablet], "s25 ultra") == [phone]
