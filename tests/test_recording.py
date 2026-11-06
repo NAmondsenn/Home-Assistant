@@ -3,8 +3,10 @@
 import logging
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from voice_assistant import config, protocol, recording
 from voice_assistant.recording import FRAME, RATE, AudioFeed, record_until_silence
@@ -150,3 +152,69 @@ def test_audio_fed_after_the_feed_stalled_is_ignored():
     feed.feed(np.full(1600, 2, dtype=np.int16))
 
     assert feed.position == 1600
+
+
+def test_time_at_counts_back_from_the_piece_a_position_is_in(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(recording, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    feed = AudioFeed()
+    # With nothing fed there's no arrival to go by, so it's now.
+    assert feed.time_at(0) == 100.0
+
+    now[0] = 101.0
+    feed.feed(np.zeros(8000, dtype=np.int16))
+    now[0] = 102.0
+    feed.feed(np.zeros(8000, dtype=np.int16))
+
+    # The whole of a piece was heard before it was sent, so a position in it is counted back from its arrival.
+    assert feed.time_at(8000) == 101.0
+    assert feed.time_at(4000) == pytest.approx(100.75)
+    assert feed.time_at(12000) == pytest.approx(101.75)
+    # One not yet fed, such as a mark made as the feed ends, goes by the last arrival.
+    assert feed.time_at(20000) == 102.0
+
+
+def test_a_feed_hands_the_recording_over_as_its_made():
+    feed = AudioFeed()
+    feed.feed(seconds(0.3, 0))
+    feed.feed(seconds(0.6, 2000))
+    feed.feed(seconds(1.0, 0))
+    heard = []
+
+    audio = record(feed, listen_from=0, heard=heard.append)
+
+    # Everything up to the moment the user was found to be talking, then each frame as it
+    # comes - adding up to exactly the recording.
+    assert len(heard[0]) > FRAME and all(len(piece) == FRAME for piece in heard[1:])
+    assert np.array_equal(np.concatenate(heard), audio)
+
+    # And nothing at all when they never talk.
+    silent = AudioFeed()
+    silent.feed(seconds(2.0, 0))
+    nothing = []
+    assert len(record(silent, listen_from=0, heard=nothing.append)) == 0
+    assert nothing == []
+
+
+def test_a_recording_from_a_feed_marks_the_timeline_by_when_the_audio_arrived(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(recording, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    marks = {}
+
+    class Timeline:
+        def mark(self, stage, at=None):
+            marks[stage] = at
+
+    # Quiet, then speech which starts 0.1s before the end of the first piece, and stops at the end of the second.
+    feed = AudioFeed()
+    feed.feed(np.concatenate([seconds(0.3, 0), np.full(1600, 2000, dtype=np.int16)]))
+    now[0] = 11.0
+    feed.feed(np.full(8000, 2000, dtype=np.int16))
+    now[0] = 12.0
+    feed.feed(seconds(1.0, 0))
+
+    record(feed, listen_from=0, timeline=Timeline())
+
+    assert set(marks) == {"recording_started", "speech_started", "speech_ended", "recording_stopped"}
+    assert marks["speech_started"] == pytest.approx(9.9)
+    assert marks["speech_ended"] == pytest.approx(11.0)
