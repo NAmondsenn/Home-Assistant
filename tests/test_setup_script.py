@@ -486,7 +486,7 @@ def test_only_the_brain_downloads_parakeet(tmp_path, role):
 UNINSTALL = SETUP.parent / "uninstall.sh"
 
 
-def run_uninstall(tmp_path, role, arguments=("--yes",), stdin="", change=None):
+def run_uninstall(tmp_path, role, arguments=("--yes",), stdin="", change=None, service_home=None):
     """
     Runs a copy of uninstall.sh, in a project folder of its own with a venv and models to
     lose and a home of its own, against stand-ins for sudo, systemctl and apt-get which only
@@ -499,6 +499,8 @@ def run_uninstall(tmp_path, role, arguments=("--yes",), stdin="", change=None):
         stdin: What's typed in, for its questions.
         change: (old, new), swapped in the copy of the script - to point a path under /etc at
             the test's own folder.
+        service_home: Runs it as root, as under sudo, with this as the home of the user who
+            owns the clone, which the stand-in getent gives - and the scratch home above as root's.
 
     Returns:
         The finished process, the project folder, and the file that notes what the stand-ins
@@ -529,10 +531,14 @@ def run_uninstall(tmp_path, role, arguments=("--yes",), stdin="", change=None):
         stand_in = bin_directory / name
         stand_in.write_text(f'#!/bin/bash\necho "{name} $*" >> "{log}"\n')
         stand_in.chmod(0o755)
-    # Not root, whoever runs the tests.
+    # Not root, whoever runs the tests - unless a home for the clone's owner says it is.
     stand_in = bin_directory / "id"
-    stand_in.write_text('#!/bin/bash\n[ "$1" = -u ] && echo 1000 || exec /usr/bin/id "$@"\n')
+    stand_in.write_text(f'#!/bin/bash\n[ "$1" = -u ] && echo {0 if service_home else 1000} || exec /usr/bin/id "$@"\n')
     stand_in.chmod(0o755)
+    if service_home:
+        stand_in = bin_directory / "getent"
+        stand_in.write_text(f'#!/bin/bash\necho "owner:x:1000:1000::{service_home}:/bin/bash"\n')
+        stand_in.chmod(0o755)
 
     env = dict(os.environ, PATH=f"{bin_directory}:{os.environ['PATH']}", HOME=str(home), NOVA_CONFIG=str(config))
     for name in ("NOVA_SETUP_ROLE", "NOVA_DATA"):
@@ -577,3 +583,25 @@ def test_uninstall_purges_raspotify_so_its_settings_go_too(tmp_path):
     assert "sudo apt-get purge -y -qq raspotify" in asked
     assert not any(line.startswith("sudo apt-get remove") for line in asked)
     assert (project / "venv" / "marker").exists()
+
+
+def test_uninstall_deletes_the_saved_data_of_the_user_the_clone_belongs_to(tmp_path):
+    # Under sudo HOME is root's, but the settings are looked for in the home of whoever owns
+    # the clone - and so must be the saved data beside them, not root's empty ones.
+    service_home = tmp_path / "service-home"
+    data = service_home / ".local" / "share" / "nova"
+    data.mkdir(parents=True)
+    (data / "timers.json").write_text("{}")
+    roots = tmp_path / "home" / ".local" / "share" / "nova"
+    roots.mkdir(parents=True)
+    (roots / "marker").write_text("")
+
+    # Asked in order: the venv, the models, then the settings and saved data.
+    result, project, log = run_uninstall(tmp_path, "satellite", arguments=(), stdin="n\nn\nyes\n",
+                                         change=("/etc/raspotify/conf", str(tmp_path / "no-raspotify")),
+                                         service_home=service_home)
+
+    assert result.returncode == 0, result.stderr
+    assert str(data) in result.stdout
+    assert not data.exists()
+    assert (roots / "marker").exists()

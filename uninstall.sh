@@ -29,7 +29,7 @@ if [ "$ROLE" = "brain" ]; then
     exit 1
 fi
 
-DATA_DIRECTORY="${NOVA_DATA:-${HOME}/.local/share/nova}"
+DATA_DIRECTORY="${NOVA_DATA:-${SERVICE_HOME}/.local/share/nova}"
 
 echo "Removing Nova from ${PROJECT_DIRECTORY}"
 
