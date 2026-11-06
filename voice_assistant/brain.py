@@ -1341,8 +1341,30 @@ class Brain:
                                      name="routine").start()
             if skipped:
                 logger.info(f"Telling the {satellite} satellite {len(skipped)} routines didn't run while it was away")
-                threading.Thread(target=session.announce, args=(_skipped_message(skipped),), daemon=True,
+                threading.Thread(target=self._tell_skipped, args=(session, satellite, skipped), daemon=True,
                                  name="routine").start()
+
+    def _tell_skipped(self, session: Session, satellite: str, skipped: List[Dict]):
+        """
+        Says on a satellite which is back that routines didn't run while it was away -
+        or, if that isn't said, keeps them to say next time. They were let go of to say
+        it, so a satellite which went again part way through lost it.
+
+        Args:
+            session: The satellite's session.
+            satellite: The satellite, by name.
+            skipped: Each as Routines.take_missed gave it.
+        """
+        try:
+            said = session.announce(_skipped_message(skipped))
+        except Exception:
+            logger.exception(f"Couldn't tell the {satellite} satellite routines didn't run while it was away")
+            said = False
+        if said:
+            return
+        logger.info(f"The {satellite} satellite wasn't told {len(skipped)} routines didn't run, so it's told next time")
+        for entry in skipped:
+            self.routines.missed(entry, satellite, entry["due_at"])
 
     def _run_routines_when_due(self):
         """

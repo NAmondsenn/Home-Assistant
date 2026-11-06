@@ -1919,6 +1919,29 @@ def test_several_routines_skipped_are_said_together(brain, connect):
     assert bedroom.announced == ["Your 7 AM and 9:30 PM routines didn't run - I couldn't reach the speaker."]
 
 
+def test_routines_said_to_have_been_skipped_are_kept_until_its_said(brain, connect):
+    # Its satellite going part way through the notice lost it: they'd been let go of first.
+    routine = brain.routines.save(MORNING)["routine"]
+    brain._run_timed(routine, time.time() - brain_module.MISSED_ROUTINE_GRACE - 1)
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    bedroom.said = False
+
+    brain._catch_up_routines()
+    assert wait_for(lambda: brain.routines.missed_satellites() == {"bedroom"})
+    assert bedroom.announced == ["Your 7 AM routine didn't run - I couldn't reach the speaker."]
+
+    # Said next time - once.
+    bedroom.said = True
+    brain._catch_up_routines()
+    assert wait_for(lambda: len(bedroom.announced) == 2)
+    brain._catch_up_routines()
+    time.sleep(0.05)
+    assert len(bedroom.announced) == 2 and brain.routines.missed_satellites() == set()
+    assert bedroom.routines == []
+
+
 def skipped(*times):
     """What's said of routines at these times, e.g. "7:00", which didn't run while their satellite was away."""
     return brain_module._skipped_message([{"at": at} for at in times])
