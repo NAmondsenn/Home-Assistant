@@ -248,6 +248,37 @@ def test_an_alarm_whose_sound_is_missing_rings_on_without_spinning_and_is_dismis
     assert copy.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": ["alarm-1@1729587600"]}
 
 
+class RefusingSpeaker(FakeSpeaker):
+    """Ends each sound as it's asked for - as the speaker does while announcements are silenced."""
+
+    def play_file(self, filename, **details):
+        playback = super().play_file(filename, **details)
+        playback.stop()
+        return playback
+
+
+def test_an_alarm_whose_sound_is_refused_rings_on_without_spinning_and_is_quietened(tmp_path):
+    # While the satellite has announcements silenced - since the wake word - each play
+    # ended at once, so the ring asked again as fast as the thread could go.
+    copy, state, _, _ = make(tmp_path)
+    speaker = RefusingSpeaker()
+    ringer = FallbackRinger(speaker, "/sounds", copy, state)
+    copy.replace([entry()])
+    ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls)
+    time.sleep(0.3)
+    calls, rung = len(speaker.calls), ringer.ringing_ids()
+    # Quietened before anything is asserted, so a ring which spins is stopped whatever happens.
+    quietening = time.monotonic()
+    quietened = ringer.quiet()
+
+    # Asked again each second, rather than as fast as the thread can go - and still ringing,
+    # so the brain is told to take it over. Quietened at once, not once the second is up.
+    assert calls <= 2 and rung == quietened == ["alarm-1@1729587600"]
+    assert time.monotonic() - quietening < 0.9
+    assert not ringer.ringing
+
+
 def test_a_ring_going_as_the_satellite_stops_carries_on_once_it_starts_again(tmp_path):
     # Its watchdog, a crash or the power. Knowing only that the alarm had rung, the
     # copy rang it no more - and the brain, told just that, neither rang it nor said

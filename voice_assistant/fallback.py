@@ -357,8 +357,11 @@ class FallbackRinger:
         while not stop.is_set() and time.monotonic() < deadline:
             playback = self.speaker.play_file(
                 filename, volume=self.state.volume("alarm"), kind="announcement")
-            if playback is None:
-                # A missing file mustn't spin the thread.
+            if playback is None or playback.done:
+                # A missing file mustn't spin the thread - nor a sound ended as it's asked
+                # for: refused while announcements are silenced, as they are from the wake
+                # word until it has dismissed this (up to the 2 seconds a send to the brain
+                # can hold the satellite's lock), or by a sound card which won't open.
                 stop.wait(1.0)
                 continue
             while not stop.is_set() and not playback.done and time.monotonic() < deadline:
