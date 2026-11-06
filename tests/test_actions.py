@@ -696,6 +696,9 @@ def test_get_batteries_finds_nothing_called_that():
     executor = ActionExecutor(batteries=FakeBatteries([_battery("MacBook Pro", 72)]))
     result = executor.execute(Action("get_batteries", {"device": "kettle"}))
     assert (result.ok, result.say) == (False, "I can't find a battery called that.")
+    # One asked for by name is still called that, though none is listed at all.
+    result = ActionExecutor(batteries=FakeBatteries([])).execute(Action("get_batteries", {"device": "mac"}))
+    assert (result.ok, result.say) == (False, "I can't find a battery called that.")
 
 
 def test_get_batteries_with_home_assistant_down_says_so():
@@ -709,6 +712,13 @@ def test_get_batteries_with_a_token_home_assistant_refuses_says_so_not_that_its_
     result = ActionExecutor(batteries=FakeBatteries(fails=refused)).execute(Action("get_batteries"))
     assert (result.ok, result.say) == (
         False, "Home Assistant didn't accept my token. HA_TOKEN in the .env file needs checking.")
+
+
+@pytest.mark.parametrize("params", [{}, {"device": ""}, {"device": "all"}])
+def test_get_batteries_with_none_at_all_says_so_when_none_was_asked_about(params):
+    # "Battery levels" with nothing to say isn't a battery "called that" which can't be found.
+    result = ActionExecutor(batteries=FakeBatteries([])).execute(Action("get_batteries", params))
+    assert (result.ok, result.say) == (False, "Home Assistant hasn't got any batteries to tell you about.")
 
 
 @pytest.mark.parametrize("failure", [ValueError("not JSON"), KeyError("unit"), TypeError("not a list")])

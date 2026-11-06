@@ -1243,6 +1243,9 @@ class ActionExecutor:
             return {"success": False, "message": HomeAssistant._failure_message(e)}
         found = find(batteries, device or "")
         if not found:
+            # Nothing asked for is every battery, as find has it, so none found then means there are none.
+            if set((device or "").lower().split()) <= {"all"}:
+                return {"success": False, "message": "Home Assistant hasn't got any batteries to tell you about."}
             return {"success": False, "message": "I can't find a battery called that."}
         now = time.time()
         return {"success": True, "message": " ".join(said(battery, now, self.batteries.stale_after)
