@@ -753,6 +753,17 @@ def test_a_refusal_is_warned_of_with_its_category_even_with_words_beside_it(llm,
     assert any("refus" in warning and "general_harms" in warning for warning in _warnings(caplog))
 
 
+def test_a_refusal_beside_not_for_me_is_still_warned_of(llm, caplog):
+    # A film line is the likeliest thing to trip a classifier, and the one heard least.
+    response = _reply("", _tool("not_for_me", use_id="t1"), stop_reason="refusal")
+    response.stop_details = SimpleNamespace(type="refusal", category="general_harms")
+    llm.client = FakeClient(response)
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("turn the lights off, Jack", playing=["Bedroom TV"])
+    assert result == {"response": "", "actions": [], "success": True, "not_for_me": True}
+    assert any("refus" in warning and "general_harms" in warning for warning in _warnings(caplog))
+
+
 def test_a_refusal_with_no_details_is_still_warned_of(llm, caplog):
     llm.client = FakeClient(_reply("I can't help with that.", stop_reason="refusal"))
     with caplog.at_level("WARNING"):

@@ -556,6 +556,15 @@ class LLMHandler:
                 response = client.messages.create(
                     model=self.model_name, system=system, messages=messages, **request_kwargs)
 
+            stop_reason = getattr(response, "stop_reason", None)
+
+            # Haiku 5.5's classifiers are new here, and a film line is the likeliest thing to
+            # trip one - so the log says why, since what's said over the film doesn't. Before
+            # not_for_me's return, as a refusal can come beside it.
+            if stop_reason == "refusal":
+                category = getattr(getattr(response, "stop_details", None), "category", None)
+                logger.warning(f"Claude refused (category: {category})")
+
             # Nothing of a response which says it's speech from a film is acted on - not a
             # set_lights beside it, which a line like "turn the lights off, Jack" could bring.
             if any(use.name == NOT_FOR_ME["name"] for use in uses):
@@ -580,14 +589,7 @@ class LLMHandler:
             # judgement is trusted rather than keyword guessing.
             actions = [self._action_from_tool_use(block) for block in response.content
                        if getattr(block, "type", None) == "tool_use"]
-            stop_reason = getattr(response, "stop_reason", None)
             stopped_short = stop_reason in STOPPED_SHORT and bool(actions)
-
-            # Haiku 5.5's classifiers are new here, and a film line is the likeliest thing to
-            # trip one - so the log says why, since what's said over the film doesn't.
-            if stop_reason == "refusal":
-                category = getattr(getattr(response, "stop_details", None), "category", None)
-                logger.warning(f"Claude refused (category: {category})")
 
             if stopped_short:
                 # Its words go with its tools - "Setting a 20 minute timer." must not be said
