@@ -366,9 +366,12 @@ def test_wrong_tries_are_per_device_with_a_backstop():
     clock.time += 1
     assert not tries.waiting("somewhere else")
     assert not tries.waiting("device 0")
-    # Nothing is held for those addresses once a minute has passed with no tries.
-    assert tries._devices == {}
-    assert len(tries._recent) == 0
+    # Nothing is held for those addresses once a minute has passed with no tries: each has
+    # all its tries again, and everyone's count starts afresh.
+    assert [tries.attempt("device 0", wrong) for _ in range(5)] == ["wrong"] * 5
+    for number in range(1, 25):
+        assert tries.attempt(f"device {number}", wrong) == "wrong"
+    assert not tries.waiting("somewhere else")
 
 
 def test_the_backstop_counts_only_the_last_minute():

@@ -1339,11 +1339,16 @@ def test_a_satellite_which_says_nothing_of_while_it_was_away_is_let_go_to_say_it
     assert len(brain.clock._missed) == 1
 
 
-def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect, monkeypatch):
-    # The real session this time, with speech told apart by how loud it is.
+def _real_sessions(monkeypatch):
+    """Has the brain make real Sessions, with speech told apart by how loud it is and no music player."""
     monkeypatch.setattr(brain_module, "Session", session_module.Session)
     monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
     monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
+
+
+def test_a_satellite_which_goes_mid_turn_leaves_the_brain_working(brain, connect, monkeypatch):
+    # The real session this time.
+    _real_sessions(monkeypatch)
     serving(brain)
     satellite = connect(brain)
     first = connected(brain)
@@ -1389,9 +1394,7 @@ def test_a_satellite_replaced_while_catching_up_leaves_no_device_behind(brain, c
         devices.append(FakeDevice())
         return devices[-1]
 
-    monkeypatch.setattr(brain_module, "Session", session_module.Session)
-    monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
+    _real_sessions(monkeypatch)
     monkeypatch.setattr(session_module, "NovaDevice", SimpleNamespace(from_config=make_device))
     monkeypatch.setattr(brain_module, "AWAY_WAIT", 0.5)
     serving(brain)
@@ -2227,9 +2230,7 @@ def test_the_brain_sends_each_satellite_its_longest_request(brain, connect):
 @pytest.mark.parametrize("name", ["wake_word_confidence", "media_wake_word_confidence"])
 def test_a_wake_word_confidence_saved_is_sent_to_each_satellite(brain, connect, monkeypatch, name):
     # The real session, which works out the value it sends.
-    monkeypatch.setattr(brain_module, "Session", session_module.Session)
-    monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
+    _real_sessions(monkeypatch)
     serving(brain)
     bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
     connected(brain)
@@ -2245,9 +2246,7 @@ def test_a_wake_word_confidence_saved_is_sent_to_each_satellite(brain, connect, 
 
 
 def test_a_voice_check_saved_is_sent_to_each_satellite(brain, connect, monkeypatch):
-    monkeypatch.setattr(brain_module, "Session", session_module.Session)
-    monkeypatch.setattr(session_module, "make_detector", lambda config: LoudnessDetector())
-    monkeypatch.setattr(session_module, "make_player", lambda config, speaker, volume, spotify_speaker=None: None)
+    _real_sessions(monkeypatch)
     serving(brain)
     bedroom, kitchen = connect(brain), connect(brain, "kitchen", KITCHEN)
     connected(brain)

@@ -2618,20 +2618,30 @@ def test_the_weather_and_pcs_are_left_out_without_a_choice(files):
 PASSWORD = "correct horse battery"
 
 
-def _free_port():
-    """A port nothing's listening on - as 0 switches the NPM listener off."""
-    with socket.socket() as spare:
-        spare.bind(("127.0.0.1", 0))
-        return spare.getsockname()[1]
-
-
 def _npm_page(files, proxy_from=("127.0.0.1",), password=None):
-    """A page with its NPM listener on, the test counting as NPM, and a password if given."""
+    """
+    A page with its NPM listener on, the test counting as NPM, and a password if given. Its
+    port is found by binding to 0 - as 0 itself switches the listener off - and held until
+    the page has started, so nothing else can be given it in between.
+    """
+    held = socket.socket()
+    # So the page can bind it while it's held, as neither listens until the page does.
+    held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    held.bind(("127.0.0.1", 0))
     page = SettingsPage([LOGIN], port=0, brain=FakeBrain({"bedroom": FakeSession()}),
                         restart=lambda: "Restarting.", started=1_800_000_000,
-                        proxy_port=_free_port(), proxy_from=list(proxy_from),
+                        proxy_port=held.getsockname()[1], proxy_from=list(proxy_from),
                         password=PagePassword(str(files / "page_password")),
                         logins=Logins(str(files / "page_logins.json")))
+    start = page.start
+
+    def start_then_let_go():
+        try:
+            start()
+        finally:
+            held.close()
+
+    page.start = start_then_let_go
     if password:
         assert page.password.set(password, page.logins) is None
     return page

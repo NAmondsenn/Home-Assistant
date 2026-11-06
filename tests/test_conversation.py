@@ -636,12 +636,12 @@ def test_a_fall_through_from_assist_gets_the_same_check():
 
 @pytest.mark.parametrize("said", ["pause", "stop"])
 def test_local_commands_never_reach_claude_while_something_plays(said):
+    # Nova's own rules, so it's their pause and stop that are kept from Claude.
     llm = FakeLLM()
-    intents = FakeIntents({said: _answer("Okay.", Action("control_playback", {"action": "pause"}))})
     actions = FakeActions({"control_playback": ActionResult(True, "Paused", confirm="chime")})
     playing = FakePlaying(["Bedroom TV"])
-    reply = _conversation(intents=intents, llm=llm, actions=actions, playing=playing).handle(said)
-    assert llm.asked == [] and actions.run == ["control_playback"]
+    reply = _conversation(intents=LocalIntents(), llm=llm, actions=actions, playing=playing).handle(said)
+    assert llm.asked == [] and (actions.run, actions.params) == (["control_playback"], [{"action": "pause"}])
     assert reply.sounds == [("success_chime.wav", "general")] and playing.asked == 0
 
 

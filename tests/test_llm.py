@@ -715,11 +715,13 @@ def test_nothing_is_run_or_claimed_from_a_reply_which_stopped_short(caplog, stop
     # Its words go with its tools, whichever tool: "Setting a 20 minute timer." said with no timer set.
     llm = _reader()
     llm.client = FakeClient([_reply(said, call, stop_reason=stop_reason), _reply("Yes.")])
+    # Given a way to read, so home_status's one request is a read not made, rather than none possible.
+    read = []
     with caplog.at_level("WARNING"):
-        result = llm.process_query("set a timer for 20 minutes")
+        result = llm.process_query("set a timer for 20 minutes", read=read.append)
     assert result["actions"] == [] and result["response"] == llm_module.DIDNT_WORK
     assert any(stop_reason in warning for warning in _warnings(caplog))
-    assert len(llm.client.requests) == 1
+    assert len(llm.client.requests) == 1 and read == []
     assert llm.history[0]["tools"] == [] and llm.history[0]["assistant"] == llm.history[0]["model_text"]
     assert said not in llm.history[0]["assistant"]
 
@@ -727,7 +729,7 @@ def test_nothing_is_run_or_claimed_from_a_reply_which_stopped_short(caplog, stop
     assert said not in repr(llm.client.requests[-1]["messages"])
 
 
-def test_a_reply_which_stopped_short_after_a_read_says_it_couldnt_find_out(caplog):
+def test_a_reply_which_stopped_short_after_a_read_says_it_couldnt_find_out():
     llm = _reader()
     llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sun")),
                              _reply("Setting it.", _tool("set_timer", duration_seconds=60), stop_reason="max_tokens")])
@@ -771,9 +773,10 @@ def test_a_refusal_with_no_details_is_still_warned_of(llm, caplog):
     assert any("refus" in warning for warning in _warnings(caplog))
 
 
-def test_a_read_isnt_made_from_a_reply_which_stopped_short():
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
+def test_a_read_isnt_made_from_a_reply_which_stopped_short(stop_reason):
     llm = _reader()
-    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sun"), stop_reason="max_tokens")])
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sun"), stop_reason=stop_reason)])
     read = []
     result = llm.process_query("when's sunset?", read=read.append)
     assert read == [] and len(llm.client.requests) == 1
