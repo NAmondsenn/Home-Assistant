@@ -2022,8 +2022,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"success": False, "message": "That isn't something the page does."}, 400)
             return
         # A negative length would be read to the end of the connection, which never comes.
+        # isdecimal(), not isdigit(): "²" is a digit to isdigit(), but int() raises on it.
         length = self.headers.get("Content-Length") or "0"
-        if not length.isdigit() or int(length) > MOST_BODY:
+        if not length.isdecimal() or int(length) > MOST_BODY:
             self._send_json({"success": False, "message": "That didn't make sense."}, 400)
             return
         try:

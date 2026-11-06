@@ -1653,10 +1653,11 @@ def test_nonsense_is_answered_rather_than_crashing_on(served):
             "success": False, "message": "That didn't make sense."}
 
 
-@pytest.mark.parametrize("length", ["-1", "lots"])
+@pytest.mark.parametrize("length", ["-1", "lots", "\u00b2"])
 def test_a_length_which_isnt_one_is_answered(served, length):
     # A negative one read to the end of the connection, which never came; one which
-    # wasn't a number dropped the connection.
+    # wasn't a number dropped the connection - as did a superscript two, which
+    # str.isdigit() takes for a digit but int() doesn't.
     connection = http.client.HTTPConnection("127.0.0.1", served.port, timeout=2)
     connection.request("POST", "/api/volume", body=b'{"category": "general", "percent": 30}',
                        headers={"Tailscale-User-Login": LOGIN, "X-Nova": "page", "Content-Length": length})
