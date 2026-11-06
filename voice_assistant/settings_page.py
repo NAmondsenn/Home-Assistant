@@ -435,6 +435,10 @@ class SettingsPage:
         self._satellites_unreadable = False
         # What was just removed, for a while, so the toast's Undo can put it back.
         self._undo = UndoShelf()
+        # Held while a satellite is removed, and while an Undo checks its satellite is
+        # still let in and puts its alarm back. Removed in between, its alarms would
+        # already have moved to the default and the one put back would ring nowhere.
+        self._removing = threading.Lock()
         self._spotify = self._spotify_sign_in(running)
         self._server: Optional[ThreadingHTTPServer] = None
         self._proxy_server: Optional[ThreadingHTTPServer] = None
@@ -982,9 +986,10 @@ class SettingsPage:
             logger.info(f"Settings page: {who} undid removing {kind} {item['id']}")
             # Put back for a satellite the brain no longer lets in, it would ring
             # nowhere - a missed wake-up.
-            if item.get("satellite") and item["satellite"] not in self.brain.satellites():
-                return {"success": False, "message": "That satellite's gone, so it can't ring there."}
-            return self.brain.clock.put_back(kind, item)
+            with self._removing:
+                if item.get("satellite") and item["satellite"] not in self.brain.satellites():
+                    return {"success": False, "message": "That satellite's gone, so it can't ring there."}
+                return self.brain.clock.put_back(kind, item)
 
         answer = self._undo.use(token, put_back)
         return answer if answer is not None else {"success": False, "message": "That can't be undone now."}
@@ -1726,7 +1731,8 @@ class SettingsPage:
         names = self._satellite_names()
         if names is None:
             return {"success": False, "message": SATELLITES_UNREADABLE}
-        emptied = self.brain.remove_satellite(name) if name in names else None
+        with self._removing:
+            emptied = self.brain.remove_satellite(name) if name in names else None
         if emptied is None:
             return {"success": False, "message": f"There's no satellite called {name}."}
         # Added again with the same name, it shouldn't be offered its old playlists.

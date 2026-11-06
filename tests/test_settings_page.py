@@ -1554,6 +1554,37 @@ def test_two_undo_taps_at_once_put_back_one_alarm(files, monkeypatch):
     assert list(clock._alarms) == [1]
 
 
+def test_a_satellite_isnt_removed_between_the_undos_check_and_the_alarm_going_back(files, monkeypatch):
+    # Removed in that gap, its alarms would already have moved to the default and the one
+    # put back would ring on a satellite which isn't there - a missed wake-up.
+    page, clock = _undoable(files, monkeypatch)
+    page.brain.known = ["bedroom", "kitchen"]
+    token = page.remove("alarm", 1, LOGIN)["undo"]
+    inside, carry_on = threading.Event(), threading.Event()
+    put_back = clock.put_back
+
+    def paused(kind, item, now=None):
+        inside.set()
+        carry_on.wait(5)
+        return put_back(kind, item, now)
+
+    clock.put_back = paused
+    undone, removed = [], []
+    undoing = threading.Thread(target=lambda: undone.append(page.undo(token, LOGIN)))
+    undoing.start()
+    assert inside.wait(5)
+    removing = threading.Thread(target=lambda: removed.append(page.remove_satellite("bedroom", LOGIN)))
+    removing.start()
+    # Long enough for the removal to have gone through, were it not held back.
+    time.sleep(0.2)
+    assert page.brain.known == ["bedroom", "kitchen"]
+    carry_on.set()
+    undoing.join()
+    removing.join()
+    assert undone[0]["success"] and removed[0]["success"]
+    assert page.brain.known == ["kitchen"]
+
+
 def test_its_typeface_icon_and_what_nova_is_doing_are_served(served):
     status, headers, body = _ask(served, "/Outfit.woff2")
     assert status == 200 and headers["Content-Type"] == "font/woff2" and body[:4] == b"wOF2"
