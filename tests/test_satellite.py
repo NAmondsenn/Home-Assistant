@@ -366,7 +366,7 @@ def test_the_wake_word_sends_the_pre_roll_then_the_recording(brain, make, tmp_pa
     brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=1.0, kind="reply", paused=False)
     brain.say("stream_audio", np.array([1, 2, 3], np.int16).tobytes(), id="reply-1")
     latency = tmp_path / "latency.jsonl"
-    assert wait_for(lambda: latency.exists())
+    assert wait_for(lambda: saved_whole(latency))
     (line,) = [json.loads(text) for text in latency.read_text().splitlines()]
     assert set(line["marks_ms"]) == {"wake", "reply_audio"}
     assert line["marks_ms"]["wake"] <= line["marks_ms"]["reply_audio"]
@@ -374,6 +374,14 @@ def test_the_wake_word_sends_the_pre_roll_then_the_recording(brain, make, tmp_pa
 
 def latency_lines(tmp_path):
     return [json.loads(text) for text in (tmp_path / "latency.jsonl").read_text().splitlines()]
+
+
+def saved_whole(path):
+    """
+    Whether a wake's timing is in its file whole - which is there a moment before its line is,
+    so a test which read it as soon as it was there could find it empty.
+    """
+    return path.exists() and path.read_text().endswith("\n")
 
 
 def test_a_reply_is_timed_from_when_it_starts_to_play(brain, make, tmp_path):
@@ -403,7 +411,7 @@ def test_a_reply_is_timed_from_when_it_starts_to_play(brain, make, tmp_path):
     finally:
         let_play.set()
 
-    assert wait_for(lambda: (tmp_path / "latency.jsonl").exists())
+    assert wait_for(lambda: saved_whole(tmp_path / "latency.jsonl"))
     (line,) = latency_lines(tmp_path)
     assert set(line["marks_ms"]) == {"wake", "reply_audio"}
 
@@ -446,7 +454,7 @@ def test_a_wake_with_no_reply_is_timed_as_its_turn_ends(brain, make, tmp_path):
     brain.say("stop_listening")
     brain.say("allow", kind="announcement")
 
-    assert wait_for(lambda: (tmp_path / "latency.jsonl").exists(), seconds=2)
+    assert wait_for(lambda: saved_whole(tmp_path / "latency.jsonl"), seconds=2)
     (line,) = latency_lines(tmp_path)
     assert set(line["marks_ms"]) == {"wake"}
 
@@ -464,7 +472,7 @@ def test_the_end_of_the_turn_before_leaves_a_wake_still_being_heard_untimed(brai
     brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=1.0, kind="reply", paused=False)
     brain.say("stream_audio", np.array([1, 2, 3], np.int16).tobytes(), id="reply-1")
 
-    assert wait_for(lambda: (tmp_path / "latency.jsonl").exists())
+    assert wait_for(lambda: saved_whole(tmp_path / "latency.jsonl"))
     (line,) = latency_lines(tmp_path)
     assert set(line["marks_ms"]) == {"wake", "reply_audio"}
 
