@@ -1825,6 +1825,20 @@ def test_run_routine_says_whether_it_ran(brain, connect):
     assert brain.run_routine({"name": "Good morning", "satellite": None}) is True
 
 
+def test_a_routine_which_didnt_run_is_warned_of_without_its_name_when_transcripts_are_off(brain, caplog):
+    # Its name is the user's own words, so the line holding it goes when transcripts are
+    # switched off - and with it the warning, from the log and the page's problems.
+    with caplog.at_level(logging.INFO, logger="voice_assistant.brain"):
+        brain.run_routine({"name": "Good morning", "satellite": None})
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert [record.getMessage() for record in warnings] == ["A routine didn't run, as its satellite isn't connected"]
+    assert not getattr(warnings[0], "transcript", False)
+    named = [record for record in caplog.records if getattr(record, "transcript", False)]
+    assert [record.getMessage() for record in named] == [
+        "The Good morning routine didn't run, as its satellite isn't connected"]
+
+
 # Batteries
 
 HOME_ASSISTANT = {"url": "http://home-assistant.test:8123"}

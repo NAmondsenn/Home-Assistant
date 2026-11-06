@@ -1239,8 +1239,11 @@ class Brain:
         """
         session = self.session_for(routine.get("satellite"))
         if session is None:
-            logger.warning(f"The {routine['name']} routine didn't run, as its satellite isn't connected",
-                           extra=TRANSCRIPT)
+            # Nameless, as the name is the user's own words and the line holding it goes while
+            # transcripts are off - the warning mustn't go with it.
+            logger.warning("A routine didn't run, as its satellite isn't connected")
+            logger.info(f"The {routine['name']} routine didn't run, as its satellite isn't connected",
+                        extra=TRANSCRIPT)
             return False
         session.run_routine(routine)
         return True
