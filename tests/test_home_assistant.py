@@ -2083,10 +2083,12 @@ def test_a_light_in_no_room_or_out_of_reach_is_still_a_light(make_home):
     assert light["colour_modes"] == [] and (light["min_kelvin"], light["max_kelvin"]) == (None, None)
 
 
-@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), requests.ReadTimeout("too slow"),
-                                    FakeResponse("<html>not the lights</html>")])
-def test_lights_which_cant_be_read_are_an_error_not_no_lights(make_home, answer):
-    with pytest.raises((requests.RequestException, ValueError)):
+@pytest.mark.parametrize("answer, raises", [
+    (requests.ConnectionError("down"), requests.ConnectionError),
+    (requests.ReadTimeout("too slow"), requests.ReadTimeout),
+    (FakeResponse("<html>not the lights</html>"), ValueError)])
+def test_lights_which_cant_be_read_are_an_error_not_no_lights(make_home, answer, raises):
+    with pytest.raises(raises):
         make_home({"/api/template": answer}).lights()
 
 
@@ -2350,10 +2352,12 @@ def test_no_value_of_novas_is_written_into_the_playing_template(make_home):
     assert "Bed" not in template and "devnova" not in template
 
 
-@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("", status=403),
-                                    FakeResponse("<html>not JSON</html>")])
-def test_whats_playing_raises_when_home_assistant_cant_say(make_home, answer):
-    with pytest.raises((requests.RequestException, ValueError)):
+@pytest.mark.parametrize("answer, raises", [
+    (requests.ConnectionError("down"), requests.ConnectionError),
+    (FakeResponse("", status=403), requests.HTTPError),
+    (FakeResponse("<html>not JSON</html>"), ValueError)])
+def test_whats_playing_raises_when_home_assistant_cant_say(make_home, answer, raises):
+    with pytest.raises(raises):
         make_home({"/api/template": answer}).playing_media()
 
 
@@ -2517,10 +2521,12 @@ def test_a_refused_token_is_said_for_sending_and_ringing(make_home):
 
 
 @pytest.mark.parametrize("ask", ["batteries", "people", "app_devices"])
-@pytest.mark.parametrize("answer", [requests.ConnectionError("down"), FakeResponse("", status=403),
-                                    FakeResponse("<html>not JSON</html>")])
-def test_a_refused_template_raises_as_for_the_lights(make_home, ask, answer):
-    with pytest.raises((requests.RequestException, ValueError)):
+@pytest.mark.parametrize("answer, raises", [
+    (requests.ConnectionError("down"), requests.ConnectionError),
+    (FakeResponse("", status=403), requests.HTTPError),
+    (FakeResponse("<html>not JSON</html>"), ValueError)])
+def test_a_refused_template_raises_as_for_the_lights(make_home, ask, answer, raises):
+    with pytest.raises(raises):
         getattr(make_home({"/api/template": answer}), ask)()
 
 

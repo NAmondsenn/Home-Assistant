@@ -1,5 +1,6 @@
 """Tests for the battery rules - what kind a device is, whether it charges, and its name."""
 
+import json
 import logging
 import threading
 import time
@@ -9,7 +10,7 @@ import requests
 
 from voice_assistant import storage
 
-from voice_assistant.config import marks_problem
+from voice_assistant.config import MARKS, Config, ConfigError
 from voice_assistant.batteries import (
     Battery,
     BatteryChoices,
@@ -162,10 +163,13 @@ def test_an_old_level_says_how_old():
 
 
 def test_a_battery_with_no_device_is_something_else_and_never_charging():
-    found = _found("remote", 61.0, None, None, None, "charging", app=False)
+    # Whatever else is claimed for it - on the app, a Mac, charging - with no device there is nothing to read a
+    # kind or a charging sensor from.
+    found = _found("remote", 61.0, None, "Apple", "Mac16,8", "charging", app=True)
     battery = Battery.from_home(found)
     assert battery.kind == "other"
     assert battery.phone is False
+    assert battery.computer is False
     assert battery.charging is None
     assert battery.device is None
 
@@ -351,14 +355,24 @@ def test_marks_which_dont_make_sense_are_refused(tmp_path):
 @pytest.mark.parametrize("marks", [[5], [15, 5], [20, 10, 5], [10, 10], [], [0], [100], [5.5], [True], ["5"], [99, 1]])
 def test_config_and_the_page_agree_on_which_marks_make_sense(tmp_path, marks):
     # config.yaml's defaults and a device's own marks follow one rule, so the page is never offered a
-    # device it can't then save.
-    for battery, count in ((_phone(50), 1), (_mac(50), 2)):
-        refused_by_page = False
+    # device it can't then save. Each is asked at its own door - an install's settings file, with the counts
+    # config has for each setting, and the page's set() with the counts it has for each kind of device.
+    kinds = {"mobile_marks": _phone, "other_marks": _mac}
+    assert {setting for _, setting in MARKS} == set(kinds)
+    for (section, setting), count in MARKS.items():
+        (tmp_path / "config.yaml").write_text(f"{section}:\n  {setting}: {json.dumps(marks)}\n")
+        try:
+            Config(path=str(tmp_path / "config.yaml"), quiet=True)
+            refused_by_config = False
+        except ConfigError:
+            refused_by_config = True
+        battery = kinds[setting](50)
         try:
             _choices(tmp_path).set(battery, marks=marks)
+            refused_by_page = False
         except ValueError:
             refused_by_page = True
-        assert (marks_problem(marks, count, "x") is not None) == refused_by_page, (battery.kind, marks)
+        assert refused_by_config == refused_by_page, (setting, count, marks)
 
 
 def test_a_refused_change_changes_nothing(tmp_path):
@@ -488,7 +502,10 @@ def test_a_mark_near_the_top_still_starts_over_at_full(tmp_path):
 
     choices.set(tablet(90), marks=[95])
     assert _marks(choices, tablet(90)) == [("Tab S11 Ultra", 95)]
+    # The start-over level is capped at exactly 100: not below it, or 99% would be a charge...
     assert _marks(choices, tablet(99)) == []
+    assert _marks(choices, tablet(90)) == []
+    # ...and not above it, where a device with no charging state could never reach it.
     assert _marks(choices, tablet(100)) == []
     assert _marks(choices, tablet(90)) == [("Tab S11 Ultra", 95)]
 

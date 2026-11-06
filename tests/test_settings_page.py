@@ -2171,8 +2171,9 @@ def test_each_device_shows_who_decides_home_only_with_more_than_one_person(files
     home.people_now = [{"id": "person.a", "name": "Amy", "state": "home", "devices": ["d2"]},
                        {"id": "person.b", "name": "Ben", "state": "not_home", "devices": ["d1"]}]
     assert _device(page, MAC)["person"] == "Ben" and _device(page, PHONE)["person"] == "Amy"
-    home.found[0]["device"] = None
-    assert _device(page, PHONE)["person"] == "Amy"
+    # The MacBook is Ben's by its trackers; with no device of its own to match them it is the first person's.
+    home.found[1]["device"] = None
+    assert _device(page, MAC)["person"] == "Amy"
 
 
 def test_a_batterys_warnings_can_be_switched_off_and_it_works_straight_away(files, tmp_path, caplog):

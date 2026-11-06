@@ -108,6 +108,19 @@ def test_a_change_that_cant_be_saved_changes_nothing(tmp_path, monkeypatch):
     assert store.get("names") == {}
 
 
+def test_a_change_that_leaves_something_json_cant_hold_changes_nothing(tmp_path):
+    path = tmp_path / "choices.json"
+    store = ChoiceStore(str(path), DEFAULTS)
+    store.change(lambda state: state["names"].update(a=1))
+
+    with pytest.raises(TypeError):
+        store.change(lambda state: state["names"].update(b=object()))
+
+    assert store.get("names") == {"a": 1}
+    # And what was saved before is still what's in the file.
+    assert ChoiceStore(str(path), DEFAULTS).get("names") == {"a": 1}
+
+
 def test_keep_holds_a_change_in_memory_when_the_save_fails(tmp_path, monkeypatch, caplog):
     store = ChoiceStore(str(tmp_path / "choices.json"), DEFAULTS)
 
