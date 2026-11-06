@@ -154,6 +154,8 @@ let allPlaylists = false;
 // shown, whole.
 let recentProblems = [];
 let allProblems = false;
+// Whether the problems are to be measured again once the web font is there.
+let measuringAgain = false;
 
 // What /api/home last said.
 let home = null;
@@ -790,6 +792,16 @@ function showProblems() {
   all.hidden = !allProblems && recentProblems.length <= FEWEST_PROBLEMS && !cut;
   all.textContent = allProblems ? "Show fewer" : "Show all";
   all.setAttribute("aria-expanded", String(allProblems));
+  // Measured in whatever font the browser had by now. The web font, still on its way on a
+  // slow line, sets the text wider or narrower, so "Show all" would be wrong until the
+  // next poll - measured again as soon as it's there instead.
+  if (!measuringAgain && document.fonts && document.fonts.status === "loading") {
+    measuringAgain = true;
+    document.fonts.ready.then(() => {
+      measuringAgain = false;
+      showProblems();
+    });
+  }
 }
 
 // Each satellite, which is the default, and whether it's connected - with a way to
