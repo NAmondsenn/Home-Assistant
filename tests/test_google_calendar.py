@@ -522,6 +522,40 @@ def test_a_list_read_under_way_cant_put_the_last_accounts_list_back(make_calenda
     assert [each["id"] for each in calendar.known()] == ["calendar-new"]
 
 
+class NeverRuns:
+    """Stands in for threading.Thread, for work still under way when the test looks."""
+
+    def __init__(self, target, **kwargs):
+        pass
+
+    def start(self):
+        pass
+
+
+@pytest.mark.parametrize("thread", [RunsAtOnce, NeverRuns], ids=["new list read first", "new list not read yet"])
+def test_a_list_read_under_way_as_another_account_signs_in_gives_the_list_kept(make_calendar, monkeypatch,
+                                                                               thread):
+    # The page shows what it's given, and checks a tap against what's kept - so the two
+    # are the new account's list, whichever read finishes first, never one of each.
+    calendar = make_calendar()
+    google = calendar._session
+    google.answers[LIST] = [_calendar_list(_entry("calendar-old", "Old", primary=True)),
+                            _calendar_list(_entry("calendar-new", "New", primary=True))]
+    monkeypatch.setattr(google_calendar.threading, "Thread", thread)
+    asked = google.get
+
+    def get(url, *args, **kwargs):
+        answer = asked(url, *args, **kwargs)
+        if url == LIST and len([each for each in google.asked if each[0] == LIST]) == 1:
+            calendar.read_list_again()
+        return answer
+
+    monkeypatch.setattr(google, "get", get)
+    given = calendar.calendars()
+
+    assert [each["id"] for each in given] == [each["id"] for each in calendar.known()] == ["calendar-new"]
+
+
 def test_nova_says_google_is_signed_in_to_on_the_settings_page():
     assert NEEDS_SIGN_IN == "I need signing in to Google again. That's done on the settings page."
 

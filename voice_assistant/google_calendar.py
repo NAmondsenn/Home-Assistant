@@ -577,20 +577,25 @@ class GoogleCalendar:
             requests.RequestException: If Google couldn't be reached, or refused.
             ValueError: If its answer wasn't a list of calendars.
         """
-        with self._reading:
-            if self._known_at is not None and time.monotonic() - self._known_at < max_age:
-                return list(self._known)
-            generation = self._generation
-        listed = []
-        for entry in self._pages(CALENDAR_LIST, {}):
-            if not isinstance(entry.get("id"), str):
-                raise ValueError("A calendar in Google's list has no id")
-            listed.append({"id": entry["id"], "name": entry.get("summaryOverride") or entry.get("summary") or "",
-                           "primary": entry.get("primary") is True, "writable": entry.get("accessRole") == "owner"})
-        with self._reading:
-            if generation == self._generation:
-                self._known, self._known_at = listed, time.monotonic()
-        return list(listed)
+        # Given back only as it's kept, as the page checks a tap against what's kept: with a
+        # sign-in while it was read, it's read again - unless the new account's read has
+        # been kept meanwhile. Each time round needs another sign-in, which a person makes.
+        while True:
+            with self._reading:
+                if self._known_at is not None and time.monotonic() - self._known_at < max_age:
+                    return list(self._known)
+                generation = self._generation
+            listed = []
+            for entry in self._pages(CALENDAR_LIST, {}):
+                if not isinstance(entry.get("id"), str):
+                    raise ValueError("A calendar in Google's list has no id")
+                listed.append({"id": entry["id"], "name": entry.get("summaryOverride") or entry.get("summary") or "",
+                               "primary": entry.get("primary") is True,
+                               "writable": entry.get("accessRole") == "owner"})
+            with self._reading:
+                if generation == self._generation:
+                    self._known, self._known_at = listed, time.monotonic()
+                    return list(listed)
 
     def read_list_again(self):
         """
