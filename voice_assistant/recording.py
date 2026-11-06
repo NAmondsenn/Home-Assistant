@@ -176,6 +176,12 @@ def record_until_silence(source, detector, listen_from: Optional[int] = None,
 # has finished, and nothing would otherwise wake the recording waiting on it.
 STALL_SECONDS = 2.0
 
+# The most a feed keeps, in seconds - the longest request which can be set (30, see
+# config.LIMITS) and the most pre-roll a wake may say its recording starts with (10,
+# protocol.MAX_AUDIO), so a satellite which doesn't stop sending can't grow it for
+# ever. In practice the satellite stops at the request's own limit, pre-roll included.
+MAX_FEED_SECONDS = 40.0
+
 
 class AudioFeed:
     """
@@ -183,16 +189,19 @@ class AudioFeed:
     over the network, which record_until_silence reads just as it reads a Microphone.
 
     Positions are counted in samples at 16kHz since the first one was fed. Everything
-    fed is kept, since one feed is only ever one query's worth of audio.
+    fed is kept, since one feed is only ever one query's worth of audio - up to a cap.
     """
 
-    def __init__(self, stall_seconds: float = STALL_SECONDS):
+    def __init__(self, stall_seconds: float = STALL_SECONDS, max_seconds: float = MAX_FEED_SECONDS):
         """
         Args:
             stall_seconds: How long a reader waits with no new audio before the feed
                 is taken to have ended.
+            max_seconds: The most audio it keeps - anything fed after that is dropped.
         """
         self.stall_seconds = stall_seconds
+        self._max_samples = round(max_seconds * RATE)
+        self._over_cap = False
         self._samples = np.zeros(0, dtype=np.int16)
         # The position each piece fed ends at, and when it arrived, for time_at.
         self._arrivals: List[Tuple[int, float]] = []
@@ -201,12 +210,26 @@ class AudioFeed:
 
     def feed(self, samples: np.ndarray):
         """
-        Adds newly arrived audio, and wakes anything waiting for it.
+        Adds newly arrived audio, and wakes anything waiting for it. Audio fed once the
+        feed has ended - by end(), or by a reader finding it stalled - is ignored, as
+        whatever was reading it has already been told there's no more. So is whatever
+        comes after the cap (see __init__), of which the first time is logged.
 
         Args:
             samples: 16-bit samples at 16kHz.
         """
         with self._condition:
+            if self._ended:
+                return
+            room = self._max_samples - len(self._samples)
+            if len(samples) > room:
+                if not self._over_cap:
+                    self._over_cap = True
+                    logger.warning(f"More than {self._max_samples / RATE:.0f}s of audio fed into one recording, "
+                                   f"dropping the rest")
+                samples = samples[:room]
+                if len(samples) == 0:
+                    return
             self._samples = np.concatenate([self._samples, samples.astype(np.int16)])
             self._arrivals.append((len(self._samples), time.monotonic()))
             self._condition.notify_all()
