@@ -375,15 +375,16 @@ class Satellite:
 
     def _muted_since(self, position: int) -> bool:
         """
-        Whether any of the audio from a position on was heard muted - muted now, or
-        unmuted after it. The second covers a mute and an unmute which both came and
+        Whether any of the audio from a position on was heard muted, or may have been -
+        muted now, or unmuted after it or too soon after it to be sure (see
+        IN_FLIGHT_SECONDS). The second covers a mute and an unmute which both came and
         went since then, as long as _take_state notes the position first.
 
         Args:
             position: A microphone position.
 
         Returns:
-            True if a clip from there would take in some of a mute.
+            True if a clip from there would take in some of a mute, or might.
         """
         return self.wake.muted or position < self._unmuted_at
 

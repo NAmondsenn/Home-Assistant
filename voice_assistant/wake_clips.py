@@ -48,7 +48,8 @@ GIVE_UP_SECONDS = 1.5
 # last moments of the second after a wake can still be on its way once that's been heard.
 MUTE_NEWS_SECONDS = 0.5
 
-# How often that wait checks how far the microphone has got, in seconds.
+# How often the wait for the audio after a wake checks how far the microphone has got,
+# in seconds.
 CHECK_SECONDS = 0.05
 
 

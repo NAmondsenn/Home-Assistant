@@ -22,7 +22,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 import satellite
-from voice_assistant import fallback, paths, protocol, satellite_link
+from voice_assistant import fallback, paths, protocol, satellite_link, wake_clips
 from voice_assistant.fallback import AlarmCopy, Phrase, StateCopy
 from voice_assistant.wake_clips import WakeClips
 
@@ -1448,7 +1448,7 @@ def test_an_unmute_is_noted_0_3_s_late_for_the_audio_still_on_its_way(brain, mak
     assert before + 4800 <= made._unmuted_at <= after + 4800
 
 
-def test_what_counts_as_muted_ends_at_the_position_of_the_unmute(brain, make):
+def test_what_counts_as_muted_ends_0_3_s_past_the_position_of_the_unmute(brain, make):
     made = make(wake_clips={"keep": True, "most": 400})
     assert wait_for(lambda: connected(made) and made.wake.listening)
     assert made.clips.muted(0) is False
@@ -1491,13 +1491,27 @@ def test_a_mute_in_the_second_after_a_wake_keeps_nothing(brain, make, tmp_path, 
     assert wake_clip_files(tmp_path) == []
 
 
-def test_a_mute_whose_message_lands_just_after_the_clip_was_heard_keeps_nothing(brain, make, tmp_path, real_time):
+def test_a_mute_whose_message_lands_just_after_the_clip_was_heard_keeps_nothing(brain, make, tmp_path, monkeypatch):
+    # The clip's wait for news of a mute lasts until the mute has landed, rather than the
+    # mute having to land inside its half a second.
     made = make(wake_clips={"keep": True, "most": 400})
+    waiting, landed = threading.Event(), threading.Event()
+    real_sleep = time.sleep
+
+    def sleep(seconds):
+        if threading.current_thread().name == "wake-clip" and seconds == wake_clips.MUTE_NEWS_SECONDS:
+            waiting.set()
+            landed.wait(timeout=5)
+        else:
+            real_sleep(seconds)
+
+    monkeypatch.setattr(wake_clips.time, "sleep", sleep)
     assert wait_for(lambda: connected(made) and made.wake.listening)
-    heard_at = made.wake.say()
-    assert wait_for(lambda: made.microphone.position >= heard_at + RATE + RATE // 10)
+    made.wake.say()
+    # All of the clip heard and read by now.
+    assert waiting.wait(timeout=5)
     set_mute(brain, made, True)
-    assert made.clips._keeping.locked()
+    landed.set()
     assert wait_for(lambda: not made.clips._keeping.locked())
     brain.say("stop_listening")
 
