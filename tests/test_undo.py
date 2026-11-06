@@ -59,6 +59,27 @@ def test_the_old_ones_go_as_new_ones_are_put():
     assert len(shelf.put("timer", {"id": 4})) >= 20
 
 
+def test_the_old_ones_go_whenever_the_shelf_is_used_not_only_when_one_is_put():
+    now = [1000.0]
+    shelf = UndoShelf(clock=lambda: now[0])
+    shelf.put("alarm", {"id": 1})
+    shelf.put("timer", {"id": 2})
+    now[0] += UNDO_KEPT + 1
+    # Asked for something else altogether, or for nothing it has.
+    assert shelf.use("not-a-token", _put_back) is None
+    assert shelf._kept == {}
+
+    # One still in time stays.
+    old = shelf.put("alarm", {"id": 3})
+    now[0] += UNDO_KEPT / 2
+    young = shelf.put("alarm", {"id": 4})
+    now[0] += UNDO_KEPT / 2 + 1
+    assert shelf.use("not-a-token", _put_back) is None
+    assert list(shelf._kept) == [young]
+    assert shelf.use(old, _put_back) is None
+    assert shelf.use(young, _put_back) == _put_back("alarm", {"id": 4})
+
+
 def test_an_undo_refused_can_be_tried_again_until_its_minute_is_up():
     now = [1000.0]
     shelf = UndoShelf(clock=lambda: now[0])

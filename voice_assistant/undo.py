@@ -56,8 +56,7 @@ class UndoShelf:
         """
         token = secrets.token_urlsafe(16)
         with self._lock:
-            now = self._clock()
-            self._kept = {kept: entry for kept, entry in self._kept.items() if now - entry[2] <= self.keep_for}
+            now = self._forget_old()
             self._kept[token] = (kind, item, now)
             while len(self._kept) > MOST_KEPT:
                 del self._kept[min(self._kept, key=lambda kept: self._kept[kept][2])]
@@ -91,21 +90,29 @@ class UndoShelf:
                     if self._clock() - claimed[2] <= self.keep_for:
                         self._kept[token] = claimed
 
+    def _forget_old(self) -> float:
+        """
+        Lets go of anything kept too long, so nothing outlasts its minute on the shelf
+        whatever the page does next. Called with the lock held.
+
+        Returns:
+            The time now, as the clock says.
+        """
+        now = self._clock()
+        self._kept = {kept: entry for kept, entry in self._kept.items() if now - entry[2] <= self.keep_for}
+        return now
+
     def _claim(self, token: Any) -> Optional[Tuple[str, Any, float]]:
         """Takes a token's entry off the shelf, if it has one still in time."""
-        if not isinstance(token, str):
-            return None
-        given = token.encode()
         with self._lock:
+            self._forget_old()
+            if not isinstance(token, str):
+                return None
+            given = token.encode()
             # Each compared in the same time, however much of it is right, so the page's
             # answers can't be timed to find one.
             found = None
             for kept in self._kept:
                 if secrets.compare_digest(kept.encode(), given):
                     found = kept
-            if found is None:
-                return None
-            entry = self._kept.pop(found)
-            if self._clock() - entry[2] > self.keep_for:
-                return None
-            return entry
+            return None if found is None else self._kept.pop(found)
