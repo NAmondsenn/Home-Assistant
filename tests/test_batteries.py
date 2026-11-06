@@ -754,6 +754,14 @@ def test_home_now_is_unsure_with_no_person_or_an_error(tmp_path):
     assert rig.watcher.home_now(_mac(14)) is None
 
 
+@pytest.mark.parametrize("state", ["unknown", "unavailable"])
+def test_home_now_is_unsure_of_a_person_home_assistant_has_no_state_for(tmp_path, state):
+    # Neither is "away": Home Assistant just can't say. The warning goes to the phone all the same.
+    rig = _fallen(tmp_path, state=state)
+    assert rig.watcher.home_now(_mac(14)) is None
+    assert rig.said == [] and rig.sent == [(MAC_MESSAGE, "Battery low")]
+
+
 def test_a_check_which_fails_doesnt_stop_the_next(tmp_path, caplog):
     rig = Rig(tmp_path, _mac(14))
     # The thread checks by the real clock, so the reading must be fresh by it.

@@ -584,7 +584,8 @@ class BatteryWatcher:
 
         Returns:
             True if the person is home, False if they are anywhere else, None if
-            there is no person or Home Assistant couldn't say.
+            there is no person, Home Assistant couldn't say, or it has no state for
+            the person - "unknown" or "unavailable" isn't away.
         """
         try:
             people = self._home.people()
@@ -593,7 +594,10 @@ class BatteryWatcher:
             return None
         if not people:
             return None
-        return deciding_person(people, battery)["state"] == "home"
+        state = deciding_person(people, battery)["state"]
+        if state in ("unknown", "unavailable"):
+            return None
+        return state == "home"
 
     def deciding_people(self, batteries: List[Battery]) -> Dict[str, str]:
         """
