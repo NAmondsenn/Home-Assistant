@@ -718,6 +718,18 @@ def test_the_recording_stops_after_10_seconds_until_the_brain_says_otherwise(bra
     assert brain.kinds()[-1] == "audio_end"
 
 
+def test_a_satellite_stopped_part_way_through_a_recording_tells_the_brain(brain, make):
+    # So the brain isn't left waiting for the rest.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    made.stop()
+
+    assert wait_for(lambda: made.exited and brain.messages("audio_end"))
+    assert brain.messages("audio_end") == [{"type": "audio_end", "reason": "cancelled"}]
+
+
 def test_a_dropped_connection_mid_recording_says_the_phrase(brain, make):
     made = make()
     assert wait_for(lambda: connected(made) and made.wake.listening)
@@ -744,6 +756,23 @@ def noting_when_the_brain_is_forgotten(made):
 
     made._forget_the_brain = forget_and_note
     return forgotten
+
+
+def test_losing_the_brain_stops_what_it_was_playing(brain, make):
+    # Nothing is left to finish or stop it - and a stream would wait for more for good.
+    made = make()
+    forgotten = noting_when_the_brain_is_forgotten(made)
+    assert wait_for(lambda: connected(made))
+    brain.say("play_stream", id="music-1", rate=44100, channels=2, volume=0.5, kind="music", paused=False)
+    brain.say("play_sound", id="chime-1", name="listening.wav", volume=0.4, kind="reply", start=0.0, length=None)
+    assert wait_for(lambda: made.speaker.streams() and made.speaker.files())
+    (music,) = made.speaker.streams()
+    (chime,) = [playback for playback in made.speaker.playing if playback.filename]
+    brain.drop()
+
+    assert forgotten.wait(5)
+    assert music.stopped and chime.stopped
+    assert made._playing == {}
 
 
 def test_losing_the_brain_after_the_recording_says_the_phrase(brain, make):
@@ -1020,6 +1049,34 @@ def test_the_brain_can_stop_one_playback_and_leave_the_rest_of_its_kind(brain, m
     assert len(brain.messages("played")) == 1
 
 
+def test_the_brain_can_silence_a_kind_of_sound_and_let_it_back(brain, make):
+    made = make()
+    assert wait_for(lambda: connected(made))
+    brain.say("play_sound", id="alarm-1", name="alarm_sound.wav", volume=1.0, kind="announcement",
+              start=0.0, length=None)
+    assert wait_for(lambda: made.speaker.files())
+    (alarm,) = [playback for playback in made.speaker.playing if playback.filename]
+
+    brain.say("silence", kind="announcement")
+    assert wait_for(lambda: alarm.stopped and "announcement" in made.speaker.silenced)
+    brain.say("allow", kind="announcement")
+    assert wait_for(lambda: "announcement" not in made.speaker.silenced)
+
+
+def test_a_sound_which_cant_be_played_is_told_played_at_once(brain, make):
+    # So the brain doesn't wait for it to finish.
+    made = make()
+    assert wait_for(lambda: connected(made))
+    play_file = made.speaker.play_file
+    made.speaker.play_file = lambda filename, **details: (None if filename.endswith("missing.wav")
+                                                          else play_file(filename, **details))
+    brain.say("play_sound", id="sound-1", name="missing.wav", volume=1.0, kind="reply", start=0.0, length=None)
+
+    assert wait_for(lambda: brain.messages("played"))
+    assert brain.messages("played") == [{"type": "played", "id": "sound-1", "stopped": False, "position": 0}]
+    assert made._playing == {}
+
+
 def test_with_no_brain_the_wake_word_gets_the_phrase(brain, make):
     brain.up = False
     made = make()
@@ -1065,6 +1122,28 @@ def test_a_check_of_the_alarm_copy_which_fails_is_logged_with_where_it_failed(br
 
     record = next(record for record in caplog.records if "Couldn't check the alarm copy" in record.getMessage())
     assert record.exc_info is not None and "The copy can't be read" in caplog.text
+
+
+def test_the_brains_copy_of_the_alarms_is_kept(brain, make, tmp_path):
+    made = make()
+    assert wait_for(lambda: connected(made))
+    brain.say("alarms", entries=[entry(1729587600.0)])
+
+    assert wait_for(lambda: made.alarms.due(1729587601.0))
+    assert AlarmCopy(str(tmp_path / "alarm_copy.json")).due(1729587601.0) == [entry(1729587600.0)]
+
+
+def test_the_brains_phrase_is_kept_and_said_once_the_brain_is_gone(brain, make, tmp_path):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("phrase", b"\x00\x00" * 100, rate=22050)
+    assert wait_for(lambda: (tmp_path / "phrase.wav").exists())
+    brain.drop()
+    assert wait_for(lambda: not made.link.connected and made.wake.listening)
+
+    made.wake.say()
+    assert wait_for(lambda: str(tmp_path / "phrase.wav") in made.speaker.files())
+    assert PHRASE not in made.speaker.files()
 
 
 def test_the_away_report_is_sent_on_connecting(brain, make, tmp_path):
