@@ -138,8 +138,8 @@ class Session:
         # Held while the conversation works out a reply - to the user, or for a routine
         # running by itself, which mustn't do so at the same time. See run_routine.
         self._conversation_lock = threading.Lock()
-        # How many times the user has stopped what's said here - with Stop, or the wake
-        # word - so an alert or a battery warning can tell it was stopped during its
+        # How many times Stop has been pressed here - Home Assistant's or the settings
+        # page's - so an alert or a battery warning can tell it was stopped during its
         # sound. See _announce_in_turn.
         self._stops = 0
 
@@ -483,8 +483,6 @@ class Session:
         # Anything going off stops the moment the wake word is heard, rather than
         # playing on over the user - and into the microphone - until its sound
         # ends. It carries on afterwards unless the conversation dealt with it.
-        # Counted first, so an announcement whose sound this stops sees it.
-        self._stops += 1
         self.speaker.silence("announcement")
         try:
             with self._conversation_lock:
@@ -838,8 +836,9 @@ class Session:
                      whose sound is never switched off. Otherwise the sound before an
                      alert or a battery warning goes if sounds.reminder_enabled is off:
                      an alarm silenced by a sound switch would be a missed wake-up. And
-                     a Stop or the wake word during that sound stops its words too, as
-                     still_wanted does for what the clock rings.
+                     Stop during that sound stops its words too, as still_wanted does for
+                     what the clock rings - the wake word leaves them for after the
+                     conversation, as it does a reminder's.
 
         Returns:
             Whether it was said - not if still_wanted turned False first, or it failed, or
@@ -868,10 +867,9 @@ class Session:
         # Waits for any conversation to finish before making any announcements.
         if not self._wait_for_turn(still_wanted):
             return False
-        # Noted as its sound starts, so a Stop or a wake word from then on is told apart
-        # from those in the conversation it waited for - see below. Not over one which
-        # outlasted the wait, when its sound is refused and a wake word is only that
-        # conversation going on.
+        # Noted as its sound starts, so a Stop from then on is told apart from one in the
+        # conversation it waited for - see below. Not over one which outlasted the wait,
+        # whose sound is refused, so a Stop then is that conversation's.
         stops = self._stops if self._idle.is_set() else None
 
         # Anything which goes off by itself uses the alarm volume, so it can stay
@@ -902,9 +900,10 @@ class Session:
             if not self._wait_for_turn(still_wanted):
                 return False
             # An alert or a battery warning has no still_wanted to stop its words, as what
-            # the clock rings has, so a Stop or the wake word during its sound does. The
-            # user heard it start and stopped it, so it counts as said - as stopped part way
-            # through its words, rather than being said again or held.
+            # the clock rings has, so a Stop during its sound does. The user heard it start
+            # and stopped it, so it counts as said - as stopped part way through its words,
+            # rather than being said again or held. The wake word isn't counted: talking to
+            # Nova may be about anything else, so its words are said once that's over.
             if not ringing and stops is not None and self._stops != stops:
                 logger.info("Stopped during its sound, so its words aren't said")
                 return True
@@ -1104,7 +1103,7 @@ class Session:
         """
         if self.brain.clock.is_ringing(satellite=self.satellite.name):
             self.brain.clock.dismiss(satellite=self.satellite.name)
-        # Counted first, as in _answer.
+        # Counted first, so an announcement whose sound this stops sees it.
         self._stops += 1
         self.speaker.stop(["reply", "announcement"])
 

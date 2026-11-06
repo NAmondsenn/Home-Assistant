@@ -1788,8 +1788,11 @@ def test_a_stop_during_a_warnings_sound_stops_its_words_too(connect, make_sessio
     assert pi.messages("play_stream") == []
 
 
-def test_the_wake_word_during_an_alerts_sound_stops_its_words_too(brain, connect, make_session):
-    # They were said once the conversation it started had finished.
+def test_the_wake_word_during_an_alerts_sound_leaves_its_words_for_after_the_conversation(brain, connect,
+                                                                                          make_session):
+    # As a reminder's are. The user may well be asking about something else, and words
+    # skipped and counted as said were lost for good: an alert wasn't kept for "any
+    # notifications?", nor a battery warning sent to the phone.
     satellite, pi = connect()
     session = make_session(satellite)
     session.conversation = _Talking()
@@ -1809,7 +1812,12 @@ def test_the_wake_word_during_an_alerts_sound_stops_its_words_too(brain, connect
     session.conversation.let_go.set()
     saying.join(10)
     assert results == [True]
-    assert pi.messages("play_stream") == []
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement"]
+
+    # Only a Stop during its sound stops them.
+    _sound_then(session, session.stop_what_rings_and_speaks)
+    assert session.announce("Homelab: the backup failed again.") is True
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement"]
 
 
 def test_an_alert_waiting_on_a_conversation_is_said_after_it_whatever_was_stopped_in_it(brain, connect,
