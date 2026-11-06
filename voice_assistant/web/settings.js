@@ -442,6 +442,10 @@ async function load() {
   noticeVersion(state.page);
 }
 
+// Whether Stop's been pressed and the brain's not yet answered. The quick check can
+// land in that time, while what rings still does, and would show Stop again.
+let stopping = false;
+
 async function live() {
   let now = "offline";
   let stoppable = false;
@@ -456,7 +460,7 @@ async function live() {
     // Out of reach, then.
   }
   // Stop is there only while there's something to stop, on any satellite.
-  document.getElementById("stop").hidden = !stoppable;
+  document.getElementById("stop").hidden = !stoppable || stopping;
   // Back after a restart, or being out of reach - so anything else may have changed too.
   if (activity === "offline" && now !== "offline") {
     load();
@@ -2446,11 +2450,20 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("restart-now").addEventListener("click", restart);
 
   // Gone as it's pressed, so it can't be pressed twice - back at the quick check
-  // straight after if anything's still ringing.
+  // once Nova's answered, if anything's still ringing.
   const stop = document.getElementById("stop");
-  stop.addEventListener("click", () => {
+  stop.addEventListener("click", async () => {
     stop.hidden = true;
-    change("/api/stop", {}, live);
+    stopping = true;
+    try {
+      await change("/api/stop", {}, async () => {
+        stopping = false;
+        await live();
+      });
+    } finally {
+      // Whatever happened, so Stop can't stay away for good.
+      stopping = false;
+    }
   });
 
   // Put back as Nova last had it if the change didn't work - even with Nova out of
