@@ -120,17 +120,17 @@ class _FromBrain:
 class _Recording(threading.Event):
     """One recording being sent to the brain - set once the brain says the user has stopped."""
 
-    def __init__(self, id: Optional[str]):
+    def __init__(self, recording_id: Optional[str]):
         """
         Args:
-            id: What the brain knows it by: "wake-3", say, for one the wake word started,
-                or the number the brain gave an answer it asked for, e.g. "listen-3" -
-                None for an answer to a brain which doesn't number them.
+            recording_id: What the brain knows it by: "wake-3", say, for one the wake word
+                started, or the number the brain gave an answer it asked for, e.g.
+                "listen-3" - None for an answer to a brain which doesn't number them.
         """
         super().__init__()
         # Every number the brain may stop it by. A listen which comes while it's being
         # sent adds its own, as this recording is that answer - see Satellite._woken.
-        self.ids = set() if id is None else {id}
+        self.ids = set() if recording_id is None else {recording_id}
 
 
 def _pieces(waiting: queue.Queue) -> Iterator[np.ndarray]:
@@ -441,13 +441,13 @@ class Satellite:
                 else:
                     # Made before the brain hears of the wake, which it could answer with
                     # stop_listening straight away.
-                    id = f"wake-{next(self._wake_ids)}"
-                    recording = self._recording = _Recording(id)
+                    recording_id = f"wake-{next(self._wake_ids)}"
+                    recording = self._recording = _Recording(recording_id)
                     self._turn_open = False
                     # Saying how much of the recording is from before the wake word, so the
                     # brain knows without a setting of its own, which could differ.
                     if not self.link.send("wake", talked_over=talked_over, pre_roll=heard_at - start,
-                                          recording=id):
+                                          recording=recording_id):
                         recording = self._recording = None
         if dismissing:
             self.speaker.allow("announcement")
