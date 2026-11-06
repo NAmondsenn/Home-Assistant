@@ -339,6 +339,8 @@ def make(tmp_path, monkeypatch, make_config):
     for made, thread in running:
         made.stop()
         thread.join(timeout=5)
+    # One which didn't stop would ring, connect and log on into the tests after it.
+    assert not [made for made, thread in running if thread.is_alive()], "A satellite didn't stop"
 
 
 def entry(due):
