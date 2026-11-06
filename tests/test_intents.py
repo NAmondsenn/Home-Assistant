@@ -232,6 +232,8 @@ def test_a_question_for_assist_says_its_a_question(text):
     # Words that only point back, to something the conversation so far says.
     "Turn the other one off.", "Turn the same one on.", "Turn both off.", "Switch the rest off.", "Run again.",
     "Run the last one.", "Open the first one.", "Turn one off.", "Turn off the second one.", "Open the third one.",
+    "Turn on the one in the kitchen.", "Turn off the fourth one.", "Turn on another one.", "Run the previous one.",
+    "Turn off the second.",
     # Two things at once, however they're joined.
     "Turn off the TV plus the fan.", "Turn off the TV then the fan.",
     # When, rather than what - a delay is Claude's.

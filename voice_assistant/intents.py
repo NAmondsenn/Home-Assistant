@@ -90,9 +90,10 @@ PRONOUNS = {"it", "this", "that", "them", "these", "those", "one", "ones", "both
             "same", "again", "first", "last"}
 
 # "One" is a name's number as often as it points back - "turn on fan one", "BBC One" - so
-# in a thing for Assist it only points back alone, or after a word saying which of
-# several: "the other one", "the second one".
-WHICH_OF_SEVERAL = {"other", "first", "second", "third", "next", "last"}
+# in a thing for Assist it only points back first ("the one in the kitchen", as "the"
+# never reaches the thing), or after a word saying which of several: "the other one",
+# "the second one". Such a word alone points back too: "turn off the second".
+WHICH_OF_SEVERAL = {"other", "another", "first", "second", "third", "fourth", "fifth", "next", "previous", "last"}
 
 # When, rather than what - "pause the TV in five minutes" is a delay, which only Claude
 # can set. A time is a unit anywhere, or one of TIME_LEADS straight before a number, a
@@ -211,12 +212,15 @@ def _says_a_time(words: List[str]) -> bool:
 def _thing_points_back(words: List[str]) -> bool:
     """
     Whether a thing for Assist has a word in it which only the conversation so far could
-    say the meaning of - "it in five minutes", "the other one" - but not "fan one".
+    say the meaning of - "it in five minutes", "the other one", "the second" - but not
+    "fan one" or "the second scene".
 
     Args:
         words: The thing's words, e.g. ["fan", "one"].
     """
-    return any(word in PRONOUNS and (word != "one" or len(words) == 1 or before in WHICH_OF_SEVERAL)
+    if len(words) == 1 and words[0] in WHICH_OF_SEVERAL:
+        return True
+    return any(word in PRONOUNS and (word != "one" or before == "" or before in WHICH_OF_SEVERAL)
                for before, word in zip([""] + words, words))
 
 
