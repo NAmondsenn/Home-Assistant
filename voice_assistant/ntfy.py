@@ -157,7 +157,7 @@ class Ntfy:
         self.listening = False
 
     @classmethod
-    def from_config(cls, config, token: Optional[str], on_alert: Optional[Callable[[Alert], None]] = None):
+    def from_config(cls, config, token: Optional[str], on_alert: Optional[Callable[[Alert], bool]] = None):
         """
         The server ntfy.url in config.yaml names, or None if it doesn't name one.
 
