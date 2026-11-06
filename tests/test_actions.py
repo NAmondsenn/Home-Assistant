@@ -935,6 +935,28 @@ def test_the_phones_among_those_found_go_by_ntfy_and_the_rest_by_notify():
     assert (len(ntfy.sent), len(home.sent)) == (1, 1)
 
 
+@pytest.mark.parametrize("text", ["TTS", " TTS ", "request_location_update", "clear_notification", "remove_channel",
+                                  "command_stop_tts", "command_screen_on", "command_launch_app"])
+def test_a_message_which_is_one_of_the_apps_commands_is_shown_not_obeyed(text):
+    # The Android app acts on a message which is exactly one of its commands, whatever its title.
+    home = FakeAppHome([_mac()])
+    result = ActionExecutor(home=home).execute(Action("send_to_phone", {"device": "mac", "text": text}))
+    assert (result.ok, result.say) == (True, "Sent.")
+    [(_, message, data)] = home.sent
+    # Not even once Home Assistant has trimmed it, as it does the templates it renders.
+    assert message.strip() not in ("TTS", "request_location_update", "clear_notification", "remove_channel") \
+        and not message.strip().startswith("command_")
+    assert message.endswith(text) and data is None
+
+
+@pytest.mark.parametrize("text", ["tts", "TTS is text to speech", "Take the command_screen_on", "commands",
+                                  "Mix flour, eggs and milk, then fry them."])
+def test_any_other_message_is_sent_as_it_is(text):
+    home = FakeAppHome([_mac()])
+    ActionExecutor(home=home).execute(Action("send_to_phone", {"device": "mac", "text": text}))
+    assert home.sent == [("mobile_app_macbook_pro", text, None)]
+
+
 def test_a_partial_send_says_which_device_got_it():
     air = _app_device("macbook-air", "Apple", "Mac15,2", notify=None, tracker="home")
     executor = ActionExecutor(home=FakeAppHome([_mac(), air]))
