@@ -1891,6 +1891,22 @@ def test_only_a_reminder_nobody_answered_goes_to_the_phone(brain):
     assert brain.ntfy.sent == [("reminders", "Reminder nobody answered", "Take the bins out")]
 
 
+def test_a_reminder_missed_too_long_ago_to_say_goes_to_the_phone(make_brain, connect, tmp_path):
+    # The brain was off as it came due, and its satellite away for hours after - so it's
+    # kept for "what did I miss" rather than said, and sent as one nobody answered.
+    due = time.time() - 60
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": due, "duration": 600, "label": "take the bins out", "satellite": "bedroom"}]}))
+    brain = make_brain()
+    brain.ntfy = FakeNtfy()
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+    brain.clock._tick(due + 5 * 3600)
+    assert brain.ntfy.sent == [("reminders", "Reminder nobody answered", "Take the bins out")]
+    assert bedroom.announced == []
+
+
 def test_each_topic_is_read_once_for_each_send(brain):
     # So one cleared on the settings page between checking it and sending to it is never sent to as "".
     class Cleared(FakeNtfy):

@@ -348,10 +348,22 @@ class Ringing:
             timer: The timer which was never dismissed.
         """
         with self._lock:
-            timer["missed_at"] = time.time()
-            self._unacknowledged.append(timer)
-            # Only the recent ones are worth keeping, so this can't grow forever.
-            self._unacknowledged = self._unacknowledged[-10:]
+            self._keep_unacknowledged([timer], time.time())
+
+    def _keep_unacknowledged(self, items: List[Dict], missed_at: Optional[float] = None):
+        """
+        Keeps what went without the user hearing it, for "what did I miss". Called with
+        the lock held.
+
+        Args:
+            items: The timers, reminders and alarms missed.
+            missed_at: When they were missed, as an epoch timestamp - or None for when
+                each came due.
+        """
+        for item in items:
+            item["missed_at"] = item["due_at"] if missed_at is None else missed_at
+        # Only the recent ones are worth keeping, so this can't grow forever.
+        self._unacknowledged = (self._unacknowledged + items)[-10:]
 
     def is_ringing(self, satellite: Optional[str] = None, unowned: bool = False) -> bool:
         """

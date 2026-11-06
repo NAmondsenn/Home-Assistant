@@ -642,14 +642,26 @@ class Clock(ClockRequests, Ringing, SatelliteCopies, ClockWords):
                 # One whose satellite was away for hours after the brain came back isn't
                 # said once it's back - "That was 5 hours ago" is no use to anyone. It's
                 # kept for "what did I miss" instead, as anything else missed is, from when
-                # it came due - and only the last ten, as _record_unacknowledged keeps.
-                for item in too_late:
-                    item["missed_at"] = item["due_at"]
-                self._unacknowledged = (self._unacknowledged + too_late)[-10:]
+                # it came due.
+                self._keep_unacknowledged(too_late)
                 # Let go of in the file before it's said, so a brain lost as it says it
                 # never says it again.
                 if missed or too_late:
                     self._save()
+            if too_late:
+                logger.info(f"Kept {len(too_late)} missed while their satellite was away for 'what did I miss', "
+                            f"as it's too late to say them")
+            # Kept only here, they'd go with a restart of the brain, or with a dismiss on
+            # their satellite before anyone asked - so each is passed on now, as one which
+            # rang out unanswered is: a reminder goes to the phone (see Brain._unanswered).
+            for item in too_late:
+                if self.on_unanswered:
+                    kind = "alarm" if item.get("kind") == "alarm" else "clock"
+                    try:
+                        self.on_unanswered(item, kind, satellite=item["satellite"])
+                    except Exception as e:
+                        # Passing it on must never stop the clock's thread.
+                        logger.error(f"Couldn't pass on a missed {kind}: {e}")
             for item in missed:
                 late = format_duration(now - item["due_at"])
                 if item.get("kind") == "alarm":

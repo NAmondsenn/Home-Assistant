@@ -1284,6 +1284,37 @@ def test_whats_held_past_the_grace_is_kept_as_missed_rather_than_said(make_clock
     assert clock.missed()["message"] == "You missed pasta reminder, 5 hours ago; 7:00 AM alarm, 5 hours ago."
 
 
+def test_whats_held_past_the_grace_is_passed_on_as_unanswered_and_logged(make_clock, tmp_path, caplog):
+    # Kept only in memory, it was lost with a restart of the brain, or cleared unheard by
+    # any dismiss there - so it's passed on as one that rang out unanswered is.
+    due = time.time() - 60
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": due, "duration": 600, "label": "pasta", "satellite": "kitchen"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": due, "satellite": "kitchen"}]}))
+    unanswered = []
+    clock = make_clock(can_hear=lambda satellite: True,
+                       on_unanswered=lambda item, kind, satellite: unanswered.append((item.get("label"), kind,
+                                                                                      satellite)))
+    with caplog.at_level(logging.INFO, logger="voice_assistant.clock"):
+        clock._tick(due + 5 * 3600)
+
+    assert sorted(unanswered, key=str) == sorted([("pasta", "clock", "kitchen"), (None, "alarm", "kitchen")], key=str)
+    assert "Kept 2 missed while their satellite was away" in caplog.text
+    assert clock.announced == [] and "pasta reminder" in clock.missed()["message"]
+    # Passing it on going wrong never stops the clock.
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": due, "duration": 600, "label": "pasta", "satellite": "kitchen"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 1, "alarms": []}))
+
+    def broken(item, kind, satellite):
+        raise RuntimeError("ntfy's gone")
+
+    clock = make_clock(can_hear=lambda satellite: True, on_unanswered=broken)
+    clock._tick(due + 5 * 3600)
+    assert "pasta reminder" in clock.missed()["message"]
+
+
 # A satellite's report, applied twice - as one is when the brain has saved it, but the
 # connection drops before the satellite hears so, and it says it all again.
 
