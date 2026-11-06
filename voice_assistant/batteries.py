@@ -310,6 +310,7 @@ class BatteryChoices:
 
     @property
     def _state(self) -> Dict:
+        """The store's live state, which is only read under the lock and never changed in place."""
         return self._store.state
 
     @property
@@ -632,11 +633,16 @@ class BatteryWatcher:
         them. Once quiet hours are over it also says any held warning which is still true.
 
         If Home Assistant doesn't answer, that is logged once until it does, and
-        nothing else happens. Any other error is a bug: it is logged with its
-        traceback, and the pass goes on with the rest.
+        nothing else happens. A bug in saying the held warnings, or in delivering one,
+        is logged with its traceback and the pass goes on with the rest.
 
         Args:
             now: The current epoch time.
+
+        Raises:
+            Exception: Any other bug, such as one in reading the batteries (apart from
+                Home Assistant not answering) or in working out the warnings. The
+                thread's pass logs it, and the pass is over.
         """
         try:
             batteries = self.read()
