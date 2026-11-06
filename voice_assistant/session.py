@@ -867,7 +867,7 @@ class Session:
         # Waits for any conversation to finish before making any announcements.
         if not self._wait_for_turn(still_wanted):
             return False
-        # Noted as its sound starts, so a Stop from then on is told apart from one in the
+        # Noted as its sound starts, so a Stop during it is told apart from one in the
         # conversation it waited for - see below. Not over one which outlasted the wait,
         # whose sound is refused, so a Stop then is that conversation's.
         stops = self._stops if self._idle.is_set() else None
@@ -890,6 +890,10 @@ class Session:
                     start=start, length=length), still_wanted)
             else:
                 chimed = True
+            # Whether Stop was pressed during its sound - decided as the sound ends, so a
+            # Stop in a conversation the wake word started over the sound, which the words
+            # then wait for, is that conversation's.
+            stopped = not ringing and stops is not None and self._stops != stops
 
             if not message:
                 return chimed
@@ -904,7 +908,7 @@ class Session:
             # and stopped it, so it counts as said - as stopped part way through its words,
             # rather than being said again or held. The wake word isn't counted: talking to
             # Nova may be about anything else, so its words are said once that's over.
-            if not ringing and stops is not None and self._stops != stops:
+            if stopped:
                 logger.info("Stopped during its sound, so its words aren't said")
                 return True
 

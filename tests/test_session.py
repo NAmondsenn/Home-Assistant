@@ -1822,6 +1822,42 @@ def test_the_wake_word_during_an_alerts_sound_leaves_its_words_for_after_the_con
     assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement"]
 
 
+def test_a_stop_in_the_conversation_a_wake_word_over_an_alerts_sound_started_is_that_conversations(
+        brain, connect, make_session):
+    # Not the alert's: its words waited for the conversation, and a Stop in it - of the
+    # reply, say - dropped them, though only a Stop during its sound is meant to.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = _Talking()
+    brain.stt.texts = ["What's the weather?"]
+    running(session)
+
+    def woken():
+        pi.wake(said())
+        assert session.conversation.talking.wait(5)
+
+    _sound_then(session, woken)
+    turns = []
+    wait_for_turn = session._wait_for_turn
+
+    def waiting_for_turn(still_wanted=None):
+        turns.append(True)
+        return wait_for_turn(still_wanted)
+
+    session._wait_for_turn = waiting_for_turn
+    results = []
+    saying = threading.Thread(target=lambda: results.append(session.announce("Homelab: the backup failed.")),
+                              daemon=True)
+    saying.start()
+    # Its sound has played, and its words wait for the conversation.
+    assert wait_for(lambda: len(turns) == 2)
+    session.stop_what_rings_and_speaks()
+    session.conversation.let_go.set()
+    saying.join(10)
+    assert results == [True]
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement"]
+
+
 def test_an_alert_waiting_on_a_conversation_is_said_after_it_whatever_was_stopped_in_it(brain, connect,
                                                                                       make_session):
     # Only a Stop or a wake word once its sound has started is the user stopping it.
