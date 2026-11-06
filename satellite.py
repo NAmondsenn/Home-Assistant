@@ -201,6 +201,8 @@ class Satellite:
         # The most seconds one recording may last - 10 until the brain says,
         # as it does whenever it connects. Not saved, as the brain owns it.
         self.longest_request: float = LIMIT_SECONDS
+        # The last longest_request from the brain which made no sense, as it was logged.
+        self._refused_longest: Optional[str] = None
         self.phrase = Phrase()
         self.ringer = FallbackRinger(self.speaker, self.sounds_folder, self.alarms, self.state)
         # The brain owns the mute, but a satellite which was muted when the brain went
@@ -625,6 +627,12 @@ class Satellite:
         # or 1e-9, which is no audio at all. The brain's own setting is at least 5.
         if isinstance(longest, (int, float)) and not isinstance(longest, bool) and 1 <= longest < math.inf:
             self.longest_request = min(longest, MOST_SECONDS)
+        elif longest is not None and ascii(longest) != self._refused_longest:
+            # Once for each such value, as the brain sends it with every state - kept as
+            # text, as NaN is never equal to itself. One missing is from an old brain.
+            self._refused_longest = ascii(longest)
+            logger.warning(f"The brain's longest_request makes no sense, so a recording still lasts up to "
+                           f"{self.longest_request:g} seconds: {ascii(longest)[:80]}")
         confidence = message.get("wake_confidence")
         # Held to the same care, as the Pi has nobody at the keyboard to notice. Only 0.05
         # to 0.99 is taken: near 0 the wake word fires on any noise, and at 1 it all but

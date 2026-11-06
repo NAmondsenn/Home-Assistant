@@ -498,6 +498,29 @@ def test_an_old_brain_leaves_the_satellite_at_ten_seconds(brain, make, sent):
     assert made.longest_request == 12
 
 
+def test_a_longest_request_which_makes_no_sense_is_logged_once(brain, make, caplog):
+    # The brain repeats its state at every change of volume, and the log shouldn't fill
+    # with the same value.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    with caplog.at_level("WARNING", logger="satellite"):
+        brain.say("state", volumes={}, muted=False, longest_request="15")
+        brain.say("state", volumes={}, muted=True, longest_request="15")
+        assert wait_for(lambda: made.wake.muted is True)
+        # An old brain, which doesn't send it, is nothing to say.
+        brain.say("state", volumes={}, muted=False)
+        assert wait_for(lambda: made.wake.muted is False)
+        brain.say("state", volumes={}, muted=True, longest_request=float("nan"))
+        assert wait_for(lambda: made.wake.muted is True)
+        brain.say("state", volumes={}, muted=False, longest_request=float("nan"))
+        assert wait_for(lambda: made.wake.muted is False)
+
+    said = [record.getMessage() for record in caplog.records if "longest_request" in record.getMessage()]
+    assert len(said) == 2
+    assert "'15'" in said[0] and "nan" in said[1]
+    assert made.longest_request == 10
+
+
 def test_the_satellite_listens_as_surely_as_the_brain_says(brain, make, caplog):
     made = make()
     assert wait_for(lambda: connected(made) and made.wake.listening)
