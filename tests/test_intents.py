@@ -190,6 +190,9 @@ def test_the_lights_with_something_else_are_left_to_claude():
     "Set the TV volume to 40.", "Run goodnight.", "Activate movie night.", "Close the blinds.",
     # "In" and a number are only a delay together - "in five minutes", "at six".
     "Turn off the TV in the kitchen.", "Turn on fan 2.",
+    # "One" is as often a name's number, and "second" an order, as either points back or
+    # says when.
+    "Turn on fan one.", "Turn on BBC One.", "Activate the second scene.", "Turn the second fan off.",
 ])
 def test_assists_own_sentences_go_to_assist(text):
     # Sent whole, on the wider rule - see HomeAssistant.command.
@@ -220,13 +223,15 @@ def test_a_question_for_assist_says_its_a_question(text):
     "Turn on battery alerts.", "Turn off the warnings.",
     # Words that only point back, to something the conversation so far says.
     "Turn the other one off.", "Turn the same one on.", "Turn both off.", "Switch the rest off.", "Run again.",
-    "Run the last one.", "Open the first one.",
+    "Run the last one.", "Open the first one.", "Turn one off.", "Turn off the second one.", "Open the third one.",
     # Two things at once, however they're joined.
     "Turn off the TV plus the fan.", "Turn off the TV then the fan.",
     # When, rather than what - a delay is Claude's.
     "Pause the TV in five minutes.", "Pause the TV for a bit.", "Turn off the TV in ten minutes.",
     "Turn off the oven at six.", "Turn on the heating until ten.", "Turn off the light in five minutes.",
     "Run the dishwasher tonight.", "Turn on the heating by 7.", "Turn on the oven for half an hour.",
+    "Pause the TV in a second.", "Turn off the fan in 30 seconds.", "Pause the TV a second.",
+    "Pause the TV one second.",
     # For the user, not a thing of Home Assistant's.
     "Run me a bath.", "Open us a window.",
     # The shapes with nothing above yet for what they mustn't catch.

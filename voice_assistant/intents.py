@@ -89,9 +89,16 @@ NOVAS_OWN = {"timer", "timers", "alarm", "alarms", "reminder", "reminders", "mus
 PRONOUNS = {"it", "this", "that", "them", "these", "those", "one", "ones", "both", "other", "others", "rest",
             "same", "again", "first", "last"}
 
+# "One" is a name's number as often as it points back - "turn on fan one", "BBC One" - so
+# in a thing for Assist it only points back alone, or after a word saying which of
+# several: "the other one", "the second one".
+WHICH_OF_SEVERAL = {"other", "first", "second", "third", "next", "last"}
+
 # When, rather than what - "pause the TV in five minutes" is a delay, which only Claude
 # can set. A time is a unit anywhere, or one of TIME_LEADS straight before a number, a
 # unit, "a", "an" or "half" - so "the TV in the kitchen" and "fan 2" are still things.
+# "Second" is an order as often as a unit, so it's only a unit after a number - "in a
+# second", "one second" - and "activate the second scene" is a thing too.
 TIME_UNITS = {"second", "seconds", "minute", "minutes", "hour", "hours", "bit", "while", "later", "tonight",
               "tomorrow", "o'clock"}
 TIME_LEADS = {"in", "for", "at", "until", "after", "before", "by"}
@@ -185,14 +192,31 @@ def _number(words: str) -> Optional[int]:
     return None
 
 
+def _a_unit(word: str, before: str) -> bool:
+    """Whether a word is a unit of time, said after another - see TIME_UNITS."""
+    return word in TIME_UNITS and (word != "second" or before.isdecimal() or before in NUMBER_WORDS)
+
+
 def _says_a_time(words: List[str]) -> bool:
     """Whether a thing's words hold a time - "the TV in five minutes", "the oven at six"."""
-    for word, after in zip(words, words[1:] + [""]):
-        if word in TIME_UNITS:
+    for before, word, after in zip([""] + words, words, words[1:] + [""]):
+        if _a_unit(word, before):
             return True
-        if word in TIME_LEADS and (after.isdigit() or after in NUMBER_WORDS or after in TIME_UNITS or after == "half"):
+        if word in TIME_LEADS and (after.isdigit() or after in NUMBER_WORDS or _a_unit(after, word) or after == "half"):
             return True
     return False
+
+
+def _thing_points_back(words: List[str]) -> bool:
+    """
+    Whether a thing for Assist has a word in it which only the conversation so far could
+    say the meaning of - "it in five minutes", "the other one" - but not "fan one".
+
+    Args:
+        words: The thing's words, e.g. ["fan", "one"].
+    """
+    return any(word in PRONOUNS and (word != "one" or len(words) == 1 or before in WHICH_OF_SEVERAL)
+               for before, word in zip([""] + words, words))
 
 
 def calendar_days(day: Optional[str], today: date) -> Tuple[date, int]:
@@ -485,10 +509,10 @@ class LocalIntents:
 
     def _assist(self, found, question: bool = False) -> Optional[Dict]:
         # A pronoun anywhere, not only alone, as in "pause it in five minutes" - which
-        # isn't a thing called "it in five minutes".
+        # isn't a thing called "it in five minutes" - bar "one" (see WHICH_OF_SEVERAL).
         words = found["thing"].split()
-        if self.home is None or _says_a_time(words) or any(word in NOVAS_OWN or word in PRONOUNS
-                                                           or word in NOT_A_THING for word in words):
+        if self.home is None or _says_a_time(words) or _thing_points_back(words) or any(
+                word in NOVAS_OWN or word in NOT_A_THING for word in words):
             return None
         asked = {"command": found.string, "wider": True, **({"question": True} if question else {})}
         return self._result("Okay.", [Action("control_home", asked)])
