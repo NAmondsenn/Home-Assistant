@@ -1919,6 +1919,26 @@ def test_the_clock_is_shown_for_the_satellite_asked_about(files):
     assert page.brain.clock.overviewed == "kitchen"
 
 
+def test_a_satellite_nobody_has_is_shown_as_the_default(files):
+    # Removed on another device while this page was looking after it: the page is given
+    # the default's, with the default named, rather than a name no chip is lit for.
+    sessions = _two_satellites()
+    sessions["bedroom"].muted = True
+    page = _page(sessions=sessions)
+    state = page.state("ghost")
+    assert state["satellite"] == "bedroom" and state["muted"] is True
+    assert page.brain.clock.overviewed == "bedroom"
+    # One which is known is still its own.
+    assert page.state("kitchen")["satellite"] == "kitchen"
+
+    # With the file unreadable there's no telling who's known, so the name asked for stays.
+    def broken(*args):
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    page.brain.satellites = broken
+    assert page.state("ghost")["satellite"] == "ghost"
+
+
 def test_the_page_asks_after_the_satellite_it_names(served):
     served.brain.sessions["kitchen"] = FakeSession(activity="thinking")
     served.brain.known.append("kitchen")
@@ -1994,7 +2014,9 @@ def test_a_satellite_which_doesnt_exist_is_handled_everywhere(served):
     assert post("/api/run", {"id": "scene.relax"}) == said
     assert post("/api/alarms", {"time": "07:30"}) == {"success": False, "message": "There's no satellite called ghost."}
     assert _ask(served, "/api/state?satellite=ghost")[0] == 200
-    assert json.loads(_ask(served, "/api/state?satellite=ghost")[2])["volumes"] == {}
+    # The page is shown the default's, and told so, rather than nothing for a name no chip is lit for.
+    state = json.loads(_ask(served, "/api/state?satellite=ghost")[2])
+    assert state["satellite"] == "bedroom" and state["volumes"] == json.loads(_ask(served, "/api/state")[2])["volumes"]
     assert _ask(served, "/api/cover?satellite=ghost")[0] == 404
     assert json.loads(_ask(served, "/api/music?satellite=ghost")[2]) == {"available": False,
                                                                        "why": "There's no satellite called ghost."}

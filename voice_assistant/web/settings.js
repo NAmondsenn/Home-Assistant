@@ -415,6 +415,13 @@ async function load() {
   wakeWord = state.wake_word || wakeWord;
   muted = Boolean(state.muted);
   satellites = state.satellites;
+  // The one looked after was removed on another device. Nova answered with the default's,
+  // so the page goes back to it too, rather than keep a name no chip is lit for. Not when
+  // the file can't be read, which leaves no list to tell it by.
+  if (chosen && !state.satellites_unreadable && !satellites.some((satellite) => satellite.name === chosen)) {
+    choose(null);
+    return;
+  }
   showActivity();
   showStatus(state.status);
   showSatellites(state);

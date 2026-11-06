@@ -582,10 +582,14 @@ class SettingsPage:
 
         Args:
             satellite: The satellite whose volumes, mute and timers are shown, or None
-                for the default. Those are empty while it isn't connected.
+                for the default. Those are empty while it isn't connected. One nobody
+                has is taken for the default, as the page may be looking after one
+                removed on another device - and says which it is showing.
         """
-        session, chosen = self._session(satellite)
         names = self._satellite_names()
+        if satellite and names is not None and satellite not in names:
+            satellite = None
+        session, chosen = self._session(satellite)
         saved, problem = self._saved()
         settings = []
         for section, name, label, used in EDITABLE:
