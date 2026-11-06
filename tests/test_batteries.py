@@ -57,6 +57,16 @@ def test_todays_devices_are_sorted_into_kinds():
     assert kind_of("Apple", "iPad14,1", True) == "mobile" and not is_phone("Apple", "iPad14,1")
 
 
+def test_an_imac_is_a_mac_too():
+    # Apple's iMac models start with "iMac", not "Mac" - an iMac on the app reporting a UPS battery is a computer.
+    assert kind_of("Apple", "iMac21,1", True) == "other"
+    imac = Battery.from_home(_found("imac", 50.0, "d7", "Apple", "iMac21,1", None))
+    assert (imac.kind, imac.phone, imac.computer) == ("other", False, True)
+    assert find([imac], "computer") == [imac]
+    # Another maker's imac is not Apple's.
+    assert not Battery.from_home(_found("imac", 50.0, "d7", "Acme", "iMac21,1", None)).computer
+
+
 def test_only_a_model_that_shows_a_phone_is_a_phone():
     # A device Nova can't place counts as a tablet, so a wrong guess costs a duplicate warning, never a lost one.
     assert kind_of("samsung", "SM-P610", True) == "mobile" and not is_phone("samsung", "SM-P610")

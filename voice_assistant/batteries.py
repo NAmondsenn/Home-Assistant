@@ -108,8 +108,9 @@ class Battery:
 
 
 def is_mac(maker: Optional[str], model: Optional[str]) -> bool:
-    """Whether a device is an Apple Mac, e.g. maker "Apple", model "Mac16,8"."""
-    return (maker or "").lower() == "apple" and (model or "").lower().startswith("mac")
+    """Whether a device is an Apple Mac, e.g. maker "Apple", model "Mac16,8" or "iMac21,1"."""
+    # An iMac's model starts "iMac", not "Mac" - and nothing else of Apple's starts "imac".
+    return (maker or "").lower() == "apple" and (model or "").lower().startswith(("mac", "imac"))
 
 
 def kind_of(maker: Optional[str], model: Optional[str], app: bool) -> str:
