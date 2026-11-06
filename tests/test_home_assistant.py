@@ -1994,6 +1994,30 @@ def test_a_script_too_deep_to_walk_cant_be_checked_and_nothing_raises(make_home)
     assert _ran(home) == []
 
 
+# What's logged for a script too deep to walk.
+TOO_DEEP = ("Can't see what script.deep does, as it goes too deep to follow, so it isn't run by voice or from "
+            "the settings page")
+
+
+def _said_too_deep(caplog):
+    """Each time a script was logged as too deep to walk, as (logger, line)."""
+    return [(record.name, record.getMessage()) for record in caplog.records if "too deep" in record.getMessage()]
+
+
+def test_a_script_too_deep_to_walk_is_said_again_once_its_been_put_right(make_home, caplog):
+    # Said once while it stays too deep - and again should it go too deep after it's been
+    # put right, rather than never again until Nova restarts.
+    home = _scripted(make_home, {"script.deep": ("Deep", TooDeep("[[[["))}, LAMP)
+    with caplog.at_level("WARNING", logger="voice_assistant.ha_guard"):
+        assert home.works_guarded("script.deep", *_now(home)) and home.works_guarded("script.deep", *_now(home))
+        home._session.answers["/api/config/script/config/deep"] = _config(
+            "Deep", _step("light.turn_on", entity_id="light.lamp"))
+        assert not home.works_guarded("script.deep", *_now(home))
+        home._session.answers["/api/config/script/config/deep"] = TooDeep("[[[[")
+        assert home.works_guarded("script.deep", *_now(home)) and home.works_guarded("script.deep", *_now(home))
+    assert _said_too_deep(caplog) == [("voice_assistant.ha_guard", TOO_DEEP)] * 2
+
+
 def test_the_scripts_and_those_too_deep_are_only_given_by_name():
     # Both are kept by the caller and passed on, so they can never be given the wrong way round.
     scripts = ha_guard.Scripts(lambda key, name: None, lambda entity_ids: {})

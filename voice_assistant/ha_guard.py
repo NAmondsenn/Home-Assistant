@@ -482,7 +482,8 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
         scripts: How to read the scripts, and what's been read of them so far - shared by
             the caller for a settings page draw, and otherwise new, to read them afresh.
         too_deep: The scripts and scenes said already to go too deep to follow, which
-            this adds to - the HomeAssistant's own, so each is said once.
+            this adds to, and takes one off once it's walked to the end - the
+            HomeAssistant's own, so each is said once until it's been put right.
 
     Returns:
         WORKS_GUARDED if any of them works something guarded, else UNSEEN if any of
@@ -506,6 +507,9 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
                                f"run by voice or from the settings page")
             too_deep.add(entity_id)
             reasons.append(UNSEEN)
+        else:
+            # Walked to the end, so it isn't too deep now - and should it go too deep again, that's said.
+            too_deep.discard(entity_id)
     return _worst(reasons)
 
 

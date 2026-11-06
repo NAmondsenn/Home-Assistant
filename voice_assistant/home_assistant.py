@@ -417,7 +417,7 @@ class HomeAssistant:
         # Why decision 2's wider rule is off, or None while it's on - see _wider_rule.
         self._wider_off: Optional[str] = None
         # The scripts whose key or configuration last couldn't be read - see _script_config -
-        # and those found too deep to walk, each said once.
+        # and those found too deep to walk, each said once until it's been put right.
         self._unreadable: Set[str] = set()
         self._too_deep: Set[str] = set()
         self._session = requests.Session()
