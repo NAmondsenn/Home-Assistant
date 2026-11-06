@@ -449,7 +449,8 @@ class FakeSpotifyOAuth:
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
-        self.cache_handler = SimpleNamespace(cache_path=kwargs["cache_path"], get_cached_token=self._cached)
+        self.cache_handler = SimpleNamespace(cache_path=kwargs["cache_handler"].cache_path,
+                                             get_cached_token=self._cached)
 
     def _cached(self):
         try:

@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, List, Tuple
 import requests
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
+from spotipy.oauth2 import CacheFileHandler, SpotifyOAuth, SpotifyOauthError
 
 from voice_assistant import paths
 from voice_assistant.google_calendar import SIGN_IN_LASTS, logged_error
@@ -95,9 +95,10 @@ def spotify_oauth(show_dialog: bool = False) -> SpotifyOAuth:
     redirect_uri = os.getenv("SPOTIFY_REDIRECT_URI")
     if not all([client_id, client_secret, redirect_uri]):
         raise ValueError("Spotify credentials not found in .env")
+    # As a handler, which spotipy would rather have than the cache_path it warns is deprecated.
     return SpotifyOAuth(client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri,
-                        scope=SCOPE, cache_path=paths.SPOTIFY_TOKEN_FILE, requests_timeout=REQUEST_TIMEOUT,
-                        show_dialog=show_dialog)
+                        scope=SCOPE, cache_handler=CacheFileHandler(cache_path=paths.SPOTIFY_TOKEN_FILE),
+                        requests_timeout=REQUEST_TIMEOUT, show_dialog=show_dialog)
 
 
 def _keep_private(path: str):

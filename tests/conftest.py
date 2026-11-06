@@ -68,7 +68,8 @@ if _module_missing("anthropic"):
     sys.modules["anthropic"] = anthropic
 
 
-# spotipy: the client and OAuth classes. Tests swap in their own fakes for both.
+# spotipy: the client and OAuth classes, and the token file's handler. Tests swap in their own
+# fakes for the first two.
 if _module_missing("spotipy"):
     spotipy = types.ModuleType("spotipy")
     oauth2 = types.ModuleType("spotipy.oauth2")
@@ -86,9 +87,14 @@ if _module_missing("spotipy"):
             super().__init__(message)
             self.error = error
 
+    class CacheFileHandler:
+        def __init__(self, cache_path=None, username=None, encoder_cls=None):
+            self.cache_path = cache_path
+
     spotipy.Spotify = Spotify
     oauth2.SpotifyOAuth = SpotifyOAuth
     oauth2.SpotifyOauthError = SpotifyOauthError
+    oauth2.CacheFileHandler = CacheFileHandler
     spotipy.oauth2 = oauth2
     sys.modules["spotipy"] = spotipy
     sys.modules["spotipy.oauth2"] = oauth2
