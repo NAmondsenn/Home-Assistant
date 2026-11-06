@@ -211,6 +211,17 @@ def test_a_ring_which_outlives_being_dismissed_doesnt_stop_the_next(tmp_path, mo
     assert all(playback.stopped for playback in speaker.playbacks)
 
 
+def test_a_ring_plays_only_one_of_the_satellites_own_sounds(tmp_path):
+    # Whatever the brain names - the sounds folder is all the ringer plays from.
+    copy, state, speaker, ringer = make(tmp_path)
+    copy.replace([entry(sound="../../elsewhere/alarm_sound.wav")])
+    ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls)
+    ringer.quiet()
+
+    assert speaker.calls[0]["filename"] == "/sounds/alarm_sound.wav"
+
+
 def test_a_ring_going_as_the_satellite_stops_carries_on_once_it_starts_again(tmp_path):
     # Its watchdog, a crash or the power. Knowing only that the alarm had rung, the
     # copy rang it no more - and the brain, told just that, neither rang it nor said

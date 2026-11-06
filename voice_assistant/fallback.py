@@ -348,7 +348,8 @@ class FallbackRinger:
         Plays an entry's sound over and over until stop is set, as it's dismissed or
         quietened, or limit seconds have passed.
         """
-        filename = os.path.join(self.sounds_folder, entry["sound"])
+        # Only ever one of the satellite's own sounds, whatever the brain's copy says.
+        filename = os.path.join(self.sounds_folder, os.path.basename(entry["sound"]))
         deadline = time.monotonic() + limit
         # This ring's own, so it stops exactly what it played. Kept by id, a second
         # ring of the same id took its place, and quietening both left one playing.
