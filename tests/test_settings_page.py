@@ -1715,11 +1715,12 @@ def test_nonsense_is_answered_rather_than_crashing_on(served):
             "success": False, "message": "That didn't make sense."}
 
 
-@pytest.mark.parametrize("length", ["-1", "lots", "\u00b2"])
+@pytest.mark.parametrize("length", ["-1", "lots", "\u00b2", pytest.param("1" * 5000, id="5000-digits")])
 def test_a_length_which_isnt_one_is_answered(served, length):
     # A negative one read to the end of the connection, which never came; one which
     # wasn't a number dropped the connection - as did a superscript two, which
-    # str.isdigit() takes for a digit but int() doesn't.
+    # str.isdigit() takes for a digit but int() doesn't, and one of over 4300 digits,
+    # which int() refuses to read.
     connection = http.client.HTTPConnection("127.0.0.1", served.port, timeout=2)
     connection.request("POST", "/api/volume", body=b'{"category": "general", "percent": 30}',
                        headers={"Tailscale-User-Login": LOGIN, "X-Nova": "page", "Content-Length": length})
