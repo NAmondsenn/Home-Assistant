@@ -1,6 +1,7 @@
 """Tests for the satellite's connection to its brain, against a fake brain on a real socket."""
 
 import logging
+import re
 import select
 import socket
 import struct
@@ -10,6 +11,7 @@ import time
 import pytest
 
 from voice_assistant import protocol, satellite_link
+from voice_assistant.config import ConfigError
 from voice_assistant.satellite_link import SatelliteLink, Stream
 
 PASSWORD = "hunter2"
@@ -18,9 +20,14 @@ PASSWORD = "hunter2"
 class FakeBrain:
     """A listening socket which admits satellites, or refuses them, as told."""
 
-    def __init__(self, refuse=False, answer_pings=True):
-        self.listener = socket.socket()
-        self.listener.bind(("127.0.0.1", 0))
+    def __init__(self, refuse=False, answer_pings=True, host="127.0.0.1"):
+        self.host = host
+        self.listener = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+        try:
+            self.listener.bind((host, 0))
+        except OSError:
+            self.listener.close()
+            raise
         self.listener.listen()
         self.port = self.listener.getsockname()[1]
         self.refuse = refuse
@@ -33,7 +40,7 @@ class FakeBrain:
 
     @property
     def address(self):
-        return f"127.0.0.1:{self.port}"
+        return f"[{self.host}]:{self.port}" if ":" in self.host else f"{self.host}:{self.port}"
 
     def _accept(self):
         while True:
@@ -180,6 +187,39 @@ def test_a_stop_just_as_the_brain_accepts_tells_nothing(brain, make):
     assert wait_for(lambda: len(brain.hellos) == 1)
     assert events == []
     assert not link.connected
+
+
+def test_the_brain_can_be_an_ipv6_address_in_brackets(make):
+    try:
+        brain = FakeBrain(host="::1")
+    except OSError:
+        pytest.skip("This machine has no IPv6 loopback")
+    try:
+        link, events, messages = make(brain.address)
+        assert link.address == ("::1", brain.port)
+        link.start()
+        assert wait_for(lambda: events == [True] and len(brain.hellos) == 1)
+    finally:
+        brain.close()
+
+
+@pytest.mark.parametrize("address, host, port", [
+    ("nova:10400", "nova", 10400),
+    # As it always was, so an address which works now still does - the port is after
+    # the last colon.
+    ("2001:db8::1:10400", "2001:db8::1", 10400),
+    ("[2001:db8::1]:10400", "2001:db8::1", 10400),
+])
+def test_the_address_is_a_name_and_a_port(make, address, host, port):
+    link, events, messages = make(address)
+    assert link.address == (host, port)
+
+
+@pytest.mark.parametrize("address", ["nova", "nova:", "nova:port", ":10400", "nova:0", "nova:65536",
+                                     "[::1]", "[::1]10400", "[]:10400", "[::1]:"])
+def test_an_address_which_cant_be_one_is_refused_naming_the_setting(make, address):
+    with pytest.raises(ConfigError, match=rf"backend\.address.*not {re.escape(repr(address))}"):
+        make(address)
 
 
 def test_pings_are_answered_inside_the_link(brain, make, monkeypatch):

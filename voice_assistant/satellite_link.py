@@ -13,6 +13,7 @@ import threading
 from time import monotonic
 from typing import Callable, Dict, Optional, Tuple
 
+from voice_assistant.config import ConfigError
 from voice_assistant.protocol import ProtocolError, Refused, greet, receive, send
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,39 @@ RETRY_LONGEST = 30.0
 # How often to ping, and how long hearing nothing at all means the connection has gone.
 PING_EVERY = 5.0
 SILENT_FOR = 15.0
+
+
+def _host_and_port(address: str) -> Tuple[str, int]:
+    """
+    The brain's address, as socket.create_connection takes it.
+
+    Args:
+        address: backend.address - "name:port", e.g. "nova:10400", or an IPv6 address
+            in brackets and the port, e.g. "[2001:db8::1]:10400".
+
+    Returns:
+        The name or address, and the port.
+
+    Raises:
+        ConfigError: It's neither, so the satellite could never connect.
+    """
+    if address.startswith("["):
+        host, between, port = address[1:].partition("]:")
+        if not between:
+            host = ""
+    else:
+        # The port is after the last colon, as it always was, so an IPv6 address
+        # written without brackets still works as it did.
+        host, _, port = address.rpartition(":")
+    try:
+        number = int(port)
+    except ValueError:
+        number = 0
+    if not host or not 1 <= number <= 65535:
+        raise ConfigError(f"backend.address in config.yaml has to be the brain's name and port, e.g. \"nova:10400\", "
+                          f"or an IPv6 address in brackets and the port, e.g. \"[2001:db8::1]:10400\" - "
+                          f"not {address!r}")
+    return host, number
 
 
 class Stream:
@@ -148,7 +182,8 @@ class SatelliteLink:
                  on_connected: Callable[[bool], None], speaker: Optional[str] = None):
         """
         Args:
-            address: The brain's "name:port" on the tailnet - backend.address in config.yaml.
+            address: The brain's "name:port" on the tailnet, or "[address]:port" for an
+                IPv6 address - backend.address in config.yaml.
             name: This satellite's name, e.g. "bedroom".
             hostname: The machine it runs on.
             password: Its password.
@@ -159,9 +194,11 @@ class SatelliteLink:
             on_connected: Called with True or False each time the connection changes.
             speaker: The Spotify Connect speaker this satellite plays Spotify on, e.g.
                 "Bedroom Pi", said in every hello - or None, for the brain's own.
+
+        Raises:
+            ConfigError: The address can't be one.
         """
-        host, _, port = address.rpartition(":")
-        self.address = (host, int(port))
+        self.address = _host_and_port(address)
         self.name = name
         self.hostname = hostname
         self.password = password
