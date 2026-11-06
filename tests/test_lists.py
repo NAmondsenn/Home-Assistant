@@ -235,6 +235,34 @@ def test_two_things_that_fit_are_asked_about(make_lists):
     assert lists.home.ticked == [("todo.shopping_list", "todo.shopping_list-2")]
 
 
+@pytest.mark.parametrize("on_list, said", [
+    # A word which ends in "e" before its "s" ...
+    ("quiche", "quiches"), ("quiches", "quiche"), ("brioche", "brioches"), ("size", "sizes"), ("axes", "axe"),
+    # ... and one which takes "es" - the same ending, so either might be meant.
+    ("peach", "peaches"), ("peaches", "peach"), ("dishes", "dish"), ("glass", "glasses"), ("glasses", "glass"),
+    ("box", "boxes"), ("boxes", "box"),
+])
+def test_a_thing_is_found_whether_its_plural_adds_s_or_es(make_lists, on_list, said):
+    # "quiches" is quiche though "peaches" is peach: the same ending, and no telling which.
+    lists = make_lists(items={"todo.shopping_list": [on_list]})
+    assert lists.tick_off(said, "shopping")["message"] == f"Ticked off {on_list} on your shopping list."
+    lists = make_lists(items={"todo.shopping_list": [on_list]})
+    assert lists.tick_off(said, "shopping", exact=True)["message"] == f"Ticked off {on_list} on your shopping list."
+
+
+def test_a_plural_still_doesnt_fit_another_word(make_lists):
+    lists = make_lists(items={"todo.shopping_list": ["boxer shorts", "quilt", "pea"]})
+    for said in ("boxes", "quiches", "peaches"):
+        assert lists.tick_off(said, "shopping")["message"] == f"I can't see {said} on your shopping list."
+    # Each word of several is allowed either plural.
+    lists = make_lists(items={"todo.shopping_list": ["quiche lorraine", "dish soap"]})
+    assert lists.tick_off("quiches lorraine", "shopping")["message"] == (
+        "Ticked off quiche lorraine on your shopping list.")
+    assert lists.tick_off("soap dishes", "shopping")["message"] == "Ticked off dish soap on your shopping list."
+    assert lists.home.ticked == [("todo.shopping_list", "todo.shopping_list-0"),
+                                 ("todo.shopping_list", "todo.shopping_list-1")]
+
+
 def test_with_no_list_named_every_list_is_looked_through(make_lists):
     lists = make_lists(items={"todo.todo": ["ring the bank"], "todo.shopping_list": ["milk"]})
     assert lists.tick_off("milk", None)["message"] == "Ticked off milk on your shopping list."

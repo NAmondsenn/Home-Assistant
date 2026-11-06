@@ -18,7 +18,7 @@ asks which.
 
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 import requests
 
@@ -113,19 +113,38 @@ def match_list(said: str, lists: List[Dict]) -> List[Dict]:
     return begun if len(begun) == 1 else []
 
 
-def _item_singular(word: str) -> str:
-    """A thing's word without its plural - "glasses" and "glass" are both glass, and "eggs" egg."""
+def _item_singulars(word: str) -> FrozenSet[str]:
+    """
+    A thing's word without its plural - "glasses" and "glass" are both glass, and "eggs" egg.
+
+    Args:
+        word: One word of a thing, in lower case.
+
+    Returns:
+        The word it could be a plural of: two for an ending which takes "es", as "peaches"
+        is peach but "quiches" is quiche, and the word alone can't say which.
+    """
     if word.endswith(ES_PLURALS):
-        return word[:-2]
-    return word if word.endswith("ss") else _singular(word)
+        return frozenset((word[:-2], word[:-1]))
+    return frozenset((word if word.endswith("ss") else _singular(word),))
 
 
-def _item_words(text: str) -> Tuple[str, ...]:
-    """A thing's words as they're matched - "Some Eggs!" is ("egg",)."""
+def _item_words(text: str) -> Tuple[FrozenSet[str], ...]:
+    """A thing's words as they're matched, each as _item_singulars has it - "Some Eggs!" is ({"egg"},)."""
     words = _words(text)
     if words and words[0] in ITEM_LEADS:
         words = words[1:]
-    return tuple(_item_singular(word) for word in words)
+    return tuple(_item_singulars(word) for word in words)
+
+
+def _same_words(one: Tuple[FrozenSet[str], ...], other: Tuple[FrozenSet[str], ...]) -> bool:
+    """Whether two things have the same words, each word fitting if any of its singulars does."""
+    return len(one) == len(other) and all(here & there for here, there in zip(one, other))
+
+
+def _has_words(words: Tuple[FrozenSet[str], ...], thing: Tuple[FrozenSet[str], ...]) -> bool:
+    """Whether a thing has every one of these words, among its own."""
+    return all(any(word & each for each in thing) for word in words)
 
 
 def match_item(said: str, items: List[Dict]) -> List[Dict]:
@@ -146,10 +165,10 @@ def match_item(said: str, items: List[Dict]) -> List[Dict]:
     words = _item_words(said)
     if not words:
         return []
-    same = [item for item in items if _item_words(item["summary"]) == words]
-    if same or all(len(word) < LOOSE_LETTERS for word in words):
+    same = [item for item in items if _same_words(_item_words(item["summary"]), words)]
+    if same or all(max(map(len, word)) < LOOSE_LETTERS for word in words):
         return same
-    return [item for item in items if set(words) <= set(_item_words(item["summary"]))]
+    return [item for item in items if _has_words(words, _item_words(item["summary"]))]
 
 
 def _joined(things: List[str], last: str = "and") -> str:
@@ -379,7 +398,7 @@ class Lists:
             things = [{**thing, "list": found} for found in lists for thing in self.home.list_items(found["id"])]
             fits = match_item(item, things)
             if exact:
-                fits = [thing for thing in fits if _item_words(thing["summary"]) == _item_words(item)]
+                fits = [thing for thing in fits if _same_words(_item_words(thing["summary"]), _item_words(item))]
             if not fits:
                 where = f"your {_list_said(lists[0]['name'])}" if named else "your lists"
                 result = {"success": False, "message": f"I can't see {item} on {where}."}
