@@ -411,7 +411,8 @@ class BatteryChoices:
             The warnings, at most one for each battery - for the lowest mark it is at
             or under that hadn't warned, as a mark of 15 warns at 15%. Every mark it is
             at or under counts as warned, so a device first seen at 4% warns once, not
-            for 15% then 5%.
+            for 15% then 5%. A warning held back for a device which has one now is let
+            go, as the two say the same thing - the device's level as it is.
         """
         with self._lock:
             warned = {}
@@ -442,6 +443,10 @@ class BatteryChoices:
                             state["warned"][battery_id] = marks
                         else:
                             state["warned"].pop(battery_id, None)
+                    # One held since the night, and a new lower mark straight after, would be the same
+                    # sentence said twice - "down to 4%" - for a device which fell further meanwhile.
+                    for warning in given:
+                        state["held"].pop(warning.battery.id, None)
                 # If the save fails the warnings are still given and kept in memory, so they aren't repeated
                 # every minute while saves fail - only after a restart.
                 self._store.keep(remember, "warned battery marks")
@@ -644,13 +649,15 @@ class BatteryWatcher:
         if self._down:
             logger.info("Home Assistant answers again, batteries are being watched.")
             self._down = False
-        # Held ones go first, so a warning held in this pass isn't also looked at again in it.
-        # Each step is wrapped, so a bug in one doesn't lose the warnings the others would give.
+        # Worked out first, as it lets go of a held warning which a new one for the same device replaces.
+        warnings = self._choices.due(batteries)
+        # Held ones go before the new ones are delivered, so a warning held in this pass isn't also looked at
+        # again in it. Each step is wrapped, so a bug in one doesn't lose the warnings the others would give.
         try:
             self._say_held(batteries, now)
         except Exception:
             logger.exception("Saying the held battery warnings failed")
-        for warning in self._choices.due(batteries):
+        for warning in warnings:
             try:
                 self._deliver(warning, now)
             except Exception:

@@ -642,6 +642,43 @@ def test_a_held_warning_no_longer_true_is_let_go_with_a_line_in_the_log(tmp_path
     assert "MacBook Pro" in caplog.text and "off" in caplog.text
 
 
+def test_a_held_warning_and_a_new_lower_mark_straight_after_quiet_hours_are_said_once(tmp_path):
+    # Held at 15 in the night; by the morning it has fallen to 4%, under the 5 which hasn't warned. Both are
+    # "down to 4%", so only the new one is said.
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    assert rig.choices.held() == {_mac(14).id: 15}
+    rig.quiet = False
+    rig.fall_to(_mac(4))
+    assert rig.said == ["Your MacBook Pro's battery is down to 4%."]
+    assert rig.choices.held() == {}
+    rig.watcher.check(NOW)
+    assert len(rig.said) == 1, "and not again on the next pass"
+
+
+def test_a_new_lower_mark_in_quiet_hours_takes_the_place_of_the_one_held(tmp_path):
+    rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
+    rig.fall_to(_mac(4))
+    assert rig.said == [] and rig.choices.held() == {_mac(14).id: 5}
+    rig.quiet = False
+    rig.watcher.check(NOW)
+    assert rig.said == ["Your MacBook Pro's battery is down to 4%."]
+    assert rig.choices.held() == {}
+
+
+def test_a_new_warning_lets_go_only_of_its_own_devices_held_one(tmp_path):
+    rig = Rig(tmp_path, _mac(40), state="not_home", sends=False, quiet=True)
+    rig.home.found = [_as_found(_mac(40)), _as_found(_tablet(40))]
+    rig.watcher.check(NOW)
+    rig.home.found = [_as_found(_mac(14)), _as_found(_tablet(4))]
+    rig.watcher.check(NOW)
+    assert rig.choices.held() == {_mac(14).id: 15, _tablet(4).id: 5}
+    rig.quiet = False
+    rig.home.found = [_as_found(_mac(4)), _as_found(_tablet(4))]
+    rig.watcher.check(NOW)
+    assert sorted(rig.said) == ["Your MacBook Pro's battery is down to 4%.",
+                                "Your Tab S11 Ultra's battery is down to 4%."]
+
+
 def test_a_held_warning_stays_held_while_its_battery_isnt_listed(tmp_path):
     # Home Assistant leaves out a sensor that is unavailable for a moment, as it is while Home Assistant restarts.
     rig = _fallen(tmp_path, state="not_home", sends=False, quiet=True)
