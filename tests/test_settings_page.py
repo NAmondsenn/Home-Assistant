@@ -1397,9 +1397,16 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b'const tab = window.open("", "_blank");\n  // So' in body
         html = _ask(served, "/")[2]
         assert b'id="spotify-address"' in html and b'id="google-address"' in html
-        assert b'fetch("/api/calendars")' in body
+        assert b'fetchWithin("/api/calendars")' in body
         # A tab closed while Nova was asked gets the link instead.
         assert b"const opened = Boolean(tab && !tab.closed);" in body
+        # Every request gives up if Nova doesn't begin to answer, a change saying it may have gone through.
+        assert b"signal: controller.signal" in body and b"AbortError" in body and body.count(b"fetch(") == 1
+        assert b"may or may not have worked" in body
+        # A battery's mark box is left with Enter, not on each step, and the rows aren't drawn under a pointer held down.
+        assert b'event.key === "Enter") box.blur();' in body and b'list.querySelector(":active")' in body
+        # Stop stays hidden until Nova has answered it.
+        assert b"!stoppable || stopping" in body
 
 
 def test_the_page_has_a_login_form_and_log_out_buttons(served):
@@ -1413,7 +1420,7 @@ def test_the_page_has_a_login_form_and_log_out_buttons(served):
     assert ">Log out</button>" in html and ">Log out everywhere</button>" in html
     assert "Set a page password at the page's Tailscale address first." in html
     # Posted through the page's script, with X-Nova, never as a plain form.
-    assert 'send("/api/login", { password: field.value })' in script and 'fetch("/api/login-state")' in script
+    assert 'send("/api/login", { password: field.value })' in script and 'fetchWithin("/api/login-state")' in script
     assert '"/api/logout"' in script and '"/api/logout-everywhere"' in script and '"/api/page-password"' in script
     assert 'field("page-password-new", "new-password"' in script and "response.status === 401" in script
     # A Log out reloads the page, so none of what it showed is left in it.
