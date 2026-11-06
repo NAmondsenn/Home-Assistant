@@ -19,6 +19,7 @@ started as above. docs/release-checklist.md has the rest.
 import argparse
 import csv
 import os
+import re
 import subprocess
 import sys
 import time
@@ -53,6 +54,11 @@ RSS_GROWTH_MB = 50
 THREAD_GROWTH = 10
 # Open files should stay level; a few dozen more over three days is a handle nothing closes.
 FILE_GROWTH = 20
+
+# The start of an error line as the log writes it, e.g. "2026-10-20 10:15:00,123 - x.y - ERROR - ",
+# with the level in its own place. A message on another level's line can quote " - ERROR - "
+# (the settings page showing the last error, say) without being taken for one.
+ERROR_LINE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:,\d+)? - \S+ - (?:ERROR|CRITICAL) - ")
 
 
 def _systemctl(prop: str, target: Target) -> Optional[str]:
@@ -112,16 +118,27 @@ def count_errors(log: str, since: datetime, until: datetime) -> int:
         The number of ERROR and CRITICAL lines.
     """
     count = 0
+    # A log that rotates while this reads moves each file along one name, so the one just
+    # read as backend.log turns up next as backend.log.1 and would be counted again. A
+    # rename keeps the file's inode, so a file seen once is skipped under any later name.
+    read = set()
     for suffix in ("", ".1", ".2", ".3"):
         try:
             with open(os.path.join(LOGS_DIRECTORY, log + suffix), errors="replace") as f:
+                status = os.fstat(f.fileno())
+                identity = (status.st_dev, status.st_ino)
+                if identity in read:
+                    continue
+                read.add(identity)
                 for line in f:
-                    if " - ERROR - " not in line and " - CRITICAL - " not in line:
+                    found = ERROR_LINE.match(line)
+                    if not found:
+                        # Another level, or a traceback's line or a message's second one, which
+                        # have no stamp and level of their own.
                         continue
                     try:
-                        stamp = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+                        stamp = datetime.strptime(found.group(1), "%Y-%m-%d %H:%M:%S")
                     except ValueError:
-                        # A traceback's line, or a message's second one, has no timestamp of its own.
                         continue
                     if since <= stamp < until:
                         count += 1

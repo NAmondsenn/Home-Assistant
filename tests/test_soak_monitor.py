@@ -242,3 +242,53 @@ def test_a_rotation_between_readings_counts_each_error_once(tmp_path, monkeypatc
     second = soak_monitor.sample(first, soak_monitor.TARGETS["brain"], first["_when"])
 
     assert (first["errors"], second["errors"]) == (1, 2)
+
+
+def test_only_a_line_whose_own_level_is_error_or_critical_is_counted(tmp_path, monkeypatch):
+    # As the log writes them, with milliseconds after the stamp. A message can quote the
+    # text of another line - the settings page's last error, say - and mustn't count as one.
+    logs = _scratch_logs(tmp_path, monkeypatch)
+    (logs / "backend.log").write_text(
+        "2026-10-20 10:05:00,123 - voice_assistant.x - INFO - Showed ' - ERROR - ' to the page\n"
+        "2026-10-20 10:06:00,456 - voice_assistant.x - WARNING - Last was 'x - CRITICAL - y'\n"
+        "2026-10-20 10:07:00,789 - voice_assistant.x - ERROR - A real one, quoting ' - ERROR - ' too\n"
+        "2026-10-20 10:08:00,001 - voice_assistant.x - CRITICAL - Another real one\n"
+        "2026-10-20 10:09:00,002 - voice_assistant.x - ERRORS - not a level either\n")
+
+    assert soak_monitor.count_errors("backend.log", datetime(2026, 10, 20), datetime(2026, 10, 21)) == 2
+
+
+def _rotate(logs):
+    """What the log's handler does when the file is full: each file moves along one name, and a new one starts."""
+    for number in (2, 1):
+        if (logs / f"backend.log.{number}").exists():
+            os.replace(logs / f"backend.log.{number}", logs / f"backend.log.{number + 1}")
+    os.replace(logs / "backend.log", logs / "backend.log.1")
+    (logs / "backend.log").write_text("")
+
+
+@pytest.mark.parametrize("rotates_before", [".1", ".2"])
+def test_a_rotation_during_one_count_reads_each_file_once(tmp_path, monkeypatch, rotates_before):
+    # Counting opens the log and then its older files in turn, so one which rotates part way
+    # moves the file just read to the next name, where it would be read a second time.
+    logs = _scratch_logs(tmp_path, monkeypatch)
+    (logs / "backend.log").write_text("2026-10-20 10:30:00,000 - voice_assistant.x - ERROR - newest\n")
+    (logs / "backend.log.1").write_text(
+        "2026-10-20 10:10:00,000 - voice_assistant.x - ERROR - older\n"
+        "2026-10-20 10:11:00,000 - voice_assistant.x - ERROR - older still\n")
+    real_open = open
+    rotated = []
+
+    def rotating_open(path, *args, **kwargs):
+        if str(path).endswith(f"backend.log{rotates_before}") and not rotated:
+            rotated.append(path)
+            _rotate(logs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", rotating_open)
+
+    count = soak_monitor.count_errors("backend.log", datetime(2026, 10, 20), datetime(2026, 10, 21))
+
+    assert rotated
+    # Each of the three is counted once: none twice, and none lost to the move.
+    assert count == 3
