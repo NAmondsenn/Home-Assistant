@@ -18,9 +18,12 @@ PASSWORD = "hunter2"
 
 
 class FakeBrain:
-    """A listening socket which admits satellites, or refuses them, as told."""
+    """
+    A listening socket which admits satellites, or refuses them, as told - and once it
+    has admitted one, reads what it sends, unless told not to.
+    """
 
-    def __init__(self, refuse=False, answer_pings=True, host="127.0.0.1"):
+    def __init__(self, refuse=False, answer_pings=True, host="127.0.0.1", reading=True):
         self.host = host
         self.listener = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
         try:
@@ -28,14 +31,22 @@ class FakeBrain:
         except OSError:
             self.listener.close()
             raise
+        if not reading:
+            # Small, so the satellite's sends fill the connection quickly. Set on the
+            # listener, so each connection it accepts starts with it.
+            self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
         self.listener.listen()
         self.port = self.listener.getsockname()[1]
         self.refuse = refuse
         self.answer_pings = answer_pings
+        self.reading = reading
         self.hellos = []
         self.received = []
+        # Each message whole, with its audio.
+        self.messages = []
         self.streams = []
         self.accepted = 0
+        self.closed = threading.Event()
         threading.Thread(target=self._accept, daemon=True).start()
 
     @property
@@ -61,9 +72,13 @@ class FakeBrain:
                 sock.close()
                 return
             self.hellos.append(protocol.admit(stream, lambda name: PASSWORD))
+            if not self.reading:
+                self.closed.wait(10)
+                return
             while True:
                 message, payload = protocol.receive(stream)
                 self.received.append(message["type"])
+                self.messages.append((message, payload))
                 if message["type"] == "ping" and self.answer_pings:
                     protocol.send(stream, "pong")
         except (OSError, protocol.ProtocolError, protocol.Refused):
@@ -82,6 +97,7 @@ class FakeBrain:
             sock.close()
 
     def close(self):
+        self.closed.set()
         self.listener.close()
         self.drop_everyone()
 
@@ -318,7 +334,148 @@ def test_a_message_can_carry_a_field_named_kind(brain, make):
     link.start()
     assert wait_for(lambda: link.connected)
     assert link.send("note", kind="reply") is True
-    assert wait_for(lambda: "note" in brain.received)
+    # The field as well as the message's own type, which shares its name with send's.
+    assert wait_for(lambda: ({"type": "note", "kind": "reply"}, b"") in brain.messages)
+
+
+def test_a_send_which_fails_gives_up_on_the_connection_and_connects_again(brain, make, monkeypatch, caplog):
+    link, events, messages = make(brain.address)
+    real_send = satellite_link.send
+
+    def send_failing_for_wake(stream, kind, payload=b"", /, **fields):
+        if kind == "wake":
+            raise BrokenPipeError("Broken pipe")
+        real_send(stream, kind, payload, **fields)
+
+    monkeypatch.setattr(satellite_link, "send", send_failing_for_wake)
+    link.start()
+    assert wait_for(lambda: link.connected)
+    with caplog.at_level(logging.WARNING):
+        assert link.send("wake", talked_over=False) is False
+    assert not link.connected
+    assert "Couldn't send 'wake' to the brain (Broken pipe)" in caplog.text
+    assert wait_for(lambda: events == [True, False, True] and len(brain.hellos) == 2)
+
+
+def test_a_send_to_a_brain_which_has_stopped_reading_gives_up_in_time(make, caplog):
+    # Rather than waiting for the brain for good, with the lock held, so nothing else
+    # could be sent either.
+    brain = FakeBrain(reading=False)
+    try:
+        link, events, messages = make(brain.address)
+        link.start()
+        assert wait_for(lambda: events == [True])
+        audio = bytes(protocol.MAX_AUDIO)
+        took = []
+
+        def send_until_one_fails():
+            for _ in range(100):
+                started = time.monotonic()
+                if not link.send("audio", audio):
+                    took.append(time.monotonic() - started)
+                    return
+
+        with caplog.at_level(logging.WARNING):
+            # On a thread of its own, so a send which waited for good couldn't hold up
+            # the tests after this one.
+            sending = threading.Thread(target=send_until_one_fails, daemon=True)
+            sending.start()
+            sending.join(timeout=5)
+            assert not sending.is_alive()
+        assert len(took) == 1 and took[0] < 1
+        assert "Couldn't send 'audio' to the brain (timed out)" in caplog.text
+        assert wait_for(lambda: events[:2] == [True, False])
+    finally:
+        brain.close()
+
+
+def test_messages_sent_from_several_threads_at_once_arrive_whole(brain, make):
+    link, events, messages = make(brain.address)
+    link.start()
+    assert wait_for(lambda: link.connected)
+    # Each far bigger than what the socket holds, so it takes many writes, which could
+    # interleave with another thread's without the link's lock. With the real timeout
+    # rather than the quick one, as how fast the brain reads isn't what's tested.
+    link._socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)
+    link._socket.settimeout(2.0)
+    audio = bytes(range(256)) * (protocol.MAX_AUDIO // 256)
+    sent = []
+
+    def send_five(sender):
+        for number in range(5):
+            sent.append(link.send("audio", audio, sender=sender, number=number))
+
+    senders = [threading.Thread(target=send_five, args=(sender,), daemon=True) for sender in range(4)]
+    for thread in senders:
+        thread.start()
+    for thread in senders:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    def arrived():
+        return [(message, payload) for message, payload in brain.messages if message["type"] == "audio"]
+
+    assert sent == [True] * 20
+    assert wait_for(lambda: len(arrived()) == 20)
+    assert sorted((message["sender"], message["number"]) for message, _ in arrived()) == [
+        (sender, number) for sender in range(4) for number in range(5)]
+    assert all(payload == audio for _, payload in arrived())
+    assert link.connected
+
+
+def test_handlers_which_raise_are_logged_and_the_link_goes_on(brain, make, caplog):
+    link, events, messages = make(brain.address)
+    handled = []
+
+    def on_message(message, payload):
+        handled.append(message["type"])
+        if message["type"] == "listen":
+            raise RuntimeError("Can't listen")
+
+    def on_connected(connected):
+        events.append(connected)
+        raise RuntimeError("Can't tell")
+
+    link._on_message = on_message
+    link._on_connected = on_connected
+    with caplog.at_level(logging.ERROR):
+        link.start()
+        assert wait_for(lambda: events == [True])
+        brain.say("listen")
+        brain.say("phrase", rate=22050)
+        assert wait_for(lambda: handled == ["listen", "phrase"])
+
+    assert link.connected
+    assert [record.getMessage() for record in caplog.records] == ["on_connected failed",
+                                                                  "Handling 'listen' from the brain failed"]
+
+
+def test_stopping_while_waiting_to_try_again_stops_at_once(make, monkeypatch):
+    monkeypatch.setattr(satellite_link, "RETRY_FIRST", 30)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    waiting = threading.Event()
+
+    class Noting(threading.Event):
+        def wait(self, timeout=None):
+            if timeout == 30:
+                waiting.set()
+            return super().wait(timeout)
+
+    link, events, messages = make(f"127.0.0.1:{port}")
+    link._stopping = Noting()
+    link.start()
+    assert waiting.wait(timeout=5)
+
+    started = time.monotonic()
+    stopping = threading.Thread(target=link.stop, daemon=True)
+    stopping.start()
+    stopping.join(timeout=5)
+    assert not stopping.is_alive()
+    # Not the thirty seconds it was waiting.
+    assert time.monotonic() - started < 1
 
 
 def test_pings_go_out_while_the_brain_keeps_talking(brain, make, monkeypatch):
@@ -349,6 +506,67 @@ def loopback():
 def arrived(stream):
     """Waits until there's something to read on the stream's socket - more bytes, or the end."""
     assert select.select([stream._socket], [], [], 5)[0]
+
+
+def test_a_message_split_across_a_quiet_moment_arrives_whole():
+    # A read which times out keeps what it had, and carries on once when_idle has looked
+    # at the clock - where socket.makefile's would leave its file unusable.
+    far, stream = loopback()
+    stream._socket.settimeout(0.05)
+    rest = [b'dio", "bytes": 4}\n12', b"34"]
+    quiet, heard = [], []
+
+    def when_idle():
+        quiet.append(True)
+        if rest:
+            far.sendall(rest.pop(0))
+        elif len(quiet) > 100:
+            raise TimeoutError("The rest of the message never came")
+
+    stream.when_idle = when_idle
+    stream.when_heard = lambda: heard.append(True)
+    far.sendall(b'{"type": "au')
+
+    assert protocol.receive(stream) == ({"type": "audio", "bytes": 4}, b"1234")
+    assert len(quiet) >= 2
+    # Once for each of the three times bytes arrived.
+    assert len(heard) == 3
+    far.close()
+    stream._socket.close()
+
+
+def test_a_line_is_read_no_further_than_its_limit():
+    far, stream = loopback()
+    far.sendall(b"abcdef\n" + b"x" * 10)
+    # The end of the line is past the limit.
+    assert stream.readline(3) == b"abc"
+    assert stream.readline() == b"def\n"
+    # No end of the line at all, but the limit's worth is there.
+    assert stream.readline(4) == b"xxxx"
+    assert stream.readline(6) == b"xxxxxx"
+
+    # So a message's line which is too long is found out without reading all of it.
+    far.sendall(b"y" * (protocol.MAX_LINE + 10) + b"\n")
+    with pytest.raises(protocol.ProtocolError, match="too long"):
+        protocol.receive(stream)
+    far.close()
+    stream._socket.close()
+
+
+def test_a_message_cut_short_by_a_hang_up_is_never_taken_for_a_whole_one():
+    far, stream = loopback()
+    far.sendall(b'{"type": "audio", "bytes": 10}\n12345')
+    far.close()
+    with pytest.raises(ConnectionError, match="part way through"):
+        protocol.receive(stream)
+    stream._socket.close()
+
+    far, stream = loopback()
+    far.sendall(b'{"type": "au')
+    far.close()
+    with pytest.raises(protocol.ProtocolError, match="cut short"):
+        protocol.receive(stream)
+    stream._socket.close()
 
 
 def test_the_stream_tells_a_hang_up_without_waiting():
