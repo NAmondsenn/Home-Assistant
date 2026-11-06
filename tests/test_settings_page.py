@@ -576,6 +576,24 @@ def test_the_page_lets_another_spotify_account_be_chosen_and_forgets_the_old_one
     assert page._playlists == {}
 
 
+def test_playlists_asked_for_as_another_spotify_account_signs_in_arent_kept(spotify):
+    # Asked for with the account before's sign-in, they'd be offered until PLAYLISTS_KEPT ran out.
+    class SignedInMeanwhile(FakePlayer):
+        def playlists(self):
+            if not self.asked_for_playlists:
+                assert _finish_spotify(page)["success"]
+            return super().playlists()
+
+    player = SignedInMeanwhile()
+    page = _page(running=spotify, sessions={"bedroom": FakeSession(music=player)})
+    page.music_state()
+    page.music_state()
+    assert player.asked_for_playlists == 2
+    # The new account's are kept as ever.
+    page.music_state()
+    assert player.asked_for_playlists == 2
+
+
 def test_the_page_signs_in_to_spotify(spotify, monkeypatch, caplog):
     monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
     page = _page(running=spotify, sessions={})

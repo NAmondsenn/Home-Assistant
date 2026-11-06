@@ -414,6 +414,10 @@ class SettingsPage:
         self.brain = brain
         # Each satellite's playlists, with when they were asked for.
         self._playlists: Dict[str, Tuple[List[str], float]] = {}
+        # Goes up at each Spotify sign-in, so playlists asked for before one - with the
+        # account before's sign-in - aren't kept once it's done.
+        self._playlists_generation = 0
+        self._playlists_lock = threading.Lock()
         self._listening_for = wake_word
         self._restart = restart
         self.started = started or time.time()
@@ -681,10 +685,16 @@ class SettingsPage:
         return why_no_player(self.running) if self.running is not None else NO_PLAYER
 
     def _user_playlists(self, name: str, music) -> List[str]:
-        kept = self._playlists.get(name)
-        if kept is None or time.monotonic() - kept[1] > PLAYLISTS_KEPT:
-            kept = self._playlists[name] = (music.playlists(), time.monotonic())
-        return kept[0]
+        with self._playlists_lock:
+            kept = self._playlists.get(name)
+            generation = self._playlists_generation
+        if kept is not None and time.monotonic() - kept[1] <= PLAYLISTS_KEPT:
+            return kept[0]
+        playlists = music.playlists()
+        with self._playlists_lock:
+            if generation == self._playlists_generation:
+                self._playlists[name] = (playlists, time.monotonic())
+        return playlists
 
     def cover(self, satellite: Optional[str] = None) -> Optional[Tuple[bytes, str]]:
         """The cover of what's playing on a satellite, as an image and its type, or None."""
@@ -1260,7 +1270,9 @@ class SettingsPage:
             logger.warning(f"Settings page: couldn't reach Spotify to sign in: {type(e).__name__}")
             return {"success": False, "message": "Couldn't reach Spotify - try again."}
         # The old account's playlists are no use if this is another's.
-        self._playlists.clear()
+        with self._playlists_lock:
+            self._playlists_generation += 1
+            self._playlists.clear()
         logger.info(f"Settings page: {who} signed in to Spotify")
         return {"success": True, "message": "Signed in to Spotify."}
 
