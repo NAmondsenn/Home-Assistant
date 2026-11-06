@@ -1,6 +1,7 @@
 """Tests for the satellite's connection to its brain, against a fake brain on a real socket."""
 
 import logging
+import select
 import socket
 import threading
 import time
@@ -8,7 +9,7 @@ import time
 import pytest
 
 from voice_assistant import protocol, satellite_link
-from voice_assistant.satellite_link import SatelliteLink
+from voice_assistant.satellite_link import SatelliteLink, Stream
 
 PASSWORD = "hunter2"
 
@@ -267,3 +268,56 @@ def test_pings_go_out_while_the_brain_keeps_talking(brain, make, monkeypatch):
         brain.say("stream_audio", id="a")
         time.sleep(0.01)
     assert brain.received.count("ping") >= 2
+
+
+# The stream
+
+def loopback():
+    """Both ends of a real connection on this machine: the far end's socket, and a Stream on the near end's."""
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        far = socket.create_connection(listener.getsockname(), timeout=5)
+        near, _ = listener.accept()
+    near.settimeout(5)
+    return far, Stream(near)
+
+
+def arrived(stream):
+    """Waits until there's something to read on the stream's socket - more bytes, or the end."""
+    assert select.select([stream._socket], [], [], 5)[0]
+
+
+def test_the_stream_tells_a_hang_up_without_waiting():
+    far, stream = loopback()
+    started = time.monotonic()
+    assert stream.hung_up() is False
+    # Not the socket's five seconds, and the timeout is left as it was.
+    assert time.monotonic() - started < 1
+    assert stream._socket.gettimeout() == 5
+
+    far.sendall(b'{"type": "hello"}\n')
+    far.close()
+    assert protocol.receive(stream)[0]["type"] == "hello"
+    arrived(stream)
+    assert stream.hung_up() is True
+    stream._socket.close()
+
+
+def test_the_stream_doesnt_take_bytes_still_to_read_for_a_hang_up():
+    far, stream = loopback()
+    # Both in one go, so the second is read into the stream's buffer with the first.
+    far.sendall(b'{"type": "hello"}\n{"type": "ping"}\n')
+    assert protocol.receive(stream)[0]["type"] == "hello"
+    assert stream.hung_up() is False
+
+    # And still on the socket, unread, ahead of the hang-up.
+    assert protocol.receive(stream)[0]["type"] == "ping"
+    far.sendall(b"{")
+    far.close()
+    arrived(stream)
+    assert stream.hung_up() is False
+    assert stream.read(1) == b"{"
+    arrived(stream)
+    assert stream.hung_up() is True
+    stream._socket.close()

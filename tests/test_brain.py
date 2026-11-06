@@ -1411,6 +1411,83 @@ def test_a_satellite_with_the_wrong_password_is_logged_once_by_name(brain, conne
                 if "bedroom" in line and "password" in line and "most likely" in line]) == 1
 
 
+def handshake_with(brain, satellite, paused=False):
+    """
+    Runs the brain's side of the handshake over a real connection, with satellite
+    run at the far end.
+
+    Args:
+        brain: The brain.
+        satellite: Called with the far end's socket, which it closes when done.
+        paused: Whether the brain only gets to the connection once satellite is done,
+            as a paused brain does - rather than at the same time.
+
+    Returns:
+        What the brain's handshake returned.
+    """
+    # A pair, rather than a loopback connection, so a hang-up has arrived by the time close returns.
+    far, near = socket.socketpair()
+    far.settimeout(5)
+    near.settimeout(brain_module.SOCKET_TIMEOUT)
+    thread = threading.Thread(target=satellite, args=(far,), daemon=True)
+    thread.start()
+    if paused:
+        thread.join(5)
+    try:
+        return brain._admit(brain_module.Stream(near), "the satellite's address")
+    finally:
+        thread.join(5)
+        near.close()
+
+
+def gives_up_waiting(far):
+    """A satellite which said hello to a paused brain, waited for an answer, and gave up before the brain got to it."""
+    with far, far.makefile("rwb") as stream:
+        protocol.send(stream, "hello", name="bedroom", hostname="bedroom-pi", sample_rate=48000,
+                      unclean=False, nonce="0" * 32)
+
+
+def test_a_satellite_which_gave_up_waiting_for_the_brain_isnt_blamed_on_its_password(brain, caplog):
+    # The brain was paused for the release checklist's stopped-brain test while the
+    # satellite tried to reconnect: the kernel took the connection, the satellite said
+    # hello, waited its SOCKET_TIMEOUT for an answer, and hung up - several times over.
+    # The brain only got to each once it carried on, with its hello and hang-up both there.
+    for _ in range(3):
+        assert handshake_with(brain, gives_up_waiting, paused=True) is None
+    gave_up = [record for record in caplog.records if "gave up waiting" in record.getMessage()]
+    assert len(gave_up) == 1
+    assert gave_up[0].levelno == logging.WARNING and "bedroom" in gave_up[0].getMessage()
+    assert not [line for line in caplog.messages if "password" in line]
+
+
+def test_a_satellite_which_hung_up_on_the_challenge_most_likely_has_the_wrong_password(brain, caplog):
+    refused = []
+
+    def wrong_password(far):
+        # It hangs up as soon as the brain can't prove it knows the password it has.
+        with far, far.makefile("rwb") as stream:
+            try:
+                protocol.greet(stream, "bedroom", "bedroom-pi", "not-the-bedrooms-password", 48000, False)
+            except protocol.Refused:
+                refused.append(True)
+
+    assert handshake_with(brain, wrong_password) is None
+    assert refused
+    assert [line for line in caplog.messages if "bedroom" in line and "most likely" in line and "password" in line]
+    assert not [line for line in caplog.messages if "gave up" in line]
+
+
+def test_a_satellite_which_gave_up_waiting_is_let_in_when_it_tries_again(brain, connect, caplog):
+    serving(brain)
+    assert handshake_with(brain, gives_up_waiting, paused=True) is None
+    connect(brain)
+    connected(brain)
+    assert "bedroom" not in brain._why_turned_away
+    # So if it gives up again another time, that's said again.
+    assert handshake_with(brain, gives_up_waiting, paused=True) is None
+    assert len([line for line in caplog.messages if "gave up waiting" in line]) == 2
+
+
 def test_whats_unowned_goes_to_the_default_before_the_clock_starts(brain):
     # Set before there were satellites, when the Pi was all of Nova.
     brain.clock.set_timer(600)

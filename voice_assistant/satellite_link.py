@@ -61,6 +61,30 @@ class Stream:
     def flush(self):
         pass
 
+    def hung_up(self) -> bool:
+        """
+        Whether the other end has hung up and there's nothing of its left to read -
+        found out without waiting. Bytes still to read, buffered here or on the socket,
+        mean no, whatever comes after them.
+
+        Returns:
+            True if the next read would find the connection closed.
+        """
+        if self._buffer:
+            return False
+        timeout = self._socket.gettimeout()
+        # Not MSG_DONTWAIT: on a socket with a timeout Python waits for it to be readable first.
+        self._socket.settimeout(0)
+        try:
+            return self._socket.recv(1, socket.MSG_PEEK) == b""
+        except BlockingIOError:
+            return False
+        except ConnectionError:
+            # Reset rather than closed - hung up all the same.
+            return True
+        finally:
+            self._socket.settimeout(timeout)
+
     def _fill(self):
         while True:
             try:

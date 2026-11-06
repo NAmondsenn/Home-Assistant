@@ -742,10 +742,15 @@ class Brain:
         # The password as it was read, for _start_session to tell whether it has
         # changed since - only ever compared, never logged.
         read: List[Optional[str]] = []
+        # Whether the satellite had hung up before the brain answered its hello.
+        gave_up: List[bool] = []
 
         def password_for(name: str) -> Optional[str]:
             named.append(name)
             read.append(self.passwords.get(name))
+            # Just before the brain answers: a satellite which has hung up by now never
+            # saw the answer, so can't have hung up over the password.
+            gave_up.append(stream.hung_up())
             return read[-1]
 
         try:
@@ -757,10 +762,20 @@ class Brain:
             if not named:
                 logger.info(f"{address} hung up before saying which satellite it was")
                 return None
+            if gave_up[0]:
+                # Its hello and its hang-up were both waiting by the time the brain got
+                # to them - a brain paused, say for the release checklist's stopped-brain
+                # test, or too busy to answer within the satellite's SOCKET_TIMEOUT. A
+                # pause leaves one of these for each try the satellite made meanwhile,
+                # so it's said once, like a refusal, until the satellite is let in.
+                self._turned_away(named[0], f"The {named[0]} satellite gave up waiting for the brain to answer "
+                                            f"its hello - the brain was paused or too busy to answer in time - "
+                                            f"and will try again")
+                return None
             # A satellite hangs up as soon as the brain can't prove it knows its
             # password - so this, rather than a refusal, is what a wrong one looks like.
-            # It also hangs up on a brain which takes longer than SOCKET_TIMEOUT to
-            # answer it, though, so it's only most likely.
+            # It also hangs up on a brain whose answer was on its way as it gave up
+            # waiting, though, so it's only most likely.
             self._turned_away(named[0], f"The {named[0]} satellite hung up part way through the handshake, "
                                         f"so most likely its password isn't the one the brain has for it "
                                         f"- or the brain was too slow to answer it")
