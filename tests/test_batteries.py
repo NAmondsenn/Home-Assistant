@@ -450,6 +450,16 @@ def test_a_failed_save_of_the_warned_marks_still_warns_only_once(tmp_path, monke
     assert _marks(choices, _mac(14)) == []
 
 
+def test_a_failed_save_of_the_warned_marks_leaves_the_state_a_reader_holds_as_it_was(tmp_path, monkeypatch):
+    # The store never changes its state in place, so a reader holding the lock can look at it without a copy.
+    choices = _choices(tmp_path)
+    before = choices._state
+    _failing_saves(monkeypatch)
+    assert _marks(choices, _mac(14)) == [("MacBook Pro", 15)]
+    assert before["warned"] == {}
+    assert choices._state["warned"] == {_mac(14).id: [15]}
+
+
 def test_a_switched_off_device_still_starts_over_when_charged(tmp_path):
     choices = _choices(tmp_path)
     mac = _mac(14)

@@ -441,13 +441,9 @@ class BatteryChoices:
                             state["warned"][battery_id] = marks
                         else:
                             state["warned"].pop(battery_id, None)
-                try:
-                    self._store.change(remember)
-                except OSError as e:
-                    # The warnings are still given and kept in memory, so they aren't repeated every
-                    # minute while saves fail - only after a restart.
-                    remember(self._state)
-                    logger.warning(f"Couldn't save the warned battery marks: {e}")
+                # If the save fails the warnings are still given and kept in memory, so they aren't repeated
+                # every minute while saves fail - only after a restart.
+                self._store.keep(remember, "warned battery marks")
             return given
 
     def hold(self, battery_id: str, mark: int):
