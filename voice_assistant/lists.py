@@ -159,14 +159,20 @@ def match_item(said: str, items: List[Dict]) -> List[Dict]:
     Returns:
         Those with the same words, ignoring case, punctuation, plurals and a leading "the",
         "some" or "my" - so an exact fit wins, and "milk" is milk even with oat milk there
-        too. If none, those with every word said, so "milk" is oat milk - unless all the
-        words said are shorter than LOOSE_LETTERS. Nova asks only when nothing fits exactly
-        and two or more fit more loosely.
+        too. The very same form is tried first, so "peach" is peach and "peaches" is
+        peaches with both there, and a form the list hasn't got is the one it has. If none,
+        those with every word said, so "milk" is oat milk - unless all the words said are
+        shorter than LOOSE_LETTERS. Nova asks only when nothing fits exactly and two or
+        more fit more loosely.
     """
     words = _item_words(said)
     if not words:
         return []
-    same = [item for item in items if _same_words(_item_words(item["summary"]), words)]
+    # Not at once by _same_words: "peach" fits "peaches" too, so with both on a list it would
+    # ask which one, and "peaches" in answer would fit both again.
+    same = [item for item in items if _item_words(item["summary"]) == words]
+    if not same:
+        same = [item for item in items if _same_words(_item_words(item["summary"]), words)]
     if same or all(max(map(len, word)) < LOOSE_LETTERS for word in words):
         return same
     return [item for item in items if _has_words(words, _item_words(item["summary"]))]

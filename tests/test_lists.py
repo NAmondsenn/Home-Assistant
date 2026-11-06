@@ -263,6 +263,22 @@ def test_a_thing_is_found_whether_its_plural_adds_s_or_es(make_lists, on_list, s
     assert lists.tick_off(said, "shopping", exact=True)["message"] == f"Ticked off {on_list} on your shopping list."
 
 
+@pytest.mark.parametrize("things", [["quiche", "quiches"], ["quiches", "quiche"],
+                                    ["peach", "peaches"], ["peaches", "peach"]])
+@pytest.mark.parametrize("exact", [False, True])
+def test_a_thing_and_its_plural_on_one_list_are_each_ticked_off_by_name(make_lists, things, exact):
+    # Each word is the same as itself first - else "peach" fits "peaches" too, and which one?
+    # is asked again whichever is answered.
+    for said in things:
+        lists = make_lists(items={"todo.shopping_list": things})
+        assert lists.tick_off(said, "shopping", exact=exact)["message"] == (
+            f"Ticked off {said} on your shopping list.")
+        assert lists.home.ticked == [("todo.shopping_list", f"todo.shopping_list-{things.index(said)}")]
+    # A form the list hasn't got still fits the one it has.
+    lists = make_lists(items={"todo.shopping_list": [things[0]]})
+    assert lists.tick_off(things[1], "shopping", exact=exact)["success"]
+
+
 def test_a_plural_still_doesnt_fit_another_word(make_lists):
     lists = make_lists(items={"todo.shopping_list": ["boxer shorts", "quilt", "pea"]})
     for said in ("boxes", "quiches", "peaches"):
