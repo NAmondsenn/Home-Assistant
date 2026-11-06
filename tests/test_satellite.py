@@ -1063,6 +1063,24 @@ def test_a_brain_which_doesnt_say_which_recording_stops_whichever_is_being_sent(
     assert brain.messages("audio_end") == []
 
 
+def test_a_recording_numbered_other_than_in_words_is_taken_as_unnumbered(brain, make):
+    # A brain whose number isn't words is treated as one which doesn't number them, so
+    # its stop_listening stops whichever recording is being sent rather than none.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening", recording=7)
+    assert wait_for(lambda: made.wake.listening)
+
+    sent = len(brain.recordings())
+    brain.say("listen", recording=7)
+    assert wait_for(lambda: len(brain.recordings()) >= sent + 2)
+    brain.say("stop_listening", recording=7)
+    assert wait_for(lambda: made.wake.listening)
+    assert brain.messages("audio_end") == []
+
+
 def test_a_wake_while_streaming_starts_nothing_new(brain, make):
     made = make()
     assert wait_for(lambda: connected(made) and made.wake.listening)
