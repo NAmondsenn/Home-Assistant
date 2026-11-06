@@ -635,9 +635,12 @@ class Brain:
             talking, and its session - the default first.
         """
         found = []
-        for name in self.satellites():
+        names = self.satellites()
+        for name in names:
             session = self.session_for(name)
-            if session is not None and (self.clock.is_ringing(satellite=name) or session.activity == "speaking"):
+            # What rings on none is heard on the default, so is the default's to stop.
+            rings = self.clock.is_ringing(satellite=name, unowned=name == names[0])
+            if session is not None and (rings or session.activity == "speaking"):
                 found.append((name, session))
         return found
 
@@ -654,8 +657,12 @@ class Brain:
             The names of the satellites stopped.
         """
         stopped = self._stoppable_sessions()
-        for _, session in stopped:
+        default = self.default_satellite()
+        for name, session in stopped:
             session.stop_what_rings_and_speaks()
+            # The session dismisses what rings on its satellite by name, and not this.
+            if name == default and self.clock.is_ringing(satellite=name, unowned=True):
+                self.clock.dismiss(satellite=name, unowned=True)
         return [name for name, _ in stopped]
 
     def serve(self):

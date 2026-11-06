@@ -353,21 +353,28 @@ class Ringing:
             # Only the recent ones are worth keeping, so this can't grow forever.
             self._unacknowledged = self._unacknowledged[-10:]
 
-    def is_ringing(self, satellite: Optional[str] = None) -> bool:
+    def is_ringing(self, satellite: Optional[str] = None, unowned: bool = False) -> bool:
         """
         Whether a timer or reminder is going off and waiting to be acknowledged.
 
         Args:
             satellite: Only what rings on this satellite - what can be heard where the
                 user is talking - or None for anywhere.
+            unowned: Whether what rings on no satellite counts as ringing on this one,
+                for the default, where it is heard.
         """
         with self._lock:
-            return any(self._rings_on(entry, satellite) for entry in self._ringing)
+            return any(self._rings_on(entry, satellite, unowned) for entry in self._ringing)
 
     @staticmethod
-    def _rings_on(entry: Dict, satellite: Optional[str]) -> bool:
-        """Whether a ringing entry rings on a satellite - any, for None."""
-        return satellite is None or entry["timer"]["satellite"] == satellite
+    def _rings_on(entry: Dict, satellite: Optional[str], unowned: bool = False) -> bool:
+        """
+        Whether a ringing entry rings on a satellite - any, for None. One set before
+        there were satellites rings on none, so isn't on any by name, but is heard on the
+        default - see Brain.session_for - so counts as on it with unowned.
+        """
+        rings_on = entry["timer"]["satellite"]
+        return satellite is None or rings_on == satellite or (unowned and rings_on is None)
 
     @staticmethod
     def _is_insistent(entry: Dict) -> bool:
@@ -444,7 +451,7 @@ class Ringing:
             logger.info(f"Silenced {len(silenced)} timer(s)/alarm(s) - the user was talking")
         return bool(silenced)
 
-    def dismiss(self, satellite: Optional[str] = None) -> Dict:
+    def dismiss(self, satellite: Optional[str] = None, unowned: bool = False) -> Dict:
         """
         Acknowledges anything currently going off, stopping it repeating.
 
@@ -457,13 +464,15 @@ class Ringing:
             satellite: Only what rings on the satellite the user is talking to - a
                 "stop" in the kitchen mustn't silence the bedroom's alarm, which
                 can't be heard there - or None for anywhere.
+            unowned: Whether what rings on no satellite is dismissed too, for the
+                default, where it is heard - see is_ringing.
 
         Returns:
             Dict with 'success' and a spoken 'message'.
         """
         with self._changing():
-            ringing = [entry for entry in self._ringing if self._rings_on(entry, satellite)]
-            self._ringing = [entry for entry in self._ringing if not self._rings_on(entry, satellite)]
+            ringing = [entry for entry in self._ringing if self._rings_on(entry, satellite, unowned)]
+            self._ringing = [entry for entry in self._ringing if not self._rings_on(entry, satellite, unowned)]
             # Dismissing also clears what was missed, since the user has now heard it.
             heard = [timer for timer in self._unacknowledged if satellite is None or timer["satellite"] == satellite]
             missed = len(heard)

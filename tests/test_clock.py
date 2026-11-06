@@ -289,6 +289,22 @@ def test_whats_ringing_is_heard_and_dismissed_only_where_it_rings(make_clock):
     assert not clock.is_ringing()
 
 
+def test_what_rings_on_no_satellite_can_be_counted_as_the_defaults(make_clock):
+    # It is heard on the default, but isn't "on" any satellite by name.
+    clock = make_clock()
+    clock.set_timer(60)
+    clock.set_timer(120, satellite="kitchen")
+    clock._tick(time.time() + 121)
+    assert not clock.is_ringing("bedroom")
+    assert clock.is_ringing("bedroom", unowned=True)
+    assert clock.is_ringing("kitchen", unowned=True)
+
+    assert clock.dismiss(satellite="bedroom")["success"] is False
+    assert clock.dismiss(satellite="bedroom", unowned=True)["success"]
+    # The kitchen's own is left.
+    assert not clock.is_ringing("bedroom", unowned=True) and clock.is_ringing("kitchen")
+
+
 def test_dismissing_only_clears_what_was_missed_where_it_was_dismissed(make_clock):
     clock = make_clock()
     clock.set_timer(60, satellite="bedroom")

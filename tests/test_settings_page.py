@@ -71,7 +71,7 @@ class FakeClock:
         # The satellites something is ringing on.
         self.ringing = set()
 
-    def is_ringing(self, satellite=None):
+    def is_ringing(self, satellite=None, unowned=False):
         return bool(self.ringing) if satellite is None else satellite in self.ringing
 
     def overview(self, satellite=None):

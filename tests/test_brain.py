@@ -1440,6 +1440,25 @@ def test_stop_silences_what_rings_and_what_nova_says_on_each_satellite(brain, co
     assert (bedroom.stopped, kitchen.stopped, hall.stopped) == (1, 1, 0)
 
 
+def test_stop_counts_what_rings_on_no_satellite_as_the_defaults(brain, connect):
+    # What was set before there were satellites rings on the default, so it is the
+    # default's to stop - until it is given to it.
+    serving(brain)
+    connect(brain)
+    connect(brain, "kitchen", KITCHEN)
+    bedroom, kitchen = connected(brain), connected(brain, "kitchen")
+    brain.clock.set_timer(60)
+    brain.clock._tick(time.time() + 61)
+    assert brain.clock.is_ringing() and not brain.clock.is_ringing("bedroom")
+
+    assert brain.stoppable()
+    assert brain.stop_everywhere() == ["bedroom"]
+
+    assert not brain.clock.is_ringing()
+    assert (bedroom.stopped, kitchen.stopped) == (1, 0)
+    assert not brain.stoppable()
+
+
 def test_an_unclean_satellite_is_told_to_the_phone(brain, connect):
     brain.ntfy = FakeNtfy()
     serving(brain)
