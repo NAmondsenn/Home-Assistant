@@ -81,6 +81,12 @@ def test_the_service_may_write_only_where_the_settings_page_saves():
     assert "Type=notify" in service and "WatchdogSec=60" in service
 
 
+def test_the_service_caps_glibcs_malloc_arenas():
+    """Without it, memory freed by a song's decode threads piles up in their arenas."""
+    service = open(os.path.join(os.path.dirname(backend.__file__), "nova-backend.service")).read()
+    assert "Environment=MALLOC_ARENA_MAX=2" in service.splitlines()
+
+
 # The satellites' passwords
 
 @pytest.fixture
