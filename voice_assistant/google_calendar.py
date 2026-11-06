@@ -114,6 +114,11 @@ CALENDAR_LIST = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
 # The most events Google gives on each page - its own most.
 EVENTS_PAGE = 250
 
+# The most pages read of one list - 20 of 250 events is 5000 for a single calendar, far more
+# than the fortnight asked for has. Past that Google is giving the same next page over, and
+# reading on would never end.
+MOST_PAGES = 20
+
 # What Google answers for a calendar it won't give the events of - deleted since its list
 # was read, or no longer shared with the user. That one is left out, not the whole read.
 CALENDAR_GONE = (403, 404)
@@ -528,10 +533,11 @@ class GoogleCalendar:
         Every item Google lists, over as many pages as it gives them in.
 
         Raises:
-            The same as _get, and ValueError if a page's items aren't a list of objects.
+            The same as _get, and ValueError if a page's items aren't a list of objects, or
+            there are more than MOST_PAGES of them.
         """
         items, page = [], None
-        while True:
+        for _ in range(MOST_PAGES):
             answer = self._get(url, {**params, "pageToken": page} if page else params)
             listed = answer.get("items", [])
             if not isinstance(listed, list) or not all(isinstance(item, dict) for item in listed):
@@ -540,6 +546,7 @@ class GoogleCalendar:
             page = answer.get("nextPageToken")
             if not page:
                 return items
+        raise ValueError(f"Google gave more than {MOST_PAGES} pages")
 
     def calendars(self, max_age: float = 300) -> List[Dict]:
         """

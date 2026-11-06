@@ -691,6 +691,28 @@ def test_every_page_of_events_is_read(make_calendar):
     assert len({(params["timeMin"], params["timeMax"]) for params in pages}) == 1
 
 
+def test_twenty_pages_of_events_are_read_and_no_more(make_calendar):
+    # A token which always leads to another page - Google looping - would otherwise never stop.
+    calendar = make_calendar()
+    endless = _events_page(_google_event("Dentist", "2026-10-22T09:30:00+01:00"), next_page="again")
+    calendar._session.answers[_events_url("calendar-personal")] = [endless] * 30
+
+    with pytest.raises(ValueError, match="Google gave more than 20 pages"):
+        calendar.events(date(2026, 10, 22), 1)
+
+    assert len(_read(calendar)) == 20
+    # Said as Google out of reach, as any answer of the wrong shape is.
+    calendar._session.answers[_events_url("calendar-personal")] = [endless] * 30
+    assert calendar.agenda(date(2026, 10, 22), 1, today=date(2026, 10, 21)) == {
+        "success": False, "message": CANT_REACH_GOOGLE}
+
+    # The twentieth page being the last is no trouble.
+    last = _events_page(_google_event("Bin day", "2026-10-22", "2026-10-23"))
+    calendar._session.answers[_events_url("calendar-personal")] = [endless] * 19 + [last]
+    assert len(calendar.events(date(2026, 10, 22), 1)) == 20
+    assert len(_read(calendar)) == 60
+
+
 def test_a_repeating_event_is_on_each_of_its_days(make_calendar):
     # singleEvents=true has Google give each time it's on, as Home Assistant did.
     lectures = [_google_event("CSC2035 Lecture", f"2026-10-{day}T11:00:00+01:00", f"2026-10-{day}T12:00:00+01:00",
