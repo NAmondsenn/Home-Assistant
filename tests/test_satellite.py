@@ -771,6 +771,55 @@ def test_the_wake_word_over_a_reply_stops_it_and_says_so(brain, make):
     assert brain.messages("played") == [{"type": "played", "id": "reply-1", "stopped": True, "position": 3}]
 
 
+def test_the_wake_word_stops_whats_playing_without_waiting_for_the_satellites_lock(brain, make):
+    # The lock is held while the brain is sent to, which takes up to 2 seconds on a full
+    # socket - and the reply, what rang and the music went on all that while.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("play_stream", id="music-1", rate=44100, channels=2, volume=0.5, kind="music", paused=False)
+    brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=0.8, kind="reply", paused=False)
+    brain.say("stream_audio", np.array([1, 2, 3], np.int16).tobytes(), id="reply-1")
+    brain.say("play_sound", id="alarm-1", name="alarm_sound.wav", volume=1.0, kind="announcement",
+              start=0.0, length=None)
+    assert wait_for(lambda: len(made.speaker.streams()) == 2 and made.speaker.streams()[1].pieces
+                    and made.speaker.files())
+    music, reply = made.speaker.streams()
+    (alarm,) = [playback for playback in made.speaker.playing if playback.filename]
+
+    with made._lock:
+        made.wake.say()
+        assert wait_for(lambda: reply.stopped and alarm.stopped and music.paused, seconds=1)
+        assert "announcement" in made.speaker.silenced
+
+    # The brain still hears of the wake before the end of what it stopped.
+    assert wait_for(lambda: len(brain.messages("played")) == 2)
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": True, "pre_roll": 4800}]
+    assert brain.kinds().index("wake") < brain.kinds().index("played")
+    brain.say("stop_listening")
+
+
+def test_what_the_wake_word_stops_is_told_after_the_wake_however_long_stopping_takes(brain, make):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=0.8, kind="reply", paused=False)
+    brain.say("stream_audio", np.array([1, 2, 3], np.int16).tobytes(), id="reply-1")
+    assert wait_for(lambda: made.speaker.streams() and made.speaker.streams()[0].pieces)
+    silence = made.speaker.silence
+
+    def slowly(kind):
+        silence(kind)
+        # Long enough for the end of the reply, stopped just before, to be told first,
+        # were nothing holding it back.
+        time.sleep(0.2)
+
+    made.speaker.silence = slowly
+    made.wake.say()
+
+    assert wait_for(lambda: brain.messages("played"))
+    assert brain.kinds().index("wake") < brain.kinds().index("played")
+    brain.say("stop_listening")
+
+
 def test_the_brain_asking_to_hear_an_answer_during_a_wake_sends_nothing_more(brain, make):
     # The brain finished asking a question as the wake word was said, so asked to hear
     # the answer while the wake's recording was being sent. That recording is all it

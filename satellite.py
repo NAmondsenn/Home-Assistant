@@ -212,9 +212,13 @@ class Satellite:
         # Made in run(), once it's known whether the last run stopped properly.
         self.link: Optional[SatelliteLink] = None
         # Guards what the link's thread and the main loop share, below. Also held while
-        # the brain is told of a wake, so it hears of that before the end of a reply
-        # the wake word stopped - see _report.
+        # the brain is told of a wake.
         self._lock = threading.Lock()
+        # Held by the wake word from stopping what plays until the brain has been told
+        # of it, so the brain hears of the wake before the end of a reply it stopped -
+        # see _report. The stops come before the lock above is taken, as it's held
+        # while the brain is sent to.
+        self._waking = threading.Lock()
         self._playing: Dict[str, _FromBrain] = {}
         # Where the follow-up the brain asked to hear starts, until the main loop sends it.
         self._listen_from: Optional[int] = None
@@ -390,29 +394,34 @@ class Satellite:
         # The recording starts a moment before the wake word was heard - see pre_roll.
         start = max(0, heard_at - round(self.pre_roll * RATE))
         recording = None
-        with self._lock:
-            talked_over = any(playing.kind == "reply" and not playing.playback.done
-                              for playing in self._playing.values())
-            self._start_timeline()
+        with self._waking:
+            # Without waiting for the lock, which is held while the brain is sent to - up
+            # to 2 seconds on a full socket, with the reply, what rings and the music
+            # going on all that while. What the brain is playing is copied in one go, so
+            # the link's thread starting or ending one meanwhile can't upset it.
+            playing = list(self._playing.values())
+            talked_over = any(each.kind == "reply" and not each.playback.done for each in playing)
             self.speaker.stop(["reply"])
             self.speaker.silence("announcement")
-            for playing in self._playing.values():
-                if playing.kind == "music":
-                    playing.playback.paused = True
-            dismissing = self.ringer.ringing
-            if dismissing:
-                # While the brain is away, the wake word dismisses what rings, and that's all.
-                self.ringer.dismiss()
-                self._save_timeline(outcome="dismissed")
-            else:
-                # Made before the brain hears of the wake, which it could answer with
-                # stop_listening straight away.
-                recording = self._recording = threading.Event()
-                self._turn_open = False
-                # Saying how much of the recording is from before the wake word, so the
-                # brain knows without a setting of its own, which could differ.
-                if not self.link.send("wake", talked_over=talked_over, pre_roll=heard_at - start):
-                    recording = self._recording = None
+            for each in playing:
+                if each.kind == "music":
+                    each.playback.paused = True
+            with self._lock:
+                self._start_timeline()
+                dismissing = self.ringer.ringing
+                if dismissing:
+                    # While the brain is away, the wake word dismisses what rings, and that's all.
+                    self.ringer.dismiss()
+                    self._save_timeline(outcome="dismissed")
+                else:
+                    # Made before the brain hears of the wake, which it could answer with
+                    # stop_listening straight away.
+                    recording = self._recording = threading.Event()
+                    self._turn_open = False
+                    # Saying how much of the recording is from before the wake word, so the
+                    # brain knows without a setting of its own, which could differ.
+                    if not self.link.send("wake", talked_over=talked_over, pre_roll=heard_at - start):
+                        recording = self._recording = None
         if dismissing:
             self.speaker.allow("announcement")
             return
@@ -684,7 +693,11 @@ class Satellite:
             if playing.kind == "music":
                 self.link.send("progress", id=id, position=playback.position)
         playing.let_go()
-        # Under the lock, so a reply the wake word stopped is reported after the wake.
+        # Not before the brain has heard of a wake which stopped it. Told the other
+        # way round, the brain would take a reply talked over for one which had
+        # finished, and the wake for a new request.
+        with self._waking:
+            pass
         with self._lock:
             if self._playing.get(id) is playing:
                 del self._playing[id]
