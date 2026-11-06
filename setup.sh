@@ -227,11 +227,11 @@ install_system_packages() {
     if [ "$ROLE" = "brain" ]; then
         # ffmpeg decodes Navidrome's songs, bzip2 unpacks Nemotron, and with no audio
         # devices there's no PortAudio or ALSA. Apt's recommended extras are left out -
-        # compilers and graphics libraries, about 580MB a headless brain never uses, more
-        # than its container's disk had room for - because every Python package it
-        # installs is a ready-made wheel. ca-certificates is named since wget and git only
-        # recommend it, and both fetch over HTTPS (wget downloads Piper, git pulls from
-        # GitHub), which a fresh container can't do without it.
+        # compilers and graphics libraries, about 580MB a headless brain never uses, which
+        # on top of the rest was more than its container's disk had room for - because
+        # every Python package it installs is a ready-made wheel. ca-certificates is named
+        # since wget and git only recommend it, and both fetch over HTTPS (wget downloads
+        # Piper, git pulls from GitHub), which a fresh container can't do without it.
         root_do apt-get install -y -qq --no-install-recommends python3-pip python3-venv \
             libsndfile1 ffmpeg bzip2 wget curl tar git ca-certificates
     else
