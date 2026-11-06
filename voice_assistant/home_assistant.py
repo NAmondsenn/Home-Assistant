@@ -556,8 +556,9 @@ class HomeAssistant:
             sent. 'refused' is set when Nova wouldn't ask Assist at all, by the words, by
             what they name or by what Assist would act on - which includes a script, scene
             or group, named or acted on, that works_guarded refuses. Its message is then
-            ha_guard.REFUSED, or REFUSED_MACHINE when all it named or Assist would act on
-            is a machine (see ha_guard.refusal_for).
+            ha_guard.REFUSED, or REFUSED_MACHINE when all it named, all Assist would act
+            on, or all such a script, scene or group is refused for, is a machine (see
+            ha_guard.refusal_for).
         """
         refused = {"success": False, "message": REFUSED, "refused": True}
         not_understood = {"success": False, "message": DIDNT_UNDERSTAND, "not_understood": True}
@@ -630,10 +631,11 @@ class HomeAssistant:
             scripts = self._scripts()
             if snapshot is not None:
                 scripts.look_up([entity for entity in runs if entity.startswith("script.")])
-            if why_not_run(runs, states, snapshot, scripts=scripts, too_deep=self._too_deep):
+            met = []
+            if why_not_run(runs, states, snapshot, scripts=scripts, too_deep=self._too_deep, met=met):
                 logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
                                f"can't be checked: '{request}'", extra=TRANSCRIPT)
-                return refused
+                return {**refused, "message": refusal_for(met, by_id, snapshot)}
             posted = True
             reply = self._request("POST", "/api/conversation/process", json=asked).json()
         except (requests.RequestException, ValueError) as e:
@@ -1562,11 +1564,13 @@ class HomeAssistant:
             kind = entity.partition(".")[0]
             if not snapshot.exposed(entity):
                 return {"success": False, "message": f"{called} isn't exposed to Assist, so I don't run it by voice."}
+            met = []
             why = WORKS_GUARDED if sensitive(entity, called) else why_not_run(
-                [entity], states, snapshot, scripts=self._scripts(), too_deep=self._too_deep)
+                [entity], states, snapshot, scripts=self._scripts(), too_deep=self._too_deep, met=met)
             if why:
                 logger.warning(f"Refused to run {entity} for Claude, as it {why}")
-                return {"success": False, "message": REFUSED if why == WORKS_GUARDED
+                by_id = {state.get("entity_id"): state for state in states}
+                return {"success": False, "message": refusal_for(met, by_id, snapshot) if why == WORKS_GUARDED
                         else f"I can't see what {called} does, so I don't run it by voice."}
             logger.info(f"Running {entity} for Claude")
             self._call_service(kind, "turn_on", {"entity_id": entity})

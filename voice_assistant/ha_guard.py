@@ -226,7 +226,9 @@ def refusal_for(entity_ids: Iterable[str], by_id: Dict[str, Dict], snapshot: Opt
     What's said when a request is refused for what it names, or what Assist would act on.
 
     Args:
-        entity_ids: What it's refused for, e.g. ["button.pve2_shutdown"].
+        entity_ids: What it's refused for, e.g. ["button.pve2_shutdown"] - with None for
+            anything which isn't one entity, such as an action on a whole room, or what a
+            script does that can't be checked (see why_not_run's met).
         by_id: Every entity's state, by entity id.
         snapshot: The registry, or None if it can't be read.
 
@@ -234,7 +236,8 @@ def refusal_for(entity_ids: Iterable[str], by_id: Dict[str, Dict], snapshot: Opt
         REFUSED_MACHINE if every one of them is a machine (see machine), else REFUSED -
         so a request naming a lock as well is the lock's.
     """
-    machines = [machine(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot) for entity in entity_ids]
+    machines = [entity is not None and machine(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot)
+                for entity in entity_ids]
     return REFUSED_MACHINE if machines and all(machines) else REFUSED
 
 
@@ -381,7 +384,26 @@ def _worst(reasons: Iterable[Optional[str]]) -> Optional[str]:
     return WORKS_GUARDED if WORKS_GUARDED in reasons else UNSEEN if UNSEEN in reasons else None
 
 
-def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapshot]) -> Optional[str]:
+def _noted(reason: str, met: Optional[List[Optional[str]]], *entities: str) -> str:
+    """
+    Notes in met, if there is one, what a reason a script or scene isn't run was found for -
+    see why_not_run.
+
+    Args:
+        reason: WORKS_GUARDED or UNSEEN.
+        met: Where it's noted, or None.
+        entities: The guarded entities it was found for - none for anything else.
+
+    Returns:
+        The reason.
+    """
+    if met is not None:
+        met.extend(entities or [None])
+    return reason
+
+
+def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapshot],
+                  met: Optional[List[Optional[str]]] = None) -> Optional[str]:
     """
     Why a dict in a script's configuration isn't to be run, by its keys together rather
     than by any one string in it: what a step's action is given, the action itself, or the
@@ -392,6 +414,7 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
             "hall"}}, or its target.
         by_id: Every entity's state, by entity id.
         snapshot: The registry, or None if it can't be read.
+        met: As for _walk.
 
     Returns:
         WORKS_GUARDED, UNSEEN or None, as for _walk.
@@ -407,24 +430,24 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
         # "0123...cdef", which only it can say whose it is. A device action's entity is
         # given that way too, but that calls no action, and its device is checked instead.
         if any(piece not in ("", "all", "none") and not ENTITY.fullmatch(piece) for piece in entities):
-            found.append(UNSEEN)
+            found.append(_noted(UNSEEN, met))
         if isinstance(action, str) and "{{" not in action:
             action = action.strip().lower()
             domain = action.partition(".")[0]
             if domain in AREA_WIDE and ("all" in entities
                                         or any(where.get(key) for where in given for key in AREA_TARGETS)):
-                found.append(WORKS_GUARDED)
+                found.append(_noted(WORKS_GUARDED, met))
             if domain in PASSED_ON or action in PASSED_ON:
-                found.append(UNSEEN)
+                found.append(_noted(UNSEEN, met))
             if action in STOPS_HOME:
-                found.append(WORKS_GUARDED)
+                found.append(_noted(WORKS_GUARDED, met))
     devices = part.get("device_id")
     if devices is not None:
         # A device action names its device and the domain it acts in, but its entity only
         # by the registry's own id for it: {"type": "unlock", "device_id": "...",
         # "entity_id": "4b1e...", "domain": "lock"}.
         if str(part.get("domain") or "").lower() in GUARDED:
-            found.append(WORKS_GUARDED)
+            found.append(_noted(WORKS_GUARDED, met))
         # Home Assistant acts on that entity without checking it's on the device given, so
         # it's checked for itself: the lamp's device with the PC's shutdown button presses
         # the shutdown. An entity id is walked as any other string is.
@@ -434,18 +457,20 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
             entity = snapshot.entity_for_registry_id(piece) if snapshot is not None else None
             state = by_id.get(entity) if entity is not None else None
             if entity is not None and guarded(entity, (state or {}).get("attributes") or {}, snapshot) is not None:
-                found.append(WORKS_GUARDED)
+                found.append(_noted(WORKS_GUARDED, met, entity))
             elif entity is None or target_refused(entity, state, snapshot):
-                found.append(UNSEEN)
+                found.append(_noted(UNSEEN, met))
         for device in devices if isinstance(devices, list) else [devices]:
             if not isinstance(device, str) or "{{" in device:
                 continue
             # One the registry hasn't got - or any, without it - could have anything on it.
             if snapshot is None or device not in snapshot.devices:
-                found.append(UNSEEN)
-            elif any(guarded(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot) is not None
-                     for entity in snapshot.on_device(device)):
-                found.append(WORKS_GUARDED)
+                found.append(_noted(UNSEEN, met))
+                continue
+            on_it = [entity for entity in snapshot.on_device(device)
+                     if guarded(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot) is not None]
+            if on_it:
+                found.append(_noted(WORKS_GUARDED, met, *on_it))
     return _worst(found)
 
 
@@ -507,7 +532,7 @@ class Scripts:
 
 
 def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optional[Snapshot], *, scripts: Scripts,
-                too_deep: Set[str]) -> Optional[str]:
+                too_deep: Set[str], met: Optional[List[Optional[str]]] = None) -> Optional[str]:
     """
     Why some scripts and scenes aren't to be run, if they aren't - see
     home_assistant.HomeAssistant.works_guarded.
@@ -523,6 +548,11 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
         too_deep: The scripts and scenes said already to go too deep to follow, which
             this adds to, and takes one off once it's walked to the end - the
             HomeAssistant's own, so each is said once until it's been put right.
+        met: If given, what each reason was found for is added to it, every one of them
+            rather than only the first: each guarded entity, and None for anything else -
+            something guarded that isn't one entity, or what can't be checked. That's
+            what refusal_for says why by, so a script which shuts a machine down and
+            unlocks a door is the lock's.
 
     Returns:
         WORKS_GUARDED if any of them works something guarded, else UNSEEN if any of
@@ -533,10 +563,10 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
     for entity_id in entity_ids:
         # One that wasn't there a moment ago can't be checked - it could be new since.
         if entity_id not in by_id:
-            reasons.append(UNSEEN)
+            reasons.append(_noted(UNSEEN, met))
             continue
         try:
-            reasons.append(_walk(entity_id, by_id, snapshot, set(), scripts))
+            reasons.append(_walk(entity_id, by_id, snapshot, set(), scripts, met=met))
         except RecursionError:
             # A configuration nested deeper than Python will walk or decode, or a long
             # enough chain of scripts each running the next, can't be checked - and
@@ -545,7 +575,7 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
                 logger.warning(f"Can't see what {entity_id} does, as it goes too deep to follow, so it isn't "
                                f"run by voice or from the settings page")
             too_deep.add(entity_id)
-            reasons.append(UNSEEN)
+            reasons.append(_noted(UNSEEN, met))
         else:
             # Walked to the end, so it isn't too deep now - and should it go too deep again, that's said.
             too_deep.discard(entity_id)
@@ -553,7 +583,7 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
 
 
 def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str], scripts: Scripts,
-          action: bool = False) -> Optional[str]:
+          action: bool = False, met: Optional[List[Optional[str]]] = None) -> Optional[str]:
     """
     Why a piece of a script's configuration isn't to be run, if it isn't. It's walked
     whole, keys as well as values - scene.apply names each thing as a key - and so is
@@ -569,6 +599,7 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
         scripts: How to read the scripts - see why_not_run.
         action: Whether it's what a step calls its action, e.g. "script.leaving", rather
             than an entity id or anything else.
+        met: Where what each reason was found for is noted, or None - see why_not_run.
 
     Returns:
         WORKS_GUARDED if any of it works something guarded, else UNSEEN if any of it
@@ -578,13 +609,13 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
         RecursionError: For a configuration, or a chain of scripts, too deep to follow.
     """
     if isinstance(part, dict):
-        found = [_step_refused(part, by_id, snapshot)]
+        found = [_step_refused(part, by_id, snapshot, met)]
         for key, value in part.items():
-            found += [_walk(key, by_id, snapshot, checked, scripts),
-                      _walk(value, by_id, snapshot, checked, scripts, action=key in ACTION_KEYS)]
+            found += [_walk(key, by_id, snapshot, checked, scripts, met=met),
+                      _walk(value, by_id, snapshot, checked, scripts, action=key in ACTION_KEYS, met=met)]
         return _worst(found)
     if isinstance(part, list):
-        return _worst([_walk(item, by_id, snapshot, checked, scripts) for item in part])
+        return _worst([_walk(item, by_id, snapshot, checked, scripts, met=met) for item in part])
     found = []
     # A template is left out: it's the user's own, and they exposed what it's in (0008,
     # "My calls").
@@ -599,7 +630,7 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
             # its entity id is now - so it's read by that key. The script domain's own
             # actions only ever act on the entities they're given.
             if name not in SCRIPT_SERVICES:
-                found.append(_walk_script(name, entity, by_id, snapshot, checked, scripts))
+                found.append(_walk_script(name, entity, by_id, snapshot, checked, scripts, met))
             continue
         if domain == "script" and (name not in SCRIPT_SERVICES or entity in by_id):
             if entity in checked:
@@ -611,38 +642,39 @@ def _walk(part, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: S
             # script that wasn't there a moment ago, or whose key can't be told, can't be
             # checked.
             key = scripts.key(entity) if entity in by_id and snapshot is not None else None
-            found.append(UNSEEN if key is None else _walk_script(key, entity, by_id, snapshot, checked, scripts))
+            found.append(_noted(UNSEEN, met) if key is None
+                         else _walk_script(key, entity, by_id, snapshot, checked, scripts, met))
             continue
         state = by_id.get(entity)
         attributes = (state or {}).get("attributes") or {}
         if domain == "automation":
             # An automation's contents aren't walked, and one could unlock - nor is what
             # automation.trigger sets off.
-            found.append(UNSEEN)
+            found.append(_noted(UNSEEN, met))
         elif guarded(entity, attributes, snapshot) is not None:
-            found.append(WORKS_GUARDED)
+            found.append(_noted(WORKS_GUARDED, met, entity))
         elif state is None or entity in checked:
             # An action's name, e.g. "light.turn_off", or nothing there to work - or
             # something walked already.
             continue
         elif target_refused(entity, state, snapshot):
             # Something the registry hasn't caught up with yet, which could be Proxmox's.
-            found.append(UNSEEN)
+            found.append(_noted(UNSEEN, met))
         else:
             # A scene's members, or a group's, are its entity_id attribute. A scene with
             # none, as an integration's can be, can't be checked - nor any without the
             # registry, which says which of its members are Proxmox's or the PC's.
             members = attributes.get("entity_id")
             if domain == "scene" and (snapshot is None or not isinstance(members, list)):
-                found.append(UNSEEN)
+                found.append(_noted(UNSEEN, met))
             elif members:
                 checked.add(entity)
-                found.append(_walk(members, by_id, snapshot, checked, scripts))
+                found.append(_walk(members, by_id, snapshot, checked, scripts, met=met))
     return _worst(found)
 
 
 def _walk_script(key: str, name: str, by_id: Dict[str, Dict], snapshot: Optional[Snapshot], checked: Set[str],
-                 scripts: Scripts) -> Optional[str]:
+                 scripts: Scripts, met: Optional[List[Optional[str]]] = None) -> Optional[str]:
     """
     Why the script of this key isn't to be run, if it isn't - its configuration walked, once
     a check. Without the registry, which says what's Proxmox's and the PC's, none can be.
@@ -650,7 +682,7 @@ def _walk_script(key: str, name: str, by_id: Dict[str, Dict], snapshot: Optional
     Args:
         key: Its key, e.g. "leaving".
         name: It as it's named, e.g. "script.leaving", for saying it can't be read.
-        by_id, snapshot, checked, scripts: As for _walk.
+        by_id, snapshot, checked, scripts, met: As for _walk.
 
     Returns:
         As for _walk.
@@ -661,4 +693,4 @@ def _walk_script(key: str, name: str, by_id: Dict[str, Dict], snapshot: Optional
         return None
     checked.add(walked)
     config = scripts.config(key, name) if snapshot is not None else None
-    return UNSEEN if config is None else _walk(config, by_id, snapshot, checked, scripts)
+    return _noted(UNSEEN, met) if config is None else _walk(config, by_id, snapshot, checked, scripts, met=met)

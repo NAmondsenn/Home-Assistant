@@ -1524,7 +1524,7 @@ def test_a_device_actions_entity_is_checked_as_well_as_its_device(make_home):
     press = {"type": "press", "device_id": "lamp", "entity_id": "9F2A", "domain": "button"}
     home = _scripted(make_home, {"script.away": ("Away", _config("Away", press))}, *states, entries=entries,
                      devices=devices)
-    assert home.run_script("away") == {"success": False, "message": REFUSED["message"]}
+    assert home.run_script("away") == {"success": False, "message": REFUSED_MACHINE["message"]}
     # One the registry has no such id for, or whose entity isn't in the states, can't be checked.
     for given in ("0123", ["4b1e", "0123"]):
         home._session.answers["/api/config/script/config/away"] = _config("Away", {**press, "entity_id": given})
@@ -1996,6 +1996,44 @@ def test_a_script_stopping_home_assistant_or_its_host_is_refused(make_home, acti
     home._session.answers["/api/config/script/config/reset"] = _config("Reset", {"service": action, "data": {}})
     assert home.works_guarded("script.reset", *_now(home))
     assert _ran(home) == []
+
+
+PVE2_SHUTDOWN = _thing("button.pve2_shutdown", "PVE2 Shutdown")
+PVE2_SHUTDOWN_ENTRY = _entry("button.pve2_shutdown", "proxmoxve")
+
+
+def test_a_script_refused_for_working_a_machine_says_so(make_home):
+    # The user's call: the lock's sentence is no answer for a script that shuts PVE2 down.
+    shuts_down = _config("Lab off", _step("button.press", entity_id="button.pve2_shutdown"))
+    home = _scripted(make_home, {"script.lab_off": ("Lab off", shuts_down)}, PVE2_SHUTDOWN,
+                     entries=[PVE2_SHUTDOWN_ENTRY])
+    assert home.run_script("lab off") == {"success": False, "message": REFUSED_MACHINE["message"]}
+    # By a light sentence naming it, with the debugging not answering - and by what Assist would act on.
+    assert home.command("turn on lab off") == REFUSED_MACHINE
+    home.socket.answer = _debugged(_match("HassTurnOn", "script.lab_off"))
+    assert home.command("run lab off", wider=True) == REFUSED_MACHINE
+    # And one run by another.
+    home = _scripted(make_home, {"script.evening": ("Evening", _config("Evening", {"action": "script.lab_off"})),
+                                 "script.lab_off": ("Lab off", shuts_down)}, PVE2_SHUTDOWN,
+                     entries=[PVE2_SHUTDOWN_ENTRY])
+    assert home.run_script("evening") == {"success": False, "message": REFUSED_MACHINE["message"]}
+    assert _ran(home) == [] and "/api/conversation/process" not in _paths(home)
+
+
+def test_a_script_working_a_machine_and_a_lock_is_the_locks(make_home):
+    # Walked on past the machine, so the lock it also unlocks is what's said.
+    both = _config("Leaving", _step("button.press", entity_id="button.pve2_shutdown"),
+                   _step("lock.unlock", entity_id="lock.front_door"))
+    home = _scripted(make_home, {"script.leaving": ("Leaving", both)}, PVE2_SHUTDOWN, FRONT_DOOR,
+                     entries=[PVE2_SHUTDOWN_ENTRY])
+    assert home.run_script("leaving") == {"success": False, "message": REFUSED["message"]}
+    home.socket.answer = _debugged(_match("HassTurnOn", "script.leaving"))
+    assert home.command("run leaving", wider=True) == REFUSED
+    # So is one with something that can't be checked beside the machine - it could unlock.
+    home._session.answers["/api/config/script/config/leaving"] = _config(
+        "Leaving", _step("button.press", entity_id="button.pve2_shutdown"), {"action": "automation.trigger"})
+    assert home.command("run leaving", wider=True) == REFUSED
+    assert _ran(home) == [] and "/api/conversation/process" not in _paths(home)
 
 
 class TooDeep(FakeResponse):
