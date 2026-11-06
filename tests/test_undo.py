@@ -10,26 +10,32 @@ import time
 from voice_assistant.undo import MOST_KEPT, UNDO_KEPT, UndoShelf
 
 
+def _put_back(kind, item):
+    """An undo which works, answering with what it was given to put back."""
+    return {"success": True, "message": "Put back.", "kind": kind, "item": item}
+
+
 def test_an_undo_works_once_and_not_after_a_minute():
     now = [1000.0]
     shelf = UndoShelf(clock=lambda: now[0])
     alarm = {"id": 3, "hour": 7, "minute": 0}
     token = shelf.put("alarm", alarm)
 
-    assert shelf.take(token) == ("alarm", alarm)
-    assert shelf.take(token) is None
+    assert shelf.use(token, _put_back) == _put_back("alarm", alarm)
+    assert shelf.use(token, _put_back) is None
 
     # Not once it's been kept a minute.
     late = shelf.put("timer", {"id": 1})
     now[0] += UNDO_KEPT + 1
-    assert shelf.take(late) is None
+    assert shelf.use(late, _put_back) is None
 
     # Nor by a brain restarted since, which has a shelf of its own.
     kept = shelf.put("timer", {"id": 2})
-    assert UndoShelf(clock=lambda: now[0]).take(kept) is None
+    assert UndoShelf(clock=lambda: now[0]).use(kept, _put_back) is None
     # Nor by anything which isn't a token.
-    assert shelf.take("") is None and shelf.take(None) is None and shelf.take("é") is None
-    assert shelf.take(kept) == ("timer", {"id": 2})
+    assert shelf.use("", _put_back) is None and shelf.use(None, _put_back) is None
+    assert shelf.use("é", _put_back) is None
+    assert shelf.use(kept, _put_back) == _put_back("timer", {"id": 2})
 
 
 def test_the_old_ones_go_as_new_ones_are_put():
@@ -46,7 +52,8 @@ def test_the_old_ones_go_as_new_ones_are_put():
         now[0] += 0.01
         tokens.append(shelf.put("timer", {"id": number}))
     assert len(shelf._kept) == MOST_KEPT
-    assert shelf.take(tokens[9]) is None and shelf.take(tokens[10]) == ("timer", {"id": 10})
+    assert shelf.use(tokens[9], _put_back) is None
+    assert shelf.use(tokens[10], _put_back) == _put_back("timer", {"id": 10})
     # Each token is new, and long enough not to be guessed.
     assert len({shelf.put("timer", {"id": 3}) for _ in range(20)}) == 20
     assert len(shelf.put("timer", {"id": 4})) >= 20

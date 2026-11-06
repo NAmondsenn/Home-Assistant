@@ -63,19 +63,6 @@ class UndoShelf:
                 del self._kept[min(self._kept, key=lambda kept: self._kept[kept][2])]
         return token
 
-    def take(self, token: Any) -> Optional[Tuple[str, Any]]:
-        """
-        Takes back what a token keeps, once only.
-
-        Args:
-            token: As the page sent it - anything at all.
-
-        Returns:
-            (kind, item), or None if the token isn't one, has been used, or is too old.
-        """
-        claimed = self._claim(token)
-        return None if claimed is None else claimed[:2]
-
     def use(self, token: Any, undo: Callable[[str, Any], Dict]) -> Optional[Dict]:
         """
         Puts back what a token keeps, with undo - using the token up only if that
