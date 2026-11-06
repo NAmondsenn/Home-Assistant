@@ -1698,7 +1698,7 @@ class HomeAssistant:
                 continue
             count = str(state.get("state", ""))
             lists.append({"id": entity, "name": (state.get("attributes") or {}).get("friendly_name") or entity,
-                          "count": int(count) if count.isdigit() else None,
+                          "count": int(count) if count.isdecimal() else None,
                           "aliases": list(snapshot.aliases(entity)) if snapshot else []})
         return lists
 

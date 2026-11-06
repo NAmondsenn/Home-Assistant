@@ -181,7 +181,7 @@ def _number(words: str) -> Optional[int]:
         The number, or None if it isn't one - which keeps the request away from the
         local path rather than guessing at it.
     """
-    if words.isdigit():
+    if words.isdecimal():
         return int(words)
     parts = words.split()
     if len(parts) == 1:
@@ -202,7 +202,8 @@ def _says_a_time(words: List[str]) -> bool:
     for before, word, after in zip([""] + words, words, words[1:] + [""]):
         if _a_unit(word, before):
             return True
-        if word in TIME_LEADS and (after.isdigit() or after in NUMBER_WORDS or _a_unit(after, word) or after == "half"):
+        if word in TIME_LEADS and (after.isdecimal() or after in NUMBER_WORDS or _a_unit(after, word)
+                                   or after == "half"):
             return True
     return False
 

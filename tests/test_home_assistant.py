@@ -1003,6 +1003,13 @@ def test_the_todo_lists_are_read_with_their_other_names(make_home):
         {"id": "todo.notepad", "name": "notepad", "count": None, "aliases": []}]
 
 
+def test_a_lists_count_which_isnt_a_plain_number_is_none(make_home):
+    # "²" is a digit to str.isdigit, but not a number int() reads.
+    odd = {"entity_id": "todo.odd", "state": "²", "attributes": {"friendly_name": "Odd"}}
+    home = make_home({"/api/states": [odd]})
+    assert home.todo_lists() == [{"id": "todo.odd", "name": "Odd", "count": None, "aliases": []}]
+
+
 def test_a_lists_things_still_to_do_are_asked_for_through_the_allowlist(make_home):
     items = [{"status": "needs_action", "summary": "milk", "uid": "a1"},
              {"status": "needs_action", "summary": "oat milk", "uid": "b2"}]

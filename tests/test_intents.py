@@ -61,6 +61,11 @@ def test_playback_controls_are_handled_without_claude(text, command):
     assert _actions(text) == [Action("control_playback", {"action": command})]
 
 
+def test_a_number_is_only_read_from_plain_digits():
+    # "²" is a digit to str.isdigit, but not a number int() reads.
+    assert intents_module._number("12") == 12 and intents_module._number("²") is None
+
+
 @pytest.mark.parametrize("text, command", [
     # "Nova, pause." said in one breath, as Nemotron heard it.
     ("Novopause.", "pause"), ("Novapause.", "pause"), ("Novaskip.", "skip"), ("Novopause, please.", "pause"),
