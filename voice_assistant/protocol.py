@@ -48,6 +48,7 @@ brain's to the satellite, without the password itself ever being sent:
 import hmac
 import json
 import logging
+import re
 import secrets
 import unicodedata
 from typing import BinaryIO, Callable, Dict, Optional, Tuple
@@ -62,6 +63,10 @@ MAX_AUDIO = 10 * 16000 * 2
 
 # The longest Spotify speaker name a hello may carry, e.g. "Bedroom Pi".
 MAX_SPEAKER = 64
+
+# What a nonce is: 32 hex digits, as secrets.token_hex(16) makes. Written out rather than
+# tried with int(nonce, 16), which lets through digits of other scripts, and spaces.
+NONCE = re.compile(r"[0-9a-fA-F]{32}")
 
 
 class ProtocolError(Exception):
@@ -210,7 +215,7 @@ def admit(stream: BinaryIO, password_for: Callable[[str], Optional[str]]) -> Dic
     unclean = hello.get("unclean")
     if (hello["type"] != "hello" or not isinstance(name, str) or not isinstance(hostname, str)
             or isinstance(sample_rate, bool) or not isinstance(sample_rate, int)
-            or not isinstance(unclean, bool) or not isinstance(nonce, str) or len(nonce) != 32):
+            or not isinstance(unclean, bool) or not isinstance(nonce, str) or not NONCE.fullmatch(nonce)):
         raise ProtocolError("Expected a hello")
     password = password_for(name)
     if password is None:

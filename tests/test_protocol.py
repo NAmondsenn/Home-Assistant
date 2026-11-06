@@ -147,6 +147,21 @@ def _admitted(**fields):
     return outcome["brain"]
 
 
+@pytest.mark.parametrize("nonce", ["z" * 32, "0" * 31 + "g", " " * 32, "0x" + "0" * 30, "\u0660" * 32, "0" * 31, "0" * 33],
+                         ids=["letters", "one letter", "spaces", "0x", "arabic-indic digits", "short", "long"])
+def test_a_hello_whose_nonce_isnt_32_hex_digits_is_refused(nonce):
+    near, far = socket.socketpair()
+    far.settimeout(1)
+    try:
+        protocol.send(near.makefile("rwb"), "hello", name="bedroom", hostname="h", sample_rate=48000,
+                      unclean=False, nonce=nonce)
+        with pytest.raises(protocol.ProtocolError):
+            protocol.admit(far.makefile("rwb"), {"bedroom": PASSWORD}.get)
+    finally:
+        near.close()
+        far.close()
+
+
 def test_a_satellite_says_its_spotify_speaker():
     outcome, sent = _handshake(PASSWORD, {"bedroom": PASSWORD}, speaker="Bedroom Pi")
 
