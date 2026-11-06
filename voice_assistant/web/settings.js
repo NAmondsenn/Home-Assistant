@@ -36,6 +36,13 @@ const CALENDARS_EVERY = 60000;
 // look asks it, so once a minute too.
 const HOME_CHOICES_EVERY = 60000;
 
+// How long the page waits for Nova to begin answering, in milliseconds, before it gives
+// up on a request. Without it one that hangs holds up what asks next for good, as each
+// of every()'s runs waits for the one before. A change is given longer than a look, as
+// some wait on Google or Home Assistant.
+const LOOK_WITHIN = 30000;
+const CHANGE_WITHIN = 60000;
+
 // The least time between volume changes sent while a slider's dragged, in
 // milliseconds - often enough for the beep to keep up with the finger, without
 // asking for every step - and between a light's, which take Home Assistant longer.
@@ -363,6 +370,14 @@ function forChosen(path) {
   return `${path}${path.includes("?") ? "&" : "?"}satellite=${encodeURIComponent(chosen)}`;
 }
 
+// fetch, giving up with an AbortError if Nova hasn't begun to answer in time - which
+// leaves out the answer's body, small and sent with its start.
+function fetchWithin(path, options = {}, within = LOOK_WITHIN) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), within);
+  return fetch(path, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 // What Nova answered - and, refused for want of a login, the login form instead of
 // the page. Through NPM that's a login which ended since the page was shown: 30 days
 // on, or Log out everywhere on another device.
@@ -374,11 +389,20 @@ function answered(response) {
 // Sends Nova a change, answering with what it said - for the chosen satellite, which
 // only the changes to its own volumes, music, lights, mute and alarms look at.
 async function send(path, body) {
-  const response = answered(await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Nova": "page" },
-    body: JSON.stringify(chosen ? { ...body, satellite: chosen } : body || {}),
-  }));
+  let response;
+  try {
+    response = answered(await fetchWithin(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Nova": "page" },
+      body: JSON.stringify(chosen ? { ...body, satellite: chosen } : body || {}),
+    }, CHANGE_WITHIN));
+  } catch (error) {
+    // Said as that rather than as unreachable: Nova got it, and may have done it.
+    if (error.name === "AbortError") {
+      return { success: false, message: "Nova didn't answer in time, so that may or may not have worked." };
+    }
+    throw error;
+  }
   return response.json().catch(() => ({ success: false, message: "Nova didn't answer properly." }));
 }
 
@@ -405,7 +429,7 @@ async function load() {
   if (locked) return;
   let state;
   try {
-    const response = answered(await fetch(forChosen("/api/state")));
+    const response = answered(await fetchWithin(forChosen("/api/state")));
     if (!response.ok) throw new Error(await response.text());
     state = await response.json();
   } catch (error) {
@@ -450,7 +474,7 @@ async function live() {
   let now = "offline";
   let stoppable = false;
   try {
-    const response = answered(await fetch(forChosen("/api/live")));
+    const response = answered(await fetchWithin(forChosen("/api/live")));
     if (response.ok) {
       const said = await response.json();
       now = said.activity;
@@ -510,7 +534,7 @@ async function checkLogin() {
   const first = firstLook;
   firstLook = false;
   try {
-    const response = await fetch("/api/login-state");
+    const response = await fetchWithin("/api/login-state");
     if (!response.ok) throw new Error(await response.text());
     loginState = await response.json();
   } catch (error) {
@@ -643,7 +667,7 @@ async function readyToReload() {
   reloadChecking = true;
   let said = null;
   try {
-    const response = await fetch("/api/login-state");
+    const response = await fetchWithin("/api/login-state");
     if (response.ok) said = await response.json();
   } catch (error) {
     // Down again, then.
@@ -1104,7 +1128,7 @@ function volumeSlider(category) {
 
 async function loadMusic() {
   try {
-    const response = answered(await fetch(forChosen("/api/music")));
+    const response = answered(await fetchWithin(forChosen("/api/music")));
     if (!response.ok) return;
     music = await response.json();
     musicAt = Date.now();
@@ -1243,7 +1267,7 @@ async function finishSignIn(service, reload) {
 
 async function loadCalendars() {
   try {
-    const response = answered(await fetch("/api/calendars"));
+    const response = answered(await fetchWithin("/api/calendars"));
     if (!response.ok) return;
     calendars = await response.json();
   } catch (error) {
@@ -1339,7 +1363,7 @@ function calendarRow(calendar, index) {
 // Asks the page's other choices of Home Assistant: the main list, the weather and the PCs.
 async function loadHomeChoices() {
   try {
-    const response = answered(await fetch("/api/home-choices"));
+    const response = answered(await fetchWithin("/api/home-choices"));
     if (!response.ok) return;
     homeChoices = await response.json();
   } catch (error) {
@@ -1478,7 +1502,7 @@ async function playMusic(body, say) {
 
 async function loadHome() {
   try {
-    const response = answered(await fetch(forChosen("/api/home")));
+    const response = answered(await fetchWithin(forChosen("/api/home")));
     if (!response.ok) return;
     home = await response.json();
   } catch (error) {
@@ -1524,7 +1548,7 @@ function showHome() {
 
 async function loadBatteries() {
   try {
-    const response = answered(await fetch("/api/batteries"));
+    const response = answered(await fetchWithin("/api/batteries"));
     if (!response.ok) return;
     batteries = await response.json();
   } catch (error) {
