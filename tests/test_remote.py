@@ -73,12 +73,12 @@ class FakeSatellite:
         self.socket.close()
 
 
-def connect():
+def connect(stream_class=satellite_link.Stream):
     """The brain's view of a satellite which has just been admitted, serving on a thread of its own."""
     ours, theirs = socket.socketpair()
     # Short, so the brain's reading wakes often to check on the satellite.
     ours.settimeout(0.05)
-    satellite = RemoteSatellite(satellite_link.Stream(ours), dict(HELLO))
+    satellite = RemoteSatellite(stream_class(ours), dict(HELLO))
     fake = FakeSatellite(theirs)
     serving = threading.Thread(target=satellite.serve, daemon=True)
     serving.start()
@@ -113,6 +113,42 @@ class Pieces:
 
     def close(self):
         self.closed.set()
+
+
+class Failing(Pieces):
+    """A stream's pieces which fail once the ones given are used up, as speech can part way through a reply."""
+
+    def __next__(self):
+        try:
+            return super().__next__()
+        except StopIteration:
+            raise RuntimeError("the voice failed") from None
+
+
+class Chunky(satellite_link.Stream):
+    """
+    A stream which writes in small pieces, as it does a big message on a busy connection,
+    giving another thread the chance to write in between.
+    """
+
+    def write(self, data):
+        for begin in range(0, len(data), 100):
+            super().write(data[begin:begin + 100])
+            time.sleep(0)
+
+
+class Breakable:
+    """A stream which takes what's written until it's broken, then fails as a hung-up connection does."""
+
+    def __init__(self):
+        self.broken = False
+
+    def write(self, data):
+        if self.broken:
+            raise BrokenPipeError("hung up")
+
+    def flush(self):
+        pass
 
 
 def test_the_satellite_is_known_by_its_hello(pair):
@@ -391,6 +427,70 @@ def test_the_voice_check_goes_with_the_state_only_when_given(pair):
         ({"type": "state", "volumes": volumes, "muted": False, "longest_request": 20.0, "wake_confidence": 0.75,
           "voice_check": 0.2}, b""),
         ({"type": "state", "volumes": volumes, "muted": True, "voice_check": 0}, b"")]
+
+
+def test_messages_sent_from_several_threads_arrive_whole_and_in_order():
+    # Music, speech and the session's own messages are all sent from threads of their own.
+    satellite, fake, serving = connect(Chunky)
+    sent = []
+
+    def send_many(number):
+        for n in range(20):
+            sent.append(satellite.send("stream_audio", bytes([number]) * 1500, id=str(number), n=n))
+
+    try:
+        threads = [threading.Thread(target=send_many, args=(number,)) for number in range(1, 5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+
+        assert len(sent) == 80 and all(sent)
+        assert wait_for(lambda: len(fake.received) == 80)
+        for number in range(1, 5):
+            mine = [(message, payload) for message, payload in fake.received if message["id"] == str(number)]
+            assert [message["n"] for message, _ in mine] == list(range(20))
+            assert all(payload == bytes([number]) * 1500 for _, payload in mine)
+    finally:
+        disconnect(satellite, fake, serving)
+
+
+def test_a_send_which_fails_ends_what_was_playing_and_whatever_is_started_after():
+    stream = Breakable()
+    satellite = RemoteSatellite(stream, dict(HELLO))
+    speaker = satellite.speaker
+    # Endless, and held back by most_ahead, so only the satellite going can end it.
+    song = Pieces(np.zeros((100, 2), dtype=np.float32) for _ in iter(int, 1))
+    music = speaker.play_stream(song, sample_rate=1000, kind="music", most_ahead=0.5)
+    chime = speaker.play_file("chime.wav")
+    assert satellite.connected and not music.done and not chime.done
+
+    stream.broken = True
+    later = speaker.play_file("later.wav")
+
+    # The failed send is the brain finding the satellite gone: nothing waits on it any more.
+    assert not satellite.connected
+    assert later.done and chime.done and music.wait(2)
+    assert song.closed.wait(2)
+    assert satellite.send("restart") is False
+
+
+def test_a_stream_whose_pieces_fail_part_way_still_ends_where_it_got_to(pair, caplog):
+    satellite, fake, serving = pair
+    pieces = Failing([np.zeros(2205, dtype=np.float32)])
+
+    with caplog.at_level(logging.ERROR, logger=remote.__name__):
+        playback = satellite.speaker.play_stream(pieces, sample_rate=22050)
+        assert wait_for(lambda: fake.messages("stream_end"))
+
+    assert [message["type"] for message, _ in fake.received] == ["play_stream", "stream_audio", "stream_end"]
+    assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+        (logging.ERROR, "A streamed reply sound failed part way: the voice failed")]
+    assert pieces.closed.is_set()
+    # Not lost with it: the satellite plays what it has, and says so.
+    assert satellite.connected and not playback.done
+    fake.say("played", id=playback.id, stopped=False, position=2205)
+    assert playback.wait(2)
 
 
 def test_audio_too_long_for_the_satellite_isnt_sent(pair):
