@@ -369,8 +369,10 @@ class SpotifyController:
             The device's ID, or None if it isn't currently advertising itself
             (e.g. the raspotify service isn't running).
         """
-        if self._fresh(self._device):
-            return self._device[0]
+        # Read once, as a new sign-in on the page's thread can drop it between the two.
+        device = self._device
+        if self._fresh(device):
+            return device[0]
 
         devices = self.sp.devices().get("devices", [])
 

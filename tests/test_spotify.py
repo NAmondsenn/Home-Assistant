@@ -385,6 +385,21 @@ def test_a_new_sign_in_drops_what_was_kept_of_the_account_before(make_controller
     assert "playlists" in controller.sp.calls and "devices" in controller.sp.calls
 
 
+def test_a_command_as_another_account_signs_in_still_finds_the_speaker(make_controller, monkeypatch):
+    # The sign-in drops the speaker kept between the command seeing it's recent and reading it.
+    controller = make_controller(cached=SAVED)
+    controller._device = ("speaker-id", time.monotonic())
+    fresh = controller._fresh
+
+    def dropped_meanwhile(cached):
+        recent = fresh(cached)
+        controller._device = None
+        return recent
+
+    monkeypatch.setattr(controller, "_fresh", dropped_meanwhile)
+    assert controller._find_device() == "speaker-id"
+
+
 def test_spotipy_never_logs_a_secret_whatever_novas_level(caplog):
     # Its own debug lines have the client's secret, in the auth header, and the code.
     caplog.set_level(logging.DEBUG)
