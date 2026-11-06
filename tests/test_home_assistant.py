@@ -3052,6 +3052,17 @@ def test_claude_and_the_page_cant_work_the_pcs_commands_made_as_lights(make_home
     assert _dimmed(home) == [("turn_on", {"entity_id": "light.lamp"}), ("turn_off", {"entity_id": "light.lamp"})]
 
 
+def test_without_the_registry_every_light_is_worked_as_before(make_home):
+    # Ruled to fail open: nothing says what's the PC's without the registry, and leaving
+    # every light out while it can't be read would cut the lights by voice and on the page.
+    home = _pc_lights(make_home)
+    home.snapshot = lambda: None
+    assert [light["id"] for light in home.lights()] == ["light.lamp", "light.kitchen_light", "light.desk_pc_shutdown",
+                                                        "light.desk_pc_lock"]
+    home._call_service("light", "turn_on", {"entity_id": "light.desk_pc_shutdown"})
+    assert _dimmed(home) == [("turn_on", {"entity_id": "light.desk_pc_shutdown"})]
+
+
 def test_claudes_room_of_lights_leaves_out_the_pcs_commands_made_as_lights(make_home):
     # Home Assistant would work every light in the room, so a room with one of the PC's
     # commands is given as its other lights instead. A room without is given as ever.
