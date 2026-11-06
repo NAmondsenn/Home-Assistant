@@ -1173,11 +1173,13 @@ class Brain:
         """
         while True:
             self._alarms_changed.wait(ALARMS_RESENT)
+            # Cleared before the copies are made, so a change while they're on their way
+            # is sent after them - and before it's looked whether the brain has stopped, so
+            # a stop() between the two isn't cleared away unseen, leaving this asleep until
+            # ALARMS_RESENT.
+            self._alarms_changed.clear()
             if self._stopped.is_set():
                 return
-            # Cleared before the copies are made, so a change while they're on their way
-            # is sent after them.
-            self._alarms_changed.clear()
             try:
                 self._send_alarms()
             except Exception as e:

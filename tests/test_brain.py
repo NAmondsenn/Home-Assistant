@@ -1706,6 +1706,23 @@ def test_the_copies_stop_being_sent_once_the_brain_stops(brain):
     assert wait_for(lambda: not ours & sending())
 
 
+def test_a_stop_just_as_the_copies_wake_still_ends_their_thread(brain):
+    # stop() set its wake-up after the thread had looked whether it was stopped and before
+    # it cleared it, so the thread slept on until ALARMS_RESENT.
+    class StoppedAsItsCleared(threading.Event):
+        def clear(self):
+            if not brain._stopped.is_set():
+                brain.stop()
+            super().clear()
+
+    brain._alarms_changed = StoppedAsItsCleared()
+    brain._alarms_changed.set()
+    sending = threading.Thread(target=brain._send_alarm_copies, daemon=True)
+    sending.start()
+    sending.join(2)
+    assert not sending.is_alive()
+
+
 def test_listening_for_satellites_tells_the_watchdog_the_brain_is_working(brain, monkeypatch):
     beats = []
     monkeypatch.setattr(brain_module.watchdog, "beat", lambda at=None: beats.append(at))
