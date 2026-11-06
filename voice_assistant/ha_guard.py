@@ -467,7 +467,7 @@ class Scripts:
         return self._keys[entity_id]
 
 
-def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optional[Snapshot], scripts: Scripts,
+def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optional[Snapshot], *, scripts: Scripts,
                 too_deep: Set[str]) -> Optional[str]:
     """
     Why some scripts and scenes aren't to be run, if they aren't - see

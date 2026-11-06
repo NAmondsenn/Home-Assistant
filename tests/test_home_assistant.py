@@ -1994,6 +1994,14 @@ def test_a_script_too_deep_to_walk_cant_be_checked_and_nothing_raises(make_home)
     assert _ran(home) == []
 
 
+def test_the_scripts_and_those_too_deep_are_only_given_by_name():
+    # Both are kept by the caller and passed on, so they can never be given the wrong way round.
+    scripts = ha_guard.Scripts(lambda key, name: None, lambda entity_ids: {})
+    with pytest.raises(TypeError):
+        ha_guard.why_not_run([], [], None, scripts, set())
+    assert ha_guard.why_not_run([], [], None, scripts=scripts, too_deep=set()) is None
+
+
 def test_a_script_run_by_two_others_is_read_once_a_refresh(make_home):
     lights = _config("Lights", _step("light.turn_on", entity_id="light.lamp"))
     home = _scripted(make_home, {"script.morning": ("Morning", _config("Morning", {"action": "script.lights"})),

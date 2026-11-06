@@ -623,7 +623,7 @@ class HomeAssistant:
             scripts = self._scripts()
             if snapshot is not None:
                 scripts.look_up([entity for entity in runs if entity.startswith("script.")])
-            if why_not_run(runs, states, snapshot, scripts, self._too_deep):
+            if why_not_run(runs, states, snapshot, scripts=scripts, too_deep=self._too_deep):
                 logger.warning(f"Refused a Home Assistant request running {runs}, which work something guarded or "
                                f"can't be checked: '{request}'", extra=TRANSCRIPT)
                 return refused
@@ -1457,7 +1457,7 @@ class HomeAssistant:
             state = next((state for state in states if state.get("entity_id") == entity_id), {})
             name = (state.get("attributes") or {}).get("friendly_name") or entity_id
             why = WORKS_GUARDED if sensitive(entity_id, name) else why_not_run(
-                [entity_id], states, self.snapshot(), self._scripts(), self._too_deep)
+                [entity_id], states, self.snapshot(), scripts=self._scripts(), too_deep=self._too_deep)
             if why:
                 logger.warning(f"Refused a Home Assistant {found[1]} from the settings page, as it {why}: '{name}'")
                 return {"success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."
@@ -1506,8 +1506,8 @@ class HomeAssistant:
             kind = entity.partition(".")[0]
             if not snapshot.exposed(entity):
                 return {"success": False, "message": f"{called} isn't exposed to Assist, so I don't run it by voice."}
-            why = WORKS_GUARDED if sensitive(entity, called) else why_not_run([entity], states, snapshot,
-                                                                               self._scripts(), self._too_deep)
+            why = WORKS_GUARDED if sensitive(entity, called) else why_not_run(
+                [entity], states, snapshot, scripts=self._scripts(), too_deep=self._too_deep)
             if why:
                 logger.warning(f"Refused to run {entity} for Claude, as it {why}")
                 return {"success": False, "message": REFUSED if why == WORKS_GUARDED
@@ -1549,7 +1549,8 @@ class HomeAssistant:
         Returns:
             Whether it's to be refused. Why is ha_guard.why_not_run's, which this shares.
         """
-        return why_not_run([entity_id], states, snapshot, scripts or self._scripts(), self._too_deep) is not None
+        return why_not_run([entity_id], states, snapshot, scripts=scripts or self._scripts(),
+                           too_deep=self._too_deep) is not None
 
     def _scripts(self) -> Scripts:
         """How a check reads the scripts, each once - see ha_guard.Scripts."""
