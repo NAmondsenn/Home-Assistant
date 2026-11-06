@@ -1405,6 +1405,9 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         assert b"may or may not have worked" in body
         # A battery's mark box is left with Enter, not on each step, and the rows aren't drawn under a pointer held down.
         assert b'event.key === "Enter") box.blur();' in body and b'list.querySelector(":active")' in body
+        # Its steps are saved one at a time, so they land in order, not each straight off the change.
+        assert b"saveMarks.send(boxes.map((each) => Number(each.value)))" in body
+        assert b'steadily(MARK_EVERY, (marked) => changeBattery("/api/batteries", { id: device.id, marks: marked }))' in body
         # Stop stays hidden until Nova has answered it.
         assert b"!stoppable || stopping" in body
 

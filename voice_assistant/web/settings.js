@@ -48,6 +48,8 @@ const CHANGE_WITHIN = 60000;
 // asking for every step - and between a light's, which take Home Assistant longer.
 const VOLUME_EVERY = 180;
 const LIGHT_EVERY = 250;
+// And between a battery's marks as they're stepped, each save of which asks Home Assistant first.
+const MARK_EVERY = 250;
 
 // How long Undo is offered once something's removed, in milliseconds. Nova keeps what
 // was removed a little longer - see voice_assistant/undo.py.
@@ -1631,21 +1633,26 @@ function batteryRow(device) {
 
   const marks = element("div", undefined, "marks");
   marks.append(element("span", device.marks.length === 1 ? "Warn at" : "Warn at both"));
+  // Every step of the arrow keys or the spinner is a change, and held down they come
+  // twenty or thirty a second. Sent one at a time, so they're saved in order and the
+  // latest wins - side by side, an earlier could be written last, and the box would
+  // jump back to it on leaving.
+  const saveMarks = steadily(MARK_EVERY, (marked) => changeBattery("/api/batteries", { id: device.id, marks: marked }));
   const boxes = device.marks.map((mark, i) => {
     const box = element("input");
     Object.assign(box, { type: "number", min: 1, max: 99, step: 1, value: mark });
     box.inputMode = "numeric";
     box.setAttribute("aria-label", `${device.name} warning mark ${i + 1}, in percent`);
-    // Every step of the arrow keys or the spinner is a change, so blurring on change would
-    // end the stepping after one. Enter ends the typing instead, as leaving the box does.
-    box.addEventListener("change", () =>
-      changeBattery("/api/batteries", { id: device.id, marks: boxes.map((each) => Number(each.value)) }));
+    // Blurring on change would end the stepping after one step. Enter ends the typing
+    // instead, as leaving the box does.
+    box.addEventListener("change", () => saveMarks.send(boxes.map((each) => Number(each.value))));
     box.addEventListener("keydown", (event) => {
       if (event.key === "Enter") box.blur();
     });
-    // Done, so the rows held back while it had the focus may be drawn again.
+    // Done, so the rows held back while it had the focus may be drawn again - unless a
+    // step is still to be saved, whose own save draws them with it.
     box.addEventListener("blur", () => {
-      if (!drawn.batteries) loadBatteries();
+      if (!drawn.batteries && !saveMarks.busy) loadBatteries();
     });
     marks.append(box, element("span", "%"));
     return box;
