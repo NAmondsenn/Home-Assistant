@@ -248,6 +248,29 @@ def test_pausing_music_tells_the_satellite(pair):
     assert playback.volume == 0.3
 
 
+def test_a_late_played_from_an_old_connection_finishes_nothing_on_the_new_one():
+    # The satellite reports a sound's end on whichever link it has by then, so an id which
+    # the new connection reused would end the new connection's sound.
+    old_connection = connect()
+    old = old_connection[0].speaker.play_file("chime.wav")
+    disconnect(*old_connection)
+
+    satellite, fake, serving = connect()
+    try:
+        new = satellite.speaker.play_file("chime.wav")
+        assert new.id != old.id
+
+        fake.say("played", id=old.id, stopped=False, position=100)
+        fake.say("ping")
+        assert wait_for(lambda: fake.messages("pong"))
+        assert not new.done
+
+        fake.say("played", id=new.id, stopped=False, position=200)
+        assert new.wait(2)
+    finally:
+        disconnect(satellite, fake, serving)
+
+
 def test_stopping_one_sound_stops_only_that_one(pair):
     satellite, fake, serving = pair
     beep = satellite.speaker.play_file("volume_beep.wav", volume=0.5)

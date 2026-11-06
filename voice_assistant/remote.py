@@ -38,6 +38,11 @@ SILENT_FOR = 15.0
 # far inside protocol.MAX_AUDIO.
 PIECE_SECONDS = 0.1
 
+# Playback ids, counted across every connection rather than from 1 on each. A satellite
+# reports a sound's end on whichever link it has by then, so after it reconnects a late
+# "played" for the old link's "1" would otherwise finish the new link's "1".
+_playback_ids = itertools.count(1)
+
 
 def _as_16_bit(audio: np.ndarray) -> bytes:
     """float32 samples as the 16-bit little-endian ones the satellite plays, channels interleaved."""
@@ -207,7 +212,6 @@ class RemoteSpeaker:
         """
         self.sample_rate = sample_rate
         self._send = send
-        self._ids = itertools.count(1)
         self._lock = threading.Lock()
         # What's playing, by id, until the satellite says it has ended, or goes.
         self._playing: Dict[str, RemotePlayback] = {}
@@ -264,7 +268,7 @@ class RemoteSpeaker:
         # word heard before the first words of a reply are made still stops it.
         channels = 2 if kind == "music" else 1
         volume = max(0.0, min(1.0, float(volume)))
-        playback = RemotePlayback(self, str(next(self._ids)), kind, volume, bool(paused), rate)
+        playback = RemotePlayback(self, str(next(_playback_ids)), kind, volume, bool(paused), rate)
         if not self._start(playback, "play_stream", rate=rate, channels=channels, volume=volume, kind=kind,
                            paused=bool(paused)):
             _close(pieces)
@@ -296,7 +300,7 @@ class RemoteSpeaker:
             play is reported finished at once.
         """
         volume = max(0.0, min(1.0, float(volume)))
-        playback = RemotePlayback(self, str(next(self._ids)), kind, volume)
+        playback = RemotePlayback(self, str(next(_playback_ids)), kind, volume)
         self._start(playback, "play_sound", name=os.path.basename(filename), volume=volume, kind=kind,
                     start=start, length=length)
         return playback
