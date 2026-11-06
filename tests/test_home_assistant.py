@@ -2909,7 +2909,10 @@ def test_status_leaves_out_network_and_app_sensors_by_their_id(make_home):
     # Dotted, as Cisco writes one, and without each byte's leading 0 - and an IPv6 address
     # with a tail of hex after it which, joined on, isn't one.
     "aabb.ccdd.eeff", "Port AABB.CCDD.EEFF up", "0:1b:63:84:45:e6", "0-1b-63-84-45-e6", "fe80::1:c0ffee",
-    "fe80::1:c0ffee:beef1"])
+    "fe80::1:c0ffee:beef1",
+    # A Zigbee device's EUI-64, as Zigbee2MQTT names one - "0x" and 16 hex digits - and
+    # without the "0x", or in bytes.
+    "0x00158d0001a2b3c4", "Joined 0x00158D0001A2B3C4", "00158d0001a2b3c4", "00:15:8d:00:01:a2:b3:c4"])
 def test_status_leaves_out_any_address_whatever_its_called(make_home, address):
     # Searched for anywhere in the state, as an address is still one inside other words.
     home = _status_home(make_home, [_status("sensor.example_router_wan", "Example router WAN", address),
@@ -2945,6 +2948,16 @@ def test_status_leaves_out_anything_with_a_hardware_address_in_its_id(make_home)
                       "°C"),
               _status("sensor.example_32113e4d1a6c4d418be75feec6c69c40", "Example temperature", "2", "°C"),
               _status("sensor.example_1a2b3c4d_5e6f_47a8_b9c0_123456789012", "Example temperature", "3", "°C"),
+              # A Zigbee device's EUI-64, as Zigbee2MQTT names its entities, in its id or its
+              # name, with or without the "0x" - even with no letter after it.
+              _status("sensor.0x00158d0001a2b3c4_temperature", "Example temperature", "4", "°C"),
+              _status("sensor.example_0x0015880001234567", "Example temperature", "5", "°C"),
+              _status("sensor.example_00158d0001a2b3c4", "Example temperature", "6", "°C"),
+              _status("sensor.example_zigbee_temperature", "0x00158d0001a2b3c4 temperature", "7", "°C"),
+              # Cisco's dotted form, whose dots the id makes underscores, and the last three
+              # bytes alone, as a Xiaomi sensor with ATC firmware is named.
+              _status("sensor.x_a4c1_3812_34ab", "Example temperature", "8", "°C"),
+              _status("sensor.atc_34ab12_temperature", "Example temperature", "9", "°C"),
               _status("sensor.example_temperature", "Example temperature", "19.5", "°C")]
     home = _status_home(make_home, things)
     assert home.status("example temperature", now=STATUS_NOW)["message"] == \
@@ -2954,14 +2967,18 @@ def test_status_leaves_out_anything_with_a_hardware_address_in_its_id(make_home)
     for entity in ("sensor.pve2_cpu_usage", "sensor.s25_ultra_storage", "sensor.example_500107862016",
                    "sensor.nextcloud_cpu_load_last_15_minutes", "sensor.backup_2026_10_25_1230",
                    # Nor is an address read from the middle of a word - "e:1:2:a:b:c" here.
-                   "sensor.zone_1_2_a_b_c"):
+                   "sensor.zone_1_2_a_b_c",
+                   # Nor, without a letter, three groups of four digits or six digits alone - a
+                   # date and a time, or a number - nor six hex letters with no digit, a word.
+                   "sensor.backup_2026_1106_1230", "sensor.example_123456", "sensor.example_facade"):
         home = _status_home(make_home, [_status(entity, "Example thing", "31")])
         assert entity in home.status("example thing", now=STATUS_NOW)["message"], entity
 
 
 @pytest.mark.parametrize("state", ["on", "21.5", "2026-10-25T10:00:00+00:00", "2026-10-25T10:00:00.123456+00:00",
                                    "1.2.3", "12:30", "12:30:45", "Version 2026.10.1", "heat",
-                                   "500107862016", "1234567890123", "16:9", "2026-10-25T10:00:00-05:00"])
+                                   "500107862016", "1234567890123", "16:9", "2026-10-25T10:00:00-05:00",
+                                   "1234567890123456"])
 def test_status_doesnt_take_an_ordinary_state_for_an_address(make_home, state):
     home = _status_home(make_home, [_status("sensor.example_router_wan", "Example router WAN", state)])
     assert "sensor.example_router_wan" in home.status("example router", now=STATUS_NOW)["message"]

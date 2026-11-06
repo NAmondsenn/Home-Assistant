@@ -325,24 +325,35 @@ NOT_STATUS_CLASSES = ("battery", "battery_charging")
 # prefix - "10.0.0.2:8080", "10.0.0.0/24" - and a hardware (MAC) one, as "aa:bb:cc:dd:ee:ff",
 # "AA-BB-CC-DD-EE-FF", without each byte's leading 0 ("0:1b:63:84:45:e6"), dotted as Cisco
 # writes one ("aabb.ccdd.eeff") or 12 hex digits run together with a letter among them -
-# twelve digits alone are more likely a count, e.g. bytes used. Four numbers alone make an
-# IPv4 address here, whether or not each is under 256 and whatever's before them, as in
+# twelve digits alone are more likely a count, e.g. bytes used. A Zigbee device's EUI-64
+# is one too, as Zigbee2MQTT names it ("0x00158d0001a2b3c4", "0x" marking it hex whatever
+# its digits) or its 16 hex digits alone, again with a letter among them - its eight bytes
+# with colons are already caught by their first six. Four numbers alone make an IPv4
+# address here, whether or not each is under 256 and whatever's before them, as in
 # "host.10.0.0.2".
 IPV4_ADDRESS = re.compile(r"(?<!\d)\d{1,3}(\.\d{1,3}){3}(?!\d)")
 # An IPv4 address in an entity id, whose dots Home Assistant makes underscores - a Ping
 # entity for 10.0.0.1 is binary_sensor.10_0_0_1.
 IPV4_IN_ID = re.compile(r"(?<!\d)\d{1,3}(_\d{1,3}){3}(?!\d)")
 _HARDWARE = (r"([0-9a-f]{1,2}([:-][0-9a-f]{1,2}){5}|[0-9a-f]{4}(\.[0-9a-f]{4}){2}"
-             r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12})(?![0-9a-f])")
+             r"|(?=[0-9a-f]{0,11}[a-f])[0-9a-f]{12}|0x[0-9a-f]{16}|(?=[0-9a-f]{0,15}[a-f])[0-9a-f]{16})"
+             r"(?![0-9a-f])")
 HARDWARE_ADDRESS = re.compile(r"(?<![0-9a-f])" + _HARDWARE, re.IGNORECASE)
 # A hardware address in an entity id, read with its underscores as colons - run together,
 # sensor.ble_temperature_a4c1381234ab, or with the colons Home Assistant makes
 # underscores, sensor.ble_a4_c1_38_ab_12_cd - starting at a word, so the "e" of "zone" in
-# sensor.zone_1_2_a_b_c isn't one. And a GUID, run together or in its groups, whatever its
-# letters: the PC's network sensors are named after their adapter's, and a GUID tells one
-# machine's hardware from another's as an address does.
+# sensor.zone_1_2_a_b_c isn't one. Two more forms are only looked for in an id, as whole
+# words: Cisco's, whose dots an id makes underscores (sensor.x_a4c1_3812_34ab), and the
+# last three bytes alone, as a Xiaomi sensor with ATC firmware is named
+# (sensor.atc_34ab12_temperature) - each with a letter among its digits, as three groups of
+# four digits are more likely a date and a time, and six digits a number, and the last
+# with a digit too, so a word such as "facade" isn't one. And a GUID, run together or in
+# its groups, whatever its letters: the PC's network sensors are named after their
+# adapter's, and a GUID tells one machine's hardware from another's as an address does.
 HARDWARE_IN_ID = re.compile(r"(?<![0-9a-z])(" + _HARDWARE
-                            + r"|([0-9a-f]{32}|[0-9a-f]{8}(:[0-9a-f]{4}){3}:[0-9a-f]{12})(?![0-9a-z]))",
+                            + r"|((?=[0-9a-f:]{0,13}[a-f])[0-9a-f]{4}(:[0-9a-f]{4}){2}"
+                            + r"|(?=[0-9a-f]{0,5}[a-f])(?=[0-9a-f]{0,5}[0-9])[0-9a-f]{6}"
+                            + r"|[0-9a-f]{32}|[0-9a-f]{8}(:[0-9a-f]{4}){3}:[0-9a-f]{12})(?![0-9a-z]))",
                             re.IGNORECASE)
 # A run of hex digits and colons, each tried as an IPv6 address - "fe80::1" in "[fe80::1]".
 # A time, "12:30:45", isn't one.
