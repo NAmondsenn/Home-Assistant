@@ -81,6 +81,11 @@ ROUTINE_CHECK = 20
 # instead - the user's call.
 MISSED_ROUTINE_GRACE = 3600
 
+# How many times a notice that routines didn't run, which its satellite didn't say, is
+# kept to try again. One the satellite keeps refusing while it stays connected would
+# otherwise be tried at every ROUTINE_CHECK for good, with a chime each time.
+SKIPPED_HAND_BACKS = 3
+
 # How often each satellite is sent its copy of the timers and alarms even when nothing
 # has changed, in seconds. The copy holds a week, so a repeating alarm's next week only
 # comes into it a day at a time.
@@ -273,6 +278,9 @@ class Brain:
         self._why_turned_away: Dict[str, str] = {}
         # When each satellite's restart was last told to the user's phone.
         self._restarts_told: Dict[str, float] = {}
+        # How many times each routine said to have been skipped has been kept to try the
+        # notice again, by satellite, routine and when it came due - see _tell_skipped.
+        self._skipped_hand_backs: Dict[Tuple[str, str, float], int] = {}
         # Whether what rang on no satellite has been given to the default yet.
         self._unowned_given = False
         # Whether each satellite removed had its copy of the alarms emptied, for
@@ -1356,8 +1364,9 @@ class Brain:
     def _tell_skipped(self, session: Session, satellite: str, skipped: List[Dict]):
         """
         Says on a satellite which is back that routines didn't run while it was away -
-        or, if that isn't said, keeps them to say next time. They were let go of to say
-        it, so a satellite which went again part way through lost it.
+        or, if that isn't said, keeps them to say next time, up to SKIPPED_HAND_BACKS
+        times. They were let go of to say it, so a satellite which went again part way
+        through lost it.
 
         Args:
             session: The satellite's session.
@@ -1369,10 +1378,28 @@ class Brain:
         except Exception:
             logger.exception(f"Couldn't tell the {satellite} satellite routines didn't run while it was away")
             said = False
+        keys = [(satellite, entry["id"], entry["due_at"]) for entry in skipped]
         if said:
+            with self._lock:
+                for key in keys:
+                    self._skipped_hand_backs.pop(key, None)
             return
-        logger.info(f"The {satellite} satellite wasn't told {len(skipped)} routines didn't run, so it's told next time")
-        for entry in skipped:
+        kept, dropped = [], []
+        with self._lock:
+            for entry, key in zip(skipped, keys):
+                tries = self._skipped_hand_backs.get(key, 0)
+                if tries < SKIPPED_HAND_BACKS:
+                    self._skipped_hand_backs[key] = tries + 1
+                    kept.append(entry)
+                else:
+                    self._skipped_hand_backs.pop(key, None)
+                    dropped.append(entry)
+        if dropped:
+            logger.warning(f"Gave up telling the {satellite} satellite {len(dropped)} routines didn't run while it was "
+                           f"away, as it wasn't told after {SKIPPED_HAND_BACKS + 1} tries")
+        if kept:
+            logger.info(f"The {satellite} satellite wasn't told {len(kept)} routines didn't run, so it's told next time")
+        for entry in kept:
             self.routines.missed(entry, satellite, entry["due_at"])
 
     def _run_routines_when_due(self):

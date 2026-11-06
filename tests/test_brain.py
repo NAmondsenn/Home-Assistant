@@ -1995,6 +1995,27 @@ def test_routines_said_to_have_been_skipped_are_kept_until_its_said(brain, conne
     assert bedroom.routines == []
 
 
+def test_a_notice_of_skipped_routines_which_keeps_failing_is_handed_back_three_times_at_most(brain, caplog):
+    # Handed back on every failure, it was tried again at every check for as long as its
+    # satellite stayed connected - with a chime each time the chime got through.
+    routine = brain.routines.save(MORNING)["routine"]
+    brain._run_timed(routine, time.time() - brain_module.MISSED_ROUTINE_GRACE - 1)
+    tries = []
+
+    def fail(message):
+        tries.append(message)
+        raise OSError("the satellite refused it")
+
+    session = SimpleNamespace(announce=fail)
+    for _ in range(3):
+        brain._tell_skipped(session, "bedroom", brain.routines.take_missed("bedroom"))
+        assert brain.routines.missed_satellites() == {"bedroom"}
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
+        brain._tell_skipped(session, "bedroom", brain.routines.take_missed("bedroom"))
+    assert brain.routines.missed_satellites() == set() and len(tries) == 4
+    assert "Gave up telling the bedroom satellite" in caplog.text
+
+
 def skipped(*times):
     """What's said of routines at these times, e.g. "7:00", which didn't run while their satellite was away."""
     return brain_module._skipped_message([{"at": at} for at in times])
