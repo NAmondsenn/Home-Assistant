@@ -443,6 +443,18 @@ def test_a_removed_satellites_playlists_are_not_kept(files):
     # Nor when it wasn't asked about, or isn't a satellite.
     assert page.remove_satellite("ghost", LOGIN)["success"] is False and set(page._playlists) == {"bedroom"}
 
+    # Let go of under the playlists' lock, as every other use of them is.
+    held = []
+
+    class Watched(dict):
+        def pop(self, *args):
+            held.append(page._playlists_lock.locked())
+            return super().pop(*args)
+
+    page._playlists = Watched(page._playlists)
+    assert page.remove_satellite("bedroom", LOGIN)["success"]
+    assert held == [True] and page._playlists == {}
+
 
 class FakeSpotifyOAuth:
     """Stands in for spotipy's SpotifyOAuth through a sign-in, writing the cache as it does."""

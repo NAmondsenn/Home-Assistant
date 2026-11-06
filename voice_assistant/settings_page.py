@@ -1750,7 +1750,8 @@ class SettingsPage:
         if emptied is None:
             return {"success": False, "message": f"There's no satellite called {name}."}
         # Added again with the same name, it shouldn't be offered its old playlists.
-        self._playlists.pop(name, None)
+        with self._playlists_lock:
+            self._playlists.pop(name, None)
         logger.info(f"Settings page: {who} removed the {name} satellite")
         if not emptied:
             # Said whatever the question said, which was asked from what the page
