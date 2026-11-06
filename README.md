@@ -381,10 +381,11 @@ systemctl restart nova-backend
 journalctl -u nova-backend -f
 ```
 
-Or by hand, to watch what it's doing - `satellite.py` on a satellite, and `backend.py` on the brain (as its user, with `runuser -u nova -- ` in front, with the service stopped):
+Or by hand, to watch what it's doing - `satellite.py` on a satellite, and `backend.py` on the brain (as its user, from root, with the service stopped):
 
 ```bash
-venv/bin/python satellite.py
+venv/bin/python satellite.py                         # a satellite
+runuser -u nova -- venv/bin/python backend.py        # the brain
 ```
 
 Logs are in `~/.local/share/nova/logs/` - `smart_assistant.log` on a satellite and `backend.log` on the brain - trimmed at 5 MB, each with a `latency.jsonl` beside it. The brain's has how long each stage of every interaction takes, summarised by (on the brain, as its user, with `runuser -u nova -- ` in front):
