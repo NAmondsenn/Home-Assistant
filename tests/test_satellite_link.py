@@ -3,6 +3,7 @@
 import logging
 import select
 import socket
+import struct
 import threading
 import time
 
@@ -301,18 +302,37 @@ def test_the_stream_tells_a_hang_up_without_waiting():
     assert protocol.receive(stream)[0]["type"] == "hello"
     arrived(stream)
     assert stream.hung_up() is True
+    assert stream._socket.gettimeout() == 5
+    stream._socket.close()
+
+
+def test_the_stream_takes_a_reset_for_a_hang_up():
+    far, stream = loopback()
+    # Closing with no time to linger resets the connection rather than closing it.
+    far.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    far.close()
+    arrived(stream)
+    assert stream.hung_up() is True
+    assert stream._socket.gettimeout() == 5
     stream._socket.close()
 
 
 def test_the_stream_doesnt_take_bytes_still_to_read_for_a_hang_up():
     far, stream = loopback()
-    # Both in one go, so the second is read into the stream's buffer with the first.
+    # Both in one go, so the second is read into the stream's buffer with the first -
+    # with the hang-up behind it on the socket.
     far.sendall(b'{"type": "hello"}\n{"type": "ping"}\n')
+    far.close()
     assert protocol.receive(stream)[0]["type"] == "hello"
+    assert stream._buffer
+    arrived(stream)
     assert stream.hung_up() is False
+    assert protocol.receive(stream)[0]["type"] == "ping"
+    assert stream.hung_up() is True
+    stream._socket.close()
 
     # And still on the socket, unread, ahead of the hang-up.
-    assert protocol.receive(stream)[0]["type"] == "ping"
+    far, stream = loopback()
     far.sendall(b"{")
     far.close()
     arrived(stream)

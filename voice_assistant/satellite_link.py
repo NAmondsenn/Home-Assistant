@@ -69,6 +69,9 @@ class Stream:
 
         Returns:
             True if the next read would find the connection closed.
+
+        Raises:
+            OSError: Looking failed some other way than finding it closed or reset.
         """
         if self._buffer:
             return False

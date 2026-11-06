@@ -5,7 +5,10 @@ against a fake satellite over a socketpair, which reads what the brain sends wit
 real protocol. Needs numpy installed (as it is on the Pi), and is skipped anywhere it isn't.
 """
 
+import logging
+import select
 import socket
+import struct
 import threading
 import time
 
@@ -369,6 +372,59 @@ def test_pings_are_answered(pair):
     satellite, fake, serving = pair
     fake.say("ping")
     assert wait_for(lambda: fake.messages("pong"))
+
+
+def closed(ours, theirs):
+    theirs.close()
+
+
+def reset(ours, theirs):
+    # Closing with no time to linger resets the connection rather than closing it.
+    theirs.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    theirs.close()
+    # The reset has arrived once there's something to read.
+    assert select.select([ours], [], [], 5)[0]
+
+
+@pytest.mark.parametrize("hang_up, family", [(closed, socket.AF_UNIX), (reset, socket.AF_INET)],
+                         ids=["broken pipe", "reset"])
+def test_a_send_which_finds_the_satellite_already_gone_says_so_plainly(hang_up, family, caplog):
+    # As after the brain was paused: the satellite gave up on it and hung up, leaving
+    # pings for the brain to answer once it carried on - with a pipe broken, or reset.
+    caplog.set_level(logging.INFO, logger=remote.__name__)
+    if family == socket.AF_UNIX:
+        ours, theirs = socket.socketpair()
+    else:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            theirs = socket.create_connection(listener.getsockname(), timeout=5)
+            ours, _ = listener.accept()
+    ours.settimeout(5)
+    satellite = RemoteSatellite(satellite_link.Stream(ours), dict(HELLO))
+    hang_up(ours, theirs)
+    try:
+        assert satellite.send("pong") is False
+    finally:
+        ours.close()
+    assert not satellite.connected
+    assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+        (logging.INFO, "The bedroom satellite had already hung up, so 'pong' wasn't sent")]
+
+
+def test_a_send_which_fails_otherwise_is_a_warning(caplog):
+    class Stalled:
+        def write(self, data):
+            raise TimeoutError("timed out")
+
+        def flush(self):
+            pass
+
+    satellite = RemoteSatellite(Stalled(), dict(HELLO))
+    assert satellite.send("restart") is False
+    assert not satellite.connected
+    assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+        (logging.WARNING, "Couldn't send 'restart' to the bedroom satellite (timed out)")]
 
 
 def test_when_the_satellite_goes_every_playback_and_feed_ends(pair):

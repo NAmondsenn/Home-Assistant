@@ -521,7 +521,13 @@ class RemoteSatellite:
                 protocol.send(self._stream, kind, payload, **fields)
                 return True
             except OSError as e:
-                logger.warning(f"Couldn't send '{kind}' to the {self.name} satellite ({e})")
+                if isinstance(e, (BrokenPipeError, ConnectionResetError)):
+                    # Not a warning: the brain is only finding out late - after it was
+                    # paused, say, when the satellite gave up on it and hung up, leaving
+                    # its pings to be answered. Its going is logged as well.
+                    logger.info(f"The {self.name} satellite had already hung up, so '{kind}' wasn't sent")
+                else:
+                    logger.warning(f"Couldn't send '{kind}' to the {self.name} satellite ({e})")
                 # Set before anything else can be sent after what may be half a message.
                 self._connected = False
         self._lost()
