@@ -208,6 +208,20 @@ def test_the_registry_is_read_into_a_snapshot():
     assert snapshot.read_at > 0
 
 
+def test_an_entitys_own_area_comes_before_its_devices():
+    # A lamp's power sensor moved to the hall, while the lamp's device is in the bedroom.
+    class Moved(FakeSocket):
+        def call(self, messages):
+            answers = super().call(messages)
+            if messages[0]["type"] == "config/entity_registry/list":
+                answers[0] = ENTITIES + [{"entity_id": "sensor.lamp_power", "platform": "hue", "device_id": "dev_lamp",
+                                          "area_id": "hall", "unique_id": "lamp-power", "original_name": "Power"}]
+            return answers
+    snapshot = HomeRegistry(Moved()).read()
+    assert snapshot.area_name("sensor.lamp_power") == "Hall"
+    assert snapshot.area_name("light.bedroom_light") == "Bedroom"
+
+
 def test_hass_agents_buttons_are_found_by_their_device_and_kind():
     snapshot = HomeRegistry(FakeSocket()).read()
     assert snapshot.hass_agent_buttons() == {
@@ -406,6 +420,25 @@ def test_no_snapshot_until_a_read_works_and_none_while_reads_fail(caplog):
         registry.refresh()
         assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
         assert registry.snapshot() is None
+
+
+def test_the_thread_reads_before_it_first_waits_then_waits_every_after_a_success():
+    # Its waits, each with how many reads had been made by then - stopping after two.
+    waits = []
+
+    class Stopping:
+        def is_set(self):
+            return len(waits) == 2
+
+        def wait(self, seconds):
+            waits.append((seconds, registry.snapshot() is not None, len(socket.calls)))
+
+    socket = FakeSocket()
+    registry = HomeRegistry(socket, every=300, retry=30)
+    registry._stopping = Stopping()
+    registry._run()
+    # A read is two calls: the list, then each entity in full.
+    assert waits == [(300, True, 2), (300, True, 4)]
 
 
 def test_the_thread_reads_at_once_then_retries_sooner_after_a_failure():

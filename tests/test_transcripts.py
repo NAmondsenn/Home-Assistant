@@ -18,7 +18,7 @@ from voice_assistant.actions import Action, ActionExecutor
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import Conversation
 from voice_assistant.ha_registry import Entry, Snapshot
-from voice_assistant.home_assistant import HomeAssistant
+from voice_assistant.home_assistant import LIGHTS_TEMPLATE, HomeAssistant
 from voice_assistant.intents import LocalIntents
 
 # What the user says, and asks for - none of which may be in the log.
@@ -53,6 +53,9 @@ class FakeHomeSession:
         if url.endswith("/api/states"):
             return FakeResponse([{"entity_id": "light.reading_lamp", "attributes": {"friendly_name": "Reading lamp"}}])
         if url.endswith("/api/template"):
+            # The lights' template alone, so another the run asks for fails, rather than
+            # being given the lights.
+            assert kwargs["json"]["template"] == LIGHTS_TEMPLATE, kwargs["json"]["template"]
             return FakeResponse([{"entity_id": "light.driveway", "area": "Garden", "state": "on",
                                   "attributes": {"friendly_name": "Gate lights"}}])
         return FakeResponse({"response": {"response_type": "action_done",

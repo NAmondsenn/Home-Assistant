@@ -2011,6 +2011,17 @@ def _said_too_deep(caplog):
     return [(record.name, record.getMessage()) for record in caplog.records if "too deep" in record.getMessage()]
 
 
+def test_a_script_too_deep_to_walk_is_said_once_by_each_home_assistant(make_home, caplog):
+    # The settings page asks every fifteen seconds, so it's said once, not each time - by
+    # each HomeAssistant, which keeps its own, and by the guard's logger.
+    with caplog.at_level("WARNING", logger="voice_assistant.ha_guard"):
+        for _ in range(2):
+            home = _scripted(make_home, {"script.deep": ("Deep", TooDeep("[[[["))}, LAMP)
+            for _ in range(3):
+                assert home.works_guarded("script.deep", *_now(home))
+    assert _said_too_deep(caplog) == [("voice_assistant.ha_guard", TOO_DEEP)] * 2
+
+
 def test_a_script_too_deep_to_walk_is_said_again_once_its_been_put_right(make_home, caplog):
     # Said once while it stays too deep - and again should it go too deep after it's been
     # put right, rather than never again until Nova restarts.
@@ -2631,6 +2642,15 @@ def test_lights_are_found_by_name_other_name_or_room(make_home):
     assert called("attic lights") is None and called("the toaster") is None
 
 
+def test_lamp_means_the_rooms_lights_when_no_light_is_called_that(make_home):
+    # As "lights" does: "dim the lamps", with only a ceiling light in the bedroom.
+    home = _house(make_home, BEDROOM_LIGHT_WARM, KITCHEN_LIGHT)
+    lights = home._in_order(home.lights())
+    for words in ("lamp", "the lamps", "bedroom lamps"):
+        assert [light["id"] for light in home.lights_called(words, lights)] == ["light.bedroom_light"], words
+    assert [light["id"] for light in home.lights_called("kitchen lamp", lights)] == ["light.kitchen_light"]
+
+
 def test_a_name_shared_across_rooms_is_novas_rooms_light(make_home):
     # As Assist has it: "dim the lamp", with a Lamp in the bedroom and one in the kitchen,
     # is the bedroom's when Nova's there.
@@ -2729,8 +2749,7 @@ def test_dimming_with_no_room_known_asks_which(make_home):
 
 def test_dimming_with_home_assistant_down_says_so(make_home):
     home = make_home({"/api/template": requests.ConnectionError("down")})
-    result = home.dim("down", "lights")
-    assert result["success"] is False and "not_understood" not in result
+    assert home.dim("down", "lights") == {"success": False, "message": "I can't reach Home Assistant right now."}
 
 
 @pytest.mark.parametrize("direction", ["down", "up"])
@@ -2771,6 +2790,40 @@ def test_a_refused_light_sentence_is_done_by_novas_own_lights(make_home):
     assert (result.ok, result.confirm) == (True, "chime")
     assert _dimmed(home) == [("turn_on", {"entity_id": ["light.porch"]})]
     assert "/api/conversation/process" not in [path for _, path, _ in home._session.requests]
+
+
+def test_a_light_sentence_refused_by_its_words_is_done_by_novas_own_lights(make_home):
+    # "Garage" is never said to Assist, whatever's called that - but a light is only ever
+    # a light, so Nova's own lights switch it.
+    garage = _rendered_light("light.garage_light", "Garage light", "Garage", state="off")
+    home = _house(make_home, garage)
+    home._session.answers["/api/states"] = [_thing("light.garage_light", "Garage light")]
+    home._session.answers["/api/conversation/process"] = _assist("action_done", "Done")
+    action, = LocalIntents(home=home).match("Turn on the garage light.")["actions"]
+    result = ActionExecutor(home=home).execute(action)
+    assert (result.ok, result.confirm) == (True, "chime")
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.garage_light"]})]
+    assert "/api/conversation/process" not in _paths(home) and home.socket.calls == []
+
+
+def test_a_light_sentence_that_fails_for_another_reason_isnt_done_by_novas_own_lights(make_home):
+    # Only a refusal is handed over: with Home Assistant's states out of reach, the light
+    # sentence says so rather than switching the lamp regardless.
+    home = _house(make_home, LAMP_OFF)
+    home._session.answers["/api/states"] = requests.ConnectionError("down")
+    result = ActionExecutor(home=home).execute(Action("control_home", {
+        "command": "turn on the lamp", "on": True, "words": "the lamp"}))
+    assert (result.ok, result.say) == (False, "I can't reach Home Assistant right now.")
+    assert _dimmed(home) == [] and "/api/template" not in _paths(home)
+
+
+def test_a_guarded_thing_without_a_name_doesnt_refuse_a_light_sentence(make_home):
+    # No name at all is never taken for one found in every request - and a lock whose
+    # name is empty or missing is still known by its entity id's words.
+    states = [_thing("lock.front_door", None), _thing("lock.back_door", ""), _thing("light.lamp", "Lamp")]
+    home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Done")})
+    assert home.command("turn on the lamp")["success"]
+    assert home.command("turn on the front door") == REFUSED and home.command("turn on the back door") == REFUSED
 
 
 def test_a_refused_light_sentence_naming_no_light_goes_to_claude(make_home):
