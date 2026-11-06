@@ -76,7 +76,7 @@ class Conversation:
 
     def __init__(self, clock, intents, llm, actions, music, chime_enabled: Union[bool, Callable[[], bool]] = True,
                  max_follow_ups: int = 3, routines=None, satellite: Optional[str] = None,
-                 playing: Optional[Callable[[], List[str]]] = None):
+                 playing: Optional[Callable[[], List[str]]] = None, progress: Optional[Callable[[], None]] = None):
         """
         Args:
             clock: The Clock, for what's ringing and for dismissing it.
@@ -96,6 +96,10 @@ class Conversation:
                 can hear, and so stop - or None for anything ringing anywhere.
             playing: Gives the names of what's playing in the user's room - see
                 Session.playing_here - or None for nothing ever playing.
+            progress: Called with nothing as a turn gets on - once for each of Claude's
+                replies, and each step of a routine - so a routine of several slow steps
+                isn't taken for one which is stuck (see Session.moved_at). Never while
+                waiting on anything, so one which is stuck still stops calling it.
         """
         self.clock = clock
         self.intents = intents
@@ -107,6 +111,7 @@ class Conversation:
         self.routines = routines
         self.satellite = satellite
         self.playing = playing
+        self.progress = progress or (lambda: None)
         self.start()
 
     @property
@@ -371,6 +376,7 @@ class Conversation:
         # What Claude reads, such as home_status, goes back to it to answer from.
         result = self.llm.process_query(text, context=timers, lights=lights, playing=playing,
                                         read=lambda action: self.actions.execute(action).say)
+        self.progress()
         if result.get("not_for_me"):
             result["playing"] = playing
         return result
@@ -436,6 +442,7 @@ class Conversation:
         said, shown, sounds = [], [], []
         for step in routine["steps"]:
             reply = self.handle(step, timeline=timeline, in_routine=True)
+            self.progress()
             said.append(reply.say)
             shown.append(reply.shown)
             sounds.extend(sound for sound in reply.sounds if sound not in sounds)

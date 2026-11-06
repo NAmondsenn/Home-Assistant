@@ -705,6 +705,28 @@ def test_a_routines_steps_are_each_done_as_if_said_and_their_answers_said_togeth
     assert reply.say == "It's sunny." and reply.sounds == [("success_chime.wav", "general")]
 
 
+def test_a_long_turn_says_its_getting_on_after_each_of_claudes_replies_and_each_step():
+    # A routine of slow steps could outlast the watchdog's allowance, though every one
+    # of them was getting on - see Session.moved_at. Once for each, and never while waiting.
+    llm = FakeLLM(_answer("It's sunny."), _answer("Okay.", Action("home_command", {"request": "turn on the lights"})))
+    intents = FakeIntents({"pause": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    moves = []
+    conversation = _conversation(intents=intents, llm=llm, routines=FakeRoutines(MORNING),
+                                 progress=lambda: moves.append(list(llm.asked)))
+    conversation.handle("good morning")
+
+    # Claude's two replies, and the three steps - the second of which went no further than Nova.
+    assert moves == [["what's the weather"], ["what's the weather"], ["what's the weather"],
+                     ["what's the weather", "turn on the lights"], ["what's the weather", "turn on the lights"]]
+
+
+def test_a_turn_handled_without_claude_doesnt_say_its_getting_on():
+    moves = []
+    intents = FakeIntents({"pause": _answer("Okay.", Action("control_playback", {"action": "pause"}))})
+    _conversation(intents=intents, progress=lambda: moves.append(1)).handle("pause")
+    assert moves == []
+
+
 def test_a_routine_runs_a_home_assistant_script_through_assist():
     class RecordingActions(FakeActions):
         def execute(self, action):

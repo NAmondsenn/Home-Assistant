@@ -105,7 +105,9 @@ AWAY_WAIT = 2.0
 # than a turn legitimately goes between steps which count as moving - a web search
 # retried once (two lots of llm.search_timeout) after a recording of up to 30 seconds,
 # the most a satellite sends whatever the brain says - while a session between wake
-# words, or playing a reply of any length, moves several times a second.
+# words, or playing a reply of any length, moves several times a second. Each of
+# Claude's replies and each step of a routine count as moving too, so a routine of
+# several slow steps fits.
 # nova-backend.service's WatchdogSec=60 then restarts the brain within a minute of the
 # watchdog going quiet: three and a half minutes from a session sticking, at most,
 # which its satellite rides out, ringing from its copy.

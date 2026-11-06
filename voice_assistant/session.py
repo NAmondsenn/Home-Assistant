@@ -162,7 +162,10 @@ class Session:
         self._closed = threading.Event()
         self._closing = threading.Lock()
         # When the session's own thread was last seen getting on, by time.monotonic():
-        # between wake words, and as a reply plays, however long it is. The brain stops
+        # between wake words, and as a reply plays, however long it is - and as each of
+        # Claude's replies and each step of a routine comes in, on whichever thread runs
+        # it (see Conversation's progress), so a routine of slow steps doesn't look
+        # stuck, nor a wake word waiting on a routine run by itself. The brain stops
         # telling systemd it's working once a session has been still too long - stuck
         # part way through a turn, with its satellite still connected and pinging, so
         # that nothing else would notice. See Brain.last_moved.
@@ -235,7 +238,7 @@ class Session:
                                          chime_enabled=lambda: self.chime_enabled,
                                          max_follow_ups=self.thresholds.get("max_follow_ups", 3),
                                          routines=brain.routines, satellite=satellite.name,
-                                         playing=self.playing_here)
+                                         playing=self.playing_here, progress=self._moved)
 
     @property
     def thresholds(self) -> Dict:

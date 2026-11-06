@@ -695,6 +695,17 @@ def test_a_session_stuck_in_a_turn_stops_moving(brain, connect, make_session):
         let_go.set()
 
 
+def test_a_long_turn_moves_as_each_of_claudes_replies_comes(make_session, monkeypatch):
+    # A routine of slow steps, said to the satellite, looked stuck once it outlasted the
+    # watchdog's allowance - see Conversation's progress.
+    session = make_session()
+    monkeypatch.setattr(session.llm, "process_query",
+                        lambda text, **kwargs: {"response": "Paris.", "actions": [], "success": True})
+    session.moved_at = moved_at = time.monotonic() - 100
+    assert session.conversation.handle("what's the capital of France").say == "Paris."
+    assert session.moved_at > moved_at
+
+
 def test_a_reply_nobody_talks_over_plays_to_the_end(connect, make_session):
     satellite, pi = connect()
     session = make_session(satellite)
