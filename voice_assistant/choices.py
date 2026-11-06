@@ -23,9 +23,10 @@ class ChoiceStore:
     A dictionary of choices kept in one JSON file, with one lock guarding it and every save.
 
     Only the defaults' keys are kept, so an old or hand-edited file can't bring in a key
-    nothing reads. A change is made to a copy and saved before it is kept, so a save that
-    fails leaves the state as it was. The state itself is never changed in place, which
-    lets a reader holding the lock look at it without a copy.
+    nothing reads. Nor can it bring in a value of another type than its default's, unless
+    the default is None - a choice not yet made. A change is made to a copy and saved
+    before it is kept, so a save that fails leaves the state as it was. The state itself is
+    never changed in place, which lets a reader holding the lock look at it without a copy.
     """
 
     def __init__(self, path: str, defaults: Dict[str, Any]):
@@ -43,10 +44,19 @@ class ChoiceStore:
             # Better to start with the defaults than to refuse to start.
             logger.warning(f"Couldn't read {path}, starting with the defaults: {e}")
             saved = {}
-        if isinstance(saved, dict):
-            for key in self._state:
-                if key in saved:
-                    self._state[key] = saved[key]
+        if not isinstance(saved, dict):
+            logger.warning(f"{path} isn't a dictionary of choices, starting with the defaults")
+            saved = {}
+        for key, default in defaults.items():
+            if key not in saved:
+                continue
+            # A default of None is a choice not yet made, such as a weather place, which is a name once it is.
+            # An exact type, as True == 1 and a whole number isn't a switch.
+            if default is not None and type(saved[key]) is not type(default):
+                logger.warning(f"{path} has '{key}' as a {type(saved[key]).__name__}, not a "
+                               f"{type(default).__name__}, so it starts as the default")
+                continue
+            self._state[key] = saved[key]
 
     @property
     def state(self) -> Dict:

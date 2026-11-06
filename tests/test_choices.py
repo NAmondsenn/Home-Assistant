@@ -31,6 +31,52 @@ def test_a_file_that_cant_be_read_starts_with_the_defaults_and_says_so(tmp_path,
     assert f"Couldn't read {path}, starting with the defaults" in caplog.text
 
 
+@pytest.mark.parametrize("text", ["[1, 2]", '"on"', "7", "null"])
+def test_a_file_that_isnt_a_dictionary_starts_with_the_defaults_and_says_so(tmp_path, caplog, text):
+    path = tmp_path / "choices.json"
+    path.write_text(text)
+
+    with caplog.at_level(logging.WARNING):
+        store = ChoiceStore(str(path), DEFAULTS)
+
+    assert store.get("names") == {} and store.get("on") is True
+    assert f"{path} isn't a dictionary of choices, starting with the defaults" in caplog.text
+
+
+def test_a_value_of_another_type_than_the_default_is_skipped_and_says_so(tmp_path, caplog):
+    path = tmp_path / "choices.json"
+    path.write_text('{"names": ["a"], "on": "no"}')
+
+    with caplog.at_level(logging.WARNING):
+        store = ChoiceStore(str(path), DEFAULTS)
+
+    assert store.get("names") == {} and store.get("on") is True
+    assert f"{path} has 'names' as a list, not a dict, so it starts as the default" in caplog.text
+    assert f"{path} has 'on' as a str, not a bool, so it starts as the default" in caplog.text
+
+
+def test_only_the_values_of_the_wrong_type_are_skipped(tmp_path):
+    path = tmp_path / "choices.json"
+    path.write_text('{"names": {"a": 1}, "on": 1}')
+
+    store = ChoiceStore(str(path), DEFAULTS)
+
+    # A whole number isn't true, though Python says True == 1.
+    assert store.get("names") == {"a": 1} and store.get("on") is True
+
+
+def test_a_choice_which_starts_as_none_may_be_anything_once_made(tmp_path, caplog):
+    # A weather place or a main list is None until it's chosen, and a name or an id after.
+    path = tmp_path / "choices.json"
+    path.write_text('{"entity": "weather.home"}')
+
+    with caplog.at_level(logging.WARNING):
+        store = ChoiceStore(str(path), {"entity": None})
+
+    assert store.get("entity") == "weather.home"
+    assert caplog.text == ""
+
+
 def test_only_the_defaults_keys_are_kept(tmp_path):
     path = tmp_path / "choices.json"
     path.write_text('{"on": false, "stray": 1}')
