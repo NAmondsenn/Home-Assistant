@@ -431,6 +431,19 @@ def test_the_page_is_told_whats_playing_and_the_playlists_are_kept_a_while(files
     assert player.asked_for_playlists == 1
 
 
+def test_a_removed_satellites_playlists_are_not_kept(files):
+    sessions = {"bedroom": FakeSession(music=FakePlayer()), "kitchen": FakeSession(music=FakePlayer())}
+    page = _page(sessions=sessions)
+    page.music_state("bedroom")
+    page.music_state("kitchen")
+    assert set(page._playlists) == {"bedroom", "kitchen"}
+
+    assert page.remove_satellite("kitchen", LOGIN)["success"]
+    assert set(page._playlists) == {"bedroom"}
+    # Nor when it wasn't asked about, or isn't a satellite.
+    assert page.remove_satellite("ghost", LOGIN)["success"] is False and set(page._playlists) == {"bedroom"}
+
+
 class FakeSpotifyOAuth:
     """Stands in for spotipy's SpotifyOAuth through a sign-in, writing the cache as it does."""
 

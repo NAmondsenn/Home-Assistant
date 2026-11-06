@@ -1729,6 +1729,8 @@ class SettingsPage:
         emptied = self.brain.remove_satellite(name) if name in names else None
         if emptied is None:
             return {"success": False, "message": f"There's no satellite called {name}."}
+        # Added again with the same name, it shouldn't be offered its old playlists.
+        self._playlists.pop(name, None)
         logger.info(f"Settings page: {who} removed the {name} satellite")
         if not emptied:
             # Said whatever the question said, which was asked from what the page
