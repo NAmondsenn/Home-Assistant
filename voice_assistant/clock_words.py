@@ -254,9 +254,9 @@ class ClockWords:
     # Said last, these mean "stop" whatever was heard before them. "Stop" alone,
     # over a timer, has come back as "It's a little bus stop" - which still went to
     # Claude, and only stopped the timer by the roundabout route of being talked over.
-    # Moonshine (see speech_to_text.py) hears a lone "stop" as "soap", "sop", or
-    # just "so" - which, said over a timer, went to Claude, who replied "Your message
-    # just says 'So'" and asked what was wanted.
+    # The old Moonshine speech-to-text heard a lone "stop" as "soap", "sop", or just
+    # "so" - which, said over a timer, went to Claude, who replied "Your message just
+    # says 'So'" and asked what was wanted.
     STOP_WORDS = {"stop", "enough", "cancel", "dismiss", "quiet", "shush", "silence", "mute", "soap", "sop", "so"}
 
     # A plain answer to a yes/no question - see answer_to_offer. "Okay" and "right"
