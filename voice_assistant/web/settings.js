@@ -1054,6 +1054,9 @@ function steadily(spacing, deliver) {
 
   function push() {
     if (sending || waiting) return;
+    // Before any wait, so nothing waits with nothing new to send - else it read as busy
+    // for the spacing after every save, and a box left then wasn't redrawn.
+    if (latest === sent) return;
     const wait = sentAt + spacing - Date.now();
     if (wait > 0) {
       waiting = setTimeout(() => {
@@ -1062,7 +1065,6 @@ function steadily(spacing, deliver) {
       }, wait);
       return;
     }
-    if (latest === sent) return;
     const value = latest;
     sending = true;
     sent = value;

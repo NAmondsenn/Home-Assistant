@@ -1427,6 +1427,8 @@ def test_the_pages_script_and_style_are_served_with_its_safety_headers(served, p
         # Its steps are saved one at a time, so they land in order, not each straight off the change.
         assert b"saveMarks.send(boxes.map((each) => Number(each.value)))" in body
         assert b'steadily(MARK_EVERY, (marked) => changeBattery("/api/batteries", { id: device.id, marks: marked }))' in body
+        # Nothing waits with nothing new to send, so it isn't busy straight after a save - and a box left then is redrawn.
+        assert body.index(b"if (latest === sent) return;") < body.index(b"const wait = sentAt + spacing - Date.now();")
         # Stop stays hidden until Nova has answered it.
         assert b"!stoppable || stopping" in body
 
