@@ -35,12 +35,16 @@ class FakePlayback:
 
 
 class FakeSpeaker:
-    def __init__(self):
+    def __init__(self, unplayable=()):
         self.calls = []
         self.playbacks = []
+        # Files it can't play, missing or unreadable, for which the real speaker gives None.
+        self.unplayable = set(unplayable)
 
     def play_file(self, filename, volume=1.0, kind="reply", cache=True, start=0.0, length=None):
         self.calls.append({"filename": filename, "volume": volume, "kind": kind, "cache": cache})
+        if filename in self.unplayable:
+            return None
         playback = FakePlayback()
         self.playbacks.append(playback)
         return playback
@@ -223,6 +227,27 @@ def test_a_ring_plays_only_one_of_the_satellites_own_sounds(tmp_path):
     assert speaker.calls[0]["filename"] == "/sounds/alarm_sound.wav"
 
 
+def test_an_alarm_whose_sound_is_missing_rings_on_without_spinning_and_is_dismissed(tmp_path):
+    copy, state, _, _ = make(tmp_path)
+    speaker = FakeSpeaker(unplayable={"/sounds/alarm_sound.wav"})
+    ringer = FallbackRinger(speaker, "/sounds", copy, state)
+    copy.replace([entry()])
+    ringer.check(NOW)
+    assert wait_for(lambda: speaker.calls)
+    time.sleep(0.2)
+
+    # Tried again each second, rather than as fast as the thread can go - and still
+    # ringing, so the brain is told to take it over.
+    assert len(speaker.calls) == 1
+    assert ringer.ringing_ids() == ["alarm-1@1729587600"]
+    dismissing = time.monotonic()
+    ringer.dismiss()
+    # At once, not once the second's wait is up.
+    assert time.monotonic() - dismissing < 0.9
+    assert not ringer.ringing
+    assert copy.away_report() == {"rang": ["alarm-1@1729587600"], "dismissed": ["alarm-1@1729587600"]}
+
+
 def test_a_ring_going_as_the_satellite_stops_carries_on_once_it_starts_again(tmp_path):
     # Its watchdog, a crash or the power. Knowing only that the alarm had rung, the
     # copy rang it no more - and the brain, told just that, neither rang it nor said
@@ -306,6 +331,24 @@ def test_an_alarm_long_missed_isnt_rung(tmp_path):
     assert speaker.calls == []
     assert not ringer.ringing
     assert copy.due(NOW + fallback.GRACE) != []
+
+
+def test_what_rang_stays_rung_while_the_brain_lists_it_and_is_forgotten_once_it_doesnt(tmp_path):
+    # The brain sends its copy whenever it changes. What rang isn't rung twice while the
+    # brain still lists it, and is forgotten once it doesn't - to ring again if the brain
+    # lists it later, as it does one whose ringing it took over and then lost.
+    copy, state, speaker, ringer = make(tmp_path)
+    both = [entry("alarm-1@1", NOW), entry("alarm-2@1", NOW + 100)]
+    copy.replace(both)
+    copy.rang(entry("alarm-1@1", NOW), NOW)
+
+    copy.replace(both)
+    assert copy.due(NOW + 1) == []
+
+    copy.replace([entry("alarm-2@1", NOW + 100)])
+    copy.replace(both)
+    assert [due["id"] for due in copy.due(NOW + 1)] == ["alarm-1@1"]
+    assert AlarmCopy(str(tmp_path / "copy.json")).due(NOW + 1) == copy.due(NOW + 1)
 
 
 def test_the_away_report_says_what_rang_and_what_was_dismissed(tmp_path):
@@ -399,3 +442,24 @@ def test_a_phrase_whose_folder_cant_be_made_is_logged_and_the_default_said(tmp_p
     speaker = FakeSpeaker()
     phrase.play(speaker, 0.7)
     assert [call["filename"] for call in speaker.calls] == ["/sounds/cant_reach_server.wav"]
+
+
+def test_the_brains_phrase_which_cant_be_played_gives_way_to_the_default(tmp_path):
+    phrase = Phrase(str(tmp_path / "phrase.wav"), "/sounds/cant_reach_server.wav")
+    phrase.replace(b"\x00\x00" * 100, 22050)
+
+    # Corrupt, so the speaker can't read it.
+    speaker = FakeSpeaker(unplayable={str(tmp_path / "phrase.wav")})
+    assert phrase.play(speaker, 0.7) is speaker.playbacks[-1]
+    assert [call["filename"] for call in speaker.calls] == [str(tmp_path / "phrase.wav"),
+                                                            "/sounds/cant_reach_server.wav"]
+
+    # Gone.
+    os.remove(tmp_path / "phrase.wav")
+    speaker = FakeSpeaker()
+    phrase.play(speaker, 0.7)
+    assert [call["filename"] for call in speaker.calls] == ["/sounds/cant_reach_server.wav"]
+
+    # And neither playable is None, for the satellite to carry on without.
+    speaker = FakeSpeaker(unplayable={"/sounds/cant_reach_server.wav"})
+    assert phrase.play(speaker, 0.7) is None
