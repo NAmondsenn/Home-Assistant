@@ -1133,8 +1133,9 @@ class HomeAssistant:
             Dict with 'success' and a 'message', and a 'chime' for success when
             something changed, since the lights changing speaks for itself. A
             'not_understood' of True when Nova doesn't know the lights, so that Claude
-            is asked.
+            is asked. A failure after some of the lights have changed says how many.
         """
+        moved, moving = 0, 0
         try:
             found, reply = self._lights_to_work(words)
             if reply:
@@ -1151,12 +1152,19 @@ class HomeAssistant:
                     return {"success": True, "message": "Those lights only switch on and off."}
                 return {"success": True,
                         "message": "They're as dim as they go." if direction == "down" else "They're as bright as they go."}
+            moving = sum(len(ids) for ids in by_brightness.values())
             for brightness, ids in by_brightness.items():
                 logger.info(f"Lights dimmed {direction}: {ids} to {brightness}%")
                 self._call_service("light", "turn_on", {"entity_id": ids, "brightness_pct": brightness})
+                moved += len(ids)
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self.failure_message(e)}
+            said = self.failure_message(e)
+            # Each brightness is a call of its own, so the lights moved before the failure
+            # stay moved - "dim the lights" can leave the lamp dimmed and the ceiling light not.
+            if moved:
+                said += f" Only {moved} of the {moving} lights changed."
+            return {"success": False, "message": said}
         return {"success": True, "message": "Done.", "chime": True}
 
     def switch_lights(self, on: bool, words: str, brightness: Optional[int] = None) -> Dict:

@@ -2780,6 +2780,34 @@ def test_lights_that_cant_be_reached_are_said_so(make_home):
     assert _dimmed(home) == []
 
 
+class FailsAfter(FakeResponse):
+    """Answers a service call the first few times, then fails as Home Assistant with a problem does."""
+
+    def __init__(self, answered):
+        super().__init__("")
+        self.answered = answered
+
+    def raise_for_status(self):
+        self.answered -= 1
+        if self.answered < 0:
+            raise requests.HTTPError("500", response=FakeResponse("", status=500))
+
+
+def test_a_failure_partway_through_dimming_says_how_many_lights_changed(make_home):
+    # Each brightness is a call of its own, so the lights already dimmed stay dimmed.
+    lamp = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=204)
+    bedroom = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=51)
+    kitchen = _rendered_light("light.kitchen_light", "Kitchen Light", "Bedroom", brightness=51)
+    home = _house(make_home, lamp, bedroom, kitchen)
+    home._session.answers[TURN_ON] = FailsAfter(1)
+    assert home.dim("down", "the lights") == {
+        "success": False, "message": "Home Assistant had a problem with that. Only 2 of the 3 lights changed."}
+    # A failure at the first call is said as ever, with nothing changed.
+    home = _house(make_home, lamp, bedroom)
+    home._session.answers[TURN_ON] = FailsAfter(0)
+    assert home.dim("down", "the lights") == {"success": False, "message": "Home Assistant had a problem with that."}
+
+
 def test_only_the_lights_that_can_be_reached_are_dimmed(make_home):
     gone = _rendered_light("light.lamp", "Lamp", "Bedroom", state="unavailable")
     bright = _rendered_light("light.bedroom_light", "Bedroom Light", "Bedroom", brightness=255)
