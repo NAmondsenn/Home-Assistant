@@ -443,6 +443,7 @@ def test_a_refresh_under_way_as_another_account_signs_in_doesnt_save_over_it(mon
         thread = threading.Thread(target=sign_in)
         thread.start()
         thread.join(5)
+        assert not thread.is_alive()
 
     refreshing.meanwhile = signed_in_on_the_page
     # The command it was for still has its token.
