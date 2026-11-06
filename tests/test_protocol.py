@@ -227,18 +227,34 @@ def test_a_wrong_password_is_refused():
 
 def test_the_brain_refuses_a_proof_which_is_wrong():
     near, far = socket.socketpair()
+    near.settimeout(5)
+    far.settimeout(5)
     brain_stream, satellite_stream = far.makefile("rwb"), near.makefile("rwb")
-    protocol.send(satellite_stream, "hello", name="bedroom", hostname="h", sample_rate=48000,
-                  unclean=True, nonce="0" * 32)
-    # Replies with the proof the brain itself gave, which is for the wrong role.
-    brain = threading.Thread(target=lambda: pytest.raises(protocol.Refused, protocol.admit,
-                                                          brain_stream, {"bedroom": PASSWORD}.get))
-    brain.start()
-    challenge, _ = protocol.receive(satellite_stream)
-    protocol.send(satellite_stream, "proof", proof=challenge["proof"])
+    outcome = []
 
-    assert protocol.receive(satellite_stream)[0]["type"] == "refused"
-    brain.join(5)
+    def brain():
+        # Kept, as nothing raised in a thread is seen by the test.
+        try:
+            outcome.append(protocol.admit(brain_stream, {"bedroom": PASSWORD}.get))
+        except Exception as e:
+            outcome.append(e)
+
+    thread = threading.Thread(target=brain)
+    try:
+        protocol.send(satellite_stream, "hello", name="bedroom", hostname="h", sample_rate=48000,
+                      unclean=True, nonce="0" * 32)
+        thread.start()
+        challenge, _ = protocol.receive(satellite_stream)
+        # Replies with the proof the brain itself gave, which is for the wrong role.
+        protocol.send(satellite_stream, "proof", proof=challenge["proof"])
+
+        assert protocol.receive(satellite_stream)[0]["type"] == "refused"
+        thread.join(5)
+        assert not thread.is_alive()
+        assert len(outcome) == 1 and isinstance(outcome[0], protocol.Refused)
+    finally:
+        for closing in (brain_stream, satellite_stream, near, far):
+            closing.close()
 
 
 def test_a_brain_which_cant_prove_the_password_is_refused():
