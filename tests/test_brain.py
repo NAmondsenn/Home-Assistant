@@ -232,6 +232,15 @@ def make_brain(tmp_path, monkeypatch, make_config, passwords):
     yield make
     for brain in made:
         brain.stop()
+    # For a brain which listened (see serving), stopped for good: the thread which listened
+    # has ended, and every session with it - each satellite's own thread forgets its
+    # session as the brain lets it go. One a test put in by hand has no such thread.
+    for brain in made:
+        listening = getattr(brain, "listening", None)
+        if listening is not None:
+            listening.join(5)
+            assert not listening.is_alive(), "The thread which listened for satellites outlived stop()"
+            assert wait_for(lambda: not brain.sessions), f"stop() left sessions: {sorted(brain.sessions)}"
 
 
 @pytest.fixture
@@ -241,7 +250,8 @@ def brain(make_brain):
 
 def serving(brain):
     """Has the brain listen for satellites, on a thread of its own, as run() does on the main one."""
-    threading.Thread(target=brain.serve, daemon=True).start()
+    brain.listening = threading.Thread(target=brain.serve, daemon=True)
+    brain.listening.start()
     assert wait_for(lambda: brain.port)
 
 
