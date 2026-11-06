@@ -1085,8 +1085,11 @@ class HomeAssistant:
             return None
         # Before the generic words, so that a light the user calls "Lamp" is the lamp
         # rather than every light in the room - "brighten the lamp" with a ceiling
-        # light in the room too.
-        named = [light for light in lights if said in [_trimmed(name) for name in [light["name"], *light["aliases"]]]]
+        # light in the room too. A name is only trimmed when that leaves more than a
+        # generic word, so a light called "All Lights" isn't "lights", taking the place
+        # of the room's lights in "dim the lights".
+        named = [light for light in lights if said in [form for name in [light["name"], *light["aliases"]]
+                                                       for form in _found_by(name)]]
         if named:
             # A name shared across rooms is Nova's own room's, as Assist has it: "dim the
             # lamp", with a Lamp in the bedroom and one in the kitchen, is the bedroom's.
@@ -1987,6 +1990,16 @@ def _trimmed(text: str) -> str:
     while words.split(" ")[0] in ("all", "the", "my") and " " in words:
         words = words.split(" ", 1)[1]
     return words
+
+
+def _found_by(name: str) -> List[str]:
+    """
+    The words a light's name or other name is found by, as said: as _plain has it, and as
+    _trimmed has it unless that's only a generic word - "The Big Lamp" is "the big lamp"
+    and "big lamp", but "All Lights" only "all lights".
+    """
+    trimmed = _trimmed(name)
+    return [_plain(name)] + ([trimmed] if trimmed not in GENERIC_LIGHT_WORDS else [])
 
 
 def _out_of_reach(lights: List[Dict]) -> Dict:

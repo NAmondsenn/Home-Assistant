@@ -2679,6 +2679,17 @@ def test_a_name_or_room_starting_with_the_or_my_is_found_as_said(make_home):
         assert [light["id"] for light in home.lights_called(words, lights)] == ["light.big_lamp"], words
 
 
+def test_a_light_called_all_lights_doesnt_take_the_place_of_the_rooms_lights(make_home):
+    # Trimmed like what was said, "All Lights" was "lights" - so "dim the lights" dimmed
+    # it alone, rather than the room's lights.
+    every = _rendered_light("light.all_lights", "All Lights", "Bedroom")
+    home = _house(make_home, LAMP_OFF, BEDROOM_LIGHT_WARM, every, KITCHEN_LIGHT)
+    lights = home._in_order(home.lights())
+    for words in ("the lights", "lights", "all the lights"):
+        assert sorted(light["id"] for light in home.lights_called(words, lights)) == [
+            "light.all_lights", "light.bedroom_light", "light.lamp"], words
+
+
 def test_lamp_means_the_rooms_lights_when_no_light_is_called_that(make_home):
     # As "lights" does: "dim the lamps", with only a ceiling light in the bedroom.
     home = _house(make_home, BEDROOM_LIGHT_WARM, KITCHEN_LIGHT)
