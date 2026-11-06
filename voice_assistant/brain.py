@@ -357,8 +357,9 @@ class Brain:
             quiet hours - or, with no ntfy, the brain's own night's.
         """
         settings = self.config.section("batteries")
+        # The marks are config.yaml's, which a Config always has, so there's no copy of them here to keep in step.
         choices = BatteryChoices(os.path.join(paths.DATA_DIR, "batteries.json"),
-                                 settings.get("mobile_marks", [5]), settings.get("other_marks", [15, 5]))
+                                 settings["mobile_marks"], settings["other_marks"])
 
         def send(message: str, title: str) -> bool:
             # The phone's topic at each warning, so one set or cleared on the settings page

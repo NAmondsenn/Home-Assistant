@@ -35,6 +35,7 @@ from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
 from voice_assistant import settings_page as settings_page_module
 from voice_assistant.batteries import BatteryWatcher
+from voice_assistant.config import Config
 from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
 from voice_assistant.media_watch import MediaWatcher
@@ -223,6 +224,9 @@ def make_brain(tmp_path, monkeypatch, make_config, passwords):
     made = []
 
     def make(**sections):
+        # The battery marks come from the settings with no fallback of the brain's own, as a real Config
+        # always has config.yaml's - which a FakeConfig has only if it's given them.
+        sections.setdefault("batteries", Config(path=str(tmp_path / "none.yaml"), quiet=True).section("batteries"))
         # One announcement a round, and no pauses, so ringing never sleeps in a test.
         config = make_config(assistant={"name": "Nova", "wake_word": "Hey Nova"}, backend={"port": 0},
                              timers={"announcements": 1, "repeat_gap": 0}, **sections)
