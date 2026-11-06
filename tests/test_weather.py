@@ -173,6 +173,29 @@ def test_a_forecast_with_less_in_it_still_says_what_it_has(choices):
     assert _said(home, choices).startswith("It's partly cloudy at the moment.")
 
 
+@pytest.mark.parametrize("odd", ["mild", "", [], {"high": 14}, True, float("nan"), float("inf")])
+def test_a_high_or_low_that_isnt_a_number_is_left_out_not_an_error(choices, odd):
+    # Met gives numbers, but a sentence is never worth an error: round("mild") raised TypeError.
+    rain = "with a 40 percent chance of rain."
+    assert _said(FakeHome(daily=[_day(0, high=odd, chance=40)]), choices) == (
+        f"It's 12 degrees and partly cloudy at the moment. Today, a low of 8, {rain}")
+    assert _said(FakeHome(daily=[_day(0, low=odd, chance=40)]), choices) == (
+        f"It's 12 degrees and partly cloudy at the moment. Today, a high of 14, {rain}")
+    assert _said(FakeHome(daily=[_day(0, high=odd, low=odd, chance=40)]), choices) == (
+        "It's 12 degrees and partly cloudy at the moment. Today, a 40 percent chance of rain.")
+    assert _said(FakeHome(daily=[_day(1, high=odd, low=odd)]), choices, day="tomorrow") == (
+        "Tomorrow, cloudy.")
+
+
+def test_a_temperature_or_chance_of_rain_that_isnt_a_number_is_left_out_too(choices):
+    nan = float("nan")
+    home = FakeHome(entities=[_entity(temperature=nan)], daily=[_day(0, chance=nan)], hourly=_dry_hours())
+    assert _said(home, choices) == ("It's partly cloudy at the moment. Today, a high of 14 and a low of 8, "
+                                    "and no rain expected.")
+    home = FakeHome(entities=[_entity(temperature="mild")], daily=[_day(0, chance="lots")], hourly=_dry_hours())
+    assert _said(home, choices).startswith("It's partly cloudy at the moment.")
+
+
 def test_with_several_weather_entities_the_chosen_one_is_used(choices):
     home = FakeHome(entities=[_entity("weather.other_place"), _entity("weather.home")])
     weather = Weather(home, choices)

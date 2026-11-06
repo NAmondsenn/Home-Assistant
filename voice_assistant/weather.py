@@ -10,6 +10,7 @@ so Nova says how old it is when Home Assistant last heard from Met over three ho
 """
 
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -79,7 +80,7 @@ class Weather:
             daily = _on(self.home.forecasts(entity["id"], "daily"), wanted)
             entry = daily[0] if daily else {}
             chance = entry.get("precipitation_probability")
-            if isinstance(chance, bool) or not isinstance(chance, (int, float)):
+            if not _is_number(chance):
                 chance = None
             # Met gives no chance of rain for a day, so the hours say when it's likely.
             hours = [] if chance is not None else [
@@ -149,6 +150,11 @@ class Weather:
         return min(entities, key=lambda entity: entity["id"])
 
 
+def _is_number(value) -> bool:
+    """Whether Met gave a number to say, e.g. 14.4 - not "mild", True (which Python counts as 1) or NaN."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _when(entry: Dict) -> Optional[datetime]:
     """When a forecast entry is for, in local time, or None if it doesn't say."""
     try:
@@ -165,9 +171,9 @@ def _on(entries: List[Dict], day: date) -> List[Dict]:
 def _temperatures(entry: Dict) -> List[str]:
     """A day's high and low, as far as Met gives them, e.g. ["a high of 14", "a low of 8"]."""
     said = []
-    if entry.get("temperature") is not None:
+    if _is_number(entry.get("temperature")):
         said.append(f"a high of {round(entry['temperature'])}")
-    if entry.get("templow") is not None:
+    if _is_number(entry.get("templow")):
         said.append(f"a low of {round(entry['templow'])}")
     return [" and ".join(said)] if said else []
 
@@ -218,6 +224,6 @@ def _now_said(entity: Dict) -> str:
     """How it is at the moment, e.g. "It's 12 degrees and partly cloudy at the moment."."""
     temperature = entity["attributes"].get("temperature")
     conditions = CONDITIONS.get(entity["state"])
-    said = [f"{round(temperature)} degrees"] if isinstance(temperature, (int, float)) else []
+    said = [f"{round(temperature)} degrees"] if _is_number(temperature) else []
     said += [conditions] if conditions else []
     return f"It's {' and '.join(said)} at the moment." if said else ""
