@@ -314,8 +314,8 @@ def test_a_button_chosen_from_a_stale_read_and_gone_since_is_never_pressed(tmp_p
     # Read for the page, then removed from Home Assistant before the choice is saved.
     power, home = _two_pcs(tmp_path)
     seen = power.overview()
-    home.registry_read = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"}, "sensor.study_cpu"),
-                              wake=("button.wake_study_pc", "button.wake_tv"))
+    home.registry_read = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"},
+                                              "sensor.study_cpu"), wake=("button.wake_study_pc", "button.wake_tv"))
     home.state_list = _states(home.registry_read, on=False)
     power.choose_wake("desk", "button.wake_desk_pc", seen)
     assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
