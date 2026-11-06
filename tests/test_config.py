@@ -72,6 +72,8 @@ def test_an_empty_file_of_its_own_is_fine(config_with):
     ("batteries:\n  other_marks: 15\n", "'batteries.other_marks' should be a list"),
     ("music: spotify\n", "'music' should be settings under it"),
     ("music:\n  player: [spotify\n", "isn't valid YAML"),
+    # Past Python's 4,300 digits, which it won't read as a number.
+    pytest.param("thresholds:\n  silence_duration: " + "9" * 5000 + "\n", "isn't valid YAML", id="too-long-a-number"),
 ])
 def test_a_mistake_stops_it_starting_and_says_where(config_with, own, said):
     with pytest.raises(ConfigError) as caught:

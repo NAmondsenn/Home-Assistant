@@ -105,7 +105,8 @@ def _read(path: str) -> Dict:
     try:
         with open(path) as file:
             data = yaml.safe_load(file)
-    except yaml.YAMLError as e:
+    # A number of more than 4,300 digits is a ValueError, from Python rather than PyYAML.
+    except (yaml.YAMLError, ValueError) as e:
         raise ConfigError(f"{path} isn't valid YAML: {e}") from e
     if data is None:
         return {}
