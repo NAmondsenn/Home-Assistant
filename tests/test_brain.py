@@ -989,6 +989,36 @@ def test_the_servers_poll_doesnt_wait_for_a_removal_being_handled(brain, monkeyp
         assert polled.wait(5)
 
 
+def test_a_removal_from_the_command_line_doesnt_stop_the_brain_letting_others_in(brain, connect, passwords,
+                                                                                 monkeypatch):
+    # Handling it sends the satellite its empty copy and closes its session, which can
+    # take as long as the stream's timeout - during which the server's poll, if it did
+    # that itself, would let nobody in.
+    serving(brain)
+    kitchen = connect(brain, "kitchen", KITCHEN)
+    session = connected(brain, "kitchen")
+    sending, release = threading.Event(), threading.Event()
+
+    def send_slowly(entries):
+        sending.set()
+        release.wait(5)
+        return True
+
+    monkeypatch.setattr(session.satellite, "send_alarms", send_slowly)
+    passwords.remove("kitchen")
+    assert sending.wait(5)
+
+    # Shaking hands is all it asks of the poll - its session waits for the removal.
+    joining = threading.Thread(target=connect, args=(brain,), daemon=True)
+    joining.start()
+    joining.join(1)
+    shook_hands = not joining.is_alive()
+    release.set()
+    joining.join(5)
+    assert shook_hands
+    assert kitchen.gone.wait(5)
+
+
 def test_a_write_for_a_removed_satellite_is_refused_at_once(brain, passwords):
     # A turn still in flight, or the page's alarm or Undo, just after the removal -
     # before the brain has looked, too. Set, it would ring nowhere until a restart.

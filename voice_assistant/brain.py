@@ -195,8 +195,7 @@ class _Server(socketserver.ThreadingTCPServer):
         # Run between connections, every STOP_CHECK. Nothing in it may stop the brain
         # listening.
         try:
-            # Never waiting on a removal the page is handling - its look is enough.
-            self.brain._shut_out_removed(wait=False)
+            self.brain._shut_out_removed_soon()
         except Exception:
             logger.exception("Couldn't check for satellites which have been removed")
         # The brain's main loop is still going, and so is every session, but for one
@@ -846,6 +845,26 @@ class Brain:
                     logger.exception(f"Couldn't finish handling the {name} satellite's removal")
         finally:
             self._removing.release()
+
+    def _shut_out_removed_soon(self):
+        """
+        The server's poll's look for removals: if the passwords' file has changed since
+        it was last looked at, has the look made on a thread of its own, and returns.
+        Handling a removal sends the satellite its empty copy and closes its session,
+        which can take as long as the stream's timeout - and the poll, doing that
+        itself, would let no satellite in meanwhile. Never waits on a removal the page
+        is handling, as for _shut_out_removed's wait: its look is enough.
+        """
+        if self._passwords_file() == self._passwords_seen:
+            return
+
+        def look():
+            try:
+                self._shut_out_removed(wait=False)
+            except Exception:
+                logger.exception("Couldn't check for satellites which have been removed")
+
+        threading.Thread(target=look, daemon=True, name="removals").start()
 
     def _on_removed(self, name: str, names: List[str]):
         """
