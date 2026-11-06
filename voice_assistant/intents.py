@@ -291,8 +291,9 @@ class LocalIntents:
             (r"what(?:'s| is| will) the weather(?: (?:going to )?be)?(?: like)?(?: (?P<day>today|tomorrow))?"
              r"|what(?:'s| is) the forecast(?: for)?(?: (?P<day2>today|tomorrow))?", self._weather),
             # Dimming has no sentence of Assist's own, so Nova steps the brightness
-            # itself, from the lights' names in Home Assistant.
-            (rf"(?P<direction>dim|brighten) (?P<words>{LIGHT})", self._dim),
+            # itself, from the lights' names in Home Assistant. "Brighten up the lights"
+            # and "dim down the lamp" are said too, whose "up" and "down" aren't the name.
+            (rf"(?P<direction>dim|brighten)(?:(?<=dim) down|(?<=brighten) up)? (?P<words>{LIGHT})", self._dim),
             # The lights go straight to Home Assistant, which works out which ones
             # from the words itself - and still works with the internet down. One rule
             # for each shape, so each can name its parts for Nova's own lights, which

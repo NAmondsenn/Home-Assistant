@@ -162,6 +162,8 @@ def test_the_lights_go_straight_to_home_assistant(text, command, on, words, brig
     ("Dim the bedroom lights.", "down", "the bedroom lights"),
     ("Dim the main light.", "down", "the main light"),
     ("brighten all the lights, please", "up", "all the lights"),
+    # With the word that often goes with each, which isn't a light's name.
+    ("Brighten up the lights.", "up", "the lights"), ("Dim down the bedroom lamp.", "down", "the bedroom lamp"),
 ])
 def test_dimming_is_done_without_claude(text, direction, words):
     assert _actions(text) == [Action("dim_lights", {"direction": direction, "words": words})]
