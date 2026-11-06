@@ -250,6 +250,11 @@ class Brain:
         # Held while a satellite's copy of the timers and alarms is made and sent, so
         # an older copy can't reach it after a newer one.
         self._sending_alarms = threading.Lock()
+        # Set by the clock whenever anything on it changes, for the thread which sends
+        # each satellite its copy - see _send_alarm_copies. The clock tells of a change
+        # on whichever thread made it, its own among them, so it mustn't wait while a
+        # copy goes to a satellite which has stalled.
+        self._alarms_changed = threading.Event()
         # Held while it's seen which satellites have been removed, and each is handled
         # - by the server's poll and by remove_satellite alike, which may look at
         # once - so one removal is never handled twice.
@@ -334,7 +339,7 @@ class Brain:
         # Every satellite's timers and alarms, rung on the satellite each was set from.
         # Started in run(), once what rings on no satellite has gone to the default.
         self.clock = Clock(on_timer_finished=self._announce, on_unanswered=self._unanswered,
-                           on_change=self._send_alarms, can_hear=lambda satellite: satellite in self._caught_up,
+                           on_change=self._alarms_changed.set, can_hear=lambda satellite: satellite in self._caught_up,
                            let_in=lambda satellite: not self._gone_from_file(satellite), config=config, start=False)
 
         # One Piper, and one Nemotron, which every session shares.
@@ -669,7 +674,8 @@ class Brain:
     def serve(self):
         """
         Listens for satellites on backend.port, on this machine alone, each on a thread
-        of its own - until stop(), or a stop signal.
+        of its own, and sends each its copy of the timers and alarms as they change -
+        until stop(), or a stop signal.
         """
         server = _Server(self.port, self)
         # Started before the server is noted, so that a stop signal landing anywhere from
@@ -682,7 +688,12 @@ class Brain:
                 # First, so whatever sees the brain listening also knows where.
                 self.port = server.server_address[1]
                 self._server = server
+                # No satellite can have connected yet, and each is sent its copy as it's
+                # caught up, so what changed before now is no news to any. Cleared with
+                # the lock held, so a stop() from here on, which sets it, is never missed.
+                self._alarms_changed.clear()
             logger.info(f"Listening for satellites on port {self.port}")
+            threading.Thread(target=self._send_alarm_copies, daemon=True, name="alarm-copies").start()
             server.serve_forever(poll_interval=STOP_CHECK)
         finally:
             with self._lock:
@@ -695,6 +706,8 @@ class Brain:
             self._stopped.set()
             server = self._server
             sessions = list(self.sessions.values())
+        # Wakes the thread sending the copies, to see it's stopped.
+        self._alarms_changed.set()
         if server is not None:
             server.shutdown()
         for session in sessions:
@@ -1138,16 +1151,26 @@ class Brain:
             satellite.send_alarms(self.clock.copy_for(satellite.name))
 
     def _send_alarms(self):
-        """Sends each satellite connected its copy - whenever anything is set, rings or is dismissed."""
+        """Sends each satellite connected its copy - see _send_alarm_copies."""
         with self._lock:
             satellites = [session.satellite for session in self.sessions.values()]
         for satellite in satellites:
             if satellite.connected:
                 self._send_alarms_to(satellite)
 
-    def _send_alarms_hourly(self):
-        """Sends each satellite its copy every ALARMS_RESENT as well, until the brain stops."""
-        while not self._stopped.wait(ALARMS_RESENT):
+    def _send_alarm_copies(self):
+        """
+        Sends each satellite connected its copy whenever anything is set, rings or is
+        dismissed, and every ALARMS_RESENT as well, until the brain stops - all on this
+        one thread, so the clock never waits on a satellite (see _alarms_changed).
+        """
+        while True:
+            self._alarms_changed.wait(ALARMS_RESENT)
+            if self._stopped.is_set():
+                return
+            # Cleared before the copies are made, so a change while they're on their way
+            # is sent after them.
+            self._alarms_changed.clear()
             try:
                 self._send_alarms()
             except Exception as e:
@@ -1392,7 +1415,6 @@ class Brain:
         if self.settings_page:
             self.settings_page.start()
         threading.Thread(target=self._run_routines_when_due, daemon=True, name="routines").start()
-        threading.Thread(target=self._send_alarms_hourly, daemon=True, name="alarm-copies").start()
         if self.batteries:
             self.batteries.start()
         if self.media:

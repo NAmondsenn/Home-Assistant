@@ -1614,8 +1614,60 @@ def test_each_satellites_copy_is_sent_again_now_and_then(brain, connect, monkeyp
     serving(brain)
     satellite = connect(brain)
     connected(brain)
-    threading.Thread(target=brain._send_alarms_hourly, daemon=True).start()
     assert wait_for(lambda: len(satellite.messages("alarms")) >= 3)
+
+
+def test_a_change_on_the_clock_never_waits_for_a_satellites_copy(brain, connect):
+    # The clock tells of a change on whichever thread made it - its own, which rings
+    # everything, among them - so it mustn't wait while a copy goes to a satellite which
+    # has stalled, for up to the stream's timeout.
+    serving(brain)
+    satellite = connect(brain)
+    connected(brain)
+    with brain._sending_alarms:
+        setting = threading.Thread(target=brain.clock.set_timer, args=(600,), kwargs={"satellite": "bedroom"},
+                                   daemon=True)
+        setting.start()
+        setting.join(1)
+        assert not setting.is_alive()
+    # It's sent once the satellite takes it.
+    assert wait_for(lambda: satellite.copy() == brain.clock.copy_for("bedroom") and satellite.copy())
+
+
+def test_the_newest_copy_reaches_a_satellite_last(brain, connect):
+    # Changes made while a copy is on its way are sent after it, never before.
+    serving(brain)
+    satellite = connect(brain)
+    connected(brain)
+    held, release = threading.Event(), threading.Event()
+
+    def stalled():
+        # A copy on its way to a satellite which has stalled - for a second at most, so
+        # nothing here can wait for good.
+        with brain._sending_alarms:
+            held.set()
+            release.wait(1)
+
+    threading.Thread(target=stalled, daemon=True).start()
+    assert held.wait(5)
+    for minutes in range(1, 6):
+        brain.clock.set_timer(60 * minutes, satellite="bedroom")
+    release.set()
+    assert wait_for(lambda: satellite.copy() is not None and len(satellite.copy()) == 5)
+    time.sleep(0.1)
+    assert satellite.copy() == brain.clock.copy_for("bedroom")
+
+
+def test_the_copies_stop_being_sent_once_the_brain_stops(brain):
+    def sending():
+        return {thread for thread in threading.enumerate() if thread.name == "alarm-copies"}
+
+    before = sending()
+    serving(brain)
+    assert wait_for(lambda: sending() - before)
+    ours = sending() - before
+    brain.stop()
+    assert wait_for(lambda: not ours & sending())
 
 
 def test_listening_for_satellites_tells_the_watchdog_the_brain_is_working(brain, monkeypatch):
