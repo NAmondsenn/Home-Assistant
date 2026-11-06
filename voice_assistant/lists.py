@@ -418,6 +418,9 @@ class Lists:
             thing = fits[0]
             try:
                 self.home.tick_off(thing["list"]["id"], thing["uid"])
+            except requests.ConnectTimeout as e:
+                # A Timeout too, but nothing was sent, so it certainly wasn't ticked off.
+                return _failed("tick something off", e)
             except requests.Timeout as e:
                 # Sent, but unanswered - so it may well have been ticked off.
                 logger.warning(f"Home Assistant didn't answer in time ticking something off: {e}")
@@ -440,7 +443,8 @@ def _not_added(added: List[str], left: List[str], where: str, error: Exception) 
         where: The list as it's said, e.g. "your shopping list".
         error: Why it failed.
     """
-    if isinstance(error, requests.Timeout):
+    # A ConnectTimeout is a Timeout too, but nothing was sent - so it wasn't added.
+    if isinstance(error, requests.Timeout) and not isinstance(error, requests.ConnectTimeout):
         # Sent, but unanswered - so it may well have been added.
         unsure = f"{NO_ANSWER}, so I can't tell if {left[0]} was added"
         if not added:

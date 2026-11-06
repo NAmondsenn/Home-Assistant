@@ -1327,13 +1327,18 @@ class ActionExecutor:
 
         Returns:
             "taken" once Home Assistant took it, "no service" if the device hasn't got a notify
-            service, "unanswered" if Home Assistant didn't answer in time, "token" if it
-            refused Nova's token, else "failed" - with the error, if there was one.
+            service, "unanswered" if it was sent but Home Assistant didn't answer in time,
+            "token" if it refused Nova's token, else "failed" - with the error, if there was
+            one. A connection which timed out before anything was sent is "failed".
         """
         if device.notify is None:
             return "no service", None
         try:
             self.home.notify(device.notify, message, title=title, data=data)
+        except requests.ConnectTimeout as e:
+            # A Timeout too, but nothing was sent, so it certainly wasn't rung or sent.
+            logger.warning(f"Couldn't reach Home Assistant to {doing} the {device.name}: {e}")
+            return "failed", e
         except requests.Timeout as e:
             logger.warning(f"Home Assistant didn't answer in time to {doing} the {device.name}: {e}")
             return "unanswered", e

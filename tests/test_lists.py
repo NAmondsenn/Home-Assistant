@@ -200,6 +200,19 @@ def test_nothing_sent_says_it_wasnt_done(make_lists):
     assert lists.home.ticked == []
 
 
+def test_a_connection_that_timed_out_was_never_sent_so_it_isnt_a_cant_tell(make_lists):
+    # A ConnectTimeout is also a Timeout, but nothing reached Home Assistant - said as a refused connection is.
+    lists = make_lists(items={"todo.shopping_list": ["milk"]})
+    lists.home.add_fails["milk"] = requests.ConnectTimeout("no connection")
+    assert lists.add(["milk"], "shopping") == {"success": False,
+                                               "message": "I couldn't add that to your shopping list."}
+    assert lists.add(["eggs", "milk", "bread"], "shopping") == {
+        "success": False, "message": "Added eggs to your shopping list, but I couldn't add milk or bread."}
+    lists.home.tick_fails = requests.ConnectTimeout("no connection")
+    assert lists.tick_off("milk", "shopping") == {"success": False, "message": CANT_REACH}
+    assert lists.home.ticked == []
+
+
 def test_each_says_it_cant_reach_home_assistant_while_its_down(make_lists):
     lists = make_lists()
     lists.home.failure = requests.ConnectionError("refused")

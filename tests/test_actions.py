@@ -794,6 +794,20 @@ def test_ringing_is_only_said_once_home_assistant_took_it():
     assert result.private
 
 
+def test_ringing_unanswered_may_have_rung_but_a_connection_never_made_didnt():
+    ring = Action("find_device", {"device": "phone", "ring": True})
+    # Sent, but unanswered - so it may well be ringing.
+    home = FakeAppHome([_app_device(tracker="home")], notify_fails=requests.ReadTimeout("slow"))
+    result = ActionExecutor(home=home).execute(ring)
+    assert result.say == ("Your phone's at home. Home Assistant didn't answer in time, so I can't tell whether "
+                          "your phone rang.")
+    # A ConnectTimeout is also a Timeout, but nothing was sent - said as a refused connection is.
+    home = FakeAppHome([_app_device(tracker="home")], notify_fails=requests.ConnectTimeout("no connection"))
+    result = ActionExecutor(home=home).execute(ring)
+    assert (result.ok, result.say) == (False, "Your phone's at home. I couldn't ring your phone.")
+    assert result.private
+
+
 def test_a_device_without_the_apps_notifications_cant_be_rung():
     mac = _app_device("macbook-pro", "Apple", "Mac16,8", notify=None, tracker="home")
     result = ActionExecutor(home=FakeAppHome([mac])).execute(Action("find_device", {"device": "mac", "ring": True}))
@@ -871,6 +885,13 @@ def test_sent_is_only_said_once_home_assistant_took_it():
     result = executor.execute(Action("send_to_phone", {"device": "mac"}))
     assert (result.ok, result.say) == (False, "Home Assistant didn't answer in time, so I can't tell whether that "
                                               "was sent to your MacBook Pro.")
+
+
+def test_a_connection_never_made_says_it_wasnt_sent():
+    executor = ActionExecutor(home=FakeAppHome([_mac()], notify_fails=requests.ConnectTimeout("no connection")))
+    executor.last_answer = ("asked", "said")
+    result = executor.execute(Action("send_to_phone", {"device": "mac"}))
+    assert (result.ok, result.say) == (False, "I couldn't send that to your MacBook Pro.")
 
 
 def test_a_device_with_no_notify_service_says_so():
