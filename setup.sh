@@ -753,6 +753,33 @@ install_service() {
     done_ "Installed as the ${SERVICE_NAME} user service"
 }
 
+# Asks whether to stop the brain's service on a machine which was a brain and is a
+# satellite now (bash setup.sh --satellite). Its role file is rewritten, but the service
+# stays enabled and running, and update.sh never looks at it again - so it would go on
+# using the machine, and start at every boot. It's asked, not done, as the brain may be
+# wanted again, and the answer starts as no.
+offer_to_disable_brain() {
+    if [ ! -f "$BRAIN_SERVICE_FILE" ]; then
+        return
+    fi
+    # Left behind by a disable which was done by hand, there's nothing to ask about.
+    if ! systemctl is-enabled -q "$BRAIN_SERVICE_NAME" 2> /dev/null && ! systemctl is-active -q "$BRAIN_SERVICE_NAME" 2> /dev/null; then
+        return
+    fi
+    step "The brain's service"
+    echo "  This machine was a brain, and ${BRAIN_SERVICE_NAME} is still set to run here beside the"
+    echo "  satellite. Its settings and data are kept whichever you choose."
+    if [ "$(ask "Stop it and keep it from starting at boot? (y/n)" "n")" = "y" ]; then
+        if root_do systemctl disable -q --now "$BRAIN_SERVICE_NAME"; then
+            done_ "Stopped, and no longer starting at boot"
+        else
+            problem "Couldn't stop it - run 'sudo systemctl disable --now ${BRAIN_SERVICE_NAME}' yourself."
+        fi
+    else
+        skipped "Left as it is - to stop it later: sudo systemctl disable --now ${BRAIN_SERVICE_NAME}"
+    fi
+}
+
 # What to do next, said at the end of setup, where it's seen.
 say_whats_next() {
     # Whoever reads these may be root, whose commands would otherwise write the brain's
@@ -809,6 +836,7 @@ main() {
     install_system_packages
     run_steps install_python_packages save_role write_settings write_secrets download_models
     if [ "$ROLE" = "satellite" ]; then
+        offer_to_disable_brain
         find_wake_word_model
         write_asound_conf
         install_raspotify

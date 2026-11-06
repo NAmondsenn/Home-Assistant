@@ -225,6 +225,75 @@ def test_a_satellite_installs_the_echo_cancellers_library(tmp_path):
     assert "libspeexdsp1" in installs.split()
 
 
+def ask_about_the_brain(tmp_path, stdin="\n", service_file=True, assume_yes=False, restart_fails=False):
+    """
+    Runs the step which asks whether to disable the brain's service, with a scratch file
+    for the service and a root_do which runs systemctl's stand-in rather than sudo. With
+    restart_fails the stand-in fails for every call, as for a service which is neither
+    enabled nor running.
+
+    Returns:
+        The finished process, and what the stand-in systemctl was asked.
+    """
+    unit = tmp_path / "nova-backend.service"
+    if service_file:
+        unit.write_text("")
+    result = run_setup(tmp_path, f'BRAIN_SERVICE_FILE="{unit}"; ASSUME_YES={str(assume_yes).lower()}; '
+                                 'root_do() { "$@"; }; offer_to_disable_brain', stdin, restart_fails=restart_fails)
+    return result, restarts(tmp_path)
+
+
+def test_a_satellite_which_was_a_brain_is_asked_about_the_brains_service(tmp_path):
+    # Enter takes the default, which is to leave it: stopping a brain is not something to
+    # do on a bare Enter, and its data is kept either way.
+    result, asked = ask_about_the_brain(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "nova-backend" in result.stdout
+    assert not any("disable" in line for line in asked)
+    # And says how to do it later.
+    assert "systemctl disable --now nova-backend" in result.stdout
+
+
+def test_a_satellite_which_was_a_brain_can_have_the_brains_service_disabled(tmp_path):
+    result, asked = ask_about_the_brain(tmp_path, stdin="y\n")
+
+    assert result.returncode == 0, result.stderr
+    assert "disable -q --now nova-backend" in asked
+
+
+def test_the_brains_service_is_left_alone_under_yes(tmp_path):
+    result, asked = ask_about_the_brain(tmp_path, stdin="", assume_yes=True)
+
+    assert result.returncode == 0, result.stderr
+    assert not any("disable" in line for line in asked)
+    assert "systemctl disable --now nova-backend" in result.stdout
+
+
+def test_a_satellite_which_never_was_a_brain_isnt_asked(tmp_path):
+    result, asked = ask_about_the_brain(tmp_path, service_file=False)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "" and asked == []
+
+
+def test_a_brains_service_which_is_neither_enabled_nor_running_isnt_asked_about(tmp_path):
+    # Left behind by an earlier change of role, and already dealt with.
+    result, asked = ask_about_the_brain(tmp_path, restart_fails=True)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert not any("disable" in line for line in asked)
+
+
+def test_only_a_satellite_setup_asks_about_the_brains_service():
+    main = SETUP.read_text().split("\nmain() {")[1]
+    satellite = main[main.index('if [ "$ROLE" = "satellite" ]; then'):main.index('if [ "$WITH_SERVICE" = true ]')]
+
+    assert main.count("offer_to_disable_brain") == 1
+    assert "offer_to_disable_brain" in satellite
+
+
 def test_new_password_isnt_for_the_brain(tmp_path):
     env = write_env(tmp_path, "ANTHROPIC_API_KEY=a-key\n")
 
