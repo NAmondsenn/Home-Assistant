@@ -426,11 +426,11 @@ def test_a_lock_called_door_is_refused_beside_a_sensor_called_back_door(make_hom
 def test_a_guarded_thing_is_refused_by_its_other_name(make_home):
     home = make_home({"/api/states": [_thing("valve.water_main", "Water main")],
                       "/api/conversation/process": _assist("action_done", "Done")})
-    home._snapshot = lambda: _registry(_entry("valve.water_main", aliases=["garden tap"]))
+    home.snapshot = lambda: _registry(_entry("valve.water_main", aliases=["garden tap"]))
     assert home.command("turn on the garden tap") == REFUSED
     assert [path for _, path, _ in home._session.requests] == ["/api/states"]
     # It's the other name that did it.
-    home._snapshot = lambda: None
+    home.snapshot = lambda: None
     assert home.command("turn on the garden tap")["success"]
 
 
@@ -438,13 +438,13 @@ def test_proxmox_is_refused_whatever_its_called(make_home):
     home = make_home({"/api/states": [_thing("button.bedroom_pve1_shut_down", "PVE2 Shut down"),
                                       _thing("switch.ct_navidrome", "Navidrome")],
                       "/api/conversation/process": _assist("action_done", "Done")})
-    home._snapshot = lambda: _registry(_entry("button.bedroom_pve1_shut_down", "proxmoxve"),
-                                       _entry("switch.ct_navidrome", "proxmoxve"))
+    home.snapshot = lambda: _registry(_entry("button.bedroom_pve1_shut_down", "proxmoxve"),
+                                      _entry("switch.ct_navidrome", "proxmoxve"))
     for request in ("turn on pve2 shut down", "turn off navidrome"):
         assert home.command(request) == REFUSED, request
     assert [path for _, path, _ in home._session.requests] == ["/api/states"] * 2
     # It's the integration that did it.
-    home._snapshot = lambda: None
+    home.snapshot = lambda: None
     assert home.command("turn off navidrome")["success"]
 
 
@@ -459,7 +459,7 @@ def _desk_pc(*kinds):
 def test_the_pcs_shutdown_restart_and_web_address_buttons_are_refused(make_home):
     states, registry = _desk_pc("Shutdown", "Restart", "LaunchUrl", "Sleep")
     home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Pressed")})
-    home._snapshot = lambda: registry
+    home.snapshot = lambda: registry
     for request in ("turn on desk pc shutdown", "turn on desk pc restart", "turn on desk pc launchurl"):
         assert home.command(request) == REFUSED, request
     assert [path for _, path, _ in home._session.requests] == ["/api/states"] * 3
@@ -482,7 +482,7 @@ def test_the_pcs_commands_are_refused_whatever_kind_of_entity_each_is(make_home)
     assert ha_guard.guarded("sensor.desk_pc_cpu", {}, registry) is None
     assert ha_guard.guarded("button.desk_pc_monitorsleep", {}, registry) is None
     home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Done")})
-    home._snapshot = lambda: registry
+    home.snapshot = lambda: registry
     for request in ("turn on desk pc shutdown", "turn on desk pc restart", "turn on desk pc sleep"):
         assert home.command(request) == REFUSED, request
     assert "/api/conversation/process" not in _paths(home)
@@ -495,7 +495,7 @@ def test_locking_the_pc_is_no_way_past_a_guarded_name(make_home):
     states, registry = _desk_pc("Lock", "Shutdown")
     states[1]["attributes"]["friendly_name"] = "PC lock"
     home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Pressed")})
-    home._snapshot = lambda: registry
+    home.snapshot = lambda: registry
     assert home.command("turn on the pc lock") == REFUSED
     states[1]["attributes"]["friendly_name"] = "Desk PC Shutdown"
     assert home.command("lock my PC")["success"] and _asked(home)["text"] == "lock my PC"
@@ -604,7 +604,7 @@ def test_the_debugging_and_assist_are_told_the_same_device(make_home):
         home.device_id = "ab12"
         return snapshot
 
-    home._snapshot = found_elsewhere
+    home.snapshot = found_elsewhere
     assert home.command("turn off the TV", wider=True)["success"]
     assert home.socket.calls[0][0][0]["device_id"] == _asked(home)["device_id"] == "da94"
 
@@ -2557,17 +2557,17 @@ def _house(make_home, *lights, area="Bedroom"):
 
 def test_lights_come_with_their_other_names(make_home):
     home = make_home({"/api/template": _rendered(LAMP_OFF, BEDROOM_LIGHT_WARM)})
-    home._snapshot = lambda: _other_names(light_bedroom_light=["main light"])
+    home.snapshot = lambda: _other_names(light_bedroom_light=["main light"])
     lamp, bedroom = home.lights()
     assert (lamp["aliases"], bedroom["aliases"]) == ([], ["main light"])
-    home._snapshot = lambda: None
+    home.snapshot = lambda: None
     assert [light["aliases"] for light in home.lights()] == [[], []]
 
 
 def test_claude_is_told_the_lights_other_names(make_home):
     home = make_home({"/api/template": _rendered(LAMP_OFF, BEDROOM_LIGHT_WARM)})
     home.area = "Bedroom"
-    home._snapshot = lambda: _other_names(light_bedroom_light=["main light"], light_lamp=["reading", "desk"])
+    home.snapshot = lambda: _other_names(light_bedroom_light=["main light"], light_lamp=["reading", "desk"])
     assert home.describe_lights() == (
         "Nova is in the Bedroom. Lights: Bedroom Light, also main light (light.bedroom_light, Bedroom) on at 40%, "
         "2700K; Lamp, also reading or desk (light.lamp, Bedroom) off")
@@ -2575,7 +2575,7 @@ def test_claude_is_told_the_lights_other_names(make_home):
 
 def test_lights_are_found_by_name_other_name_or_room(make_home):
     home = _house(make_home, LAMP_OFF, BEDROOM_LIGHT_WARM, KITCHEN_LIGHT)
-    home._snapshot = lambda: _other_names(light_bedroom_light=["main light"])
+    home.snapshot = lambda: _other_names(light_bedroom_light=["main light"])
     lights = home._in_order(home.lights())
 
     def called(words):
@@ -2726,7 +2726,7 @@ def test_a_refused_light_sentence_is_done_by_novas_own_lights(make_home):
     home._session.answers["/api/states"] = [_thing("lock.front_door", "Front door"),
                                             _thing("light.porch", "Porch light")]
     home._session.answers["/api/conversation/process"] = _assist("action_done", "Done")
-    home._snapshot = lambda: _registry(_entry("lock.front_door"), _entry("light.porch", aliases=["front door light"]))
+    home.snapshot = lambda: _registry(_entry("lock.front_door"), _entry("light.porch", aliases=["front door light"]))
     result = ActionExecutor(home=home).execute(Action("control_home", {
         "command": "turn on the front door light", "on": True, "words": "the front door light"}))
     assert (result.ok, result.confirm) == (True, "chime")

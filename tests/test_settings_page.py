@@ -2387,9 +2387,9 @@ class FakeChoicesHome:
                    Entry("sensor.desk_cpu", "mqtt", "desk", None, "desk_cpu", "CPU Load", (), False),
                    Entry("button.wake_desk_pc", "wake_on_lan", None, None, "wake_desk_pc", None, (), False),
                    Entry("button.wake_nas", "wake_on_lan", None, None, "wake_nas", None, (), False)]
-        self.snapshot = Snapshot(entries={entry.entity_id: entry for entry in entries},
-                                 devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}}, areas={},
-                                 read_at=0.0)
+        self.registry_read = Snapshot(entries={entry.entity_id: entry for entry in entries},
+                                      devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}},
+                                      areas={}, read_at=0.0)
         self.names = {"button.wake_desk_pc": "Wake Desk PC", "button.wake_nas": "Wake NAS"}
 
     def _fail(self):
@@ -2408,15 +2408,15 @@ class FakeChoicesHome:
         self._fail()
         return [dict(found) for found in self.devices]
 
-    def _snapshot(self):
-        return self.snapshot
+    def snapshot(self):
+        return self.registry_read
 
-    def _states(self):
+    def states(self):
         self._fail()
         # The PC is off, so every one of HASS.Agent's entities on it is unavailable.
         return [{"entity_id": entity, "state": "unavailable" if entry.platform == "mqtt" else "unknown",
                  "attributes": {"friendly_name": self.names[entity]} if entity in self.names else {}}
-                for entity, entry in self.snapshot.entries.items()]
+                for entity, entry in self.registry_read.entries.items()]
 
     def press(self, entity_id):
         self.pressed.append(entity_id)
@@ -2512,9 +2512,10 @@ def test_a_wake_button_chosen_for_another_pc_is_moved_and_the_page_says_so(files
     page, home = _home_page(files)
     study = [Entry("button.study_off", "mqtt", "study", None, "study_shutdown", "Shutdown", (), False),
              Entry("sensor.study_cpu", "mqtt", "study", None, "study_cpu", "CPU Load", (), False)]
-    home.snapshot = Snapshot(entries={**home.snapshot.entries, **{entry.entity_id: entry for entry in study}},
-                             devices={**home.snapshot.devices, "study": {"name": "Study PC", "maker": "HASS.Agent Team"}},
-                             areas={}, read_at=0.0)
+    home.registry_read = Snapshot(
+        entries={**home.registry_read.entries, **{entry.entity_id: entry for entry in study}},
+        devices={**home.registry_read.devices, "study": {"name": "Study PC", "maker": "HASS.Agent Team"}},
+        areas={}, read_at=0.0)
     # Chosen the wrong way round, each can still be put right.
     assert page.choose_wake("desk", "button.wake_nas", LOGIN)["success"] is True
     assert page.choose_wake("study", "button.wake_desk_pc", LOGIN)["success"] is True
@@ -2575,8 +2576,8 @@ def test_home_choices_without_home_assistant_say_so(files):
 
 
 def test_the_weather_and_pcs_are_left_out_without_a_choice(files):
-    lonely = FakeChoicesHome().snapshot
-    page, home = _home_page(files, weather=[], snapshot=Snapshot(
+    lonely = FakeChoicesHome().registry_read
+    page, home = _home_page(files, weather=[], registry_read=Snapshot(
         entries={entity: entry for entity, entry in lonely.entries.items() if entity != "button.wake_nas"},
         devices=lonely.devices, areas={}, read_at=0.0))
     state = page.home_choices_state()
@@ -2585,7 +2586,7 @@ def test_the_weather_and_pcs_are_left_out_without_a_choice(files):
     home.weather = [FakeChoicesHome().weather[0]]
     assert page.home_choices_state()["weather"] is None
     # Two buttons for the one PC are a choice.
-    home.snapshot = FakeChoicesHome().snapshot
+    home.registry_read = FakeChoicesHome().registry_read
     assert page.home_choices_state()["pcs"] is not None
 
 

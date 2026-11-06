@@ -60,17 +60,17 @@ class FakeHome:
     """Stands in for Home Assistant: its states and snapshot, and the buttons pressed."""
 
     def __init__(self, snapshot, on=True):
-        self.snapshot = snapshot
-        self.states = _states(snapshot, on) if snapshot else []
+        self.registry_read = snapshot
+        self.state_list = _states(snapshot, on) if snapshot else []
         self.pressed = []
         # What pressing raises, or None.
         self.fails = None
 
-    def _snapshot(self):
-        return self.snapshot
+    def snapshot(self):
+        return self.registry_read
 
-    def _states(self):
-        return self.states
+    def states(self):
+        return self.state_list
 
     def press(self, entity_id):
         if isinstance(self.fails, Exception):
@@ -207,7 +207,7 @@ def test_only_hass_agents_own_entities_say_whether_the_pc_is_on(tmp_path):
     pcs = find_pcs(states, snapshot, {})
     assert [(pc.on, pc.wake) for pc in pcs] == [(False, "button.wake_desk_pc")]
     power, home = _power(tmp_path, snapshot)
-    home.states = states
+    home.state_list = states
     assert power.act("on") == {"success": True, "message": "Turning your PC on."}
     assert power.act("off") == {"success": False, "message": "Your PC's already off."}
 
@@ -225,7 +225,7 @@ def test_a_press_that_never_reached_home_assistant_says_so(tmp_path):
 def test_the_pcs_choice_is_only_offered_with_more_than_one_of_either(tmp_path):
     # Named by their friendly names - the entity ids hold hardware addresses.
     def named(home):
-        for state in home.states:
+        for state in home.state_list:
             if state["entity_id"].startswith("button.wake_"):
                 state["attributes"] = {"friendly_name": state["entity_id"][len("button.wake_"):].replace("_", " ").title()}
 
@@ -314,9 +314,9 @@ def test_a_button_chosen_from_a_stale_read_and_gone_since_is_never_pressed(tmp_p
     # Read for the page, then removed from Home Assistant before the choice is saved.
     power, home = _two_pcs(tmp_path)
     seen = power.overview()
-    home.snapshot = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"}, "sensor.study_cpu"),
+    home.registry_read = _snapshot(_pc(), _pc("study", "Study PC", {"Shutdown": "button.study_off"}, "sensor.study_cpu"),
                               wake=("button.wake_study_pc", "button.wake_tv"))
-    home.states = _states(home.snapshot, on=False)
+    home.state_list = _states(home.registry_read, on=False)
     power.choose_wake("desk", "button.wake_desk_pc", seen)
     assert power.choices.get("wake") == {"desk": "button.wake_desk_pc"}
 

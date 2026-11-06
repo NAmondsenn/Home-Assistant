@@ -737,16 +737,16 @@ class FakePCHome:
         entries = [Entry("button.desk_off", "mqtt", "desk", None, "desk_off", "Shutdown", (), False),
                    Entry("button.desk_again", "mqtt", "desk", None, "desk_again", "Restart", (), False),
                    Entry("sensor.desk_cpu", "mqtt", "desk", None, "desk_cpu", "CPU Load", (), False)]
-        self.snapshot = Snapshot(entries={entry.entity_id: entry for entry in entries},
-                                 devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}}, areas={},
-                                 read_at=0.0)
+        self.registry_read = Snapshot(entries={entry.entity_id: entry for entry in entries},
+                                      devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}},
+                                      areas={}, read_at=0.0)
         self.pressed = []
 
-    def _snapshot(self):
-        return self.snapshot
+    def snapshot(self):
+        return self.registry_read
 
-    def _states(self):
-        return [{"entity_id": entity, "state": "12", "attributes": {}} for entity in self.snapshot.entries]
+    def states(self):
+        return [{"entity_id": entity, "state": "12", "attributes": {}} for entity in self.registry_read.entries]
 
     def press(self, entity_id):
         self.pressed.append(entity_id)

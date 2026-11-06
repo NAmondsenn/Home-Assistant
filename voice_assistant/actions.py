@@ -1248,7 +1248,7 @@ class ActionExecutor:
             batteries = self.batteries.read()
         except HOME_FAILURES as e:
             logger.warning(f"Couldn't read the batteries: {e}")
-            return {"success": False, "message": HomeAssistant._failure_message(e)}
+            return {"success": False, "message": HomeAssistant.failure_message(e)}
         found = find(batteries, device or "")
         if not found:
             # Nothing asked for is every battery, as find has it, so none found then means there are none.
@@ -1317,7 +1317,7 @@ class ActionExecutor:
             # Sent, but unanswered - so it may well be ringing.
             return False, f"{NO_ANSWER}, so I can't tell whether your {word} rang."
         if outcome == "token":
-            return False, HomeAssistant._failure_message(error)
+            return False, HomeAssistant.failure_message(error)
         return False, f"I couldn't ring your {word}."
 
     def _notify(self, device: AppDevice, doing: str, message: str, title: Optional[str] = None,
@@ -1482,7 +1482,7 @@ class ActionExecutor:
         if outcome == "unanswered":
             return f"{NO_ANSWER}, so I can't tell whether that was sent to your {device.name}."
         if outcome == "token":
-            return HomeAssistant._failure_message(error)
+            return HomeAssistant.failure_message(error)
         return f"I couldn't send that to your {device.name}."
 
     @tool(

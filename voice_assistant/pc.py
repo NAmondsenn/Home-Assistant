@@ -153,10 +153,10 @@ class PCPower:
             requests.RequestException: If Home Assistant couldn't be asked.
             ValueError: If its states can't be read.
         """
-        snapshot = self.home._snapshot()
+        snapshot = self.home.snapshot()
         if snapshot is None:
             return {"pcs": [], "buttons": []}
-        states = self.home._states()
+        states = self.home.states()
         names = {state.get("entity_id"): (state.get("attributes") or {}).get("friendly_name") for state in states}
         return {"pcs": [{"device": pc.device, "name": pc.name, "wake": pc.wake}
                         for pc in find_pcs(states, snapshot, self._wake())],
@@ -216,11 +216,11 @@ class PCPower:
         Returns:
             (the PC, the snapshot, None) - or (None, None, the reply to give instead).
         """
-        snapshot = self.home._snapshot()
+        snapshot = self.home.snapshot()
         if snapshot is None:
             return None, None, {"success": False, "message": "I can't check your PC's buttons just now."}
         try:
-            states = self.home._states()
+            states = self.home.states()
         except (requests.RequestException, ValueError) as e:
             logger.warning(f"Couldn't read Home Assistant's states for the PC: {e}")
             return None, None, {"success": False, "message": CANT_REACH}
@@ -326,6 +326,6 @@ class PCPower:
             return {"success": False, "message": f"{NO_ANSWER}, so I can't tell whether your PC heard."}
         except (requests.RequestException, NotAllowed) as e:
             logger.warning(f"Couldn't press the PC's {kind} button: {e}")
-            return {"success": False, "message": HomeAssistant._failure_message(e)}
+            return {"success": False, "message": HomeAssistant.failure_message(e)}
         logger.info(f"Pressed the PC's {kind} button")
         return {"success": True, "message": said}

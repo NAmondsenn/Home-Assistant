@@ -460,7 +460,7 @@ def _not_added(added: List[str], left: List[str], where: str, error: Exception) 
         return f"Added {_joined(added)} to {where}, but {unsure}{rest}."
     if not added:
         if getattr(getattr(error, "response", None), "status_code", None) == 401:
-            return HomeAssistant._failure_message(error)
+            return HomeAssistant.failure_message(error)
         return f"I couldn't add that to {where}."
     return f"Added {_joined(added)} to {where}, but I couldn't add {_joined(left, 'or')}."
 
@@ -468,4 +468,4 @@ def _not_added(added: List[str], left: List[str], where: str, error: Exception) 
 def _failed(doing: str, error: Exception) -> Dict:
     """What's said when Home Assistant couldn't be asked - CANT_REACH while it's down."""
     logger.warning(f"Could not {doing} in Home Assistant: {error}")
-    return {"success": False, "message": HomeAssistant._failure_message(error)}
+    return {"success": False, "message": HomeAssistant.failure_message(error)}

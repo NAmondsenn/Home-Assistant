@@ -89,7 +89,7 @@ class Weather:
         except (requests.RequestException, ValueError) as e:
             logger.warning(f"Could not get the weather from Home Assistant: {e}")
             # Said as every other Home Assistant failure is - CANT_REACH while it's down.
-            return {"success": False, "message": HomeAssistant._failure_message(e)}
+            return {"success": False, "message": HomeAssistant.failure_message(e)}
 
         rain = _rain(chance, hours)
         if day == "tomorrow":

@@ -436,7 +436,7 @@ class HomeAssistant:
         logger.info(f"Home Assistant at {url}")
         return cls(url, token, registry=registry)
 
-    def _snapshot(self) -> Optional[Snapshot]:
+    def snapshot(self) -> Optional[Snapshot]:
         """The latest read of Home Assistant's registry, or None if there's none to go by."""
         return self.registry.snapshot() if self.registry else None
 
@@ -487,7 +487,7 @@ class HomeAssistant:
         return text
 
     @staticmethod
-    def _failure_message(error: Exception) -> str:
+    def failure_message(error: Exception) -> str:
         """What to say when Home Assistant couldn't be asked, depending on why."""
         if isinstance(error, NotAllowed):
             return "I can't do that."
@@ -498,7 +498,7 @@ class HomeAssistant:
             return CANT_REACH
         return "Home Assistant had a problem with that."
 
-    def _states(self) -> List[Dict]:
+    def states(self) -> List[Dict]:
         """
         Every entity's state, as /api/states has them - read afresh each time, so a lock
         added a minute ago is refused too.
@@ -559,8 +559,8 @@ class HomeAssistant:
         posted = False
         try:
             # Nothing goes to Assist if what's there can't be read.
-            states = self._states()
-            snapshot = self._snapshot()
+            states = self.states()
+            snapshot = self.snapshot()
             if snapshot is None:
                 self._wider_rule("there's no read of Home Assistant's registry to go by")
                 if wider:
@@ -631,7 +631,7 @@ class HomeAssistant:
                                                                              requests.Timeout)
             if wider and isinstance(e, unreached):
                 return not_understood
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
 
         response = reply.get("response") or {}
         said = ((response.get("speech") or {}).get("plain") or {}).get("speech") or ""
@@ -778,7 +778,7 @@ class HomeAssistant:
             has it - False without the registry.
         """
         try:
-            states = self._states()
+            states = self.states()
             try:
                 lights = self.lights()
             except requests.HTTPError as e:
@@ -789,8 +789,8 @@ class HomeAssistant:
                 lights = [_light(state) for state in states if LIGHT.fullmatch(state.get("entity_id") or "")]
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self._failure_message(e)}
-        snapshot = self._snapshot()
+            return {"success": False, "message": self.failure_message(e)}
+        snapshot = self.snapshot()
         # Each script's key and configuration are read once a draw, however many others run
         # it - and every script's key in one round, as the walk would only ask for one at a
         # time - only those it would walk, as one whose name says it unlocks never is.
@@ -842,7 +842,7 @@ class HomeAssistant:
             ValueError: If it didn't answer with the lights.
         """
         found = self._template(LIGHTS_TEMPLATE, timeout=timeout)
-        snapshot = self._snapshot()
+        snapshot = self.snapshot()
         return [_light(state, snapshot.aliases(state["entity_id"]) if snapshot else ()) for state in json.loads(found)]
 
     def batteries(self, timeout: Optional[float] = None) -> List[Dict]:
@@ -1126,7 +1126,7 @@ class HomeAssistant:
                 self._call_service("light", "turn_on", {"entity_id": ids, "brightness_pct": brightness})
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
         return {"success": True, "message": "Done.", "chime": True}
 
     def switch_lights(self, on: bool, words: str, brightness: Optional[int] = None) -> Dict:
@@ -1162,7 +1162,7 @@ class HomeAssistant:
             self._call_service("light", service, data)
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
         return {"success": True, "message": "Done.", "chime": True}
 
     def set_light(self, entity_id: str, on: Optional[bool] = None, brightness: Optional[int] = None,
@@ -1209,7 +1209,7 @@ class HomeAssistant:
             self._call_service("light", "turn_on" if on or changes else "turn_off", data)
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
         return {"success": True, "message": "Done."}
 
     def set_lights(self, on: bool, light: Optional[str] = None, area: Optional[str] = None,
@@ -1262,7 +1262,7 @@ class HomeAssistant:
             self._call_service("light", service, data)
         except (requests.RequestException, NotAllowed) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
         return {"success": True, "message": "Done.", "chime": True}
 
     def _call_service(self, domain: str, service: str, data: Dict, returns: bool = False) -> Optional[Dict]:
@@ -1328,7 +1328,7 @@ class HomeAssistant:
         one of Proxmox's, nor HASS.Agent's others - its launchurl opens any web address on
         the PC - and none at all without a snapshot, as nothing could vouch for it.
         """
-        snapshot = self._snapshot()
+        snapshot = self.snapshot()
         if snapshot is None or snapshot.platform(entity_id) in (None, "proxmoxve"):
             return False
         if entity_id in snapshot.wake_buttons():
@@ -1396,14 +1396,14 @@ class HomeAssistant:
             first, e.g. "Navidrome status (binary_sensor.navidrome_status, Homelab): on".
         """
         try:
-            states = self._states()
+            states = self.states()
         except (requests.RequestException, ValueError) as e:
             logger.warning(f"Couldn't read Home Assistant's states: {e}")
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
         now = time.time() if now is None else now
         # Without the registry, nothing has an area, which is no reason not to answer -
         # but nothing can be told not to be a phone's or the PC's, either (see _private).
-        snapshot = self._snapshot()
+        snapshot = self.snapshot()
         asked = set(split_words(about)) - STATUS_STOP_WORDS
         found = []
         for state in states:
@@ -1442,11 +1442,11 @@ class HomeAssistant:
         if not found:
             return {"success": False, "message": "That isn't a script or a scene."}
         try:
-            states = self._states()
+            states = self.states()
             state = next((state for state in states if state.get("entity_id") == entity_id), {})
             name = (state.get("attributes") or {}).get("friendly_name") or entity_id
             why = WORKS_GUARDED if sensitive(entity_id, name) else why_not_run(
-                [entity_id], states, self._snapshot(), self._scripts(), self._too_deep)
+                [entity_id], states, self.snapshot(), self._scripts(), self._too_deep)
             if why:
                 logger.warning(f"Refused a Home Assistant {found[1]} from the settings page, as it {why}: '{name}'")
                 return {"success": False, "message": "Nova doesn't run anything which locks, unlocks or opens."
@@ -1454,7 +1454,7 @@ class HomeAssistant:
             self._call_service(found[1], "turn_on", {"entity_id": entity_id})
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
         return {"success": True, "message": f"Started {name}." if found[1] == "script" else f"Set {name}."}
 
     def run_script(self, name: str) -> Dict:
@@ -1473,11 +1473,11 @@ class HomeAssistant:
             of several was meant.
         """
         # Which are exposed, and the key to each script's configuration, are the registry's.
-        snapshot = self._snapshot()
+        snapshot = self.snapshot()
         if snapshot is None:
             return {"success": False, "message": "I can't tell which scripts can be run by voice just now."}
         try:
-            states = self._states()
+            states = self.states()
             wanted = _script_name(name)
             found = {}
             for state in states:
@@ -1505,7 +1505,7 @@ class HomeAssistant:
             self._call_service(kind, "turn_on", {"entity_id": entity})
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
-            return {"success": False, "message": self._failure_message(e)}
+            return {"success": False, "message": self.failure_message(e)}
         return {"success": True, "message": f"Started {called}." if kind == "script" else f"Set {called}."}
 
     def works_guarded(self, entity_id: str, states: List[Dict], snapshot: Optional[Snapshot], *,
@@ -1627,7 +1627,7 @@ class HomeAssistant:
             ValueError: If its states can't be read.
         """
         entities = []
-        for state in self._states():
+        for state in self.states():
             entity = str(state.get("entity_id", ""))
             if not entity.startswith("weather."):
                 continue
@@ -1678,9 +1678,9 @@ class HomeAssistant:
             requests.RequestException: If Home Assistant couldn't be asked.
             ValueError: If its states can't be read.
         """
-        snapshot = self._snapshot()
+        snapshot = self.snapshot()
         lists = []
-        for state in self._states():
+        for state in self.states():
             entity = str(state.get("entity_id", ""))
             if not entity.startswith("todo."):
                 continue
