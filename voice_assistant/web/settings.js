@@ -1624,10 +1624,16 @@ function batteryRow(device) {
     Object.assign(box, { type: "number", min: 1, max: 99, step: 1, value: mark });
     box.inputMode = "numeric";
     box.setAttribute("aria-label", `${device.name} warning mark ${i + 1}, in percent`);
-    box.addEventListener("change", () => {
-      // Done typing, so the rows may be drawn again with what comes back.
-      box.blur();
-      changeBattery("/api/batteries", { id: device.id, marks: boxes.map((each) => Number(each.value)) });
+    // Every step of the arrow keys or the spinner is a change, so blurring on change would
+    // end the stepping after one. Enter ends the typing instead, as leaving the box does.
+    box.addEventListener("change", () =>
+      changeBattery("/api/batteries", { id: device.id, marks: boxes.map((each) => Number(each.value)) }));
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") box.blur();
+    });
+    // Done, so the rows held back while it had the focus may be drawn again.
+    box.addEventListener("blur", () => {
+      if (!drawn.batteries) loadBatteries();
     });
     marks.append(box, element("span", "%"));
     return box;
