@@ -370,6 +370,22 @@ def test_the_last_check_is_kept_beside_the_new_one(tmp_path):
     assert f"Saved the check as {check_path}, and kept the last one as {previous}. Restart Nova to use it." in shown
 
 
+def test_the_check_before_the_last_is_kept_too(tmp_path):
+    # Two trainings in a row - the first a bad one saved with --force, say - still leave
+    # the good check to put back.
+    wake, labels, users = _wake_folder(tmp_path)
+    check_path = tmp_path / "voice_check.json"
+    check_path.write_text('{"made": "last"}')
+    (tmp_path / "voice_check.json.previous").write_text('{"made": "before"}')
+
+    train.train(str(wake), str(labels), str(check_path), "hey_nova", Extract(users), rounds=2,
+                show=lambda line: None, fit=FakeFit())
+
+    assert (tmp_path / "voice_check.json.previous").read_text() == '{"made": "last"}'
+    assert (tmp_path / "voice_check.json.previous-2").read_text() == '{"made": "before"}'
+    assert voice_check.load(str(check_path)) is not None
+
+
 def test_with_no_check_before_there_is_nothing_kept(tmp_path):
     wake, labels, users = _wake_folder(tmp_path)
     check_path = tmp_path / "voice_check.json"
@@ -391,6 +407,21 @@ def test_a_check_which_stops_the_users_held_back_requests_isnt_saved(tmp_path):
                     show=lambda line: None, fit=FakeFit(score=0.1))
     assert check_path.read_text() == '{"made": "up"}'
     assert not os.path.exists(str(check_path) + ".previous")
+
+
+def test_the_check_is_judged_at_novas_default_which_is_one_of_the_settings_counted():
+    # Were it not one of them, nothing would be counted at it, and every check refused.
+    assert train.GUARD_SETTING == voice_check.DEFAULT_THRESHOLD
+    assert train.GUARD_SETTING in train.SETTINGS
+
+
+def test_a_check_is_refused_by_what_it_kept_at_the_guards_setting(tmp_path, monkeypatch):
+    monkeypatch.setattr(train, "GUARD_SETTING", 0.5)
+    wake, labels, users = _wake_folder(tmp_path)
+    # Every moment scores 0.3, so passes at 0.2 and 0.3, and is stopped at 0.5.
+    with pytest.raises(ValueError, match=r"kept only 0 of 8 held-back requests \(0%\) at 0.5"):
+        train.train(str(wake), str(labels), str(tmp_path / "voice_check.json"), "hey_nova", Extract(users),
+                    rounds=4, show=lambda line: None, fit=FakeFit(score=0.3))
 
 
 def test_with_too_few_clips_to_tell_it_isnt_saved(tmp_path):

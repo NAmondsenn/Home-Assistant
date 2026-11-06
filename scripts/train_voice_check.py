@@ -32,7 +32,8 @@ or more passes the check - at 0.2, 0.3 and 0.5, the settings worth choosing betw
 clip with no such moment when it's scored again is counted on its own line. The
 recordings are always trained on, and each run gives the same results as the last.
 Then it trains on everything and saves the check, readable by you only, as
-~/.local/share/nova/voice_check.json, keeping the one before as voice_check.json.previous.
+~/.local/share/nova/voice_check.json, keeping the one before as voice_check.json.previous
+and the one before that as voice_check.json.previous-2.
 The satellite loads it when it starts - any start, so a check which kept under 90% of the
 held-back requests at 0.2 isn't saved at all, unless --force says to.
 
@@ -74,11 +75,16 @@ ROUNDS = 20
 # user's requests through in the trial (0.2) to stopping the most false wakes (0.5).
 SETTINGS = (0.2, 0.3, 0.5)
 
-# The share of the held-back requests a check must keep at Nova's default setting to be
-# saved, without --force. A labels file with pos and neg swapped keeps none, and the
-# satellite would load it at its next restart of any kind - a reboot, the watchdog - and
-# stop the user. The trial's kept all 140.
+# The share of the held-back requests a check must keep at GUARD_SETTING to be saved,
+# without --force. A labels file with pos and neg swapped keeps none, and the satellite
+# would load it at its next restart of any kind - a reboot, the watchdog - and stop the
+# user. The trial's kept all 140.
 KEEP_AT_LEAST = 0.9
+
+# The setting a check is judged at for that: Nova's default, as the page's setting is
+# the brain's, which the Pi doesn't know. Only SETTINGS are counted, so it has to be one
+# of them - the tests check it is.
+GUARD_SETTING = voice_check.DEFAULT_THRESHOLD
 
 # openWakeWord works through audio 80ms at a time - wake_word.py's CHUNK_SAMPLES, which
 # isn't imported, so this file needn't load openWakeWord for --help or its tests.
@@ -238,8 +244,8 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
         show: Shows the user a line.
 
     Returns:
-        How many held-back requests were kept at Nova's default setting, and out of how
-        many which could have woken it.
+        How many held-back requests were kept at GUARD_SETTING, and out of how many
+        which could have woken it.
     """
     held_requests, held_false_wakes = len(requests) // 4, len(false_wakes) // 4
     if not held_requests and not held_false_wakes:
@@ -250,7 +256,7 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
     # The same clips held back each run - and the features and the training are the same
     # each run too - so the results only change when the files or the labels do.
     rng = np.random.default_rng(0)
-    kept = {setting: [0, 0] for setting in (*SETTINGS, voice_check.DEFAULT_THRESHOLD)}
+    kept = {setting: [0, 0] for setting in SETTINGS}
     reached, unheard = [0, 0], [0, 0]
     for _ in range(rounds):
         out_requests = set(rng.permutation(len(requests))[:held_requests])
@@ -274,7 +280,7 @@ def held_back(recordings: Tuple[List[Steps], List[Steps]], requests: List[Steps]
     if any(unheard):
         show(f"  {unheard[0]} requests and {unheard[1]} false wakes held back never scored {MIN_SCORE} or more "
              f"again, so they're left out")
-    return kept[voice_check.DEFAULT_THRESHOLD][0], reached[0]
+    return kept[GUARD_SETTING][0], reached[0]
 
 
 def enough_kept(kept: int, reached: int, force: bool, show: Callable[[str], None]):
@@ -282,7 +288,7 @@ def enough_kept(kept: int, reached: int, force: bool, show: Callable[[str], None
     Refuses a check which kept too few of the held-back requests to be saved, unless forced.
 
     Args:
-        kept: How many held-back requests it kept at Nova's default setting.
+        kept: How many held-back requests it kept at GUARD_SETTING.
         reached: Out of how many.
         force: Save it whatever, as --force says.
         show: Shows the user a line.
@@ -294,7 +300,7 @@ def enough_kept(kept: int, reached: int, force: bool, show: Callable[[str], None
     if not reached:
         problem = "there were no held-back requests to tell how it does"
     elif kept < KEEP_AT_LEAST * reached:
-        problem = (f"kept only {_share(kept, reached, 'held-back requests')} at {voice_check.DEFAULT_THRESHOLD}, "
+        problem = (f"kept only {_share(kept, reached, 'held-back requests')} at {GUARD_SETTING}, "
                    f"under {round(100 * KEEP_AT_LEAST)}%")
     else:
         return
@@ -307,7 +313,9 @@ def enough_kept(kept: int, reached: int, force: bool, show: Callable[[str], None
 def keep_previous(check_path: str) -> Optional[str]:
     """
     Keeps the check there now, if any, as check_path + ".previous", readable by you only -
-    so one which turns out worse can be put back by hand.
+    so one which turns out worse can be put back by hand - and the one kept as that
+    before as check_path + ".previous-2". Two trainings in a row, the first a bad one
+    saved with --force, still leave the good check to put back.
 
     Args:
         check_path: Where the check is saved.
@@ -324,6 +332,10 @@ def keep_previous(check_path: str) -> Optional[str]:
     except FileNotFoundError:
         return None
     previous = check_path + ".previous"
+    try:
+        os.replace(previous, previous + "-2")
+    except FileNotFoundError:
+        pass
     storage.save_text(previous, text)
     return previous
 
@@ -430,7 +442,7 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help=f"how many times clips are held back to say how it does (default {ROUNDS})")
     parser.add_argument("--force", action="store_true",
                         help=f"save the check even if it keeps under {round(100 * KEEP_AT_LEAST)}%% of the "
-                             f"held-back requests at {voice_check.DEFAULT_THRESHOLD}")
+                             f"held-back requests at {GUARD_SETTING}")
     return parser.parse_args(argv)
 
 
