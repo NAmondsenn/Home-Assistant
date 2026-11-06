@@ -1771,7 +1771,7 @@ def test_a_routine_more_than_an_hour_late_is_said_to_have_been_skipped(brain, co
     bedroom = connected(brain)
     brain._catch_up_routines()
     assert wait_for(lambda: bedroom.announced)
-    assert bedroom.announced == ["Your 7 o'clock routine didn't run - I couldn't reach the speaker."]
+    assert bedroom.announced == ["Your 7 AM routine didn't run - I couldn't reach the speaker."]
     assert bedroom.routines == []
 
 
@@ -1784,7 +1784,24 @@ def test_several_routines_skipped_are_said_together(brain, connect):
     bedroom = connected(brain)
     brain._catch_up_routines()
     assert wait_for(lambda: bedroom.announced)
-    assert bedroom.announced == ["Your 7 o'clock and 9:30 PM routines didn't run - I couldn't reach the speaker."]
+    assert bedroom.announced == ["Your 7 AM and 9:30 PM routines didn't run - I couldn't reach the speaker."]
+
+
+def skipped(*times):
+    """What's said of routines at these times, e.g. "7:00", which didn't run while their satellite was away."""
+    return brain_module._skipped_message([{"at": at} for at in times])
+
+
+@pytest.mark.parametrize("at, said", [("7:00", "7 AM"), ("19:00", "7 PM"), ("0:00", "midnight"), ("12:00", "noon"),
+                                      ("7:05", "7:05 AM"), ("21:30", "9:30 PM")])
+def test_a_skipped_routines_time_is_said_with_am_or_pm(at, said):
+    # On the hour it said "7 o'clock", which is 7 in the morning or the evening.
+    assert skipped(at) == f"Your {said} routine didn't run - I couldn't reach the speaker."
+
+
+def test_two_skipped_routines_at_one_time_are_routines_not_a_routine():
+    assert skipped("7:00", "7:00") == "Your 7 AM routines didn't run - I couldn't reach the speaker."
+    assert skipped("7:00", "7:00", "21:30") == "Your 7 AM and 9:30 PM routines didn't run - I couldn't reach the speaker."
 
 
 def test_a_routine_deleted_while_its_satellite_was_away_is_let_go(brain, connect):

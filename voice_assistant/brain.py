@@ -161,7 +161,7 @@ def _speech_to_text(config, tts: TextToSpeech):
 def _skipped_message(skipped: List[Dict]) -> str:
     """
     What's said for routines which didn't run while their satellite was away, e.g.
-    "Your 7 o'clock routine didn't run - I couldn't reach the speaker."
+    "Your 7 AM routine didn't run - I couldn't reach the speaker."
 
     Args:
         skipped: Each as Routines.take_missed has it.
@@ -169,12 +169,16 @@ def _skipped_message(skipped: List[Dict]) -> str:
     times = []
     for entry in skipped:
         hour, minute = (int(part) for part in entry["at"].split(":"))
-        said = f"{hour % 12 or 12} o'clock" if minute == 0 else spoken_clock_time(hour, minute)
+        # Without the minutes on the hour, as it's said elsewhere - but never without AM or
+        # PM, as "7 o'clock" doesn't say which.
+        said = spoken_clock_time(hour, minute).replace(":00", "")
         if said not in times:
             times.append(said)
+    # By how many routines there were, not how many times: two at 7 AM are routines.
+    routines = "routine" if len(skipped) == 1 else "routines"
     if len(times) == 1:
-        return f"Your {times[0]} routine didn't run - I couldn't reach the speaker."
-    return f"Your {', '.join(times[:-1])} and {times[-1]} routines didn't run - I couldn't reach the speaker."
+        return f"Your {times[0]} {routines} didn't run - I couldn't reach the speaker."
+    return f"Your {', '.join(times[:-1])} and {times[-1]} {routines} didn't run - I couldn't reach the speaker."
 
 
 class _Server(socketserver.ThreadingTCPServer):
