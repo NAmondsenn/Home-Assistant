@@ -355,7 +355,7 @@ def test_the_wake_word_sends_the_pre_roll_then_the_recording(brain, make, tmp_pa
     brain.say("stop_listening")
 
     # Saying how much of the recording is from before the wake word - see audio.pre_roll.
-    assert brain.messages("wake") == [{"type": "wake", "talked_over": False, "pre_roll": 4800}]
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": False, "pre_roll": 4800, "recording": "wake-1"}]
     assert brain.kinds().index("wake") < brain.kinds().index("audio")
     pre_roll, first, second = brain.recordings()[:3]
     assert np.array_equal(pre_roll, samples(heard_at - 4800, heard_at))
@@ -887,7 +887,7 @@ def test_the_wake_word_over_a_reply_stops_it_and_says_so(brain, make):
     assert reply.stopped
     assert music.paused and not music.done
     assert "announcement" in made.speaker.silenced
-    assert brain.messages("wake") == [{"type": "wake", "talked_over": True, "pre_roll": 4800}]
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": True, "pre_roll": 4800, "recording": "wake-1"}]
     # The brain hears of the wake before the end of the reply it stopped.
     assert brain.kinds().index("wake") < brain.kinds().index("played")
     assert brain.messages("played") == [{"type": "played", "id": "reply-1", "stopped": True, "position": 3}]
@@ -915,7 +915,7 @@ def test_the_wake_word_stops_whats_playing_without_waiting_for_the_satellites_lo
 
     # The brain still hears of the wake before the end of what it stopped.
     assert wait_for(lambda: len(brain.messages("played")) == 2)
-    assert brain.messages("wake") == [{"type": "wake", "talked_over": True, "pre_roll": 4800}]
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": True, "pre_roll": 4800, "recording": "wake-1"}]
     assert brain.kinds().index("wake") < brain.kinds().index("played")
     brain.say("stop_listening")
 
@@ -958,6 +958,79 @@ def test_the_brain_asking_to_hear_an_answer_during_a_wake_sends_nothing_more(bra
     sent = len(brain.recordings())
     time.sleep(0.1)
     assert len(brain.recordings()) == sent
+    assert brain.messages("audio_end") == []
+
+
+@pytest.mark.parametrize("stopped", ["listen-1", "wake-1"])
+def test_a_wake_being_sent_as_the_brain_asks_for_an_answer_stops_as_either(brain, make, stopped):
+    # Its recording is the answer, as above, so the brain stops it as the answer it asked
+    # for, if that was listened to - or as the wake's, if the wake was.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 3)
+    brain.say("listen", recording="listen-1")
+    brain.say("stop_listening", recording=stopped)
+
+    assert wait_for(lambda: made.wake.listening)
+    sent = len(brain.recordings())
+    time.sleep(0.1)
+    assert len(brain.recordings()) == sent
+    assert brain.messages("audio_end") == []
+
+
+def test_a_stop_meant_for_a_recording_which_ran_out_leaves_the_next_one_going(brain, make):
+    # The brain stopped listening to the first just as it reached its limit, and the
+    # wake word was said again while that was on its way.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: brain.messages("audio_end"))
+    # Longer, so the second can't reach its limit before the brain stops it.
+    brain.say("state", volumes={}, muted=False, longest_request=30)
+    assert wait_for(lambda: made.longest_request == 30 and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.messages("wake")) == 2)
+    sent = len(brain.recordings())
+    brain.say("stop_listening", recording="wake-1")
+
+    assert wait_for(lambda: len(brain.recordings()) >= sent + 5)
+    assert not made.wake.listening
+    brain.say("stop_listening", recording="wake-2")
+    assert wait_for(lambda: made.wake.listening)
+    assert len(brain.messages("audio_end")) == 1
+    assert [wake["recording"] for wake in brain.messages("wake")] == ["wake-1", "wake-2"]
+
+
+def test_a_follow_up_is_known_by_the_number_the_brain_gave_it(brain, make):
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    brain.say("listen", recording="listen-4")
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    # Meant for another recording, which has ended.
+    brain.say("stop_listening", recording="wake-9")
+    sent = len(brain.recordings())
+    assert wait_for(lambda: len(brain.recordings()) >= sent + 3)
+
+    brain.say("stop_listening", recording="listen-4")
+    assert wait_for(lambda: made.wake.listening)
+    assert brain.messages("audio_end") == []
+
+
+def test_a_brain_which_doesnt_say_which_recording_stops_whichever_is_being_sent(brain, make):
+    # Today's brain, whose listen and stop_listening carry no number.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+    assert wait_for(lambda: made.wake.listening)
+
+    sent = len(brain.recordings())
+    brain.say("listen")
+    assert wait_for(lambda: len(brain.recordings()) >= sent + 2)
+    brain.say("stop_listening")
+    assert wait_for(lambda: made.wake.listening)
     assert brain.messages("audio_end") == []
 
 
@@ -1556,7 +1629,7 @@ def test_clips_which_raise_leave_the_wake_going(brain, make, monkeypatch, caplog
     assert wait_for(lambda: len(brain.recordings()) >= 2)
     brain.say("stop_listening")
 
-    assert brain.messages("wake") == [{"type": "wake", "talked_over": False, "pre_roll": 4800}]
+    assert brain.messages("wake") == [{"type": "wake", "talked_over": False, "pre_roll": 4800, "recording": "wake-1"}]
     assert np.array_equal(brain.recordings()[0], samples(heard_at - 4800, heard_at))
     assert "Nothing can be kept" in caplog.text
 

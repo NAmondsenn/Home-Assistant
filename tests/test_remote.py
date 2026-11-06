@@ -255,7 +255,7 @@ def test_a_follow_up_is_heard_until_the_brain_stops_listening(pair):
     fake.say("audio", answer.tobytes())
     assert np.array_equal(feed.listen(start=0).read(1600), answer)
 
-    satellite.stop_listening()
+    satellite.stop_listening(feed)
     assert wait_for(lambda: fake.messages("stop_listening"))
     # Already on its way as the brain stopped listening, so it goes nowhere.
     fake.say("audio", answer.tobytes())
@@ -263,6 +263,74 @@ def test_a_follow_up_is_heard_until_the_brain_stops_listening(pair):
     assert wait_for(lambda: fake.messages("pong"))
     assert feed.position == 1600
     assert ends_at_once(feed)
+
+
+def test_a_follow_up_is_numbered_and_stopping_it_says_which(pair):
+    satellite, fake, serving = pair
+    feed = satellite.listen()
+    assert wait_for(lambda: fake.messages("listen"))
+    (listen,) = fake.messages("listen")
+    # Never a number the satellite gives a wake's recording, "wake-1" on, so a stop for
+    # one can't be taken for the other.
+    assert listen["recording"].startswith("listen-")
+
+    satellite.stop_listening(feed)
+    assert wait_for(lambda: fake.messages("stop_listening"))
+    assert fake.messages("stop_listening") == [{"type": "stop_listening", "recording": listen["recording"]}]
+    satellite.listen()
+    assert wait_for(lambda: len(fake.messages("listen")) == 2)
+    assert fake.messages("listen")[1]["recording"] != listen["recording"]
+
+
+def test_stopping_a_wake_says_which_recording_the_satellite_said_it_was(pair):
+    satellite, fake, serving = pair
+    fake.say("wake", talked_over=False, recording="wake-7")
+    feed = satellite.wakes.get(timeout=2)["feed"]
+
+    satellite.stop_listening(feed)
+    assert wait_for(lambda: fake.messages("stop_listening"))
+    assert fake.messages("stop_listening") == [{"type": "stop_listening", "recording": "wake-7"}]
+    assert ends_at_once(feed)
+
+
+@pytest.mark.parametrize("said", [{}, {"recording": 7}, {"recording": ["wake-7"]}])
+def test_a_satellite_which_doesnt_number_its_recordings_is_stopped_as_it_always_was(pair, said):
+    # Today's Pi says no number with its wake, so is sent nothing it hasn't been before.
+    satellite, fake, serving = pair
+    fake.say("wake", talked_over=False, **said)
+    feed = satellite.wakes.get(timeout=2)["feed"]
+
+    satellite.stop_listening(feed)
+    assert wait_for(lambda: fake.messages("stop_listening"))
+    assert fake.messages("stop_listening") == [{"type": "stop_listening"}]
+
+
+@pytest.mark.parametrize("numbered", [True, False])
+def test_stopping_a_recording_the_satellite_ended_itself_leaves_its_next_one_going(pair, numbered):
+    # The first ran to its limit, and the wake word was said again before the brain
+    # stopped listening to it - so stopping it then ended the second, on both sides.
+    satellite, fake, serving = pair
+    first = {"recording": "wake-1"} if numbered else {}
+    second = {"recording": "wake-2"} if numbered else {}
+    fake.say("wake", talked_over=False, **first)
+    fake.say("audio", np.ones(1600, np.int16).tobytes())
+    fake.say("audio_end", reason="limit")
+    fake.say("wake", talked_over=False, **second)
+    earlier = satellite.wakes.get(timeout=2)["feed"]
+    later = satellite.wakes.get(timeout=2)["feed"]
+
+    satellite.stop_listening(earlier)
+    fake.say("audio", np.ones(1600, np.int16).tobytes())
+    fake.say("ping")
+    assert wait_for(lambda: fake.messages("pong"))
+    assert later.position == 1600
+    # Nothing to stop: the satellite ended it, and a stop now could only end the next.
+    assert fake.messages("stop_listening") == []
+
+    satellite.stop_listening(later)
+    assert wait_for(lambda: fake.messages("stop_listening"))
+    assert fake.messages("stop_listening") == [{"type": "stop_listening", **second}]
+    assert ends_at_once(later)
 
 
 def test_pausing_music_tells_the_satellite(pair):

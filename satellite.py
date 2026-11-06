@@ -117,6 +117,22 @@ class _FromBrain:
             self.pieces.put(None)
 
 
+class _Recording(threading.Event):
+    """One recording being sent to the brain - set once the brain says the user has stopped."""
+
+    def __init__(self, id: Optional[str]):
+        """
+        Args:
+            id: What the brain knows it by: "wake-3", say, for one the wake word started,
+                or the number the brain gave an answer it asked for, e.g. "listen-3" -
+                None for an answer to a brain which doesn't number them.
+        """
+        super().__init__()
+        # Every number the brain may stop it by. A listen which comes while it's being
+        # sent adds its own, as this recording is that answer - see Satellite._woken.
+        self.ids = set() if id is None else {id}
+
+
 def _pieces(waiting: queue.Queue) -> Iterator[np.ndarray]:
     """A stream's audio as it arrives from the brain, until None says that's all."""
     while True:
@@ -224,8 +240,14 @@ class Satellite:
         self._playing: Dict[str, _FromBrain] = {}
         # Where the follow-up the brain asked to hear starts, until the main loop sends it.
         self._listen_from: Optional[int] = None
+        # The number the brain gave that follow-up, if it gave one. Set with _listen_from,
+        # and only read with it.
+        self._listen_recording: Optional[str] = None
         # Set by the brain's stop_listening - one for each recording, while it's sent.
-        self._recording: Optional[threading.Event] = None
+        self._recording: Optional[_Recording] = None
+        # Numbers for the recordings the wake word starts, said with each wake so the
+        # brain can say which one it's stopping. Never "listen-", as the brain's are.
+        self._wake_ids = itertools.count(1)
         # Whether the brain has had all of a recording and not yet answered it - from
         # the recording's end until its allow, at the end of the turn. Losing the brain
         # then says the phrase, as losing it part way through a recording does.
@@ -419,11 +441,13 @@ class Satellite:
                 else:
                     # Made before the brain hears of the wake, which it could answer with
                     # stop_listening straight away.
-                    recording = self._recording = threading.Event()
+                    id = f"wake-{next(self._wake_ids)}"
+                    recording = self._recording = _Recording(id)
                     self._turn_open = False
                     # Saying how much of the recording is from before the wake word, so the
                     # brain knows without a setting of its own, which could differ.
-                    if not self.link.send("wake", talked_over=talked_over, pre_roll=heard_at - start):
+                    if not self.link.send("wake", talked_over=talked_over, pre_roll=heard_at - start,
+                                          recording=id):
                         recording = self._recording = None
         if dismissing:
             self.speaker.allow("announcement")
@@ -446,12 +470,12 @@ class Satellite:
             start, self._listen_from = self._listen_from, None
             if start is None:
                 return
-            recording = self._recording = threading.Event()
+            recording = self._recording = _Recording(self._listen_recording)
             self._turn_open = False
         if self._send_recording(start, 0, recording) == "dropped":
             self._say_cant_reach()
 
-    def _send_recording(self, start: int, pre_roll: int, stopped: threading.Event) -> str:
+    def _send_recording(self, start: int, pre_roll: int, stopped: _Recording) -> str:
         """
         Sends the brain what the microphone hears, until it says the user has stopped.
 
@@ -534,16 +558,27 @@ class Satellite:
         handler(message, payload)
 
     def _listen(self, message: Dict, payload: bytes):
+        recording = message.get("recording")
+        recording = recording if isinstance(recording, str) else None
         # From the moment it's asked for - before the brain's listening sound - so an
         # answer started over the sound isn't lost.
         with self._lock:
             self._listen_from = self.microphone.position
+            self._listen_recording = recording
+            # A recording being sent now is the answer, rather than one after it - see
+            # _woken - so the brain may stop it as that.
+            if self._recording is not None and recording is not None:
+                self._recording.ids.add(recording)
 
     def _stop_listening(self, message: Dict, payload: bytes):
         # Only ever the recording being sent now. One which has already ended by itself,
-        # at the limit, is over whatever the brain says.
+        # at the limit, is over whatever the brain says - and a stop meant for it, which
+        # crossed the next wake on its way, leaves that next one going. A brain which
+        # doesn't say which recording means whichever is being sent.
+        said = message.get("recording")
+        said = said if isinstance(said, str) else None
         with self._lock:
-            if self._recording is not None:
+            if self._recording is not None and (said is None or said in self._recording.ids):
                 self._recording.set()
                 # Here rather than once the main loop sees it's stopped, which can be
                 # after the brain's allow has arrived, when it has nothing to say.

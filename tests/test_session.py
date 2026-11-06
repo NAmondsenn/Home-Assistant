@@ -415,7 +415,8 @@ def test_giving_up_without_hearing_anything_is_audible(brain, connect, make_sess
     # listening, or still thinking.
     satellite, pi = connect()
     session = make_session(satellite)
-    feed = AudioFeed()
+    # One the satellite is sending, as only that has a recording to stop.
+    feed = satellite.listen()
     feed.feed(np.zeros(4 * RATE, np.int16))
 
     assert session._handle_interaction(feed, timeline=FakeTimeline()) is None
@@ -587,7 +588,8 @@ def test_speech_to_text_is_let_go_if_the_recording_fails(brain, connect, make_se
     monkeypatch.setattr(session_module, "record_until_silence", broken)
 
     with pytest.raises(RuntimeError):
-        session._handle_interaction(AudioFeed(), timeline=FakeTimeline())
+        # One the satellite is sending, as only that has a recording to stop.
+        session._handle_interaction(satellite.listen(), timeline=FakeTimeline())
     assert brain.stt.made[0].cancelled
     assert wait_for(lambda: pi.messages("stop_listening"))
 

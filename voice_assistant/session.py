@@ -568,7 +568,7 @@ class Session:
             raise
         finally:
             # The user has stopped, or isn't going to start - so the satellite stops sending.
-            self.satellite.stop_listening()
+            self.satellite.stop_listening(feed)
 
         if not self.satellite.connected:
             # Gone part way through, so there's nobody to answer - and half a request

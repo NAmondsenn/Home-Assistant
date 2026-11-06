@@ -8,8 +8,9 @@ comes with it, if any: Wyoming's message shape, without needing its library.
 After the handshake, what a satellite sends the brain:
 
     ping
-    wake  {"talked_over": ..., "pre_roll": ...}  (pre_roll: how many of the samples
-        sent next are from before the wake word - optional)
+    wake  {"talked_over": ..., "pre_roll": ..., "recording": ...}  (pre_roll: how many of
+        the samples sent next are from before the wake word; recording: what the
+        satellite calls the recording, e.g. "wake-3" - both optional)
     audio  (payload: 16-bit samples at 16kHz)
     audio_end  {"reason": "limit"|"cancelled"}
     played  {"id": ..., "stopped": ..., "position": ...}
@@ -19,8 +20,9 @@ After the handshake, what a satellite sends the brain:
 and what the brain sends a satellite:
 
     pong
-    listen
-    stop_listening
+    listen  {"recording": ...}  (what the brain calls the answer, e.g. "listen-3" - optional)
+    stop_listening  {"recording": ...}  (which recording to stop - optional, for whichever
+        is being sent)
     play_sound  {"id": ..., "name": ..., "volume": ..., "kind": ..., "start": ..., "length": ...}
     play_stream  {"id": ..., "rate": ..., "channels": ..., "volume": ..., "kind": ..., "paused": ...}
     stream_audio  {"id": ...}  (payload)

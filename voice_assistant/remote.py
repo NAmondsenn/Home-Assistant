@@ -43,6 +43,11 @@ PIECE_SECONDS = 0.1
 # "played" for the old link's "1" would otherwise finish the new link's "1".
 _playback_ids = itertools.count(1)
 
+# Numbers for the answers the brain asks a satellite to send, said with listen and with
+# the stop_listening which ends one - "listen-1" on, never a satellite's "wake-1", and
+# counted for as long as the brain runs, so none comes round again.
+_listen_ids = itertools.count(1)
+
 
 def _as_16_bit(audio: np.ndarray) -> bytes:
     """float32 samples as the 16-bit little-endian ones the satellite plays, channels interleaved."""
@@ -479,9 +484,11 @@ class RemoteSatellite:
         # can't be interleaved.
         self._lock = threading.Lock()
         self._connected = True
-        # Where the recording the satellite is sending goes, while there is one.
+        # Where the recording the satellite is sending goes, while there is one, and
+        # what the satellite knows it by - None from a satellite which doesn't say.
         self._feed_lock = threading.Lock()
         self._feed: Optional[AudioFeed] = None
+        self._feed_recording: Optional[str] = None
         self._last_heard = monotonic()
         self._handlers: Dict[str, Callable[[Dict, bytes], None]] = {
             "ping": lambda message, payload: self.send("pong"),
@@ -564,23 +571,38 @@ class RemoteSatellite:
     def listen(self) -> AudioFeed:
         """
         Has the satellite send what the user says from now - their answer to Nova's
-        question - until stop_listening(), or the longest a request may be.
+        question - until stop_listening(feed), or the longest a request may be.
 
         Returns:
             A feed of it. Already ended if the satellite isn't connected.
         """
+        recording = f"listen-{next(_listen_ids)}"
         # Before the satellite is asked, so the first of it has somewhere to go.
-        feed = self._new_feed()
-        self.send("listen")
+        feed = self._new_feed(recording)
+        self.send("listen", recording=recording)
         return feed
 
-    def stop_listening(self):
+    def stop_listening(self, feed: AudioFeed):
         """
-        Has the satellite stop sending what the user says, once the brain has heard
-        them stop, and ends its feed. Any of it already on its way is dropped.
+        Has the satellite stop sending what the user says into a feed, once the brain
+        has heard them stop, and ends the feed. Any of it already on its way is dropped.
+
+        Args:
+            feed: The one listened to, as a wake or listen() gave it.
         """
-        self._end_feed()
-        self.send("stop_listening")
+        with self._feed_lock:
+            if self._feed is not feed:
+                # Ended already: the satellite ended the recording itself, at its limit,
+                # or a newer one took its place here, to be stopped in its turn. A stop
+                # now could only end the satellite's next recording, on one which
+                # doesn't number them.
+                return
+            recording, self._feed, self._feed_recording = self._feed_recording, None, None
+        feed.end()
+        # Said, so a satellite which has started its next recording by the time this
+        # arrives leaves that one going. Left out for one which doesn't number them,
+        # which stops whichever it's sending, as it always has.
+        self.send("stop_listening", **({} if recording is None else {"recording": recording}))
 
     def set_state(self, volumes: Dict[str, float], muted: bool, longest_request: Optional[float] = None,
                   wake_confidence: Optional[float] = None, voice_check: Optional[float] = None) -> bool:
@@ -694,8 +716,9 @@ class RemoteSatellite:
         # It's sent as the recording's first piece, so is never more than a message holds.
         if isinstance(pre_roll, bool) or not isinstance(pre_roll, int) or not 0 <= pre_roll <= protocol.MAX_AUDIO // 2:
             pre_roll = None
+        recording = message.get("recording")
         self.wakes.put({"talked_over": bool(message.get("talked_over")), "pre_roll": pre_roll,
-                        "feed": self._new_feed()})
+                        "feed": self._new_feed(recording if isinstance(recording, str) else None)})
 
     def _audio(self, message: Dict, payload: bytes):
         with self._feed_lock:
@@ -709,8 +732,17 @@ class RemoteSatellite:
                                "dismissed": list(message.get("dismissed") or []),
                                "ringing": list(message.get("ringing") or [])})
 
-    def _new_feed(self) -> AudioFeed:
-        """Starts a feed for the recording the satellite is about to send, ending any before it."""
+    def _new_feed(self, recording: Optional[str]) -> AudioFeed:
+        """
+        Starts a feed for the recording the satellite is about to send, ending any before it.
+
+        Args:
+            recording: What the satellite knows it by, e.g. "wake-3" - or None, from one
+                which doesn't say.
+
+        Returns:
+            The feed. Already ended if the satellite isn't connected.
+        """
         feed = AudioFeed()
         with self._feed_lock:
             # Checked under the lock, which _lost takes once it's no longer connected,
@@ -718,7 +750,7 @@ class RemoteSatellite:
             if not self._connected:
                 feed.end()
                 return feed
-            old, self._feed = self._feed, feed
+            old, self._feed, self._feed_recording = self._feed, feed, recording
         if old is not None:
             old.end()
         return feed
@@ -726,7 +758,7 @@ class RemoteSatellite:
     def _end_feed(self):
         """Ends the feed of the recording being sent, if there is one."""
         with self._feed_lock:
-            feed, self._feed = self._feed, None
+            feed, self._feed, self._feed_recording = self._feed, None, None
         if feed is not None:
             feed.end()
 
