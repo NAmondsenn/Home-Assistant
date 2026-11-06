@@ -11,7 +11,7 @@ import pytest
 import requests
 
 from voice_assistant import volume as volume_module
-from voice_assistant.actions import Action, ActionExecutor, ActionResult, confirm
+from voice_assistant.actions import NOT_A_COMMAND, Action, ActionExecutor, ActionResult, confirm
 from voice_assistant.batteries import Battery
 from voice_assistant.volume import VolumeControl
 
@@ -936,17 +936,24 @@ def test_the_phones_among_those_found_go_by_ntfy_and_the_rest_by_notify():
 
 
 @pytest.mark.parametrize("text", ["TTS", " TTS ", "request_location_update", "clear_notification", "remove_channel",
-                                  "command_stop_tts", "command_screen_on", "command_launch_app"])
+                                  "command_stop_tts", "command_screen_on", "command_launch_app",
+                                  # The iPhone's, iPad's and Mac's own, the Mac being one Nova sends to.
+                                  "clear_badge", "update_complications", "update_widgets", "kiosk_reload"])
 def test_a_message_which_is_one_of_the_apps_commands_is_shown_not_obeyed(text):
-    # The Android app acts on a message which is exactly one of its commands, whatever its title.
+    # The app acts on a message which is exactly one of its commands, whatever its title.
     home = FakeAppHome([_mac()])
     result = ActionExecutor(home=home).execute(Action("send_to_phone", {"device": "mac", "text": text}))
     assert (result.ok, result.say) == (True, "Sent.")
-    [(_, message, data)] = home.sent
-    # Not even once Home Assistant has trimmed it, as it does the templates it renders.
-    assert message.strip() not in ("TTS", "request_location_update", "clear_notification", "remove_channel") \
-        and not message.strip().startswith("command_")
-    assert message.endswith(text) and data is None
+    # Shown by the character put in front, which Home Assistant's trimming leaves - and nothing else.
+    assert home.sent == [("mobile_app_macbook_pro", NOT_A_COMMAND + text, None)]
+
+
+def test_a_message_which_isnt_words_is_sent_as_words():
+    # Claude can give a number for the text, which had no strip() to check it with.
+    home = FakeAppHome([_mac()])
+    result = ActionExecutor(home=home).execute(Action("send_to_phone", {"device": "mac", "text": 42}))
+    assert (result.ok, result.say) == (True, "Sent.")
+    assert home.sent == [("mobile_app_macbook_pro", "42", None)]
 
 
 @pytest.mark.parametrize("text", ["tts", "TTS is text to speech", "Take the command_screen_on", "commands",

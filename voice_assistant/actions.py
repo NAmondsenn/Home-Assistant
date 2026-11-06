@@ -58,9 +58,12 @@ MOST_CALENDAR_DAYS = 14
 MOST_NEXT = 10
 
 # The messages the Home Assistant app acts on instead of showing, when a notification's whole
-# message is one - and any "command_..." too, such as command_screen_on. Its title makes no
-# difference, so a text which was just "TTS" would be taken for the command and never read.
-APP_COMMANDS = ("TTS", "request_location_update", "clear_notification", "remove_channel")
+# message is one - Android's, then the iPhone's, iPad's and Mac's - and any "command_..." or
+# "kiosk_..." too, such as command_screen_on. Its title makes no difference, so a text which
+# was just "TTS" would be taken for the command and never read.
+APP_COMMANDS = ("TTS", "request_location_update", "clear_notification", "remove_channel", "clear_badge",
+                "update_complications", "update_widgets")
+APP_COMMAND_STARTS = ("command_", "kiosk_")
 # Put in front of a text which is one, so it's shown. A zero-width space, as a plain space
 # could be lost: Home Assistant's templates strip the text they render.
 NOT_A_COMMAND = "\u200b"
@@ -1472,7 +1475,9 @@ class ActionExecutor:
         Returns:
             None once Home Assistant took it, else what to say of why not.
         """
-        if text.strip() in APP_COMMANDS or text.strip().startswith("command_"):
+        # Words, whatever Claude gave - a number has no strip() to check it with.
+        text = str(text)
+        if text.strip() in APP_COMMANDS or text.strip().startswith(APP_COMMAND_STARTS):
             text = NOT_A_COMMAND + text
         outcome, error = self._notify(device, "send to", text, title=title)
         if outcome == "taken":
