@@ -419,9 +419,9 @@ class Phrase:
             audio: 16-bit little-endian mono audio.
             rate: Its sample rate.
         """
-        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         temporary = self.path + ".tmp"
         try:
+            os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
             with wave.open(temporary, "wb") as file:
                 file.setnchannels(1)
                 file.setsampwidth(2)

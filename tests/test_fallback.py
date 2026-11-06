@@ -1,6 +1,7 @@
 """Tests for what the satellite does while it can't reach its brain."""
 
 import json
+import logging
 import os
 import threading
 import time
@@ -385,3 +386,16 @@ def test_the_phrase_is_the_default_until_the_brain_sends_one(tmp_path):
         assert (file.getframerate(), file.getnchannels(), file.getsampwidth()) == (22050, 1, 2)
         assert file.getnframes() == 100
     assert os.listdir(tmp_path) == ["phrase.wav"]
+
+
+def test_a_phrase_whose_folder_cant_be_made_is_logged_and_the_default_said(tmp_path, caplog):
+    # Here a file is in the way. The error went up to whatever handed the phrase over.
+    (tmp_path / "blocked").write_text("")
+    phrase = Phrase(str(tmp_path / "blocked" / "phrase.wav"), "/sounds/cant_reach_server.wav")
+    with caplog.at_level(logging.ERROR, logger="voice_assistant.fallback"):
+        phrase.replace(b"\x00\x00" * 100, 22050)
+    assert "Could not keep the brain's phrase" in caplog.text
+
+    speaker = FakeSpeaker()
+    phrase.play(speaker, 0.7)
+    assert [call["filename"] for call in speaker.calls] == ["/sounds/cant_reach_server.wav"]
