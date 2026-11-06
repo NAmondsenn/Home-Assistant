@@ -45,6 +45,21 @@ class FakeSpeaker:
         return playback
 
 
+class StuckSpeaker(FakeSpeaker):
+    """Holds the first sound it's asked for until let go - as a sound card which won't open can."""
+
+    def __init__(self):
+        super().__init__()
+        self.held = threading.Event()
+        self.let_go = threading.Event()
+
+    def play_file(self, filename, **details):
+        if not self.held.is_set():
+            self.held.set()
+            self.let_go.wait(5)
+        return super().play_file(filename, **details)
+
+
 def entry(id="alarm-1@1729587600", due=NOW, sound="alarm_sound.wav"):
     return {"id": id, "due": due, "kind": "alarm", "sound": sound}
 
@@ -162,6 +177,36 @@ def test_an_alarm_already_ringing_isnt_rung_again_when_the_brain_lists_it_anew(t
     assert len(speaker.calls) == 1
     # Marked as rung all the same, so it isn't checked again.
     assert copy.due(NOW + 31) == []
+    ringer.quiet()
+    assert all(playback.stopped for playback in speaker.playbacks)
+
+
+def test_a_ring_which_outlives_being_dismissed_doesnt_stop_the_next(tmp_path, monkeypatch):
+    # Dismissing waits 2 s for each ring to stop. One stuck for longer left its stop set
+    # for the next, so the next alarm to fall due was marked as rung and stopped as it
+    # started, never heard.
+    copy, state, _, _ = make(tmp_path)
+    speaker = StuckSpeaker()
+    ringer = FallbackRinger(speaker, "/sounds", copy, state)
+    copy.replace([entry("alarm-1@1", NOW), entry("alarm-2@1", NOW + 100, sound="timer_sound.wav")])
+    try:
+        ringer.check(NOW)
+        assert speaker.held.wait(2)
+        join = threading.Thread.join
+        with monkeypatch.context() as patched:
+            # Not the 2 s it waits, which the test needn't.
+            patched.setattr(threading.Thread, "join", lambda thread, timeout=None:
+                            join(thread, 0.05 if thread.name.startswith("ring-") else timeout))
+            ringer.dismiss()
+        assert ringer.ringing_ids() == ["alarm-1@1"]
+
+        ringer.check(NOW + 100)
+        assert wait_for(lambda: "/sounds/timer_sound.wav" in [call["filename"] for call in speaker.calls])
+        assert "alarm-2@1" in ringer.ringing_ids()
+    finally:
+        speaker.let_go.set()
+    # The stuck one, once let go, stops as it was told to - and leaves the other ringing.
+    assert wait_for(lambda: ringer.ringing_ids() == ["alarm-2@1"])
     ringer.quiet()
     assert all(playback.stopped for playback in speaker.playbacks)
 

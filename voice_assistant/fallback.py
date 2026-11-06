@@ -269,6 +269,7 @@ class FallbackRinger:
         self.sounds_folder = sounds_folder
         self.copy = copy
         self.state = state
+        # Set to stop the rings started since the last quiet, which each hold it - see quiet.
         self._stop = threading.Event()
         self._threads: List[threading.Thread] = []
         self._lock = threading.Lock()
@@ -332,9 +333,8 @@ class FallbackRinger:
 
     def _start(self, entry: Dict, limit: float):
         """Starts ringing an entry for at most limit seconds. Called with the lock held."""
-        if not any(thread.is_alive() for thread in self._threads):
-            self._stop.clear()
-        thread = threading.Thread(target=self._ring, args=(entry, limit), daemon=True, name=f"ring-{entry['id']}")
+        thread = threading.Thread(target=self._ring, args=(entry, limit, self._stop), daemon=True,
+                                  name=f"ring-{entry['id']}")
         # Started under the lock, and only then listed, so whatever asks what's
         # ringing never finds it listed but not yet alive - which ringing_ids takes
         # for a ring that has ended, and forgets. Forgotten, it rang on with nothing
@@ -343,27 +343,30 @@ class FallbackRinger:
         thread.start()
         self._threads.append(thread)
 
-    def _ring(self, entry: Dict, limit: float):
-        """Plays an entry's sound over and over until dismissed, quietened or limit seconds have passed."""
+    def _ring(self, entry: Dict, limit: float, stop: threading.Event):
+        """
+        Plays an entry's sound over and over until stop is set, as it's dismissed or
+        quietened, or limit seconds have passed.
+        """
         filename = os.path.join(self.sounds_folder, entry["sound"])
         deadline = time.monotonic() + limit
         # This ring's own, so it stops exactly what it played. Kept by id, a second
         # ring of the same id took its place, and quietening both left one playing.
         playback = None
-        while not self._stop.is_set() and time.monotonic() < deadline:
+        while not stop.is_set() and time.monotonic() < deadline:
             playback = self.speaker.play_file(
                 filename, volume=self.state.volume("alarm"), kind="announcement")
             if playback is None:
                 # A missing file mustn't spin the thread.
-                self._stop.wait(1.0)
+                stop.wait(1.0)
                 continue
-            while not self._stop.is_set() and not playback.done and time.monotonic() < deadline:
+            while not stop.is_set() and not playback.done and time.monotonic() < deadline:
                 playback.wait(0.2)
         if playback is not None and not playback.done:
             playback.stop()
         # Rung out. One quietened is still going - for the brain to take over, or the
         # satellite to carry on once it starts again - and one dismissed is over already.
-        if not self._stop.is_set():
+        if not stop.is_set():
             self.copy.ended(entry["id"])
 
     def dismiss(self):
@@ -382,9 +385,13 @@ class FallbackRinger:
             The ids which were ringing.
         """
         with self._lock:
-            threads = list(self._threads)
+            threads, stop = list(self._threads), self._stop
+            # What rings from now on has a stop of its own. Shared, a ring which outlived
+            # the wait below - in a sound card which won't open, say - kept it set, and
+            # the next to fall due stopped as it started, marked as rung but never heard.
+            self._stop = threading.Event()
         ids = [thread.name[len("ring-"):] for thread in threads if thread.is_alive()]
-        self._stop.set()
+        stop.set()
         for thread in threads:
             thread.join(timeout=2.0)
         return ids
