@@ -2846,6 +2846,24 @@ def test_a_light_sentence_refused_by_its_words_is_done_by_novas_own_lights(make_
     assert "/api/conversation/process" not in _paths(home) and home.socket.calls == []
 
 
+def test_the_log_says_a_refused_light_sentence_was_handed_to_novas_own_lights(make_home, caplog):
+    # Refused only for Assist, so the log doesn't leave it at that - and says what was
+    # named for what it is, which here is the PC's shutdown button, not a lock or a door.
+    porch = _rendered_light("light.porch", "Porch light", "Outside", state="off")
+    home = _house(make_home, porch)
+    home._session.answers["/api/states"] = [_thing("button.desk_pc_shutdown", "Shutdown"),
+                                            _thing("light.porch", "Porch light")]
+    home.snapshot = lambda: _registry(_entry("button.desk_pc_shutdown", "mqtt", "desk", "Shutdown"),
+                                      _entry("light.porch", aliases=["shutdown light"]), devices=DESK)
+    with caplog.at_level("INFO", logger="voice_assistant.home_assistant"):
+        result = ActionExecutor(home=home).execute(Action("control_home", {
+            "command": "turn on the shutdown light", "on": True, "words": "the shutdown light"}))
+    assert result.ok and _dimmed(home) == [("turn_on", {"entity_id": ["light.porch"]})]
+    assert caplog.messages[:2] == [
+        "Refused a Home Assistant request naming something never worked by voice: 'turn on the shutdown light'",
+        "Handed to Nova's own lights instead, which only ever work lights: 'the shutdown light'"]
+
+
 def test_a_light_sentence_that_fails_for_another_reason_isnt_done_by_novas_own_lights(make_home):
     # Only a refusal is handed over: with Home Assistant's states out of reach, the light
     # sentence says so rather than switching the lamp regardless.

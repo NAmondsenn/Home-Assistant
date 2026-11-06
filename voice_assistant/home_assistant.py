@@ -579,8 +579,8 @@ class HomeAssistant:
                                 extra=TRANSCRIPT)
                     return not_understood
             if names_guarded(request, states, snapshot):
-                logger.warning(f"Refused a Home Assistant request naming a lock, door or the like: '{request}'",
-                               extra=TRANSCRIPT)
+                logger.warning(f"Refused a Home Assistant request naming something never worked by voice: "
+                               f"'{request}'", extra=TRANSCRIPT)
                 return refused
 
             by_id = {state.get("entity_id"): state for state in states}
@@ -1183,6 +1183,10 @@ class HomeAssistant:
             lights changing speaks for itself. A 'not_understood' of True when Nova
             doesn't know the lights, so that Claude is asked.
         """
+        # The refusal just logged was only Assist's, and the light sentence is still done
+        # here - so the log says so, rather than leaving it at "Refused".
+        logger.info(f"Handed to Nova's own lights instead, which only ever work lights: '{words}'",
+                    extra=TRANSCRIPT)
         try:
             found, reply = self._lights_to_work(words)
             if reply:
