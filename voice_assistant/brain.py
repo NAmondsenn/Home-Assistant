@@ -661,15 +661,17 @@ class Brain:
         of its own - until stop(), or a stop signal.
         """
         server = _Server(self.port, self)
-        with self._lock:
-            if self._stopped.is_set():
-                server.server_close()
-                return
-            # First, so whatever sees the brain listening also knows where.
-            self.port = server.server_address[1]
-            self._server = server
-        logger.info(f"Listening for satellites on port {self.port}")
+        # Started before the server is noted, so that a stop signal landing anywhere from
+        # there to serve_forever still clears it. Left set, stop() would call shutdown()
+        # on a loop which never started, and wait for ever.
         try:
+            with self._lock:
+                if self._stopped.is_set():
+                    return
+                # First, so whatever sees the brain listening also knows where.
+                self.port = server.server_address[1]
+                self._server = server
+            logger.info(f"Listening for satellites on port {self.port}")
             server.serve_forever(poll_interval=STOP_CHECK)
         finally:
             with self._lock:

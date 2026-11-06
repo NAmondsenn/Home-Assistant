@@ -347,6 +347,23 @@ def test_whatever_sees_the_brain_listening_knows_its_port(brain):
     assert seen == [brain.port] and brain.port != 0
 
 
+def test_a_stop_signal_just_as_the_brain_starts_listening_leaves_nothing_for_stop_to_wait_on(brain, monkeypatch):
+    # The signal's SystemExit can land anywhere in serve(). Landing after the server was
+    # noted but before it ran, it left stop() calling shutdown() on a loop which never
+    # started - and that waits for ever.
+    def signalled(message, *args, **kwargs):
+        if message.startswith("Listening for satellites"):
+            raise SystemExit(0)
+
+    monkeypatch.setattr(brain_module.logger, "info", signalled)
+    with pytest.raises(SystemExit):
+        brain.serve()
+
+    # Taken away first, so that a failing test can't hang the fixture's own stop().
+    stuck, brain._server = brain._server, None
+    assert stuck is None
+
+
 def test_a_satellite_which_connects_gets_its_state_alarms_and_phrase(brain, connect):
     brain.clock.set_timer(600, satellite="bedroom")
     brain.clock.set_timer(900, satellite="kitchen")
