@@ -274,7 +274,8 @@ class LocalIntents:
                 in Google is heard from then on. Without it, the activity rules don't
                 match, and Claude has them.
             wake_word: The wake word, e.g. "Hey Nova" - its last word, run into a command
-                said in the same breath ("Novopause."), is taken off it.
+                said in the same breath ("Novopause."), is taken off it, and so are the
+                words before that ("Hey Novopause.").
         """
         self.clock = clock
         self.ntfy = ntfy
@@ -284,7 +285,10 @@ class LocalIntents:
         # "Nova", how Nemotron heard it so: "Nova, pause." said in one breath was "Novopause.".
         ending = (wake_word.split() or [""])[-1].lower()
         starts = [re.escape(ending)] + (["novo"] if ending == "nova" else [])
-        self._run_into = rf"(?:{'|'.join(starts)})(\w+)" if ending else None
+        # The wake word's other words may be heard before it, as they're said: "Hey Novopause.".
+        before = _tidied(" ".join(wake_word.split()[:-1]))
+        lead = rf"(?:{re.escape(before)} )?" if before else ""
+        self._run_into = rf"{lead}(?:{'|'.join(starts)})(\w+)" if ending else None
         # The request as it was said, punctuation and all, while match looks at it - a
         # session's requests are matched one at a time. "Eggs, milk, bread" has commas,
         # which the rules never see.
