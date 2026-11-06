@@ -654,6 +654,14 @@ def test_a_routines_steps_are_never_taken_for_whats_playing():
     assert llm.playing == [[]] and reply.say == "Sorry, I didn't catch that."
 
 
+def test_a_routine_step_taken_for_whats_playing_leaves_the_turn_noted_as_the_routine():
+    # not_for_me_unfounded counts what Claude heard, which a routine's step wasn't.
+    evening = FakeRoutines({"name": "Evening", "phrases": ["evening"], "steps": ["is it sunny"]})
+    timeline = Timeline()
+    _conversation(llm=FakeLLM(NOT_FOR_ME), routines=evening).handle("evening", timeline=timeline)
+    assert timeline.notes["outcome"] == "routine"
+
+
 # Sending to the phone
 
 def test_whats_said_is_kept_for_sending_to_the_phone():

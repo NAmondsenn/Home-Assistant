@@ -240,7 +240,7 @@ class Conversation:
         # Before anything is run or done with the turn: speech from a film has nothing ringing
         # silenced, as the user said nothing, nor kept to send to the phone.
         if result.get("not_for_me"):
-            return self._not_for_me(result["playing"], timeline)
+            return self._not_for_me(result["playing"], timeline, in_routine)
         actions = result.get("actions", [])
 
         # Every action asked for is run, in order - "pause the music and set a ten
@@ -261,7 +261,7 @@ class Conversation:
             result = self._ask_claude(text, in_routine=in_routine)
             timeline.mark("llm_done")
             if result.get("not_for_me"):
-                return self._not_for_me(result["playing"], timeline)
+                return self._not_for_me(result["playing"], timeline, in_routine)
             actions = result.get("actions", [])
             action_results = self._run(actions)
         response_text = result["response"]
@@ -375,7 +375,7 @@ class Conversation:
             result["playing"] = playing
         return result
 
-    def _not_for_me(self, playing: List[str], timeline: Timeline) -> Reply:
+    def _not_for_me(self, playing: List[str], timeline: Timeline, in_routine: bool = False) -> Reply:
         """
         The reply when Claude took what it heard for speech from what's playing - a line
         from a film, heard as the wake word and a request.
@@ -383,6 +383,7 @@ class Conversation:
         Args:
             playing: What Claude was told plays in the room.
             timeline: The Timeline the turn is marked on.
+            in_routine: True for a step of a routine, whose turn stays noted as the routine.
 
         Returns:
             Nothing at all while something played, so a film is never answered, and the
@@ -390,7 +391,10 @@ class Conversation:
             Claude had no grounds for it.
         """
         if not playing:
-            timeline.note(outcome="not_for_me_unfounded")
+            # It counts how often Claude takes what it heard for a film with nothing playing,
+            # which tunes the prompt. A routine's step wasn't heard - it's the user's own words.
+            if not in_routine:
+                timeline.note(outcome="not_for_me_unfounded")
             logger.info("Claude took that for speech from what's playing, with nothing playing, "
                         "so it wasn't caught")
             return Reply(say=NOT_CAUGHT)
