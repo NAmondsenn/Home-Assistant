@@ -281,9 +281,9 @@ class GoogleSignIn:
             GoogleSignInError: If the address isn't from the sign-in started, or none
                 was, or it ran out, or was cancelled on Google's page, or it hasn't got
                 Google's code in it - nothing is asked or saved - or if Google refused
-                the code for the client's set-up, wasn't given everything Nova asks
-                for, or gave no whole sign-in to keep - nothing is saved - or the
-                sign-in couldn't be saved.
+                the code for the client's set-up, was slowing Nova down, wasn't given
+                everything Nova asks for, or gave no whole sign-in to keep - nothing is
+                saved - or the sign-in couldn't be saved.
             ValueError: If the address couldn't be read at all, such as "http://[x".
             SignInNeeded: If Google turned the code down, or ClientRefused, if it
                 doesn't know the client.
@@ -316,6 +316,11 @@ class GoogleSignIn:
             response = e.response
             if response is None or not 400 <= response.status_code < 500:
                 raise
+            # Google slowing Nova down is a moment out of reach, not the client being wrong.
+            if response.status_code == 429 or _rate_limited(response):
+                logger.warning(f"Google slowed the sign-in down: HTTP {response.status_code}")
+                raise GoogleSignInError("Google is slowing Nova down - start the sign-in again in a minute.") \
+                    from None
             # A client set up wrongly in Google Cloud - a redirect it doesn't allow, the
             # API switched off - which trying again, or Google being out of reach, isn't.
             code = self._error(response)

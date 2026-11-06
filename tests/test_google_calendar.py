@@ -427,6 +427,30 @@ def test_google_refusing_the_sign_in_otherwise_names_its_error(token_file, caplo
         assert words not in caplog.text
 
 
+@pytest.mark.parametrize("answer", [
+    FakeResponse(429, {"error": "rate_limit_exceeded", "error_description": "Words"}),
+    FakeResponse(429, ["not", "an", "error"]),
+    FakeResponse(403, {"error": {"code": 403, "errors": [{"domain": "usageLimits", "reason": "rateLimitExceeded"}]}}),
+    FakeResponse(403, {"error": {"code": 403, "errors": [{"domain": "usageLimits",
+                                                          "reason": "userRateLimitExceeded"}]}}),
+])
+def test_google_slowing_the_sign_in_down_says_to_try_again_not_to_check_the_client(token_file, caplog, answer):
+    # A busy Google isn't a client set up wrongly, which "check the client in Google Cloud" says.
+    sign_in = GoogleSignIn(CLIENT_ID, CLIENT_SECRET, token_file,
+                           session=FakeGoogle(**{google_calendar.TOKEN: [answer]}))
+    state = _query(sign_in.start())["state"]
+
+    with pytest.raises(GoogleSignInError) as refused:
+        sign_in.finish(_pasted(state))
+
+    assert str(refused.value) == "Google is slowing Nova down - start the sign-in again in a minute."
+    assert f"HTTP {answer.status_code}" in caplog.text and "Words" not in caplog.text
+    assert not os.path.exists(token_file)
+    # The sign-in is used up, so it is started afresh.
+    with pytest.raises(GoogleSignInError, match="That address isn't from this sign-in - start again."):
+        sign_in.finish(_pasted(state))
+
+
 @pytest.mark.parametrize("changed", [
     {"access_token": None},
     {"access_token": ""},
