@@ -370,6 +370,74 @@ def test_the_wake_word_sends_the_pre_roll_then_the_recording(brain, make, tmp_pa
     assert line["marks_ms"]["wake"] <= line["marks_ms"]["reply_audio"]
 
 
+def latency_lines(tmp_path):
+    return [json.loads(text) for text in (tmp_path / "latency.jsonl").read_text().splitlines()]
+
+
+def test_a_reply_is_timed_from_when_it_starts_to_play(brain, make, tmp_path):
+    # Not from when its first audio arrives, which can be a while before the speaker
+    # plays it.
+    made = make()
+    let_play = threading.Event()
+    play_stream = made.speaker.play_stream
+
+    def play_stream_once_let(pieces, **details):
+        def held():
+            let_play.wait(5)
+            yield from pieces
+        return play_stream(held(), **details)
+
+    made.speaker.play_stream = play_stream_once_let
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+    brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=1.0, kind="reply", paused=False)
+    brain.say("stream_audio", np.array([1, 2, 3], np.int16).tobytes(), id="reply-1")
+    try:
+        # Arrived, and waiting for the speaker.
+        assert wait_for(lambda: "reply-1" in made._playing and made._playing["reply-1"].pieces.qsize())
+        assert not (tmp_path / "latency.jsonl").exists()
+    finally:
+        let_play.set()
+
+    assert wait_for(lambda: (tmp_path / "latency.jsonl").exists())
+    (line,) = latency_lines(tmp_path)
+    assert set(line["marks_ms"]) == {"wake", "reply_audio"}
+
+
+def test_a_wake_with_no_reply_is_timed_as_its_turn_ends(brain, make, tmp_path):
+    # Rather than only at the next wake, which may be hours later.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("stop_listening")
+    brain.say("allow", kind="announcement")
+
+    assert wait_for(lambda: (tmp_path / "latency.jsonl").exists(), seconds=2)
+    (line,) = latency_lines(tmp_path)
+    assert set(line["marks_ms"]) == {"wake"}
+
+
+def test_the_end_of_the_turn_before_leaves_a_wake_still_being_heard_untimed(brain, make, tmp_path):
+    # The brain ended its last turn just as the wake word was heard, so that turn's end
+    # arrives while this wake is being heard - and this wake's reply is still to come.
+    made = make()
+    assert wait_for(lambda: connected(made) and made.wake.listening)
+    made.wake.say()
+    assert wait_for(lambda: len(brain.recordings()) >= 2)
+    brain.say("allow", kind="announcement")
+    assert wait_for(lambda: "announcement" not in made.speaker.silenced)
+    brain.say("stop_listening")
+    brain.say("play_stream", id="reply-1", rate=22050, channels=1, volume=1.0, kind="reply", paused=False)
+    brain.say("stream_audio", np.array([1, 2, 3], np.int16).tobytes(), id="reply-1")
+
+    assert wait_for(lambda: (tmp_path / "latency.jsonl").exists())
+    (line,) = latency_lines(tmp_path)
+    assert set(line["marks_ms"]) == {"wake", "reply_audio"}
+
+
 def test_the_recording_stops_when_the_brain_says(brain, make):
     made = make()
     assert wait_for(lambda: connected(made) and made.wake.listening)

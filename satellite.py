@@ -32,7 +32,7 @@ from voice_assistant.fallback import AlarmCopy, FallbackRinger, Phrase, StateCop
 from voice_assistant.logging_setup import setup_logging
 from voice_assistant.microphone import RATE, Microphone
 from voice_assistant.satellite_link import SILENT_FOR, SatelliteLink
-from voice_assistant.speaker import Playback, Speaker
+from voice_assistant.speaker import BLOCK_SECONDS, Playback, Speaker
 from voice_assistant.timeline import Timeline
 from voice_assistant.wake_clips import WakeClips, clip_start
 from voice_assistant.wake_word import WakeWordDetector
@@ -228,7 +228,7 @@ class Satellite:
         # the recording's end until its allow, at the end of the turn. Losing the brain
         # then says the phrase, as losing it part way through a recording does.
         self._turn_open = False
-        # The last wake's timing, until its reply starts to play.
+        # The last wake's timing, until its reply starts to play or its turn ends.
         self._timeline: Optional[Timeline] = None
         # The report of what happened while the brain was away, and what was still
         # ringing, as they were sent on connecting - until the brain says it has them,
@@ -549,6 +549,11 @@ class Satellite:
     def _allow(self, message: Dict, payload: bytes):
         # Sent as the brain's turn ends, whatever came of it.
         with self._lock:
+            # A wake with no reply is timed now, rather than at the next wake - unless its
+            # recording is still going, when this is the end of the turn before, which
+            # the brain ended just as the wake word was heard.
+            if self._turn_open:
+                self._save_timeline()
             self._turn_open = False
         self.speaker.allow(message["kind"])
 
@@ -578,11 +583,6 @@ class Satellite:
             # One the satellite has stopped, which the brain hasn't heard about yet.
             if playing is None or playing.pieces is None or playing.playback.done:
                 return
-            # Nova's spoken reply is streamed, where its chimes are sounds, so the first
-            # of a "reply" stream is when the user starts to hear the answer.
-            if playing.kind == "reply" and payload and self._timeline is not None:
-                self._timeline.mark("reply_audio")
-                self._save_timeline()
         audio = np.frombuffer(payload, np.int16).astype(np.float32) / 32768
         if playing.channels > 1:
             audio = audio.reshape(-1, playing.channels)
@@ -689,6 +689,9 @@ class Satellite:
     def _report(self, id: str, playing: _FromBrain):
         """Tells the brain how far its music has got each second, and when any of its playbacks ends."""
         playback = playing.playback
+        # Nova's spoken reply is streamed, where its chimes are sounds.
+        if playing.kind == "reply" and playing.pieces is not None:
+            self._time_reply(playback)
         while not playback.wait(PROGRESS_EVERY):
             if playing.kind == "music":
                 self.link.send("progress", id=id, position=playback.position)
@@ -702,6 +705,27 @@ class Satellite:
             if self._playing.get(id) is playing:
                 del self._playing[id]
             self.link.send("played", id=id, stopped=playback.stopped, position=playback.position)
+
+    def _time_reply(self, playback: Playback):
+        """
+        Marks the last wake's reply as the speaker starts to play it, which is when the
+        user starts to hear the answer - not as its first audio arrives, which can be a
+        while before.
+
+        Args:
+            playback: The reply.
+        """
+        # Looked at as often as the speaker takes more audio.
+        while not playback.position and not playback.wait(BLOCK_SECONDS):
+            pass
+        # Over before any of it played - talked over, most likely.
+        if not playback.position:
+            return
+        heard = time.monotonic()
+        with self._lock:
+            if self._timeline is not None:
+                self._timeline.mark("reply_audio", at=heard)
+                self._save_timeline()
 
     def _on_connected(self, connected: bool):
         """Called on the link's own thread each time the brain is reached, or lost."""
