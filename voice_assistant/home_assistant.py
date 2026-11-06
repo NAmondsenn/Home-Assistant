@@ -19,7 +19,9 @@ steps each light's brightness itself. What Assist doesn't understand - "make the
 lamp warmer" - goes to Claude, which works the lights through Home Assistant's own
 services instead, by light or by room, with a brightness, colour or warmth. Those
 services are only ever given lights, by entity id or by area - but any light,
-exposed to Assist or not, as exposing only limits what Assist does.
+exposed to Assist or not, as exposing only limits what Assist does. Never, though, a
+HASS.Agent command made as a light, which could shut the PC down: Nova's own lights
+leave it out, as Assist does (see _never_worked).
 
 The settings page names devices itself, as there's nothing to mishear: it lists the
 lights, to switch and dim, and the scripts and scenes, to run - but nothing else,
@@ -59,9 +61,9 @@ import requests
 
 from voice_assistant import network
 from voice_assistant.clock import format_duration
-from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, Scripts, names_guarded,
-                                      runnables_named, sensitive, sensitive_words, split_words, why_not_run,
-                                      why_target_refused)
+from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, Scripts, guarded,
+                                      names_guarded, runnables_named, sensitive, sensitive_words, split_words,
+                                      why_not_run, why_target_refused)
 from voice_assistant.ha_registry import (HASS_AGENT_MAKER, PC_KINDS, HomeRegistry, HomeSocket, HomeSocketError,
                                          Snapshot)
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -96,6 +98,8 @@ DEFAULT_AGENT = "conversation.home_assistant"
 # A button is only ever the PC's: one of HASS.Agent's in PC_KINDS, or a Wake-on-LAN one, as
 # the registry's snapshot shows it (see _pressable) - never Proxmox's, whose buttons shut
 # down and restart the hosts and their guests, and nothing at all without a snapshot.
+# A light is never one of the PC's HASS.Agent commands made as a light (see _never_worked),
+# and a room with one is given as its other lights instead (see set_lights).
 SERVICES = {"light": ("turn_on", "turn_off"), "script": ("turn_on",), "scene": ("turn_on",),
             "weather": ("get_forecasts",), "todo": ("add_item", "update_item", "get_items"),
             "notify": re.compile(r"mobile_app_[a-z0-9_]+"), "button": ("press",)}
@@ -788,6 +792,7 @@ class HomeAssistant:
             "scene") and 'by_voice': whether it's exposed to Assist, as the registry
             has it - False without the registry.
         """
+        snapshot = self.snapshot()
         try:
             states = self.states()
             try:
@@ -797,11 +802,11 @@ class HomeAssistant:
                     raise
                 # The lights are among the states too, just without their rooms - so the
                 # page still has them, as it did before Nova knew about rooms.
-                lights = [_light(state) for state in states if LIGHT.fullmatch(state.get("entity_id") or "")]
+                lights = [_light(state) for state in states if LIGHT.fullmatch(state.get("entity_id") or "")
+                          and not _never_worked(state["entity_id"], snapshot)]
         except (requests.RequestException, ValueError) as e:
             logger.error(f"Home Assistant request failed: {e}")
             return {"success": False, "message": self.failure_message(e)}
-        snapshot = self.snapshot()
         # Each script's key and configuration are read once a draw, however many others run
         # it - and every script's key in one round, as the walk would only ask for one at a
         # time - only those it would walk, as one whose name says it unlocks never is.
@@ -830,7 +835,9 @@ class HomeAssistant:
 
     def lights(self, timeout: Optional[float] = None) -> List[Dict]:
         """
-        Every light there is, with the room it's in and how it's set.
+        Every light there is, with the room it's in and how it's set - bar any Nova never
+        works (see _never_worked), so that dimming, switching, the page and Claude's list
+        of the lights all leave it out.
 
         Args:
             timeout: Seconds to wait for Home Assistant, or None for REQUEST_TIMEOUT.
@@ -853,7 +860,8 @@ class HomeAssistant:
         """
         found = self._template(LIGHTS_TEMPLATE, timeout=timeout)
         snapshot = self.snapshot()
-        return [_light(state, snapshot.aliases(state["entity_id"]) if snapshot else ()) for state in json.loads(found)]
+        return [_light(state, snapshot.aliases(state["entity_id"]) if snapshot else ()) for state in json.loads(found)
+                if not _never_worked(state["entity_id"], snapshot)]
 
     def batteries(self, timeout: Optional[float] = None) -> List[Dict]:
         """
@@ -1283,6 +1291,20 @@ class HomeAssistant:
                 if area_id is None:
                     return {"success": False, "message": f"I don't know a room called {area}."}
                 data = {"area_id": area_id}
+                # Home Assistant works every light in a room, a HASS.Agent command made as one
+                # too - so a room with one is given as its other lights instead, by entity id,
+                # as the registry has them. Without the registry, none can be told apart.
+                snapshot = self.snapshot()
+                if snapshot is not None:
+                    here = [entry.entity_id for entry in snapshot.entries.values()
+                            if entry.area_id == area_id and LIGHT.fullmatch(entry.entity_id)]
+                    kept = [entity for entity in here if not _never_worked(entity, snapshot)]
+                    if len(kept) < len(here):
+                        logger.info(f"Lights in the {area} left out, as Nova never works them: "
+                                    f"{[entity for entity in here if entity not in kept]}")
+                        if not kept:
+                            return {"success": False, "message": "I can't do that."}
+                        data = {"entity_id": kept}
 
             if on:
                 if brightness is not None:
@@ -1323,7 +1345,8 @@ class HomeAssistant:
                 outside its own domain, or nothing to act on - or, for one in UNTARGETED,
                 any target at all, notify's own "target" included, at the top or in its
                 data - or returns doesn't match whether RETURNS has it - or, for a button,
-                anything but one of the PC's, one at a time (see _pressable) - or, for
+                anything but one of the PC's, one at a time (see _pressable) - or, for a
+                light, one Nova never works (see _never_worked) - or, for
                 todo.update_item, anything but marking a thing completed.
             requests.RequestException: If Home Assistant couldn't be asked.
         """
@@ -1344,6 +1367,7 @@ class HomeAssistant:
                 or not all(isinstance(entity, str) and re.fullmatch(rf"{domain}\.[a-z0-9_]+", entity)
                            for entity in entities)
                 or (domain == "button" and not (len(entities) == 1 and self._pressable(entities[0])))
+                or (domain == "light" and any(_never_worked(entity, self.snapshot()) for entity in entities))
                 # Only ever completing a thing - never renaming it or putting it back to do.
                 or ((domain, service) == ("todo", "update_item")
                     and not (set(data) <= {"entity_id", "item", "status"} and data.get("status") == "completed"))):
@@ -1966,6 +1990,22 @@ def _out_of_reach(lights: List[Dict]) -> Dict:
     """What's said when none of the lights asked for can be reached, e.g. "Home Assistant can't reach that light."."""
     which = "that light" if len(lights) == 1 else "those lights"
     return {"success": False, "message": f"Home Assistant can't reach {which}."}
+
+
+def _never_worked(entity_id: str, snapshot: Optional[Snapshot]) -> bool:
+    """
+    Whether Nova never works a light, as the guard has it - a HASS.Agent command made as a
+    light, which could shut the PC down as much as its button could, whatever it's called.
+
+    Args:
+        entity_id: The light, e.g. "light.desk_pc_shutdown".
+        snapshot: The registry, which says what's HASS.Agent's - or None if it can't be read,
+            when none can be told apart, so every light is worked.
+
+    Returns:
+        Whether it's left out of every light Nova works.
+    """
+    return guarded(entity_id, {}, snapshot) is not None
 
 
 def _dims(light: Dict) -> bool:

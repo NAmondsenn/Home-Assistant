@@ -168,9 +168,10 @@ def _thing(entity, name, device_class=None):
 REFUSED = {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
 
 
-def _entry(entity, platform="demo", device=None, original_name=None, aliases=(), exposed=True, registry_id=""):
-    """One entity as the registry has it, its unique id its object id."""
-    return Entry(entity, platform, device, None, entity.partition(".")[2], original_name, tuple(aliases), exposed,
+def _entry(entity, platform="demo", device=None, original_name=None, aliases=(), exposed=True, registry_id="",
+           area=None):
+    """One entity as the registry has it, its unique id its object id - in the area with this id, if one's given."""
+    return Entry(entity, platform, device, area, entity.partition(".")[2], original_name, tuple(aliases), exposed,
                  registry_id)
 
 
@@ -2583,8 +2584,8 @@ def test_a_refused_template_raises_as_for_the_lights(make_home, ask, answer, rai
 # The lights by their other names, and dimming them
 
 def _other_names(**aliases):
-    """A registry snapshot that knows only these other names, e.g. light_bedroom_light=["main light"]."""
-    return SimpleNamespace(aliases=lambda entity_id: tuple(aliases.get(entity_id.replace(".", "_"), ())))
+    """A registry snapshot of just these lights, with these other names, e.g. light_bedroom_light=["main light"]."""
+    return _registry(*[_entry(key.replace("_", ".", 1), aliases=names) for key, names in aliases.items()])
 
 
 KITCHEN_LIGHT = _rendered_light("light.kitchen_light", "Kitchen Light", "Kitchen", brightness=255)
@@ -2938,6 +2939,99 @@ def test_the_offline_fallback_sends_a_light_sentence_but_not_one_joining_more(ma
     assert (result.ok, result.understood) == (False, False) and _paths(home) == ["/api/states"]
     result = ActionExecutor(home=home).execute(fallback("Turn off the lights."))
     assert result.ok and _asked(home)["text"] == "Turn off the lights."
+
+
+# The PC's commands made as lights. HASS.Agent can make a command a light rather than a
+# button, and any of them could shut the PC down - even one whose name, as a button's,
+# would be safe, like "Lock" - so Nova's own lights never work them, as Assist doesn't.
+
+PC_SHUTDOWN_LIGHT = _rendered_light("light.desk_pc_shutdown", "Desk lamp", "Bedroom", state="off",
+                                    supported_color_modes=["brightness"])
+PC_LOCK_LIGHT = _rendered_light("light.desk_pc_lock", "PC lock", "Bedroom", state="off",
+                                supported_color_modes=["brightness"])
+LAMP_DIMMABLE = _rendered_light("light.lamp", "Lamp", "Bedroom", brightness=204, supported_color_modes=["brightness"])
+
+
+def _pc_lights(make_home, template=None):
+    """
+    A house with the lamp, the kitchen light and the PC's shutdown and lock commands made
+    as lights - those two and the lamp in the Bedroom, where Nova is - with the registry,
+    which says which are the PC's. The template is answered with the lights, unless a
+    test gives another answer.
+    """
+    home = _house(make_home, LAMP_DIMMABLE, KITCHEN_LIGHT, PC_SHUTDOWN_LIGHT, PC_LOCK_LIGHT)
+    if template is not None:
+        home._session.answers["/api/template"] = template
+    home.registry.read = _registry(
+        _entry("light.desk_pc_shutdown", "mqtt", "desk", "Shutdown", area="bedroom"),
+        _entry("light.desk_pc_lock", "mqtt", "desk", "Lock", area="bedroom"),
+        _entry("light.lamp", "hue", area="bedroom"), _entry("light.kitchen_light", "hue", area="kitchen"),
+        devices=DESK)
+    return home
+
+
+def test_the_pcs_commands_made_as_lights_are_left_out_of_the_lights(make_home):
+    home = _pc_lights(make_home)
+    assert [light["id"] for light in home.lights()] == ["light.lamp", "light.kitchen_light"]
+    assert "desk_pc" not in home.describe_lights()
+    # Nor are they on the settings page, from the template or, without it, from the states.
+    assert [light["id"] for light in home.overview()["lights"]] == ["light.lamp", "light.kitchen_light"]
+    home._session.answers["/api/template"] = FakeResponse({}, status=403)
+    home._session.answers["/api/states"] = [_thing("light.lamp", "Lamp"), _thing("light.desk_pc_shutdown", "Desk lamp"),
+                                            _thing("light.desk_pc_lock", "PC lock")]
+    assert [light["id"] for light in home.overview()["lights"]] == ["light.lamp"]
+
+
+def test_dimming_and_switching_leave_out_the_pcs_commands_made_as_lights(make_home):
+    home = _pc_lights(make_home)
+    # Brightening would otherwise switch both on, as they're off.
+    assert home.dim("up", "the lights")["success"] and home.dim("down", "the bedroom lights")["success"]
+    assert home.switch_lights(True, "the lights")["success"] and home.switch_lights(False, "all the lights")["success"]
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.lamp"], "brightness_pct": 100}),
+                             ("turn_on", {"entity_id": ["light.lamp"], "brightness_pct": 50}),
+                             ("turn_on", {"entity_id": ["light.lamp"]}), ("turn_off", {"entity_id": ["light.lamp"]})]
+    for words in ("the desk lamp", "pc lock"):
+        assert home.dim("up", words)["not_understood"] and home.switch_lights(True, words)["not_understood"]
+    assert len(_dimmed(home)) == 4
+
+
+def test_a_refused_light_sentence_naming_the_pcs_command_isnt_done_by_novas_own_lights(make_home):
+    # Assist refuses "turn on the desk lamp", as the desk lamp is the PC's shutdown - and
+    # Nova's own lights, which do what Assist refuses of a light, mustn't do it instead.
+    home = _pc_lights(make_home)
+    home._session.answers["/api/states"] = [_thing("light.desk_pc_shutdown", "Desk lamp")]
+    action, = LocalIntents(home=home).match("Turn on the desk lamp.")["actions"]
+    result = ActionExecutor(home=home).execute(action)
+    assert (result.ok, result.understood) == (False, False)
+    assert _dimmed(home) == [] and "/api/conversation/process" not in _paths(home)
+
+
+def test_claude_and_the_page_cant_work_the_pcs_commands_made_as_lights(make_home):
+    home = _pc_lights(make_home)
+    for entity in ("light.desk_pc_shutdown", "light.desk_pc_lock"):
+        assert home.set_lights(on=True, light=entity) == {"success": False, "message": "I can't do that."}
+        assert home.set_light(entity, on=True) == {"success": False, "message": "I can't do that."}
+    assert _dimmed(home) == []
+    # An ordinary light is worked as ever.
+    assert home.set_lights(on=True, light="light.lamp")["success"] and home.set_light("light.lamp", on=False)["success"]
+    assert _dimmed(home) == [("turn_on", {"entity_id": "light.lamp"}), ("turn_off", {"entity_id": "light.lamp"})]
+
+
+def test_claudes_room_of_lights_leaves_out_the_pcs_commands_made_as_lights(make_home):
+    # Home Assistant would work every light in the room, so a room with one of the PC's
+    # commands is given as its other lights instead. A room without is given as ever.
+    home = _pc_lights(make_home, template=FakeResponse("bedroom"))
+    assert home.set_lights(on=True, brightness=40)["success"]
+    home._session.answers["/api/template"] = FakeResponse("kitchen")
+    assert home.set_lights(on=False, area="Kitchen")["success"]
+    assert _dimmed(home) == [("turn_on", {"entity_id": ["light.lamp"], "brightness_pct": 40}),
+                             ("turn_off", {"area_id": "kitchen"})]
+    # A room with nothing else isn't given at all.
+    home.registry.read = _registry(_entry("light.desk_pc_shutdown", "mqtt", "desk", "Shutdown", area="study"),
+                                   devices=DESK)
+    home._session.answers["/api/template"] = FakeResponse("study")
+    assert home.set_lights(on=True, area="Study") == {"success": False, "message": "I can't do that."}
+    assert len(_dimmed(home)) == 2
 
 
 # What Claude reads of the house - see HomeAssistant.status
