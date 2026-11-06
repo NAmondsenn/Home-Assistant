@@ -64,12 +64,42 @@ SCOPE = ("user-read-playback-state,user-modify-playback-state,"
 COVER_SIZE = 300
 
 # How many sign-ins have been made since Nova started, so each controller drops what it
-# kept of the account before - see SpotifyController._signed_in.
+# kept of the account before - see SpotifyController._signed_in - and a token refresh
+# begun before one isn't saved over it - see _TokenFile.
 _sign_ins = 0
+# Held while a refresh saves its token, and through a sign-in from getting its token to
+# counting it, so a refresh's save can't come between the two. Re-entrant, as the sign-in's
+# own save comes through _TokenFile on its thread.
+_token_lock = threading.RLock()
+# The count of sign-ins each thread's refresh began at - None while it isn't refreshing.
+_refreshing = threading.local()
 
 
 class SpotifySignInError(ValueError):
     """A sign-in to Spotify which didn't work, said as the page says it."""
+
+
+class _TokenFile(CacheFileHandler):
+    """
+    The token file, kept as spotipy's own handler keeps it - bar a token refreshed from
+    the account before a sign-in. A refresh reads the file, waits for Spotify, then saves:
+    one under way as the page signs in to another account would save the old account back
+    over the new, after the page had said "Signed in to Spotify".
+    """
+
+    def save_token_to_cache(self, token_info):
+        """
+        Saves a token to the file, unless it's a refresh's begun before the latest sign-in.
+
+        Args:
+            token_info: The token, as spotipy has it.
+        """
+        began = getattr(_refreshing, "began", None)
+        with _token_lock:
+            if began is not None and began != _sign_ins:
+                logger.info("Spotify was signed in to during a token refresh, so the refreshed token wasn't kept")
+                return
+            super().save_token_to_cache(token_info)
 
 
 def spotify_oauth(show_dialog: bool = False) -> SpotifyOAuth:
@@ -97,7 +127,7 @@ def spotify_oauth(show_dialog: bool = False) -> SpotifyOAuth:
         raise ValueError("Spotify credentials not found in .env")
     # As a handler, which spotipy would rather have than the cache_path it warns is deprecated.
     return SpotifyOAuth(client_id=client_id, client_secret=client_secret, redirect_uri=redirect_uri,
-                        scope=SCOPE, cache_handler=CacheFileHandler(cache_path=paths.SPOTIFY_TOKEN_FILE),
+                        scope=SCOPE, cache_handler=_TokenFile(cache_path=paths.SPOTIFY_TOKEN_FILE),
                         requests_timeout=REQUEST_TIMEOUT, show_dialog=show_dialog)
 
 
@@ -186,22 +216,25 @@ class SpotifySignIn:
             raise SpotifySignInError("That sign-in ran out - start again.")
         if not code:
             raise SpotifySignInError("That address hasn't got Spotify's code in it - copy all of it.")
-        try:
-            # Not from the cache, which would hand back the sign-in being replaced.
-            token = self.oauth.get_access_token(code, as_dict=False, check_cache=False)
-        except SpotifyOauthError as e:
-            # Its error - invalid_grant, invalid_client - is the only clue to a wrong
-            # redirect address or secret, and isn't secret itself. It's still Spotify's
-            # own text, so only a plain code is logged, as with the pasted error= above.
-            logger.info(f"Spotify turned the sign-in down: {logged_error(e.error)}")
-            raise SpotifySignInError("Spotify didn't accept that sign-in - start again.") from None
-        # spotipy only warns when it can't write the cache, so it's read back - for this
-        # token, not an older sign-in still there.
-        if (self.oauth.cache_handler.get_cached_token() or {}).get("access_token") != token:
-            logger.error(f"Couldn't save the sign-in to Spotify in {self.oauth.cache_handler.cache_path}")
-            raise SpotifySignInError("Couldn't save the sign-in - check Nova's data folder.")
-        _keep_private(self.oauth.cache_handler.cache_path)
-        with self._lock:
+        # Held from getting the token to counting the sign-in, so a refresh begun before it
+        # can't save in between - see _TokenFile. Spotify's answer is waited for under it,
+        # which holds up nothing but a refresh's save while Spotify answers.
+        with _token_lock:
+            try:
+                # Not from the cache, which would hand back the sign-in being replaced.
+                token = self.oauth.get_access_token(code, as_dict=False, check_cache=False)
+            except SpotifyOauthError as e:
+                # Its error - invalid_grant, invalid_client - is the only clue to a wrong
+                # redirect address or secret, and isn't secret itself. It's still Spotify's
+                # own text, so only a plain code is logged, as with the pasted error= above.
+                logger.info(f"Spotify turned the sign-in down: {logged_error(e.error)}")
+                raise SpotifySignInError("Spotify didn't accept that sign-in - start again.") from None
+            # spotipy only warns when it can't write the cache, so it's read back - for this
+            # token, not an older sign-in still there.
+            if (self.oauth.cache_handler.get_cached_token() or {}).get("access_token") != token:
+                logger.error(f"Couldn't save the sign-in to Spotify in {self.oauth.cache_handler.cache_path}")
+                raise SpotifySignInError("Couldn't save the sign-in - check Nova's data folder.")
+            _keep_private(self.oauth.cache_handler.cache_path)
             _sign_ins += 1
         logger.info("Signed in to Spotify")
 
@@ -229,8 +262,14 @@ class _RefreshingAuth:
         self.oauth = oauth
 
     def get_access_token(self, as_dict: bool = False):
-        # Reads the cache and refreshes the token if it's run out.
-        token_info = self.oauth.get_cached_token()
+        # Noted before the cache is read, so a sign-in made while the token's refreshed
+        # keeps the refresh from being saved over it - see _TokenFile.
+        _refreshing.began = _sign_ins
+        try:
+            # Reads the cache and refreshes the token if it's run out.
+            token_info = self.oauth.get_cached_token()
+        finally:
+            _refreshing.began = None
         if not token_info:
             raise RuntimeError(NOT_SIGNED_IN)
         return token_info if as_dict else token_info["access_token"]

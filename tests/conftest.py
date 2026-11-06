@@ -8,6 +8,7 @@ is registered in its place. Nothing here is used when the real package is instal
 and no test ever reaches the network either way.
 """
 
+import json
 import sys
 import types
 
@@ -88,8 +89,21 @@ if _module_missing("spotipy"):
             self.error = error
 
     class CacheFileHandler:
+        """Keeps the token in its file, as spotipy's own does."""
+
         def __init__(self, cache_path=None, username=None, encoder_cls=None):
             self.cache_path = cache_path
+
+        def get_cached_token(self):
+            try:
+                with open(self.cache_path) as file:
+                    return json.load(file)
+            except FileNotFoundError:
+                return None
+
+        def save_token_to_cache(self, token_info):
+            with open(self.cache_path, "w") as file:
+                json.dump(token_info, file)
 
     spotipy.Spotify = Spotify
     oauth2.SpotifyOAuth = SpotifyOAuth

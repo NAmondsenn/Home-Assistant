@@ -391,6 +391,70 @@ def test_a_new_sign_in_drops_what_was_kept_of_the_account_before(make_controller
     assert "playlists" in controller.sp.calls and "devices" in controller.sp.calls
 
 
+class SpotifySaving:
+    """
+    Stands in for SpotifyOAuth as spotipy 2.26.0 has it, saving every token through the
+    cache handler spotify_oauth gives it: a sign-in's from its code, and a refresh's from
+    the refresh token in the file - with something done while Spotify answers the refresh.
+    """
+
+    def __init__(self, cache_handler):
+        self.cache_handler = cache_handler
+        self.meanwhile = lambda: None
+
+    def get_authorize_url(self, state=None):
+        return f"https://accounts.spotify.com/authorize?client_id=client-id&state={state}"
+
+    parse_auth_response_url = staticmethod(FakeSignInOAuth.parse_auth_response_url)
+
+    def get_access_token(self, code=None, as_dict=True, check_cache=True):
+        self.cache_handler.save_token_to_cache({"access_token": "new-access", "refresh_token": "new-account"})
+        return "new-access"
+
+    def get_cached_token(self):
+        refresh_token = self.cache_handler.get_cached_token()["refresh_token"]
+        self.meanwhile()
+        refreshed = {"access_token": f"refreshed-{refresh_token}", "refresh_token": refresh_token}
+        self.cache_handler.save_token_to_cache(refreshed)
+        return refreshed
+
+
+def test_a_refresh_under_way_as_another_account_signs_in_doesnt_save_over_it(monkeypatch, tmp_path):
+    # It read the account before's token, and saved once Spotify answered, it put that
+    # account back - after the page had said "Signed in to Spotify".
+    token_file = tmp_path / "spotify_token.json"
+    token_file.write_text(json.dumps({"access_token": "old-access", "refresh_token": "old-account"}))
+    monkeypatch.setattr(spotify_controller.paths, "SPOTIFY_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("SPOTIFY_REDIRECT_URI", CALLBACK)
+    monkeypatch.setattr(spotify_controller, "SpotifyOAuth", lambda **kwargs: SpotifySaving(kwargs["cache_handler"]))
+    page = spotify_controller.SpotifySignIn(spotify_controller.spotify_oauth(show_dialog=True))
+    refreshing = spotify_controller.spotify_oauth()
+    failed = []
+
+    def sign_in():
+        try:
+            page.finish(f"{CALLBACK}?code=the-code&state={_state(page.start())}")
+        except Exception as e:
+            failed.append(e)
+
+    def signed_in_on_the_page():
+        thread = threading.Thread(target=sign_in)
+        thread.start()
+        thread.join(5)
+
+    refreshing.meanwhile = signed_in_on_the_page
+    # The command it was for still has its token.
+    assert spotify_controller._RefreshingAuth(refreshing).get_access_token() == "refreshed-old-account"
+    assert failed == [] and json.loads(token_file.read_text())["refresh_token"] == "new-account"
+
+    # One begun after the sign-in saves as ever.
+    refreshing.meanwhile = lambda: None
+    assert spotify_controller._RefreshingAuth(refreshing).get_access_token() == "refreshed-new-account"
+    assert json.loads(token_file.read_text())["access_token"] == "refreshed-new-account"
+
+
 def test_a_command_as_another_account_signs_in_still_finds_the_speaker(make_controller, monkeypatch):
     # The sign-in drops the speaker kept between the command seeing it's recent and reading it.
     controller = make_controller(cached=SAVED)
