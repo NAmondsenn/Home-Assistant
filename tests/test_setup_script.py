@@ -294,6 +294,20 @@ def test_only_a_satellite_setup_asks_about_the_brains_service():
     assert "offer_to_disable_brain" in satellite
 
 
+def test_the_brain_doesnt_install_the_systems_pip_but_keeps_what_its_steps_call(tmp_path):
+    # Its venv brings its own pip (python3-venv depends on that wheel), and install_python_packages
+    # only ever runs that one - so the system's pip is one nothing uses. Everything the
+    # brain's steps do call stays: the venv, wget and tar for the models, git, and the libraries.
+    result = run_setup(tmp_path, 'root_do() { echo "$*"; }; install_system_packages', role="brain")
+
+    assert result.returncode == 0, result.stderr
+    installs = next(line for line in result.stdout.splitlines() if line.startswith("apt-get install"))
+    packages = installs.split()
+    assert "python3-pip" not in packages
+    for needed in ["python3-venv", "libsndfile1", "ffmpeg", "bzip2", "wget", "tar", "git", "ca-certificates"]:
+        assert needed in packages
+
+
 def test_new_password_isnt_for_the_brain(tmp_path):
     env = write_env(tmp_path, "ANTHROPIC_API_KEY=a-key\n")
 

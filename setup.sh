@@ -232,7 +232,9 @@ install_system_packages() {
         # every Python package it installs is a ready-made wheel. ca-certificates is named
         # since wget and git only recommend it, and both fetch over HTTPS (wget downloads
         # Piper, git pulls from GitHub), which a fresh container can't do without it.
-        root_do apt-get install -y -qq --no-install-recommends python3-pip python3-venv \
+        # There's no python3-pip: the venv brings its own pip (python3-venv depends on its
+        # wheel), and that's the only one install_python_packages runs.
+        root_do apt-get install -y -qq --no-install-recommends python3-venv \
             libsndfile1 ffmpeg bzip2 wget curl tar git ca-certificates
     else
         # libspeexdsp1 is the echo canceller's library (see voice_assistant/echo.py). Without
