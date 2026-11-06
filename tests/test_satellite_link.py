@@ -160,6 +160,28 @@ def test_the_link_reconnects_after_the_brain_goes(brain, make):
     assert [h["unclean"] for h in brain.hellos] == [True, False]
 
 
+def test_a_stop_just_as_the_brain_accepts_tells_nothing(brain, make):
+    # Neither connected nor lost: the satellite never heard it had the brain, so hearing
+    # it had lost it at shutdown would be news of nothing.
+    link, events, messages = make(brain.address)
+    connect = link._connect
+
+    def connect_then_stop():
+        connect()
+        # As stop() does, but from here, so it comes in just after the brain has
+        # accepted the satellite. Joining is the test's to do.
+        link._stopping.set()
+        link._close()
+
+    link._connect = connect_then_stop
+    link.start()
+    link._thread.join(timeout=5)
+    assert not link._thread.is_alive()
+    assert wait_for(lambda: len(brain.hellos) == 1)
+    assert events == []
+    assert not link.connected
+
+
 def test_pings_are_answered_inside_the_link(brain, make, monkeypatch):
     monkeypatch.setattr(satellite_link, "PING_EVERY", 0.05)
     link, events, messages = make(brain.address)

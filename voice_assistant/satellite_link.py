@@ -278,10 +278,12 @@ class SatelliteLink:
             last_failure = None
             delay = RETRY_FIRST
             logger.info(f"Connected to the brain at {self.address[0]}")
-            # Together, so connected is never True without on_connected having been told.
-            with self._lock:
-                self._connected = True
-            self._set_connected(True)
+            # connected has been True since _connect, a moment before on_connected(True)
+            # runs, so a handler may send as it's told. A stop() in that moment has
+            # already made it False, and then nothing is told: True, then False at once,
+            # would be news of a connection the satellite never had.
+            if self._connected:
+                self._set_connected(True)
             try:
                 self._serve()
             except (OSError, ProtocolError) as e:
@@ -293,7 +295,7 @@ class SatelliteLink:
             self._stopping.wait(delay)
 
     def _connect(self):
-        """Connects and proves the password, leaving the socket and stream ready."""
+        """Connects and proves the password, leaving the socket and stream ready, and connected True."""
         sock = socket.create_connection(self.address, timeout=SOCKET_TIMEOUT)
         stream = Stream(sock)
         try:
@@ -309,6 +311,9 @@ class SatelliteLink:
                 raise ConnectionError("Stopped")
             self._socket = sock
             self._stream = stream
+            # Under the same lock as the check, so a stop() from here on finds it True,
+            # and its close leaves it False.
+            self._connected = True
         self._last_heard = self._last_ping = monotonic()
         self._expected = None
         stream.when_idle = self._check_in
