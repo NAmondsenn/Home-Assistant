@@ -283,6 +283,30 @@ def test_stopping_tells_the_satellite_what_to_stop(pair):
                                                               {"type": "stop", "kinds": None}]
 
 
+@pytest.mark.parametrize("stopping", [
+    lambda speaker: speaker.stop(),
+    lambda speaker: speaker.stop(["reply"]),
+    lambda speaker: speaker.silence("reply"),
+], ids=["everything", "a kind", "silence"])
+def test_a_sound_started_while_a_stop_is_sent_isnt_finished_by_it(stopping):
+    # Another thread's reply starts after the satellite was told to stop, so it plays
+    # there - and mustn't be taken as stopped here, where it would be waited on no more.
+    started = []
+
+    def send(kind, payload=b"", /, **fields):
+        if kind in ("stop", "silence") and not started:
+            started.append(speaker.play_file("late.wav"))
+        return True
+
+    speaker = remote.RemoteSpeaker(send, 48000)
+    earlier = speaker.play_file("earlier.wav")
+
+    stopping(speaker)
+
+    assert earlier.done
+    assert not started[0].done
+
+
 def test_state_alarms_the_phrase_and_restarts_reach_the_satellite(pair):
     satellite, fake, serving = pair
     volumes = {"general": 0.5, "alarm": 1.0, "music": 0.3}

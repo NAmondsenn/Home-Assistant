@@ -309,10 +309,14 @@ class RemoteSpeaker:
             kinds: Only stop these kinds of sound. None stops everything.
         """
         kinds = None if kinds is None else list(kinds)
+        # Picked out before the satellite is told, so a sound which another thread starts
+        # while the stop is on its way isn't finished here whilst it plays there.
+        stopping = self._matching(lambda playback: kinds is None or playback.kind in kinds)
         # Told first, and only then finished here: whatever starts once these are done -
         # the next song, say - reaches the satellite after the stop, so isn't stopped by it.
         self._send("stop", kinds=kinds)
-        self._finish(lambda playback: kinds is None or playback.kind in kinds)
+        for playback in stopping:
+            playback._finish()
 
     def silence(self, kind: str):
         """
@@ -322,8 +326,11 @@ class RemoteSpeaker:
         Args:
             kind: The kind of sound, e.g. "announcement".
         """
+        # Picked out first, as in stop.
+        silenced = self._matching(lambda playback: playback.kind == kind)
         self._send("silence", kind=kind)
-        self._finish(lambda playback: playback.kind == kind)
+        for playback in silenced:
+            playback._finish()
 
     def allow(self, kind: str):
         """
@@ -384,12 +391,10 @@ class RemoteSpeaker:
         if not playback.done:
             self._send("stream_end", id=playback.id)
 
-    def _finish(self, which: Callable[[RemotePlayback], bool]):
-        """Marks the playbacks the satellite has been told to stop as done, without waiting for it to say."""
+    def _matching(self, which: Callable[[RemotePlayback], bool]) -> List[RemotePlayback]:
+        """The sounds playing now which `which` picks out - for stop and silence to finish once it's told."""
         with self._lock:
-            stopped = [playback for playback in self._playing.values() if which(playback)]
-        for playback in stopped:
-            playback._finish()
+            return [playback for playback in self._playing.values() if which(playback)]
 
     def _played(self, id: str, position: Optional[int]):
         """The satellite has finished or stopped a sound."""
