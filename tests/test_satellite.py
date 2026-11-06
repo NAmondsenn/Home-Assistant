@@ -408,6 +408,35 @@ def test_a_reply_is_timed_from_when_it_starts_to_play(brain, make, tmp_path):
     assert set(line["marks_ms"]) == {"wake", "reply_audio"}
 
 
+class _HeardAsTheNextWakeComes:
+    """A reply which starts to play as the wake word is said again, while its start is looked for."""
+
+    def __init__(self, made):
+        self.made = made
+        self.position = 0
+
+    def wait(self, timeout=None):
+        with self.made._lock:
+            self.made._start_timeline()
+        self.position = 1024
+        return False
+
+
+def test_a_reply_starting_as_the_next_wake_comes_doesnt_time_that_wake(make, tmp_path):
+    # It marked whatever wake was being timed once it started, so the next wake was given
+    # the last one's reply - in latency.jsonl, as an answer far quicker than any.
+    made = make(start=False)
+    with made._lock:
+        made._start_timeline()
+    made._time_reply(_HeardAsTheNextWakeComes(made))
+
+    # The last wake's timing was saved as the next began, without the reply.
+    (line,) = latency_lines(tmp_path)
+    assert set(line["marks_ms"]) == {"wake"}
+    with made._lock:
+        assert made._timeline is not None and set(made._timeline.marks) == {"wake"}
+
+
 def test_a_wake_with_no_reply_is_timed_as_its_turn_ends(brain, make, tmp_path):
     # Rather than only at the next wake, which may be hours later.
     made = make()

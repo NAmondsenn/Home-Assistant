@@ -731,7 +731,10 @@ class Satellite:
         threading.Thread(target=self._report, args=(id, playing), daemon=True, name=f"played-{id}").start()
 
     def _report(self, id: str, playing: _FromBrain):
-        """Tells the brain how far its music has got each second, and when any of its playbacks ends."""
+        """
+        Tells the brain how far its music has got each second, and when any of its playbacks
+        ends - and times a reply's start, for the wake it answers (see _time_reply).
+        """
         playback = playing.playback
         # Nova's spoken reply is streamed, where its chimes are sounds.
         if playing.kind == "reply" and playing.pieces is not None:
@@ -759,6 +762,9 @@ class Satellite:
         Args:
             playback: The reply.
         """
+        # The wake it's the reply to, so a wake word said again as it starts isn't given it.
+        with self._lock:
+            timeline = self._timeline
         # Looked at as often as the speaker takes more audio.
         while not playback.position and not playback.wait(BLOCK_SECONDS):
             pass
@@ -767,7 +773,7 @@ class Satellite:
             return
         heard = time.monotonic()
         with self._lock:
-            if self._timeline is not None:
+            if timeline is not None and self._timeline is timeline:
                 self._timeline.mark("reply_audio", at=heard)
                 self._save_timeline()
 
