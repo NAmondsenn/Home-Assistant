@@ -34,7 +34,7 @@ from voice_assistant import paths, protocol
 from voice_assistant import routines as routines_module
 from voice_assistant import session as session_module
 from voice_assistant import settings_page as settings_page_module
-from voice_assistant.batteries import BatteryWatcher
+from voice_assistant.batteries import Battery, BatteryChoices, BatteryWatcher
 from voice_assistant.config import Config
 from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
@@ -2109,17 +2109,25 @@ def home_assistant_token(monkeypatch):
     monkeypatch.setenv("HA_TOKEN", "a-token")
 
 
-def test_the_brain_watches_batteries_when_home_assistant_is_set_up(make_brain, home_assistant_token, tmp_path):
+def test_the_brain_watches_batteries_when_home_assistant_is_set_up(make_brain, home_assistant_token, tmp_path,
+                                                                   monkeypatch):
+    made = []
+    monkeypatch.setattr(brain_module, "BatteryWatcher",
+                        lambda *args, **kwargs: made.append(kwargs) or BatteryWatcher(*args, **kwargs))
     brain = make_brain(home_assistant=HOME_ASSISTANT,
                        batteries={"mobile_marks": [7], "other_marks": [30, 7], "check_every": 10, "stale_after": 99})
     assert isinstance(brain.batteries, BatteryWatcher) and brain.home is not None
-    assert brain.batteries.stale_after == 99
-    assert brain.batteries._check_every == 10
+    assert brain.batteries.stale_after == 99 and made[-1]["check_every"] == 10
     # The settings come from config.yaml's batteries section, kept in the brain's own data folder.
-    assert brain.batteries._choices._defaults == {"mobile": [7], "other": [30, 7]}
-    assert brain.batteries._choices._path == str(tmp_path / "batteries.json")
+    phone = Battery(id="sensor.phone_battery_level", name="Phone", level=50, changed=0, device="d1", kind="mobile",
+                    phone=True, computer=False, charging=False)
+    mac = Battery(id="sensor.mac_battery_level", name="Mac", level=50, changed=0, device="d2", kind="other",
+                  phone=False, computer=True, charging=False)
+    assert (brain.batteries.choices.default_marks(phone), brain.batteries.choices.default_marks(mac)) == ([7], [30, 7])
+    brain.batteries.choices.set_also_send_when_said(False)
+    assert BatteryChoices(str(tmp_path / "batteries.json"), [5], [15, 5]).also_send_when_said is False
     # Not running until run() starts it.
-    assert brain.batteries._thread is None
+    assert not [thread for thread in threading.enumerate() if thread.name == "batteries"]
 
 
 def test_the_brain_has_no_battery_watcher_without_home_assistant(make_brain, monkeypatch):
@@ -2349,8 +2357,10 @@ def test_warnings_go_to_the_phone_through_ntfy_and_wait_for_ntfys_quiet_hours(ma
 def test_without_ntfy_warnings_are_only_said_and_quiet_hours_are_still_ntfys(make_brain, home_assistant_token):
     brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"quiet_from": "22:00", "quiet_until": "06:30"})
     assert brain.ntfy is None and brain.batteries._send("It's low.", "Battery low") is False
-    assert (brain.batteries._quiet.__self__.quiet_from, brain.batteries._quiet.__self__.quiet_until) == (
-        "22:00", "06:30")
+    brain._night._now = lambda: datetime(2026, 10, 20, 22, 30)
+    assert brain.batteries._quiet()
+    brain._night._now = lambda: datetime(2026, 10, 20, 6, 45)
+    assert not brain.batteries._quiet()
     # And with ntfy but nowhere to send to, the same.
     brain = make_brain(home_assistant=HOME_ASSISTANT, ntfy={"url": "http://ntfy.test", "phone": ""})
     assert brain.batteries._send("It's low.", "Battery low") is False

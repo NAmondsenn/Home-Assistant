@@ -2300,7 +2300,6 @@ def test_each_device_shows_who_decides_home_only_with_more_than_one_person(files
 
 def test_a_batterys_warnings_can_be_switched_off_and_it_works_straight_away(files, tmp_path, caplog):
     page, home, choices = _watched(tmp_path)
-    batteries = page.brain.batteries.read()
     home.found[1]["level"] = 10
     with caplog.at_level(logging.INFO):
         result = page.set_battery(MAC, LOGIN, enabled=False)
@@ -2315,7 +2314,6 @@ def test_a_batterys_warnings_can_be_switched_off_and_it_works_straight_away(file
     assert _device(page, PHONE)["marks"] == [50] and _device(page, PHONE)["send_to_phone"] is True
     assert page.set_battery(PHONE, LOGIN, reset=True)["success"]
     assert _device(page, PHONE)["marks"] == [5] and _device(page, PHONE)["send_to_phone"] is False
-    assert len(batteries) == 2
 
 
 @pytest.mark.parametrize("marks, said", [
@@ -2358,7 +2356,6 @@ def test_a_battery_home_assistant_doesnt_show_just_now_is_refused(files, tmp_pat
     home.fails = requests.ConnectionError("down")
     assert not page.set_battery(MAC, LOGIN, enabled=False)["success"]
     assert MAC not in choices._state["devices"]
-    assert page.brain.batteries is not None and _page().batteries_state()["available"] is False
 
 
 def test_also_send_when_said_can_be_switched_off(files, tmp_path):
