@@ -773,6 +773,28 @@ def test_a_refusal_with_no_details_is_still_warned_of(llm, caplog):
     assert any("refus" in warning for warning in _warnings(caplog))
 
 
+@pytest.mark.parametrize("response, answered", [
+    (_reply("", stop_reason="refusal"), llm_module.DIDNT_WORK),
+    (_reply("I can't help with that.", stop_reason="refusal"), "I can't help with that."),
+    (_reply("Setting it.", _tool("set_timer", duration_seconds=60), stop_reason="refusal"), llm_module.DIDNT_WORK),
+], ids=["nothing", "words", "a tool"])
+def test_a_refusal_while_something_plays_isnt_answered(llm, caplog, response, answered):
+    # A film line is the likeliest thing to trip a classifier, and "Sorry, that didn't
+    # work. Try asking again." was said over the film. The user's call: say nothing, as
+    # for not_for_me, and leave the refusal to the log.
+    response.stop_details = SimpleNamespace(type="refusal", category="general_harms")
+    llm.client = FakeClient(response)
+    with caplog.at_level("WARNING"):
+        result = llm.process_query("call the police, Sarah", playing=["Bedroom TV"])
+    assert result == {"response": "", "actions": [], "success": True, "not_for_me": True}
+    assert llm.history == []
+    assert any("general_harms" in warning and "Bedroom TV" in warning for warning in _warnings(caplog))
+
+    # With nothing playing, it's answered as before.
+    llm.client = FakeClient(response)
+    assert llm.process_query("call the police, Sarah") == {"response": answered, "actions": [], "success": True}
+
+
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
 def test_a_read_isnt_made_from_a_reply_which_stopped_short(stop_reason):
     llm = _reader()

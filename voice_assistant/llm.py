@@ -448,7 +448,8 @@ class LLMHandler:
         no tool, and a read tool is never an action, so what's read is never said as it is.
 
         A response which calls not_for_me ends it all there: nothing in it is run or read,
-        and the turn isn't kept in the history, the user's words included.
+        and the turn isn't kept in the history, the user's words included. So does a
+        refusal while something plays, which a line from the film is the likeliest cause of.
 
         Args:
             text: What the user said.
@@ -461,7 +462,8 @@ class LLMHandler:
         Returns:
             Dict with 'response' (what to say), 'actions' (the Actions asked for)
             and 'success' (False if Claude couldn't be asked, or the request failed) -
-            and 'not_for_me', True, when Claude called it, with no response or actions.
+            and 'not_for_me', True, when Claude called it, or refused while something
+            played, with no response or actions.
         """
         logger.info(f"Processing query: '{text}'", extra=TRANSCRIPT)
         use_web_search = self._wants_web_search(text)
@@ -561,16 +563,24 @@ class LLMHandler:
             stop_reason = getattr(response, "stop_reason", None)
 
             # Haiku 5.5's classifiers are new here, and a film line is the likeliest thing to
-            # trip one - so the log says why, since what's said over the film doesn't. Before
-            # not_for_me's return, as a refusal can come beside it.
+            # trip one - so the log says why, since nothing's said over the film (see below).
+            # Before not_for_me's return, as a refusal can come beside it.
             if stop_reason == "refusal":
                 category = getattr(getattr(response, "stop_details", None), "category", None)
-                logger.warning(f"Claude refused (category: {category})")
+                logger.warning(f"Claude refused (category: {category})"
+                               + (f" with {', '.join(playing)} playing, so nothing's said" if playing else ""))
 
             # Nothing of a response which says it's speech from a film is acted on - not a
             # set_lights beside it, which a line like "turn the lights off, Jack" could bring.
             if any(use.name == NOT_FOR_ME["name"] for use in uses):
                 logger.debug("Claude took that for speech from what's playing")
+                self._log_usage(response)
+                return {"response": "", "actions": [], "success": True, "not_for_me": True}
+
+            # Nor is a refusal answered while something plays - the user's call: "Sorry, that
+            # didn't work. Try asking again." was said over the film whose line tripped it. It
+            # ends as not_for_me does, with nothing said, run or kept in the history.
+            if stop_reason == "refusal" and playing:
                 self._log_usage(response)
                 return {"response": "", "actions": [], "success": True, "not_for_me": True}
 
