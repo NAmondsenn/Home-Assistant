@@ -241,7 +241,7 @@ def test_a_question_for_assist_says_its_a_question(text):
     "Turn off the oven at six.", "Turn on the heating until ten.", "Turn off the light in five minutes.",
     "Run the dishwasher tonight.", "Turn on the heating by 7.", "Turn on the oven for half an hour.",
     "Pause the TV in a second.", "Turn off the fan in 30 seconds.", "Pause the TV a second.",
-    "Pause the TV one second.",
+    "Pause the TV one second.", "Pause the TV in second.", "Turn off the fan for second.",
     # For the user, not a thing of Home Assistant's.
     "Run me a bath.", "Open us a window.",
     # The shapes with nothing above yet for what they mustn't catch.

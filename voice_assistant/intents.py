@@ -98,8 +98,10 @@ WHICH_OF_SEVERAL = {"other", "another", "first", "second", "third", "fourth", "f
 # When, rather than what - "pause the TV in five minutes" is a delay, which only Claude
 # can set. A time is a unit anywhere, or one of TIME_LEADS straight before a number, a
 # unit, "a", "an" or "half" - so "the TV in the kitchen" and "fan 2" are still things.
-# "Second" is an order as often as a unit, so it's only a unit after a number - "in a
-# second", "one second" - and "activate the second scene" is a thing too.
+# "Second" is an order as often as a unit, so it's only a unit after a number or one of
+# TIME_LEADS - "in a second", "one second", "for second" - and "activate the second
+# scene" is a thing too. "The light in second bedroom" is then Claude's, which is the
+# safe way round.
 TIME_UNITS = {"second", "seconds", "minute", "minutes", "hour", "hours", "bit", "while", "later", "tonight",
               "tomorrow", "o'clock"}
 TIME_LEADS = {"in", "for", "at", "until", "after", "before", "by"}
@@ -195,7 +197,8 @@ def _number(words: str) -> Optional[int]:
 
 def _a_unit(word: str, before: str) -> bool:
     """Whether a word is a unit of time, said after another - see TIME_UNITS."""
-    return word in TIME_UNITS and (word != "second" or before.isdecimal() or before in NUMBER_WORDS)
+    return word in TIME_UNITS and (word != "second" or before.isdecimal() or before in NUMBER_WORDS
+                                   or before in TIME_LEADS)
 
 
 def _says_a_time(words: List[str]) -> bool:
