@@ -600,6 +600,20 @@ def test_removing_one_thats_away_moves_its_alarms_and_warns(brain, connect, capl
     _rings_on(brain, "bedroom", session)
 
 
+def test_removing_one_which_couldnt_be_sent_the_empty_copy_says_so(brain, connect, monkeypatch, caplog):
+    # Connected, so "while it wasn't connected" would be wrong.
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    session = connected(brain, "kitchen")
+    monkeypatch.setattr(session.satellite, "send_alarms", lambda entries: False)
+
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
+        assert brain.remove_satellite("kitchen") is False
+
+    assert "The kitchen satellite was removed but couldn't be sent an empty copy, so it still has a copy" in caplog.text
+    assert "wasn't connected" not in caplog.text
+
+
 def test_removing_the_default_makes_the_next_one_default(brain, connect):
     brain.clock.set_alarm(6, 30, satellite="bedroom")
     serving(brain)

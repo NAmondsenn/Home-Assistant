@@ -866,19 +866,22 @@ class Brain:
             session = self.sessions.pop(name, None)
             self._caught_up.discard(name)
         emptied = False
+        was_connected = False
         if session is not None:
             logger.info(f"The {name} satellite was removed, so it's let go")
             # Emptied before it's let go, so it never rings its old alarms from its
             # copy - as it would once it couldn't reach the brain, for a week.
             with self._sending_alarms:
-                emptied = session.satellite.connected and session.satellite.send_alarms([])
+                was_connected = session.satellite.connected
+                emptied = was_connected and session.satellite.send_alarms([])
             self._let_go(session)
             self._satellites_changed()
         with self._lock:
             self._emptied[name] = emptied
         if not emptied:
-            logger.warning(f"The {name} satellite was removed while it wasn't connected, so it still has a copy "
-                           f"of its alarms for the next week, and rings them if it's switched on before then")
+            why = "but couldn't be sent an empty copy" if was_connected else "while it wasn't connected"
+            logger.warning(f"The {name} satellite was removed {why}, so it still has a copy of its alarms for the "
+                           f"next week, and rings them if it's switched on before then")
         default = names[0] if names else None
         if default is None:
             with self._lock:
