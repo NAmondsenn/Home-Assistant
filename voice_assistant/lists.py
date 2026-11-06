@@ -44,7 +44,8 @@ ITEM_LEADS = ("the", "some", "my")
 # of a thing's - "a" would otherwise fit "a pear", and "no" notepad.
 LOOSE_LETTERS = 3
 
-# The endings whose plural takes "es" - "glasses" is glass and "boxes" is box.
+# The endings whose plural may take "es" - "glasses" is glass and "boxes" is box - though it may
+# only take "s": "quiches" is quiche. Both are tried, see _item_singulars.
 ES_PLURALS = ("sses", "xes", "ches", "shes", "zes")
 
 
