@@ -1583,6 +1583,9 @@ function showBatteries(state) {
     // time. A tapped switch or button keeps the focus in Chromium, so only a box counts.
     const typing = document.activeElement;
     if (typing && typing.type === "number" && list.contains(typing)) return false;
+    // Nor while a switch or button is held down: the row drawn again under the pointer
+    // loses the click, if it's slow enough to land just after a mark box was edited.
+    if (list.querySelector(":active")) return false;
     list.replaceChildren(...(state.devices.length ? state.devices.map(batteryRow) : [emptyRow("Home Assistant has no batteries.")]));
   });
 }
