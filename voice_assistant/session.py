@@ -138,6 +138,10 @@ class Session:
         # Held while the conversation works out a reply - to the user, or for a routine
         # running by itself, which mustn't do so at the same time. See run_routine.
         self._conversation_lock = threading.Lock()
+        # How many times the user has stopped what's said here - with Stop, or the wake
+        # word - so an alert or a battery warning can tell it was stopped during its
+        # sound. See _announce_in_turn.
+        self._stops = 0
 
         # What the assistant is doing - "idle", "listening", "thinking" or "speaking" -
         # for the settings page's star. Only ever read for show.
@@ -479,6 +483,8 @@ class Session:
         # Anything going off stops the moment the wake word is heard, rather than
         # playing on over the user - and into the microphone - until its sound
         # ends. It carries on afterwards unless the conversation dealt with it.
+        # Counted first, so an announcement whose sound this stops sees it.
+        self._stops += 1
         self.speaker.silence("announcement")
         try:
             with self._conversation_lock:
@@ -831,7 +837,9 @@ class Session:
             ringing: True for what the clock rings - a timer, a reminder or an alarm -
                      whose sound is never switched off. Otherwise the sound before an
                      alert or a battery warning goes if sounds.reminder_enabled is off:
-                     an alarm silenced by a sound switch would be a missed wake-up.
+                     an alarm silenced by a sound switch would be a missed wake-up. And
+                     a Stop or the wake word during that sound stops its words too, as
+                     still_wanted does for what the clock rings.
 
         Returns:
             Whether it was said - not if still_wanted turned False first, or it failed, or
@@ -848,17 +856,22 @@ class Session:
             sound = None
         try:
             with self._announcing:
-                return self._announce_in_turn(message, sound, boost, still_wanted, start, length, level)
+                return self._announce_in_turn(message, sound, boost, still_wanted, start, length, level, ringing)
         finally:
             # Let back a few seconds later rather than straight away, since a timer's
             # next round comes three seconds after this one.
             self.music.release(after=5)
 
-    def _announce_in_turn(self, message, sound, boost, still_wanted, start, length, level):
+    def _announce_in_turn(self, message, sound, boost, still_wanted, start, length, level, ringing):
         """The body of announce, run once any other announcement has finished. Returns what it does."""
         # Waits for any conversation to finish before making any announcements.
         if not self._wait_for_turn(still_wanted):
             return False
+        # Noted as its sound starts, so a Stop or a wake word from then on is told apart
+        # from those in the conversation it waited for - see below. Not over one which
+        # outlasted the wait, when its sound is refused and a wake word is only that
+        # conversation going on.
+        stops = self._stops if self._idle.is_set() else None
 
         # Anything which goes off by itself uses the alarm volume, so it can stay
         # loud even when the assistant's voice is turned down - and once boosted,
@@ -887,6 +900,13 @@ class Session:
             # message waits its turn again rather than talking over them.
             if not self._wait_for_turn(still_wanted):
                 return False
+            # An alert or a battery warning has no still_wanted to stop its words, as what
+            # the clock rings has, so a Stop or the wake word during its sound does. The
+            # user heard it start and stopped it, so it counts as said - as stopped part way
+            # through its words, rather than being said again or held.
+            if not ringing and stops is not None and self._stops != stops:
+                logger.info("Stopped during its sound, so its words aren't said")
+                return True
 
             # Shown as speaking only between conversations - in one, the conversation
             # itself says what the assistant's doing.
@@ -1073,6 +1093,8 @@ class Session:
         """
         if self.brain.clock.is_ringing(satellite=self.satellite.name):
             self.brain.clock.dismiss(satellite=self.satellite.name)
+        # Counted first, as in _answer.
+        self._stops += 1
         self.speaker.stop(["reply", "announcement"])
 
     def _speak_from_home_assistant(self, message):

@@ -1739,6 +1739,115 @@ def test_a_stop_during_a_battery_warning_still_counts_as_said(connect, make_sess
     assert results == [True]
 
 
+class _Talking(ScriptedConversation):
+    """A conversation the user is still in, until the test lets it go."""
+
+    def __init__(self):
+        super().__init__()
+        self.talking, self.let_go = threading.Event(), threading.Event()
+
+    def handle(self, text, follow_up=False, timeline=None):
+        self.talking.set()
+        self.let_go.wait(5)
+        return Reply()
+
+
+def _sound_then(session, then):
+    """Has the session's speaker do then as soon as an announcement's sound starts - once."""
+    play_file = session.speaker.play_file
+    done = []
+
+    def playing(*args, **kwargs):
+        playback = play_file(*args, **kwargs)
+        if kwargs.get("kind") == "announcement" and not done:
+            done.append(True)
+            then()
+        return playback
+
+    session.speaker.play_file = playing
+
+
+def test_a_stop_during_a_warnings_sound_stops_its_words_too(connect, make_session):
+    # Only the sound stopped, and the words came straight after. The user heard it start
+    # and stopped it, so it counts as said, as stopped part way through its words.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    _sound_then(session, session.stop_what_rings_and_speaks)
+    assert session.announce("Your phone's battery is down to 5%.") is True
+    assert pi.messages("play_stream") == []
+
+
+def test_the_wake_word_during_an_alerts_sound_stops_its_words_too(brain, connect, make_session):
+    # They were said once the conversation it started had finished.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = _Talking()
+    brain.stt.texts = ["What's the weather?"]
+    running(session)
+
+    def woken():
+        pi.wake(said())
+        assert session.conversation.talking.wait(5)
+
+    _sound_then(session, woken)
+    results = []
+    saying = threading.Thread(target=lambda: results.append(session.announce("Homelab: the backup failed.")),
+                              daemon=True)
+    saying.start()
+    assert session.conversation.talking.wait(5)
+    session.conversation.let_go.set()
+    saying.join(10)
+    assert results == [True]
+    assert pi.messages("play_stream") == []
+
+
+def test_an_alert_waiting_on_a_conversation_is_said_after_it_whatever_was_stopped_in_it(brain, connect,
+                                                                                      make_session):
+    # Only a Stop or a wake word once its sound has started is the user stopping it.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = _Talking()
+    brain.stt.texts = ["What's the weather?"]
+    running(session)
+    pi.wake(said())
+    assert session.conversation.talking.wait(5)
+    results = []
+    saying = threading.Thread(target=lambda: results.append(session.announce("Homelab: the backup failed.")),
+                              daemon=True)
+    saying.start()
+    time.sleep(0.1)
+    session.stop_what_rings_and_speaks()
+    session.conversation.let_go.set()
+    saying.join(10)
+    assert results == [True]
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement"]
+
+
+def test_the_wake_word_during_what_the_clock_rings_leaves_its_words_to_the_clock(brain, connect, make_session):
+    # A reminder still ringing once the conversation is over carries on - it's dismissed
+    # by the conversation, or Stop, through still_wanted.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = _Talking()
+    brain.stt.texts = ["What's the weather?"]
+    running(session)
+
+    def woken():
+        pi.wake(said())
+        assert session.conversation.talking.wait(5)
+
+    _sound_then(session, woken)
+    results = []
+    saying = threading.Thread(target=lambda: results.append(session.announce(
+        "Your reminder: take the bins out.", still_wanted=lambda: True, ringing=True)), daemon=True)
+    saying.start()
+    assert session.conversation.talking.wait(5)
+    session.conversation.let_go.set()
+    saying.join(10)
+    assert results == [True]
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement"]
+
+
 # Settings saved while a session is already running
 
 def test_the_listening_blip_is_switched_off_straight_away(brain, connect, make_session):
