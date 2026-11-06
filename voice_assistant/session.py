@@ -843,7 +843,8 @@ class Session:
 
         Returns:
             Whether it was said - not if still_wanted turned False first, or it failed, or
-            the satellite went before it had finished. One the user silenced themselves,
+            the satellite went before it had finished, or refused it as it went ahead over
+            a conversation which outlasted its wait. One the user silenced themselves,
             with the wake word or Home Assistant's Stop, was heard, so it counts as said, as
             does one given up on because its satellite never said it had finished. A
             caller which must not lose it, like a battery warning, sends or holds it
@@ -912,12 +913,22 @@ class Session:
             # itself says what the assistant's doing.
             if self._idle.is_set():
                 self.activity = "speaking"
+            # Gone ahead over a conversation which outlasted the wait, the words reach a
+            # satellite which still has announcements silenced - see _answer.
+            over_a_conversation = not self._idle.is_set()
             tts = self.brain.tts
-            said = self._play_announcement(self.speaker.play_stream(
-                tts.stream(message), tts.sample_rate, volume=volume, kind="announcement"),
-                still_wanted)
+            words = self.speaker.play_stream(tts.stream(message), tts.sample_rate, volume=volume,
+                                             kind="announcement")
+            said = self._play_announcement(words, still_wanted)
             if self._idle.is_set():
                 self.activity = "idle"
+            if over_a_conversation and words.position == 0:
+                # Refused there, so ended at once with none of it played - which isn't said.
+                # One the satellite took, as the conversation ended just then, says how far
+                # it got.
+                logger.warning("An announcement was refused as it went ahead over a long conversation, "
+                               "so it wasn't said")
+                return False
             # A satellite which went part way through ends its playbacks too, so they
             # look finished - it isn't said unless it's still there at the end.
             return said and self.satellite.connected

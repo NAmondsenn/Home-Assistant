@@ -60,7 +60,7 @@ class Pi:
     """
     The satellite's end of the connection: keeps everything the brain sends, and plays
     as a satellite would - each of its own sounds finished at once, and each stream
-    once it has all been sent, unless the test holds it playing.
+    once it has all been sent, unless the test holds it playing, saying how far it got.
     """
 
     def __init__(self, sock):
@@ -75,6 +75,12 @@ class Pi:
         self.finishes_nothing = False
         self._held_ids = set()
         self._streams = 0
+        # Whether announcements are refused, as they are while the satellite has them
+        # silenced: each ends at once, with none of it played.
+        self.refusing = False
+        self._refused = set()
+        # How much of each stream has arrived, by its id.
+        self._samples = {}
         # What the user says each time the brain asks to hear their answer.
         self.answers = []
         threading.Thread(target=self._read, daemon=True).start()
@@ -84,6 +90,8 @@ class Pi:
             while True:
                 message, payload = protocol.receive(self.stream)
                 self.received.append((message, payload))
+                if message["type"] == "stream_audio":
+                    self._samples[message["id"]] = self._samples.get(message["id"], 0) + len(payload) // 2
                 self._play(message)
         except (OSError, protocol.ProtocolError):
             pass
@@ -92,14 +100,17 @@ class Pi:
         kind = message["type"]
         if self.finishes_nothing and kind in ("play_sound", "stream_end"):
             return
-        if kind == "play_sound":
+        if kind in ("play_sound", "play_stream") and self.refusing and message["kind"] == "announcement":
+            self._refused.add(message["id"])
+            self.say("played", id=message["id"], stopped=False, position=0)
+        elif kind == "play_sound":
             self.say("played", id=message["id"])
         elif kind == "play_stream":
             self._streams += 1
             if self._streams in self.held:
                 self._held_ids.add(message["id"])
-        elif kind == "stream_end" and message["id"] not in self._held_ids:
-            self.say("played", id=message["id"])
+        elif kind == "stream_end" and message["id"] not in self._held_ids | self._refused:
+            self.say("played", id=message["id"], stopped=False, position=self._samples.get(message["id"], 0))
         elif kind == "listen" and self.answers:
             self.send_audio(self.answers.pop(0))
 
@@ -1846,6 +1857,36 @@ def test_the_wake_word_during_what_the_clock_rings_leaves_its_words_to_the_clock
     saying.join(10)
     assert results == [True]
     assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement"]
+
+
+class _OutlastedWait(threading.Event):
+    """
+    A conversation going on longer than an announcement waits for one - which runs out
+    at once here, rather than after a minute.
+    """
+
+    def wait(self, timeout=None):
+        return self.is_set()
+
+
+def test_a_warning_refused_over_a_long_conversation_isnt_counted_as_said(connect, make_session):
+    # It went ahead once the wait ran out, while the satellite still had announcements
+    # silenced, so its words were refused - and counted as said, so a battery warning
+    # was neither said again nor held, and an alert wasn't kept.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session._idle = _OutlastedWait()
+    pi.refusing = True
+    assert _the_brain_says(session, "Your phone's battery is down to 5%.") == (False, False)
+    assert [message["kind"] for message in pi.messages("play_stream")] == ["announcement", "announcement"]
+
+
+def test_a_warning_over_a_long_conversation_the_satellite_took_counts_as_said(connect, make_session):
+    # The conversation ended just as it went ahead, so the satellite had announcements back.
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session._idle = _OutlastedWait()
+    assert _the_brain_says(session, "Your phone's battery is down to 5%.") == (True, True)
 
 
 # Settings saved while a session is already running
