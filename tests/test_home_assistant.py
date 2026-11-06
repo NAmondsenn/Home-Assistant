@@ -164,8 +164,9 @@ def _thing(entity, name, device_class=None):
     return {"entity_id": entity, "state": "unknown", "attributes": attributes}
 
 
-# What command() answers when the guard refuses.
+# What command() answers when the guard refuses - and when all it refuses for is a machine's.
 REFUSED = {"success": False, "message": "I don't lock, unlock or open anything by voice.", "refused": True}
+REFUSED_MACHINE = {"success": False, "message": "I don't shut down or restart machines by voice.", "refused": True}
 
 
 def _entry(entity, platform="demo", device=None, original_name=None, aliases=(), exposed=True, registry_id="",
@@ -442,11 +443,33 @@ def test_proxmox_is_refused_whatever_its_called(make_home):
     home.snapshot = lambda: _registry(_entry("button.bedroom_pve1_shut_down", "proxmoxve"),
                                       _entry("switch.ct_navidrome", "proxmoxve"))
     for request in ("turn on pve2 shut down", "turn off navidrome"):
-        assert home.command(request) == REFUSED, request
+        assert home.command(request) == REFUSED_MACHINE, request
     assert [path for _, path, _ in home._session.requests] == ["/api/states"] * 2
     # It's the integration that did it.
     home.snapshot = lambda: None
     assert home.command("turn off navidrome")["success"]
+
+
+def test_a_machine_is_refused_in_words_of_its_own(make_home):
+    # "I don't lock, unlock or open anything" was said for shutting down PVE2 as well - the
+    # user's call: a machine has its own sentence, and anything with a lock in it the lock's.
+    states, registry = _desk_pc("Restart")
+    states += [_thing("button.pve2_shutdown", "PVE2 Shutdown"), _thing("lock.shed", "Shed"),
+               _thing("switch.ct_navidrome", "Navidrome")]
+    registry = _registry(*registry.entries.values(), _entry("button.pve2_shutdown", "proxmoxve"),
+                         _entry("lock.shed"), _entry("switch.ct_navidrome", "proxmoxve"), devices=DESK)
+    home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Done")})
+    home.registry.read = registry
+    assert home.command("turn on pve2 shutdown") == REFUSED_MACHINE
+    assert home.command("turn on desk pc restart") == REFUSED_MACHINE
+    assert home.command("turn on pve2 shutdown and the shed") == REFUSED
+    assert home.command("unlock the pve2 shutdown") == REFUSED
+    # So is what Assist would act on, by a name the registry hasn't caught up with.
+    home.socket.answer = _debugged(_match("HassTurnOff", "switch.ct_navidrome"))
+    assert home.command("turn off the music box", wider=True) == REFUSED_MACHINE
+    home.socket.answer = _debugged(_match("HassTurnOff", "switch.ct_navidrome", "lock.shed"))
+    assert home.command("turn off the music box", wider=True) == REFUSED
+    assert "/api/conversation/process" not in _paths(home)
 
 
 def _desk_pc(*kinds):
@@ -462,7 +485,7 @@ def test_the_pcs_shutdown_restart_and_web_address_buttons_are_refused(make_home)
     home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Pressed")})
     home.snapshot = lambda: registry
     for request in ("turn on desk pc shutdown", "turn on desk pc restart", "turn on desk pc launchurl"):
-        assert home.command(request) == REFUSED, request
+        assert home.command(request) == REFUSED_MACHINE, request
     assert [path for _, path, _ in home._session.requests] == ["/api/states"] * 3
     assert home.command("turn on desk pc sleep")["success"] and _asked(home)["text"] == "turn on desk pc sleep"
 
@@ -485,7 +508,7 @@ def test_the_pcs_commands_are_refused_whatever_kind_of_entity_each_is(make_home)
     home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Done")})
     home.snapshot = lambda: registry
     for request in ("turn on desk pc shutdown", "turn on desk pc restart", "turn on desk pc sleep"):
-        assert home.command(request) == REFUSED, request
+        assert home.command(request) == REFUSED_MACHINE, request
     assert "/api/conversation/process" not in _paths(home)
 
 
@@ -497,7 +520,7 @@ def test_locking_the_pc_is_no_way_past_a_guarded_name(make_home):
     states[1]["attributes"]["friendly_name"] = "PC lock"
     home = make_home({"/api/states": states, "/api/conversation/process": _assist("action_done", "Pressed")})
     home.snapshot = lambda: registry
-    assert home.command("turn on the pc lock") == REFUSED
+    assert home.command("turn on the pc lock") == REFUSED_MACHINE
     states[1]["attributes"]["friendly_name"] = "Desk PC Shutdown"
     assert home.command("lock my PC")["success"] and _asked(home)["text"] == "lock my PC"
 
@@ -527,10 +550,11 @@ def test_a_guarded_name_said_in_other_words_is_still_refused(make_home):
     home.registry.read = _registry(_entry("button.desk_pc_shutdown", "mqtt", "desk", "Shutdown"),
                                    _entry("button.pve2_shutdown", "proxmoxve"),
                                    devices={"desk": {"name": "Desk PC", "maker": "HASS.Agent Team"}})
-    for request in ("turn on pve 2 shutdown", "turn on nova shut down", "turn on the bedroom win dows",
-                    # What's left once the words for locking the PC are taken out, as before.
-                    "turn on nova lock my pc shut down"):
-        assert home.command(request) == REFUSED, request
+    for request, refused in (("turn on pve 2 shutdown", REFUSED_MACHINE), ("turn on nova shut down", REFUSED_MACHINE),
+                             ("turn on the bedroom win dows", REFUSED),
+                             # What's left once the words for locking the PC are taken out, as before.
+                             ("turn on nova lock my pc shut down", REFUSED_MACHINE)):
+        assert home.command(request) == refused, request
     assert _paths(home) == ["/api/states"] * 4
 
 
@@ -541,7 +565,7 @@ def test_a_guarded_name_is_never_found_inside_a_word(make_home):
     for request in ("turn on the casanova lamp", "turn on the novas lamp"):
         assert home.command(request)["success"], request
     assert _paths(home).count("/api/conversation/process") == 2
-    assert home.command("turn on the casa nova lamp") == REFUSED
+    assert home.command("turn on the casa nova lamp") == REFUSED_MACHINE
 
 
 # Asking Assist what a sentence would act on, before it acts - and failing shut without that

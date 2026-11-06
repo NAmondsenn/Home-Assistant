@@ -62,8 +62,8 @@ import requests
 from voice_assistant import network
 from voice_assistant.clock import format_duration
 from voice_assistant.ha_guard import (REFUSED, RUNNABLE, WORKS_GUARDED, AssistMatch, Scripts, guarded,
-                                      names_guarded, runnables_named, sensitive, sensitive_words, split_words,
-                                      why_not_run, why_target_refused)
+                                      names_guarded, refusal_for, runnables_named, sensitive, sensitive_words,
+                                      split_words, why_not_run, why_target_refused)
 from voice_assistant.ha_registry import (HASS_AGENT_MAKER, PC_KINDS, HomeRegistry, HomeSocket, HomeSocketError,
                                          Snapshot)
 from voice_assistant.logging_setup import TRANSCRIPT
@@ -555,7 +555,9 @@ class HomeAssistant:
             can't be told, or when a wider request can't reach Home Assistant before it's
             sent. 'refused' is set when Nova wouldn't ask Assist at all, by the words, by
             what they name or by what Assist would act on - which includes a script, scene
-            or group, named or acted on, that works_guarded refuses.
+            or group, named or acted on, that works_guarded refuses. Its message is then
+            ha_guard.REFUSED, or REFUSED_MACHINE when all it named or Assist would act on
+            is a machine (see ha_guard.refusal_for).
         """
         refused = {"success": False, "message": REFUSED, "refused": True}
         not_understood = {"success": False, "message": DIDNT_UNDERSTAND, "not_understood": True}
@@ -582,12 +584,13 @@ class HomeAssistant:
                     logger.info(f"Not sent to Assist, which is only given light sentences just now: '{request}'",
                                 extra=TRANSCRIPT)
                     return not_understood
-            if names_guarded(request, states, snapshot):
+            by_id = {state.get("entity_id"): state for state in states}
+            named = names_guarded(request, states, snapshot)
+            if named:
                 logger.warning(f"Refused a Home Assistant request naming something never worked by voice: "
                                f"'{request}'", extra=TRANSCRIPT)
-                return refused
+                return {**refused, "message": refusal_for(named, by_id, snapshot)}
 
-            by_id = {state.get("entity_id"): state for state in states}
             # Told the same device as Assist, which find_device can change meanwhile.
             match, unanswered = self._assist_targets(request, asked.get("device_id"))
             if snapshot is not None:
@@ -612,7 +615,7 @@ class HomeAssistant:
                     whys = "; ".join(f"{target} is {why}" for target, why in barred.items())
                     logger.warning(f"Refused a Home Assistant request Assist would act on {list(barred)} ({whys}) "
                                    f"with: '{request}'", extra=TRANSCRIPT)
-                    return refused
+                    return {**refused, "message": refusal_for(barred, by_id, snapshot)}
             # A script or scene is only run once what it does has been checked - one Assist
             # would act on, and one the request names, as a light sentence can while the
             # debugging isn't answering: "turn on the porch light", with a script called

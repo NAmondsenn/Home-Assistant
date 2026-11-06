@@ -62,6 +62,9 @@ SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\
 
 # What's said when a request is refused, by its words or by what it names.
 REFUSED = "I don't lock, unlock or open anything by voice."
+# And when all it's refused for is a machine - Proxmox's, or the PC's (see machine) - for
+# which the lock's sentence is no answer: "turn off Navidrome" stops a container.
+REFUSED_MACHINE = "I don't shut down or restart machines by voice."
 
 # Locking the PC - HASS.Agent's button.windows_pc_lock - is the one exception to the
 # words above: it only makes things safer (the user's call), and it's a button, not a
@@ -198,12 +201,49 @@ def guarded(entity_id: str, attributes: Dict, snapshot: Optional[Snapshot]) -> O
     return None
 
 
-def names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot]) -> bool:
+def machine(entity_id: str, attributes: Dict, snapshot: Optional[Snapshot]) -> bool:
     """
-    Whether a request for Assist names anything which is never worked by voice - by
-    its name, the words of its entity id or an other name from the registry, or by a
-    word for all of its kind - as whole words. That's everything Home Assistant has,
-    not only what's exposed to Assist.
+    Whether something guarded is a machine's - Proxmox's, or one of HASS.Agent's commands
+    on the PC - rather than a lock, a door or the like. It only decides what's said when
+    it's refused (see refusal_for), never whether it is.
+
+    Args:
+        entity_id: e.g. "button.pve2_shutdown".
+        attributes: Its attributes, as for guarded.
+        snapshot: The registry, or None if it can't be read - when nothing is taken for a
+            machine, as only the registry says what's Proxmox's and the PC's.
+
+    Returns:
+        Whether it is.
+    """
+    if snapshot is None or guarded(entity_id, attributes, snapshot) != ():
+        return False
+    return snapshot.platform(entity_id) == PROXMOX or entity_id in snapshot.hass_agent_commands
+
+
+def refusal_for(entity_ids: Iterable[str], by_id: Dict[str, Dict], snapshot: Optional[Snapshot]) -> str:
+    """
+    What's said when a request is refused for what it names, or what Assist would act on.
+
+    Args:
+        entity_ids: What it's refused for, e.g. ["button.pve2_shutdown"].
+        by_id: Every entity's state, by entity id.
+        snapshot: The registry, or None if it can't be read.
+
+    Returns:
+        REFUSED_MACHINE if every one of them is a machine (see machine), else REFUSED -
+        so a request naming a lock as well is the lock's.
+    """
+    machines = [machine(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot) for entity in entity_ids]
+    return REFUSED_MACHINE if machines and all(machines) else REFUSED
+
+
+def names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot]) -> List[str]:
+    """
+    What a request for Assist names which is never worked by voice - by its name, the
+    words of its entity id or an other name from the registry, or by a word for all of
+    its kind - as whole words. That's everything Home Assistant has, not only what's
+    exposed to Assist.
 
     A harmless thing's name which holds a guarded one's doesn't let it by, as Assist
     reads a room before a name: with a lock called "front door", "turn off the bedroom
@@ -220,19 +260,18 @@ def names_guarded(request: str, states: List[Dict], snapshot: Optional[Snapshot]
         snapshot: The registry, or None if it can't be read - see guarded.
 
     Returns:
-        Whether it's to be refused.
+        Their entity ids - every one of its kind for a kind's word, e.g. every window for
+        "open the windows" - or [] for none, when it isn't to be refused.
     """
     said, excused = _said(request)
-    names, kinds = set(), set()
+    named = []
     for state in states:
         entity = str(state.get("entity_id") or "")
         attributes = state.get("attributes") or {}
         kind = guarded(entity, attributes, snapshot)
-        if kind is None:
-            continue
-        names |= _names(entity, attributes, snapshot)
-        kinds |= set(kind)
-    return any(name in said for name in names) or any(kind in excused for kind in kinds)
+        if kind is not None and (_names(entity, attributes, snapshot) & said or set(kind) & excused):
+            named.append(entity)
+    return named
 
 
 def runnables_named(request: str, states: List[Dict], snapshot: Optional[Snapshot]) -> List[str]:
