@@ -246,11 +246,15 @@ def _speaker(said) -> Optional[str]:
         said: The hello's speaker, which may be anything at all.
 
     Returns:
-        It, if it's text of 1 to MAX_SPEAKER characters with no control characters in
-        it - a newline, say - else None.
+        It, if it's text of 1 to MAX_SPEAKER characters with no control characters or
+        line breaks in it - a newline, say - else None.
     """
     if not isinstance(said, str) or not 1 <= len(said) <= MAX_SPEAKER:
         return None
-    if any(unicodedata.category(character).startswith("C") for character in said):
-        return None
+    for character in said:
+        category = unicodedata.category(character)
+        # The line and paragraph separators (U+2028 and U+2029) are in Z, not C, but end
+        # a line just as a newline does.
+        if category.startswith("C") or category in ("Zl", "Zp"):
+            return None
     return said

@@ -182,6 +182,14 @@ def test_a_hello_without_a_speaker_still_connects():
     assert _admitted(speaker="Cuisine de Zoë")["speaker"] == "Cuisine de Zoë"
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"], ids=["line separator", "paragraph separator"])
+def test_a_speaker_with_a_line_or_paragraph_separator_is_left_out(separator):
+    # Neither is a control character, but each ends a line as a newline does.
+    assert _admitted(speaker=f"Bedroom{separator}Pi")["speaker"] is None
+    # While the spaces which don't end a line still do for a name: "Bedroom Pi", and a non-breaking one.
+    assert _admitted(speaker="Bedroom\u00a0Pi")["speaker"] == "Bedroom\u00a0Pi"
+
+
 def test_a_speaker_left_out_is_logged(caplog):
     # So falling back to the brain's own speaker name can be told from the journal,
     # not only heard as "I can't find the Voice-Assistant speaker" - shown as ascii()
