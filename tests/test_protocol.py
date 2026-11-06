@@ -152,14 +152,15 @@ def _admitted(**fields):
 def test_a_hello_whose_nonce_isnt_32_hex_digits_is_refused(nonce):
     near, far = socket.socketpair()
     far.settimeout(1)
+    satellite_stream, brain_stream = near.makefile("rwb"), far.makefile("rwb")
     try:
-        protocol.send(near.makefile("rwb"), "hello", name="bedroom", hostname="h", sample_rate=48000,
+        protocol.send(satellite_stream, "hello", name="bedroom", hostname="h", sample_rate=48000,
                       unclean=False, nonce=nonce)
         with pytest.raises(protocol.ProtocolError):
-            protocol.admit(far.makefile("rwb"), {"bedroom": PASSWORD}.get)
+            protocol.admit(brain_stream, {"bedroom": PASSWORD}.get)
     finally:
-        near.close()
-        far.close()
+        for closing in (brain_stream, satellite_stream, near, far):
+            closing.close()
 
 
 def test_a_satellite_says_its_spotify_speaker():
