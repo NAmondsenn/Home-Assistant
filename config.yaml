@@ -236,7 +236,8 @@ batteries:
   # each falls past a mark. Warnings go to your phone through ntfy.phone and, while
   # you're home outside ntfy's quiet hours, are said out loud as well - see
   # docs/decisions/0007. Home Assistant is needed for this. These are the marks to start
-  # with; each device's own are changed on the settings page.
+  # with - exactly one for a phone or tablet and two for anything else, and the settings
+  # page keeps to the same; each device's own are changed there.
   # Phones and tablets, which are warned about once, as a percentage.
   mobile_marks: [5]
   # Everything else - a laptop, a remote - warned about at each, highest first.
