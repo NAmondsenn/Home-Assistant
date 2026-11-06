@@ -92,6 +92,9 @@ class RemotePlayback:
         # How many samples of a stream have been sent, at its own rate.
         self._sent = 0
         self._finished = threading.Event()
+        # Whether the satellite has been sent the message which starts it. Until it has, a
+        # stop which gets to the satellite first leaves it playing there - see RemoteSpeaker._matching.
+        self._told = False
         # Notified whenever it moves on or finishes - see _wait_to_send.
         self._changed = threading.Condition()
         # Keeps each change together with the message saying so, so two made at once
@@ -313,8 +316,8 @@ class RemoteSpeaker:
             kinds: Only stop these kinds of sound. None stops everything.
         """
         kinds = None if kinds is None else list(kinds)
-        # Picked out before the satellite is told, so a sound which another thread starts
-        # while the stop is on its way isn't finished here whilst it plays there.
+        # Picked out before the satellite is told of the stop, and only from the sounds it
+        # has been told of: see _matching for what that leaves out, and why.
         stopping = self._matching(lambda playback: kinds is None or playback.kind in kinds)
         # Told first, and only then finished here: whatever starts once these are done -
         # the next song, say - reaches the satellite after the stop, so isn't stopped by it.
@@ -367,6 +370,7 @@ class RemoteSpeaker:
         with self._lock:
             self._playing[playback.id] = playback
         if self._send(message, id=playback.id, **fields):
+            playback._told = True
             return True
         with self._lock:
             self._playing.pop(playback.id, None)
@@ -396,9 +400,24 @@ class RemoteSpeaker:
             self._send("stream_end", id=playback.id)
 
     def _matching(self, which: Callable[[RemotePlayback], bool]) -> List[RemotePlayback]:
-        """The sounds playing now which `which` picks out - for stop and silence to finish once it's told."""
+        """
+        The sounds playing now which `which` picks out - for stop and silence to finish
+        once the satellite has been told to stop them.
+
+        Only those the satellite has been sent the start of. One which another thread is
+        still starting - kept in _playing, its message not yet sent - may reach the
+        satellite after the stop, and then plays there, so isn't finished here. If its
+        message went out before the stop the satellite stops it and says so, and it ends
+        here then, a moment later than the others.
+
+        Args:
+            which: Whether a sound is one to stop.
+
+        Returns:
+            The sounds.
+        """
         with self._lock:
-            return [playback for playback in self._playing.values() if which(playback)]
+            return [playback for playback in self._playing.values() if playback._told and which(playback)]
 
     def _played(self, id: str, position: Optional[int]):
         """The satellite has finished or stopped a sound."""

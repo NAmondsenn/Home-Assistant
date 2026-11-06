@@ -342,11 +342,14 @@ def test_stopping_tells_the_satellite_what_to_stop(pair):
                                                               {"type": "stop", "kinds": None}]
 
 
-@pytest.mark.parametrize("stopping", [
+STOPPING = pytest.mark.parametrize("stopping", [
     lambda speaker: speaker.stop(),
     lambda speaker: speaker.stop(["reply"]),
     lambda speaker: speaker.silence("reply"),
 ], ids=["everything", "a kind", "silence"])
+
+
+@STOPPING
 def test_a_sound_started_while_a_stop_is_sent_isnt_finished_by_it(stopping):
     # Another thread's reply starts after the satellite was told to stop, so it plays
     # there - and mustn't be taken as stopped here, where it would be waited on no more.
@@ -364,6 +367,30 @@ def test_a_sound_started_while_a_stop_is_sent_isnt_finished_by_it(stopping):
 
     assert earlier.done
     assert not started[0].done
+
+
+@STOPPING
+def test_a_sound_whose_play_is_still_being_sent_isnt_finished_by_a_stop_which_gets_there_first(stopping):
+    # Another thread's reply is kept by its id, and its play message is queued behind a
+    # stop from a thread which wins the satellite's lock first: the stop reaches the
+    # satellite before the play, so the sound plays there and mustn't be taken as stopped.
+    wire = []
+    started = []
+
+    def send(kind, payload=b"", /, **fields):
+        if kind == "play_sound" and not started:
+            started.append(True)
+            # The stop gets in between the sound being kept and its message being sent.
+            stopping(speaker)
+        wire.append(kind)
+        return True
+
+    speaker = remote.RemoteSpeaker(send, 48000)
+
+    late = speaker.play_file("late.wav")
+
+    assert wire in (["stop", "play_sound"], ["silence", "play_sound"])
+    assert not late.done
 
 
 def test_state_alarms_the_phrase_and_restarts_reach_the_satellite(pair):
