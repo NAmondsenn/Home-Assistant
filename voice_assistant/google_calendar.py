@@ -126,6 +126,13 @@ CALENDAR_GONE = (403, 404)
 # not a calendar gone, or "nothing on" would be said for what wasn't read.
 RATE_LIMITED = ("rateLimitExceeded", "userRateLimitExceeded")
 
+# An email address, which Google names the user's own calendar by, and a person's own shared
+# with them. A bare "@" isn't one - "Gym @ 6" is a name, said as it is. Kept wide, as a missed
+# address would be spoken and told to Claude: anything before the "@", then a domain whose
+# last part, after a dot, starts with a letter ("me@example.com", "me@mail.co.uk", but not
+# "Gym@6.30").
+ADDRESS = re.compile(r"[^\s@]+@[^\s@]+\.[^\W\d_][^\s@]+")
+
 # The ids of Google's own calendars - a country's holidays, the contacts' birthdays, week
 # numbers - which are things on the calendar, not activities, unless switched on.
 GOOGLES_OWN = "@group.v.calendar.google.com"
@@ -1174,7 +1181,7 @@ def named_by_address(calendar: Dict) -> bool:
     Whether a calendar is named by an email address - as Google names the user's own, and
     a person's own shared with them, by theirs - which is never said, or told to Claude.
     """
-    return "@" in calendar["name"]
+    return ADDRESS.search(calendar["name"]) is not None
 
 
 def spoken_name(calendar: Dict) -> str:

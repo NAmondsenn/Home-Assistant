@@ -32,7 +32,7 @@ from voice_assistant.actions import Action, ActionExecutor
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.google_calendar import (CANT_REACH_GOOGLE, NEEDS_SIGN_IN, ClientRefused, GoogleCalendar,
                                              GoogleSignIn, GoogleSignInError, SignInNeeded, describe_agenda,
-                                             describe_found)
+                                             describe_found, named_by_address, spoken_name)
 from voice_assistant.intents import LocalIntents
 
 CLIENT_ID = "made-up-client.apps.example.com"
@@ -1250,6 +1250,38 @@ def _named_by_addresses(make_calendar, tmp_path, activities=None):
     calendar._session.answers[_events_url("calendar-theirs")] = [_events_page(
         _google_event("Office", "2026-10-21T09:00:00+01:00", "2026-10-21T17:00:00+01:00"))]
     return calendar
+
+
+@pytest.mark.parametrize("name", [
+    OWN_ADDRESS, "ME@EXAMPLE.COM", "first.last+cal@sub.example.co.uk", "a_b-c@x-y.io", "user@xn--p1ai.xn--p1ai",
+    "\u540d\u524d@\u4f8b\u3048.\u65e5\u672c", " someone@example.com ", "Alice's calendar (alice@example.com)",
+])
+def test_a_name_with_an_email_address_in_it_is_named_by_an_address(name):
+    # The privacy rule: a name holding a real address is never said, or told to Claude.
+    assert named_by_address({"name": name})
+    assert spoken_name({"name": name, "primary": True}) == "your calendar"
+    assert spoken_name({"name": name, "primary": False}) == "a shared calendar"
+
+
+@pytest.mark.parametrize("name", ["Gym @ 6", "Gym @6", "Gym@6", "Gym@6.30", "Meet @ 6.30pm", "Dinner @ Mario's.",
+                                  "@", "Work @ Tesco", "", "Gym @ 6, me@"])
+def test_a_name_with_an_at_sign_but_no_address_is_said_as_it_is(name):
+    assert not named_by_address({"name": name})
+    assert spoken_name({"name": name, "primary": False}) == name
+
+
+def test_a_calendar_called_gym_at_six_is_an_activity_said_by_its_name(make_calendar):
+    calendar = make_calendar(calendars={"calendar-personal": [], "calendar-gym": []},
+                             activities={"calendar-gym": True}, reads=2)
+    calendar._session.answers[LIST] = [_calendar_list(
+        _entry("calendar-personal", OWN_ADDRESS, primary=True), _entry("calendar-gym", "Gym @ 6"))]
+    calendar._session.answers[_events_url("calendar-gym")] = [_events_page(
+        _google_event("Class", "2026-10-21T18:00:00+01:00", "2026-10-21T19:00:00+01:00"))] * 2
+    assert [event["calendar"] for event in calendar.events(date(2026, 10, 21), 1)] == ["Gym @ 6"]
+    assert list(calendar.activity_calendars()) == ["gym @ 6"]
+    assert "gym 6" in calendar.activity_words()
+    assert calendar.agenda(date(2026, 10, 21), 1, today=date(2026, 10, 20))["message"] == (
+        "Tomorrow, you've got gym @ 6 from 6:00 PM until 7:00 PM.")
 
 
 def test_a_calendar_named_by_an_address_isnt_an_activity(make_calendar, tmp_path, caplog):
