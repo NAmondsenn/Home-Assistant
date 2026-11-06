@@ -426,7 +426,7 @@ async function load() {
   showStatus(state.status);
   showSatellites(state);
   showMuted();
-  showVolumes(state.volumes);
+  showVolumes(state.volumes, state.satellite);
   drawIfChanged("clock", state.clock, showClock);
   drawIfChanged("memories", state.memories, showMemories);
   drawIfChanged("own-routines", state.routines, showOwnRoutines);
@@ -979,10 +979,14 @@ function showMuted() {
     : `Listening for “${wakeWord}”`;
 }
 
-function showVolumes(volumes) {
+// The volumes of the satellite named, which is the default's unless another is looked after.
+function showVolumes(volumes, name) {
   const none = Object.keys(volumes).length === 0;
-  // A satellite which isn't connected has no volumes to show.
-  document.getElementById("volumes-missing").hidden = !none;
+  // A satellite which isn't connected has no volumes to show. It's said by its being
+  // connected, so the note never blames the connection for volumes missing for another
+  // reason; with no satellite to ask after, there being no volumes is all there is to go on.
+  const shown = satellites.find((satellite) => satellite.name === name);
+  document.getElementById("volumes-missing").hidden = shown ? shown.connected : !none;
   document.getElementById("mute").disabled = none;
   if (none) {
     for (const category of Object.keys(sliders)) {
