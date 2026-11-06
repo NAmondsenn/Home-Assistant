@@ -386,8 +386,10 @@ def test_a_satellite_which_connects_gets_its_state_alarms_and_phrase(brain, conn
     satellite = connect(brain)
     assert wait_for(lambda: satellite.messages("away_settled"))
 
-    # And, once it has said what happened while it was away, that the brain has it.
-    assert [message["type"] for message, _ in satellite.received] == ["state", "alarms", "phrase", "away_settled"]
+    # And, once it has said what happened while it was away, its copy as that left it and
+    # that the brain has it.
+    assert [message["type"] for message, _ in satellite.received] == ["state", "alarms", "phrase", "alarms",
+                                                                      "away_settled"]
     # Its volumes and mute, as its session has them.
     assert satellite.messages("state")[0] == {"type": "state", "volumes": {"general": 0.5, "alarm": 0.8, "music": 0.4},
                                              "muted": False, "longest_request": 15.0}
@@ -1248,6 +1250,38 @@ def test_what_a_satellite_was_still_ringing_as_the_brain_came_back_rings_on(make
     assert len(session.announced) == 1
 
 
+def test_a_satellite_has_the_copy_listing_what_the_brain_took_over_before_its_told_its_settled(make_brain, connect,
+                                                                                             tmp_path):
+    # Told it's settled, the satellite stops ringing what it was and lets its copy ring it
+    # again, as due from when the brain began ringing it - which only the copy made after
+    # the report says. Sent after, by the thread sending copies - held up here, as by a
+    # satellite which has stalled - a brain lost in between left it silent on both sides.
+    now = time.time()
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": now - 30, "satellite": "bedroom"}]}))
+    brain = make_brain()
+    brain.clock.alarm_ring_duration = 0
+    held_up = threading.Event()
+    send_alarms = brain._send_alarms
+
+    def stalled():
+        held_up.wait(1)
+        send_alarms()
+
+    brain._send_alarms = stalled
+    serving(brain)
+    alarm = f"alarm-1@{int(now - 30)}"
+    try:
+        satellite = connect(brain, away={"rang": [alarm], "dismissed": [], "ringing": [alarm]})
+        assert wait_for(lambda: satellite.messages("away_settled"))
+        sent = [message for message, _ in satellite.received]
+        settled = [message["type"] for message in sent].index("away_settled")
+        assert any(alarm in [entry["id"] for entry in message["entries"]]
+                   for message in sent[:settled] if message["type"] == "alarms")
+    finally:
+        held_up.set()
+
+
 def test_a_satellite_is_told_once_what_happened_while_it_was_away_is_saved(brain, connect, tmp_path,
                                                                           monkeypatch):
     # It rings on what it was still ringing, and keeps its report, until then - so a
@@ -1615,7 +1649,8 @@ def test_each_satellites_copy_is_sent_again_now_and_then(brain, connect, monkeyp
     serving(brain)
     satellite = connect(brain)
     connected(brain)
-    assert wait_for(lambda: len(satellite.messages("alarms")) >= 3)
+    caught_up = len(satellite.messages("alarms"))
+    assert wait_for(lambda: len(satellite.messages("alarms")) >= caught_up + 2)
 
 
 def test_a_change_on_the_clock_never_waits_for_a_satellites_copy(brain, connect):

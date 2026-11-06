@@ -1064,6 +1064,11 @@ class Brain:
                            f"the brain, so it's let go, to connect again and say")
             return False
         self.clock.apply_away(satellite.name, away["rang"], away["dismissed"], away["ringing"])
+        # Its copy as that left it, before it's told it's settled - which has it stop
+        # ringing what it was, and its copy ring that again if the brain is lost, as due
+        # from when the brain began ringing it, as only this copy says. The thread
+        # sending copies could get to it only after, held up by another satellite.
+        self._send_alarms_to(satellite)
         # Only now it's saved does the satellite stop ringing what it was, and forget
         # what it said - lost before then, the next brain hears it all again.
         satellite.settle_away()
