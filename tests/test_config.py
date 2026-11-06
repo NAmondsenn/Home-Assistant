@@ -581,6 +581,23 @@ def test_update_says_what_it_updated_from_when_it_starts_again_on_the_new_code()
     assert text.index('export NOVA_UPDATED_FROM="$before"') < text.index('exec bash "${PROJECT_DIRECTORY}/update.sh"')
 
 
+@pytest.mark.parametrize("role, shown", [
+    ("brain", "root_do journalctl -u nova-backend -n 12 --no-pager -o cat"),
+    ("satellite", "journalctl --user-unit voice-assistant -n 12 --no-pager -o cat"),
+])
+def test_update_reads_the_brains_journal_as_root(role, shown):
+    # Read when Nova didn't start - and a user outside the journal's group would be shown
+    # nothing of why, as the brain's other service steps are done as root for them.
+    text = (Path(__file__).parent.parent / "update.sh").read_text()
+    chosen = text[text.index('if [ "$ROLE" = "brain" ]; then\n    stop_service()'):
+                  text.index("# The new code reads the settings")]
+    script = ('root_do() { echo "root_do $*"; }\njournalctl() { echo "journalctl $*"; }\nsystemctl() { :; }\n'
+              f"ROLE={role} BRAIN_SERVICE_NAME=nova-backend SERVICE_NAME=voice-assistant\n{chosen}show_log 12\n")
+    shown_by = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+    assert shown_by.stdout.strip() == shown, shown_by.stderr
+
+
 @pytest.mark.parametrize("setting, value", [
     ("mqtt.port", ".inf"), ("mqtt.port", ".nan"), ("mqtt.port", "-.inf"),
     ("conversation.history_max_age", ".nan"), ("thresholds.silence_duration", ".inf"),

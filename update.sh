@@ -121,7 +121,7 @@ if [ "$ROLE" = "brain" ]; then
     stop_service() { root_do systemctl stop "$BRAIN_SERVICE_NAME" || true; }
     start_service() { root_do systemctl start "$BRAIN_SERVICE_NAME"; }
     service_is_active() { systemctl is-active -q "$BRAIN_SERVICE_NAME"; }
-    show_log() { journalctl -u "$BRAIN_SERVICE_NAME" -n "$1" --no-pager -o cat; }
+    show_log() { root_do journalctl -u "$BRAIN_SERVICE_NAME" -n "$1" --no-pager -o cat; }
 else
     stop_service() { systemctl --user stop "$SERVICE_NAME" || true; }
     start_service() { systemctl --user start "$SERVICE_NAME"; }
