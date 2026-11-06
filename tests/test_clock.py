@@ -1258,6 +1258,32 @@ def test_whats_missed_waits_until_its_satellite_can_hear_it(make_clock, tmp_path
     assert len(clock.announced) == 1
 
 
+def test_whats_held_past_the_grace_is_kept_as_missed_rather_than_said(make_clock, tmp_path, monkeypatch):
+    # The brain was off as both came due, and the kitchen was away for hours after - so
+    # once it was back, a long-running brain said "That was 5 hours ago". Past the grace
+    # by then, they're what the user can ask they missed instead.
+    due = time.time() - 60
+    (tmp_path / "timers.json").write_text(json.dumps({"next_id": 2, "timers": [
+        {"id": 1, "due_at": due, "duration": 600, "label": "pasta", "satellite": "kitchen"}]}))
+    (tmp_path / "alarms.json").write_text(json.dumps({"next_id": 2, "alarms": [
+        {"id": 1, "hour": 7, "minute": 0, "repeat": None, "due_at": due, "satellite": "kitchen"}]}))
+    back = set()
+    clock = make_clock(can_hear=lambda satellite: satellite in back)
+    later = due + 5 * 3600
+
+    # Still kept while the kitchen's away, as it may yet say it rang them itself.
+    clock._tick(later)
+    assert len(clock._missed) == 2 and clock.announced == []
+
+    back.add("kitchen")
+    clock._tick(later)
+    assert clock.announced == [] and clock._missed == []
+    # Let go of in the file as well, so a restart doesn't say them either.
+    assert make_clock()._missed == []
+    monkeypatch.setattr(time, "time", lambda: later)
+    assert clock.missed()["message"] == "You missed pasta reminder, 5 hours ago; 7:00 AM alarm, 5 hours ago."
+
+
 # A satellite's report, applied twice - as one is when the brain has saved it, but the
 # connection drops before the satellite hears so, and it says it all again.
 

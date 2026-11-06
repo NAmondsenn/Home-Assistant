@@ -54,7 +54,8 @@ TIMERS_FILE = os.path.join(paths.DATA_DIR, "timers.json")
 ALARMS_FILE = os.path.join(paths.DATA_DIR, "alarms.json")
 
 # A timer which came due while the assistant was off is still announced if it was
-# recent, anything older is ignored.
+# recent, anything older is ignored - and one held past it for a satellite which
+# couldn't hear it yet is kept for "what did I miss" instead (see _tick).
 MISSED_TIMER_GRACE_SECONDS = 3600
 
 # Waits until NTP corrects the time, so the clock is accurate on startup.
@@ -101,7 +102,8 @@ class Clock(ClockRequests, Ringing, SatelliteCopies, ClockWords):
                       what came due while the brain was off: connected, and having
                       said what it rang from its copy meanwhile (see apply_away). Each
                       is kept until it is, rather than said to nobody - or said for
-                      something the satellite rang itself. Called with the clock's
+                      something the satellite rang itself - and one past the grace by
+                      then is kept for "what did I miss" instead. Called with the clock's
                       lock held, so it mustn't wait on anything, nor call the clock.
                       None says them all at the first tick.
             let_in: Called with a satellite's name as something is set or put back
@@ -628,14 +630,25 @@ class Clock(ClockRequests, Ringing, SatelliteCopies, ClockWords):
         # its satellite can hear it - see can_hear.
         if self._missed:
             with self._lock:
-                missed, waiting = [], []
+                missed, waiting, too_late = [], [], []
                 for item in self._missed:
-                    ready = self.can_hear is None or self.can_hear(item["satellite"])
-                    (missed if ready else waiting).append(item)
+                    if self.can_hear is not None and not self.can_hear(item["satellite"]):
+                        waiting.append(item)
+                    elif now - item["due_at"] > MISSED_TIMER_GRACE_SECONDS:
+                        too_late.append(item)
+                    else:
+                        missed.append(item)
                 self._missed = waiting
+                # One whose satellite was away for hours after the brain came back isn't
+                # said once it's back - "That was 5 hours ago" is no use to anyone. It's
+                # kept for "what did I miss" instead, as anything else missed is, from when
+                # it came due - and only the last ten, as _record_unacknowledged keeps.
+                for item in too_late:
+                    item["missed_at"] = item["due_at"]
+                self._unacknowledged = (self._unacknowledged + too_late)[-10:]
                 # Let go of in the file before it's said, so a brain lost as it says it
                 # never says it again.
-                if missed:
+                if missed or too_late:
                     self._save()
             for item in missed:
                 late = format_duration(now - item["due_at"])
