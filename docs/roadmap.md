@@ -4,12 +4,15 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 ## Next
 
-1. **The voice check** - a check that it's the user's own voice saying "Hey Nova", to tell it from a film's, which the wake word's confidence alone can't. It isn't built. What it learns from is the recordings made with `scripts/record_wake_samples.py`, and the few seconds around each wake which a satellite keeps while `wake_clips.keep` is on.
-2. **Then the 72-hour soak** of everything since Phase 3, on the brain and on each satellite - see "Leaving it running" in the [release checklist](release-checklist.md).
+1. **The brain's memory while music plays** - in the soak it rose about 20 MB a step during a long Navidrome session, without levelling off, though a trial on a scratch copy found no per-song leak. It is measured by kind (the main heap, the threads' arenas, the rest) during the next long session before anything is changed.
+2. **The minor findings parked by each plan's reviews**, fixed in one round.
+3. **Music fetched by voice** - an album or song that isn't in Navidrome fetched through the homelab's own downloaders and played once it's there. Not designed yet.
+4. **Football scores**, from FotMob or Home Assistant. Not designed yet.
+5. **Phase 6** - push-to-talk clients for Windows and macOS.
 
 ## Branches
 
-- `main` - everything, and where new work branches off. Phases 1 to 4 and the routines were merged on 21 October, Phase 5's lights on 22 October, and the rest of Phase 5 as it was built, up to keeping a few seconds around each wake on 31 October.
+- `main` - everything, and where new work branches off. Phases 1 to 4 and the routines were merged on 21 October, Phase 5's lights on 22 October, and the rest of Phase 5 as it was built, up to the voice check on 2 November and a clearer log after the brain pauses on 6 November.
 - `satellite` - the Pi as a satellite, and the brain ([decisions/0006](decisions/0006-the-pi-as-a-satellite.md)), built on `phase-5`. Running on the Pi and the brain since 23 October. Its work reached `main` on 25 October, with Home Assistant first, and the two were the same commit on 31 October.
 - `phase-1`, `phase-2`, `phase-3`, `phase-4` and `routines` - the stages Phases 1 to 4 and the routines were built in, each on the one before (`routines` on `phase-4`, whose plan is in [decisions/0004](decisions/0004-pve2-backend.md)). All merged into `main`.
 - `phase-5` - Phase 5's lights, and Nova in Home Assistant ([decisions/0005](decisions/0005-nova-in-home-assistant.md)), built on `main`. Merged into `main`, and so is its last change, the new voice, as a commit of its own there.
@@ -94,8 +97,8 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
   - [x] A second speech model, Parakeet, for the lone words Nemotron misses. Merged on 29 October
   - [x] Fewer false wakes, the first part - about one an hour from the TV, some sent on as if the user had said them: a surer wake word while something plays in the satellite's room, and Claude ignoring what sounds like speech from it ([decisions/0010](decisions/0010-media-aware-wake-word.md)). Merged on 30 October, with Claude's working-out kept unspoken, and `scripts/record_wake_samples.py` for the recordings the voice check learns from
   - [x] A few seconds of audio around each wake, kept on the satellite while `wake_clips.keep` is on, so the voice check can learn from real false wakes. Merged on 31 October
-  - [ ] Fewer false wakes, the second part: the voice check - a check that it's the user's own voice saying "Hey Nova". The wake word's confidence alone can't tell them apart: the TV's run from 0.53 to 0.96, the user's from 0.52 to 0.99. Next
-  - [ ] The 72-hour soak of everything since Phase 3, on the brain and on each satellite - after the voice check
+  - [x] Fewer false wakes, the second part: the voice check - a check that it's the user's own voice saying "Hey Nova" ([decisions/0011](decisions/0011-the-voice-check.md)), since the wake word's confidence alone can't tell them apart: the TV's run from 0.53 to 0.96, the user's from 0.52 to 0.99. Merged and running on the brain and the Pi from 2 November. In the soak it stopped 66 false wakes, let three through (speech from the TV) and turned none of the user's away
+  - [x] The soak of everything since Phase 3, on the brain and the Pi - from 3 November, ended after 51.5 hours by moving the rack on 5 November and not run again. No restarts or errors on either, and the only growth worth a look was the brain's memory during a long music session (see Next). The release checklist's stopped-brain timer test passed on 6 November
   - Later, if wanted: Jellyfin through Home Assistant's media players, for the TV, and confirmations for anything security-sensitive
 - Phase 6 - push-to-talk clients for Windows and macOS.
 
