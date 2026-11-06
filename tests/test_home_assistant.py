@@ -2642,6 +2642,18 @@ def test_lights_are_found_by_name_other_name_or_room(make_home):
     assert called("attic lights") is None and called("the toaster") is None
 
 
+def test_a_name_or_room_starting_with_the_or_my_is_found_as_said(make_home):
+    # A leading "the", "my" or "all" comes off the names as it does off what was said,
+    # so "my room lights" is the room called "My Room", not one called "room".
+    big = _rendered_light("light.big_lamp", "The Big Lamp", "My Room")
+    home = _house(make_home, big, KITCHEN_LIGHT)
+    home.snapshot = lambda: _other_names(light_big_lamp=["the reading light"])
+    lights = home._in_order(home.lights())
+    for words in ("the big lamp", "Big Lamp", "reading light", "the reading light", "my room lights",
+                  "all the My Room lights"):
+        assert [light["id"] for light in home.lights_called(words, lights)] == ["light.big_lamp"], words
+
+
 def test_lamp_means_the_rooms_lights_when_no_light_is_called_that(make_home):
     # As "lights" does: "dim the lamps", with only a ceiling light in the bedroom.
     home = _house(make_home, BEDROOM_LIGHT_WARM, KITCHEN_LIGHT)

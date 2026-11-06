@@ -1059,7 +1059,8 @@ class HomeAssistant:
 
         Args:
             words: What the user called them, e.g. "the main light". A leading "all",
-                "the" or "my" is ignored, and so are case and punctuation.
+                "the" or "my" is ignored, and so are case and punctuation - in the
+                lights' names, other names and rooms as well.
             lights: The lights, as lights() has them.
 
         Returns:
@@ -1068,15 +1069,13 @@ class HomeAssistant:
             room - none if that isn't known; else those in the room named, e.g. "bedroom
             lights". None if the words mean nothing Nova knows.
         """
-        said = _plain(words)
-        while said.split(" ")[0] in ("all", "the", "my") and " " in said:
-            said = said.split(" ", 1)[1]
+        said = _trimmed(words)
         if not said:
             return None
         # Before the generic words, so that a light the user calls "Lamp" is the lamp
         # rather than every light in the room - "brighten the lamp" with a ceiling
         # light in the room too.
-        named = [light for light in lights if said in [_plain(name) for name in [light["name"], *light["aliases"]]]]
+        named = [light for light in lights if said in [_trimmed(name) for name in [light["name"], *light["aliases"]]]]
         if named:
             # A name shared across rooms is Nova's own room's, as Assist has it: "dim the
             # lamp", with a Lamp in the bedroom and one in the kitchen, is the bedroom's.
@@ -1086,7 +1085,7 @@ class HomeAssistant:
             return [light for light in lights if self.area and light["area"] == self.area]
         room = said.rsplit(" ", 1)[0] if said.rsplit(" ", 1)[-1] in GENERIC_LIGHT_WORDS else None
         if room:
-            in_room = [light for light in lights if light["area"] and _plain(light["area"]) == room]
+            in_room = [light for light in lights if light["area"] and _trimmed(light["area"]) == room]
             return in_room or None
         return None
 
@@ -1937,6 +1936,18 @@ def _status_said(name: str, area: Optional[str], state: Dict, now: float) -> str
 def _plain(text: str) -> str:
     """Words for comparing, e.g. "The Main Light!" is "the main light"."""
     return " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split())
+
+
+def _trimmed(text: str) -> str:
+    """
+    Words for comparing as _plain has them, less any leading "all", "the" or "my" - "The Big
+    Lamp" is "big lamp", whether it's what was said or a light's own name. The last word is
+    always kept, so a light called "All" is still "all".
+    """
+    words = _plain(text)
+    while words.split(" ")[0] in ("all", "the", "my") and " " in words:
+        words = words.split(" ", 1)[1]
+    return words
 
 
 def _out_of_reach(lights: List[Dict]) -> Dict:
