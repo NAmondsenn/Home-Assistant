@@ -81,6 +81,14 @@ def test_a_mistake_stops_it_starting_and_says_where(config_with, own, said):
     assert said in str(caught.value) and "config.yaml" in str(caught.value)
 
 
+def test_a_file_which_isnt_utf_8_stops_it_starting_and_says_where(config_with, tmp_path):
+    # Saved by an editor in Latin-1, "café" can't be read - said as a mistake, not a traceback.
+    (tmp_path / "config.yaml").write_bytes("music:\n  player: café\n".encode("latin-1"))
+    with pytest.raises(ConfigError) as caught:
+        config_with()
+    assert "isn't valid YAML" in str(caught.value) and "config.yaml" in str(caught.value)
+
+
 RETIRED = """speech_to_text:
   engine: moonshine
 moonshine:
