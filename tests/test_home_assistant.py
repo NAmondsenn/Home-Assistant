@@ -1990,11 +1990,19 @@ def test_a_script_handing_a_sentence_to_assist_or_publishing_over_mqtt_cant_be_c
                                     "homeassistant.restart", "HomeAssistant.Restart"])
 def test_a_script_stopping_home_assistant_or_its_host_is_refused(make_home, action):
     # Ruling 147, revised: they take down the hub Nova works the house through, as
-    # Proxmox's buttons take down the machines - and they need no entity to do it.
+    # Proxmox's buttons take down the machines - and they need no entity to do it. So
+    # what's said is the machine's sentence, the user's call on 7 Nov.
     home = _scripted(make_home, {"script.reset": ("Reset", _config("Reset", {"action": action}))})
-    assert home.run_script("reset") == {"success": False, "message": REFUSED["message"]}
+    assert home.run_script("reset") == {"success": False, "message": REFUSED_MACHINE["message"]}
+    home.socket.answer = _debugged(_match("HassTurnOn", "script.reset"))
+    assert home.command("run reset", wider=True) == REFUSED_MACHINE
     home._session.answers["/api/config/script/config/reset"] = _config("Reset", {"service": action, "data": {}})
     assert home.works_guarded("script.reset", *_now(home))
+    assert _ran(home) == [] and "/api/conversation/process" not in _paths(home)
+    # One which unlocks the front door as well is the lock's.
+    home = _scripted(make_home, {"script.reset": ("Reset", _config(
+        "Reset", {"action": action}, _step("lock.unlock", entity_id="lock.front_door")))}, FRONT_DOOR)
+    assert home.run_script("reset") == {"success": False, "message": REFUSED["message"]}
     assert _ran(home) == []
 
 

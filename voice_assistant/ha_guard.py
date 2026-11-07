@@ -62,8 +62,9 @@ SENSITIVE = re.compile(r"\b(?:un)?lock|\bgarage\b|\bgates?\b|\bdisarm|\barm the\
 
 # What's said when a request is refused, by its words or by what it names.
 REFUSED = "I don't lock, unlock or open anything by voice."
-# And when all it's refused for is a machine - Proxmox's, or the PC's (see machine) - for
-# which the lock's sentence is no answer: "turn off Navidrome" stops a container.
+# And when all it's refused for is a machine - Proxmox's, the PC's (see machine), or Home
+# Assistant itself or its host (see HUB) - for which the lock's sentence is no answer:
+# "turn off Navidrome" stops a container.
 REFUSED_MACHINE = "I don't shut down or restart machines by voice."
 
 # Locking the PC - HASS.Agent's button.windows_pc_lock - is the one exception to the
@@ -127,6 +128,10 @@ PASSED_ON = ("conversation", "mqtt.publish")
 # Actions which stop Home Assistant, or the machine it runs on - the hub Nova works the house
 # through - so they work something guarded as Proxmox's buttons do, with no entity named.
 STOPS_HOME = ("hassio.host_shutdown", "hassio.host_reboot", "homeassistant.stop", "homeassistant.restart")
+# What a step with one of them is refused for, as why_not_run's met notes it in place of an
+# entity, so that it's the machine's sentence which is said (see refusal_for). No entity id
+# has a space in it, so it's never taken for one.
+HUB = "Home Assistant or its host"
 
 # The script domain's own actions. Every other script.<name> is a script's own action, named
 # by its key - see _walk.
@@ -226,17 +231,19 @@ def refusal_for(entity_ids: Iterable[str], by_id: Dict[str, Dict], snapshot: Opt
     What's said when a request is refused for what it names, or what Assist would act on.
 
     Args:
-        entity_ids: What it's refused for, e.g. ["button.pve2_shutdown"] - with None for
-            anything which isn't one entity, such as an action on a whole room, or what a
+        entity_ids: What it's refused for, e.g. ["button.pve2_shutdown"] - with HUB for a
+            script's step which stops Home Assistant or its host, and None for anything
+            else which isn't one entity, such as an action on a whole room, or what a
             script does that can't be checked (see why_not_run's met).
         by_id: Every entity's state, by entity id.
         snapshot: The registry, or None if it can't be read.
 
     Returns:
-        REFUSED_MACHINE if every one of them is a machine (see machine), else REFUSED -
-        so a request naming a lock as well is the lock's.
+        REFUSED_MACHINE if every one of them is a machine (see machine) or HUB, else
+        REFUSED - so a request naming a lock as well is the lock's.
     """
-    machines = [entity is not None and machine(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot)
+    machines = [entity == HUB
+                or entity is not None and machine(entity, (by_id.get(entity) or {}).get("attributes") or {}, snapshot)
                 for entity in entity_ids]
     return REFUSED_MACHINE if machines and all(machines) else REFUSED
 
@@ -392,7 +399,7 @@ def _noted(reason: str, met: Optional[List[Optional[str]]], *entities: str) -> s
     Args:
         reason: WORKS_GUARDED or UNSEEN.
         met: Where it's noted, or None.
-        entities: The guarded entities it was found for - none for anything else.
+        entities: The guarded entities it was found for, or HUB - none for anything else.
 
     Returns:
         The reason.
@@ -440,7 +447,7 @@ def _step_refused(part: Dict, by_id: Dict[str, Dict], snapshot: Optional[Snapsho
             if domain in PASSED_ON or action in PASSED_ON:
                 found.append(_noted(UNSEEN, met))
             if action in STOPS_HOME:
-                found.append(_noted(WORKS_GUARDED, met))
+                found.append(_noted(WORKS_GUARDED, met, HUB))
     devices = part.get("device_id")
     if devices is not None:
         # A device action names its device and the domain it acts in, but its entity only
@@ -549,10 +556,10 @@ def why_not_run(entity_ids: Sequence[str], states: List[Dict], snapshot: Optiona
             this adds to, and takes one off once it's walked to the end - the
             HomeAssistant's own, so each is said once until it's been put right.
         met: If given, what each reason was found for is added to it, every one of them
-            rather than only the first: each guarded entity, and None for anything else -
-            something guarded that isn't one entity, or what can't be checked. That's
-            what refusal_for says why by, so a script which shuts a machine down and
-            unlocks a door is the lock's.
+            rather than only the first: each guarded entity, HUB for a step which stops
+            Home Assistant or its host, and None for anything else - something guarded
+            that isn't one entity, or what can't be checked. That's what refusal_for says
+            why by, so a script which shuts a machine down and unlocks a door is the lock's.
 
     Returns:
         WORKS_GUARDED if any of them works something guarded, else UNSEEN if any of
