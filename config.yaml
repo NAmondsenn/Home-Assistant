@@ -51,12 +51,25 @@ music:
   # What plays the music: "navidrome" - your own music server, set up below - or
   # "spotify", which needs Spotify Premium.
   player: "spotify"
+  # Whether Nova offers to download a song or album Navidrome hasn't got, through
+  # SoulSync, when you ask to play it. "Download X" works either way.
+  offer_downloads: true
+  # How long Nova waits for a download to appear in Navidrome before saying it couldn't
+  # get it, counted from the request. Read at each check, so a change is used straight away.
+  song_download_minutes: 10
+  album_download_minutes: 30
 
 navidrome:
   # Navidrome's address, e.g. "http://navidrome.local:4533", and the user Nova signs in
   # as. The password goes in ~/.config/nova/.env as NAVIDROME_PASSWORD.
   url: ""
   username: ""
+
+soulsync:
+  # SoulSync's address, e.g. "http://soulsync.local:8008", for music Nova downloads when
+  # Navidrome hasn't got it. The key, made in SoulSync's own settings, goes in
+  # ~/.config/nova/.env as SOULSYNC_API_KEY.
+  url: ""
 
 spotify:
   device_name: "Voice-Assistant"

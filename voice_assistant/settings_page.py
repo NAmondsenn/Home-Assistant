@@ -95,6 +95,10 @@ EDITABLE = [
     ("music", "player", "What plays the music", "restart"),
     ("navidrome", "url", "Navidrome's address", "restart"),
     ("navidrome", "username", "Navidrome's user for Nova", "restart"),
+    ("music", "offer_downloads", "Offer to download what Navidrome hasn't got", "now"),
+    ("music", "song_download_minutes", "Minutes to wait for a song to download", "now"),
+    ("music", "album_download_minutes", "Minutes to wait for an album to download", "now"),
+    ("soulsync", "url", "SoulSync's address", "now"),
     ("home_assistant", "url", "Home Assistant's address", "restart"),
     ("ntfy", "url", "Your ntfy server", "restart"),
     ("ntfy", "alerts", "Topics read out as they arrive, separated by commas", "restart"),
@@ -127,7 +131,8 @@ LATER = "Used once Nova restarts"
 
 # The keys, and what each is for. Claude's can be under an older name too.
 KEYS = [("ANTHROPIC_API_KEY", "Claude"), ("HA_TOKEN", "Home Assistant (an administrator's token)"),
-        ("MQTT_PASSWORD", "Home Assistant's MQTT"), ("NAVIDROME_PASSWORD", "Navidrome"), ("NTFY_TOKEN", "ntfy"),
+        ("MQTT_PASSWORD", "Home Assistant's MQTT"), ("NAVIDROME_PASSWORD", "Navidrome"),
+        ("SOULSYNC_API_KEY", "SoulSync"), ("NTFY_TOKEN", "ntfy"),
         ("SPOTIFY_CLIENT_ID", "Spotify client ID"), ("SPOTIFY_CLIENT_SECRET", "Spotify client secret"),
         ("GOOGLE_CLIENT_ID", "Google client ID"), ("GOOGLE_CLIENT_SECRET", "Google client secret")]
 OLDER_NAMES = {"ANTHROPIC_API_KEY": ["Claude_API_Key"]}

@@ -53,6 +53,7 @@ LIMITS: Dict[Tuple[str, str], Limit] = {
     ("ntfy", "quiet_from"): Limit("time"),
     ("ntfy", "quiet_until"): Limit("time"),
     ("navidrome", "url"): Limit("address"),
+    ("soulsync", "url"): Limit("address"),
     ("home_assistant", "url"): Limit("address"),
     ("ntfy", "url"): Limit("address"),
     ("ntfy", "phone"): Limit("topic"),
@@ -67,6 +68,10 @@ LIMITS: Dict[Tuple[str, str], Limit] = {
     # 0 is no check, and above 0.95 hardly any wake would pass it.
     ("thresholds", "voice_check"): Limit("number", 0, 0.95),
     ("conversation", "history_max_age"): Limit("number", 0, 3600, True),
+    # Under a minute Nova would give up before SoulSync had answered once, and a wait of
+    # more than an hour for a song, or four for an album, is a download which has stalled.
+    ("music", "song_download_minutes"): Limit("number", 1, 60, True),
+    ("music", "album_download_minutes"): Limit("number", 1, 240, True),
     ("mqtt", "host"): Limit("host"),
     ("mqtt", "port"): Limit("number", 1, 65535, True),
     ("voice", "speed"): Limit("number", 0.75, 1.5),

@@ -258,6 +258,9 @@ IN_AND_OUT = {
     ("mqtt", "port"): ([1, 1883, 65535], [0, 65536, 1883.5]),
     ("voice", "speed"): ([0.75, 1.5, 1], [0.74, 1.51]),
     ("settings_page", "proxy_port"): ([0, 8766, 65535], [-1, 65536, 8766.5, True]),
+    ("soulsync", "url"): (["http://soulsync.local:8008", ""], ["soulsync.local", "ftp://soulsync.local"]),
+    ("music", "song_download_minutes"): ([1, 10, 60], [0, 61, 10.5, True]),
+    ("music", "album_download_minutes"): ([1, 30, 240], [0, 241, 30.5, True]),
 }
 
 
@@ -275,6 +278,22 @@ def test_each_limit_is_the_tables():
     assert limit_problem("ntfy", "phone", "a/b") == "should be an ntfy topic: letters, digits, hyphens and underscores"
     assert limit_problem("mqtt", "host", "http://x") == "should be a host name or address, without http://"
     assert limit_problem("music", "player", "anything") is None
+
+
+def test_the_download_settings_have_their_limits():
+    assert limit_problem("music", "song_download_minutes", 0) == "should be a whole number from 1 to 60"
+    assert limit_problem("music", "album_download_minutes", 241) == "should be a whole number from 1 to 240"
+    assert limit_problem("music", "song_download_minutes", 10) is None
+    assert limit_problem("soulsync", "url", "soulsync.local") == "should be an address starting http:// or https://"
+
+
+def test_the_repositorys_config_has_the_download_settings(tmp_path):
+    config = Config(path=str(tmp_path / "none.yaml"))
+    music = config.section("music")
+    assert music["offer_downloads"] is True
+    assert (music["song_download_minutes"], music["album_download_minutes"]) == (10, 30)
+    # No address until the user gives SoulSync's, so downloading says it isn't set up.
+    assert config.section("soulsync")["url"] == ""
 
 
 def test_an_out_of_range_value_stops_the_start_naming_it(tmp_path):

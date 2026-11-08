@@ -327,6 +327,39 @@ def test_the_page_shows_whats_set_and_never_a_key(files):
     assert player["choices"] == ["navidrome", "spotify"]
 
 
+def test_the_download_settings_are_under_music_and_used_straight_away(files):
+    page, running = _running(files)
+    shown = {setting["key"]: setting for setting in page.state()["settings"]}
+    assert shown["music.offer_downloads"]["label"] == "Offer to download what Navidrome hasn't got"
+    assert shown["music.offer_downloads"]["kind"] == "yes/no" and shown["music.offer_downloads"]["value"] is True
+    assert shown["music.song_download_minutes"]["label"] == "Minutes to wait for a song to download"
+    assert shown["music.album_download_minutes"]["label"] == "Minutes to wait for an album to download"
+    assert shown["soulsync.url"]["label"] == "SoulSync's address"
+    assert all(shown[key]["used"] == NOW for key in ("music.offer_downloads", "music.song_download_minutes",
+                                                     "music.album_download_minutes", "soulsync.url"))
+    # The page checks the minutes as they're typed, with the limits saving uses.
+    assert (shown["music.song_download_minutes"]["min"], shown["music.song_download_minutes"]["max"]) == (1, 60)
+    assert (shown["music.album_download_minutes"]["min"], shown["music.album_download_minutes"]["max"]) == (1, 240)
+    assert shown["soulsync.url"]["form"] == "address"
+
+    result = page.save_settings({"music.song_download_minutes": 5, "soulsync.url": "http://soulsync.local:8008"}, LOGIN)
+
+    assert result == {"success": True, "message": "Saved. It's used straight away.", "restart_needed": False}
+    assert running.section("music")["song_download_minutes"] == 5
+    assert running.section("soulsync")["url"] == "http://soulsync.local:8008"
+    assert not page.save_settings({"music.album_download_minutes": 241}, LOGIN)["success"]
+
+
+def test_soulsyncs_key_is_saved_and_never_shown(files):
+    page = _page()
+    assert "SOULSYNC_API_KEY" in {key["name"] for key in page.state()["keys"]}
+    assert page.set_key("SOULSYNC_API_KEY", "the-soulsync-key", LOGIN)["success"]
+    assert 'SOULSYNC_API_KEY="the-soulsync-key"' in (files / ".env").read_text()
+    state = page.state()
+    assert {key["name"]: key["set"] for key in state["keys"]}["SOULSYNC_API_KEY"]
+    assert "the-soulsync-key" not in json.dumps(state)
+
+
 @pytest.mark.parametrize("loaded, said", [(True, "ready"), (False, "missing")])
 def test_speech_to_text_is_nemotron_on_the_brain(files, loaded, said):
     # It asked for a backend's reachable, which Nemotron hasn't got - so the tile said

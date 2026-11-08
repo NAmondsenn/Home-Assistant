@@ -364,6 +364,8 @@ SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 # HA_TOKEN=
 # For music from Navidrome:
 # NAVIDROME_PASSWORD=
+# For music fetched by voice, a key made in SoulSync's settings:
+# SOULSYNC_API_KEY=
 EOF
     )
     done_ "Saved to ${SECRETS_FILE}"
