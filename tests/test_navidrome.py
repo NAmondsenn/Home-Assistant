@@ -274,6 +274,36 @@ def test_a_version_is_only_where_a_version_goes_and_a_whole_word():
     assert version_of("Gooba (Radio) (Edit)") is None
 
 
+def test_a_clean_version_says_so_and_nothing_more():
+    # "Version" or "edit" after the word is still the clean version.
+    for name in ("Gooba (Clean)", "Gooba (Clean Version)", "Gooba (Clean Edit)", "Gooba [Edited Version]",
+                 "Gooba (Radio Edit)", "Gooba - Clean", "Gooba - Radio Edit", "Gooba (Live - Radio Edit)"):
+        assert marked_clean(name), name
+    assert version_of("Gooba (Live - Radio Edit)") == "radio edit"
+    assert version_of("Gooba (Clean Radio Edit)") == "radio edit"
+
+
+def test_a_credit_to_an_artist_called_clean_isnt_a_clean_version():
+    # Clean Bandit are credited on other people's records; the song is not a clean one for that.
+    assert version_of("Gooba (feat. Clean Bandit)") is None
+    assert version_of("Gooba - feat. Clean Bandit") is None
+    assert version_of("Gooba (Edited by Clean Bandit)") is None
+    assert version_of("Gooba (Clean Bandit Remix)") == "remix"
+    assert version_of("Gooba [Clean Bandit Remix]") == "remix"
+    assert version_of("Gooba - Clean Bandit Remix") == "remix"
+    # Whichever of its words comes last still counts: this one is a clean version, by Clean Bandit.
+    assert version_of("Gooba (Clean Bandit - Clean)") == "clean"
+
+
+def test_a_credit_to_an_artist_called_clean_is_no_clean_track():
+    assert not is_clean({"title": "Gooba (feat. Clean Bandit)"})
+    assert not is_clean({"title": "Gooba (Clean Bandit Remix)"})
+    assert not is_clean({"title": "Gooba - Clean Bandit Remix"})
+    assert not is_clean({"title": "Gooba", "album": "Hits [feat. Clean Bandit]"})
+    assert is_clean({"title": "Gooba (feat. Clean Bandit)", "explicitStatus": "clean"})
+    assert not is_clean({"title": "Gooba (Clean)", "album": "Hits", "explicitStatus": "explicit"})
+
+
 def test_only_some_versions_are_clean_ones():
     assert CLEAN_VERSIONS == ("clean", "edited", "radio edit")
     assert all(version in VERSIONS for version in CLEAN_VERSIONS)
@@ -350,6 +380,19 @@ def test_a_clean_version_is_always_one_of_the_songs_found(make_library):
         {"id": "9", "title": "Dreams (Acoustic)", "artist": "Fleetwood Mac"},
     ]))
     assert _ids(library.find_songs("Dreams", "Fleetwood Mac")) == ["7", "8"]
+
+
+def test_a_remix_by_an_artist_called_clean_isnt_the_song_asked_for(make_library):
+    library = make_library(_songs_found([
+        {"id": "12", "title": "Dreams (feat. Clean Bandit)", "artist": "Fleetwood Mac"},
+        {"id": "13", "title": "Dreams (Clean Bandit Remix)", "artist": "Fleetwood Mac"},
+        {"id": "14", "title": "Dreams - Clean Bandit Remix", "artist": "Fleetwood Mac"},
+    ]))
+    # The credit is on the song itself, but isn't a clean version of it; the remixes aren't the song.
+    found = library.find_songs("Dreams", "Fleetwood Mac")
+    assert _ids(found) == ["12"] and not is_clean(found[0])
+    assert _ids(library.find_songs("Dreams Remix", "Fleetwood Mac")) == ["13", "14"]
+    assert not any(is_clean(song) for song in library.find_songs("Dreams Remix", "Fleetwood Mac"))
 
 
 def test_a_real_title_with_clean_or_edited_in_it_is_its_title(make_library):
