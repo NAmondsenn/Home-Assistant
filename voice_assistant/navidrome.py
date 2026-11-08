@@ -58,6 +58,10 @@ MOST_FAILURES = 3
 # Subsonic's error code for a wrong username or password.
 WRONG_LOGIN = 40
 
+# Its error code for a user who isn't allowed to do what was asked - a scan, say,
+# which only an admin may start.
+NOT_AUTHORISED = 50
+
 # How big a cover is asked for, in pixels a side, for the settings page.
 COVER_SIZE = 300
 
@@ -66,6 +70,13 @@ COVER_SIZE = 300
 # strength of "songs" alone.
 GENERIC_PLAYLIST_WORDS = {"songs", "song", "music", "playlist", "playlists", "mix", "tracks", "track",
                           "list", "my", "some", "tunes"}
+
+# The versions of a song or album which aren't the one asked for unless they're named,
+# and the ones which are only the same thing with the swearing taken out. Navidrome
+# has no field for them, so they're read from the names - see version_of.
+VERSIONS = ("clean", "edited", "radio edit", "live", "remix", "acoustic", "instrumental", "sped up", "slowed",
+            "karaoke")
+CLEAN_VERSIONS = ("clean", "edited", "radio edit")
 
 
 class NavidromeError(Exception):
@@ -133,7 +144,217 @@ def best(items: List[Dict], name_key: str, name: str, artist: Optional[str]) -> 
     return max(scored, key=lambda scored_item: (scored_item[0], -scored_item[1]))[2]
 
 
-class NavidromePlayer:
+def _names_version(text: str, version: str) -> bool:
+    """Whether text has the version's words, as whole words: "Alive" has no "live"."""
+    return f" {version} " in f" {normalise(text)} "
+
+
+def version_of(name: str) -> Optional[str]:
+    """
+    The first of VERSIONS which a title or album name says it is, in a bracketed
+    part or after a spaced " - ": "Gooba (Clean)" -> "clean", "Gooba - Live at
+    Wembley" -> "live". Anywhere else the word is only part of the title, so Taylor
+    Swift's "Clean" and "Edited Highlights" are no version of anything.
+
+    Args:
+        name: A song's title or an album's name.
+
+    Returns:
+        The version, as spelt in VERSIONS, or None if the name says none.
+    """
+    name = name or ""
+    # Each part on its own, so "(Radio) (Edit)" isn't taken for a radio edit.
+    parts = [text for brackets in re.findall(r"\(([^)]*)\)|\[([^\]]*)\]", name) for text in brackets]
+    if " - " in name:
+        parts.append(name.split(" - ", 1)[1])
+    return next((version for version in VERSIONS if any(_names_version(part, version) for part in parts)), None)
+
+
+def marked_clean(name: str) -> bool:
+    """Whether a title or album name says it's a clean version."""
+    return version_of(name) in CLEAN_VERSIONS
+
+
+def is_clean(track: Dict) -> bool:
+    """
+    Whether a track is a clean version. Navidrome's own mark wins - its explicitStatus,
+    "explicit" or "clean", from the file's tags. Most songs with nothing to bleep
+    carry no mark at all, so an unmarked track is clean only if its title or its
+    album's name says so.
+
+    Args:
+        track: A song as Navidrome describes it, with its title, album and explicitStatus.
+    """
+    status = (track.get("explicitStatus") or "").strip().lower()
+    if status in ("clean", "explicit"):
+        return status == "clean"
+    return marked_clean(track.get("title") or "") or marked_clean(track.get("album") or "")
+
+
+def _asked_for(item: Dict, name_key: str, title: str, artist: Optional[str]) -> bool:
+    """
+    Whether a song or album found is what was asked for: its name has every word of
+    the title, it's by the artist if one was given, and it isn't a live version,
+    remix or the like unless the title says so. A clean version always is, as the
+    same thing without the swearing.
+    """
+    name = item.get(name_key) or ""
+    if likeness(name, title) < 2 or (artist and likeness(item.get("artist") or "", artist) < 2):
+        return False
+    version = version_of(name)
+    return version is None or version in CLEAN_VERSIONS or _names_version(title, version)
+
+
+class NavidromeLibrary:
+    """Asks Navidrome what it holds, and to scan for more - without playing any of it."""
+
+    def __init__(self, url: str, username: str, password: str):
+        """
+        Args:
+            url: Navidrome's address, e.g. "http://navidrome.local:4533".
+            username: The Navidrome user to sign in as.
+            password: Its password.
+        """
+        self.url = url.rstrip("/")
+        self.username = username
+        self._password = password
+        self._session = requests.Session()
+
+    # Talking to Navidrome
+
+    def _sign_in(self) -> Dict[str, str]:
+        """
+        The parameters which sign each request in. The password itself is never
+        sent - only a hash of it with a random salt, new each time, as the Subsonic
+        API has it.
+        """
+        salt = secrets.token_hex(8)
+        token = hashlib.md5((self._password + salt).encode()).hexdigest()
+        return {"u": self.username, "t": token, "s": salt, "v": API_VERSION, "c": CLIENT_NAME, "f": "json"}
+
+    def _call(self, endpoint: str, **params) -> Dict:
+        """
+        One Subsonic API request.
+
+        Raises:
+            requests.RequestException: If Navidrome couldn't be reached.
+            NavidromeError: If it answered with an error.
+        """
+        # On the local network, so it's still asked with only the internet down - but
+        # not with no network at all, which only waited out looking its name up. See
+        # HomeAssistant._request.
+        if not network.online():
+            raise requests.ConnectionError("No network connection")
+        response = self._session.get(f"{self.url}/rest/{endpoint}", params={**self._sign_in(), **params},
+                                     timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        body = response.json().get("subsonic-response") or {}
+        if body.get("status") != "ok":
+            error = body.get("error") or {}
+            raise NavidromeError(error.get("message") or "unknown error", error.get("code"))
+        return body
+
+    @staticmethod
+    def _failure_message(error: Exception) -> str:
+        """
+        What to say when Navidrome couldn't be asked. Only the kind of error is
+        logged, never the error itself, which can hold the request's address -
+        and with it the signed-in token.
+        """
+        logger.error(f"Navidrome request failed: {type(error).__name__}"
+                     + (f" ({error})" if isinstance(error, NavidromeError) else ""))
+        if isinstance(error, NavidromeError) and error.code == WRONG_LOGIN:
+            return "Navidrome didn't accept my password. NAVIDROME_PASSWORD in the .env file needs checking."
+        if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+            return "I can't reach Navidrome right now."
+        return "Navidrome had a problem with that."
+
+    def _search(self, query: str, songs: int = 0, albums: int = 0, artists: int = 0) -> Dict:
+        return self._call("search3", query=query, songCount=songs, albumCount=albums,
+                          artistCount=artists).get("searchResult3") or {}
+
+    def _album_songs(self, album_id: str) -> List[Dict]:
+        return self._call("getAlbum", id=album_id).get("album", {}).get("song") or []
+
+    # Finding what's there, for a download
+
+    def _matches(self, kind: str, most: int, name_key: str, title: str, artist: Optional[str]) -> List[Dict]:
+        """
+        The songs or albums a search finds which are what was asked for - see
+        _asked_for. The title and artist are searched together, and the title alone
+        if nothing they find is what was asked for - _find_song's way, a little
+        wider: the library may spell the artist differently from how it was said.
+
+        Args:
+            kind: "song" or "album".
+            most: How many Navidrome is asked for.
+            name_key: "title" for a song, "name" for an album.
+            title: The title or album as asked for.
+            artist: The artist as asked for, or None.
+
+        Raises:
+            requests.RequestException: If Navidrome couldn't be reached.
+            NavidromeError: If it answered with an error.
+        """
+        for query in ([f"{title} {artist}", title] if artist else [title]):
+            found = self._search(query, **{f"{kind}s": most}).get(kind) or []
+            matches = [item for item in found if _asked_for(item, name_key, title, artist)]
+            if matches:
+                return matches
+        return []
+
+    def find_songs(self, title: str, artist: Optional[str]) -> List[Dict]:
+        """
+        The songs in Navidrome which are the one asked for - every copy, so a clean
+        one and an explicit one are both there to tell apart with is_clean.
+
+        Args:
+            title: The song's title as asked for.
+            artist: Its artist, or None if only the title was given.
+
+        Raises:
+            requests.RequestException: If Navidrome couldn't be reached.
+            NavidromeError: If it answered with an error.
+        """
+        return self._matches("song", 20, "title", title, artist)
+
+    def find_album_tracks(self, title: str, artist: Optional[str]) -> List[Dict]:
+        """
+        Every track of each album in Navidrome which is the one asked for, each with
+        its album's name, for is_clean to read.
+
+        Args:
+            title: The album's name as asked for.
+            artist: Its artist, or None if only the name was given.
+
+        Raises:
+            requests.RequestException: If Navidrome couldn't be reached.
+            NavidromeError: If it answered with an error.
+        """
+        albums = self._matches("album", 10, "name", title, artist)
+        return [{**track, "album": album.get("name") or ""}
+                for album in albums for track in self._album_songs(album["id"])]
+
+    def start_scan(self) -> bool:
+        """
+        Asks Navidrome to scan its folders for new music, which it does in its own time.
+
+        Returns:
+            True if Navidrome took the request, False if it couldn't be asked or
+            refused - which only an admin is allowed to ask of it.
+        """
+        try:
+            self._call("startScan")
+        except (requests.RequestException, NavidromeError, ValueError) as e:
+            if isinstance(e, NavidromeError) and e.code == NOT_AUTHORISED:
+                logger.warning("Navidrome refused to scan: the user Nova signs in as needs to be an admin for that")
+            else:
+                self._failure_message(e)
+            return False
+        return True
+
+
+class NavidromePlayer(NavidromeLibrary):
     """Finds music on Navidrome and plays it through the assistant's speaker."""
 
     name = "Navidrome"
@@ -149,12 +370,9 @@ class NavidromePlayer:
             speaker: The Speaker to play through.
             volume: The VolumeControl, which keeps the music's own volume.
         """
-        self.url = url.rstrip("/")
-        self.username = username
-        self._password = password
+        super().__init__(url, username, password)
         self.speaker = speaker
         self.volume = volume
-        self._session = requests.Session()
 
         self._lock = threading.Condition()
         # What's playing and what's next, in the order it'll be played, and the
@@ -210,63 +428,7 @@ class NavidromePlayer:
         logger.info(f"Navidrome at {url}, as {username}")
         return cls(url, username, password, speaker, volume)
 
-    # Talking to Navidrome
-
-    def _sign_in(self) -> Dict[str, str]:
-        """
-        The parameters which sign each request in. The password itself is never
-        sent - only a hash of it with a random salt, new each time, as the Subsonic
-        API has it.
-        """
-        salt = secrets.token_hex(8)
-        token = hashlib.md5((self._password + salt).encode()).hexdigest()
-        return {"u": self.username, "t": token, "s": salt, "v": API_VERSION, "c": CLIENT_NAME, "f": "json"}
-
-    def _call(self, endpoint: str, **params) -> Dict:
-        """
-        One Subsonic API request.
-
-        Raises:
-            requests.RequestException: If Navidrome couldn't be reached.
-            NavidromeError: If it answered with an error.
-        """
-        # On the local network, so it's still asked with only the internet down - but
-        # not with no network at all, which only waited out looking its name up. See
-        # HomeAssistant._request.
-        if not network.online():
-            raise requests.ConnectionError("No network connection")
-        response = self._session.get(f"{self.url}/rest/{endpoint}", params={**self._sign_in(), **params},
-                                     timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        body = response.json().get("subsonic-response") or {}
-        if body.get("status") != "ok":
-            error = body.get("error") or {}
-            raise NavidromeError(error.get("message") or "unknown error", error.get("code"))
-        return body
-
-    @staticmethod
-    def _failure_message(error: Exception) -> str:
-        """
-        What to say when Navidrome couldn't be asked. Only the kind of error is
-        logged, never the error itself, which can hold the request's address -
-        and with it the signed-in token.
-        """
-        logger.error(f"Navidrome request failed: {type(error).__name__}"
-                     + (f" ({error})" if isinstance(error, NavidromeError) else ""))
-        if isinstance(error, NavidromeError) and error.code == WRONG_LOGIN:
-            return "Navidrome didn't accept my password. NAVIDROME_PASSWORD in the .env file needs checking."
-        if isinstance(error, (requests.ConnectionError, requests.Timeout)):
-            return "I can't reach Navidrome right now."
-        return "Navidrome had a problem with that."
-
     # Finding music
-
-    def _search(self, query: str, songs: int = 0, albums: int = 0, artists: int = 0) -> Dict:
-        return self._call("search3", query=query, songCount=songs, albumCount=albums,
-                          artistCount=artists).get("searchResult3") or {}
-
-    def _album_songs(self, album_id: str) -> List[Dict]:
-        return self._call("getAlbum", id=album_id).get("album", {}).get("song") or []
 
     def _find_song(self, query: str) -> Tuple[List[Dict], str]:
         """
@@ -369,7 +531,12 @@ class NavidromePlayer:
             return {"success": False, "message": self._failure_message(e)}
 
         if not songs:
-            return {"success": False, "message": f"I couldn't find {query or 'anything to play'} on Navidrome."}
+            result = {"success": False, "message": f"I couldn't find {query or 'anything to play'} on Navidrome."}
+            if query:
+                # Navidrome hasn't got it, which isn't the same as not being able to ask,
+                # so whoever asked can offer to download it.
+                result["missing"] = True
+            return result
         self._start(songs[:MOST_SONGS])
         logger.info(f"Playing {said} ({len(songs)} song{'s' if len(songs) != 1 else ''} queued)")
         return {"success": True, "message": f"Playing {said}"}
