@@ -289,10 +289,16 @@ class Downloads:
         wanted = Wanted.from_query(query, search_type)
         if self._is_waiting(wanted):
             return None
+        return self._offered(query, search_type, wanted)
+
+    @staticmethod
+    def _offered(query: str, search_type: Optional[str], wanted: Wanted) -> Dict:
+        """The offer to download what Navidrome hasn't got, with the request on a yes."""
         return {"success": True, "message": f"I haven't got {wanted.name}. Do you want me to download it?",
                 "ask_first": Action("request_download", {"query": query, "search_type": search_type})}
 
-    def download(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str]) -> Dict:
+    def download(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str],
+                 asked: bool = True) -> Dict:
         """
         Asks SoulSync for a song or album, for "download X" - unless Navidrome already
         has it, when that's said instead, and nothing is requested.
@@ -302,13 +308,17 @@ class Downloads:
             search_type: "album" for an album; "artist", everything by an artist, is
                 refused; anything else is a song.
             satellite: The satellite that asked, which is told how it went - or None.
+            asked: Whether the user's own words asked for a download - "download X",
+                "get me X". If not, as when Claude takes an "okay" to an offer for a yes,
+                it's only offered, for a plain yes, as pc_power only ever asks.
 
         Returns:
             Dict with 'success' and 'message' - and 'later', True, once it's requested,
             as nothing is said until SoulSync has it ("X requested."), or 'ask_first',
-            the request on a yes, when Navidrome has only a clean version of it.
+            the request on a yes, when it's offered: Navidrome has only a clean version
+            of it, or it wasn't asked for in words.
         """
-        return self._ask(query, search_type, satellite, look=True)
+        return self._ask(query, search_type, satellite, look=True, asked=asked)
 
     def request(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str]) -> Dict:
         """
@@ -325,10 +335,10 @@ class Downloads:
         Returns:
             As download.
         """
-        return self._ask(query, search_type, satellite, look=False)
+        return self._ask(query, search_type, satellite, look=False, asked=True)
 
     def _ask(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str],
-             look: bool) -> Dict:
+             look: bool, asked: bool) -> Dict:
         """
         What download and request share: what stops the request, if anything does,
         else the request, started.
@@ -338,6 +348,7 @@ class Downloads:
             search_type: What it names.
             satellite: The satellite that asked, or None.
             look: Whether to look in Navidrome for it first.
+            asked: Whether to request it, or - not asked for in words - only offer to.
 
         Returns:
             As download.
@@ -359,6 +370,8 @@ class Downloads:
             had = self._in_navidrome(query, search_type, wanted)
             if had:
                 return had
+        if not asked:
+            return self._offered(query, search_type, wanted)
         if not self.start(wanted, satellite):
             # Asked for elsewhere since it was checked.
             return already

@@ -6,6 +6,7 @@ and Navidrome, and a fake clock which only moves on when the watch waits, so not
 real is asked and no test waits out a poll.
 """
 
+import functools
 import logging
 import threading
 
@@ -787,7 +788,7 @@ def test_the_same_thing_asked_for_while_it_waits_is_requested_once(running, set_
     assert downloads.download("Gooba by 6ix9ine", "track", "kitchen")["later"]
 
     # Named as it's asked for this time.
-    for ask in (downloads.download, downloads.request):
+    for ask in (downloads.download, downloads.request, functools.partial(downloads.download, asked=False)):
         assert ask("gooba by 6ix9ine", "track", "bedroom") == {
             "success": True, "message": "I'm already getting gooba by 6ix9ine."}
     assert downloads.offer("Gooba by 6ix9ine", "track") is None
@@ -796,6 +797,22 @@ def test_the_same_thing_asked_for_while_it_waits_is_requested_once(running, set_
     downloads.stop()
     assert _all_ended()
     assert soulsync.requested == [("Gooba", "6ix9ine")]
+
+
+def test_a_download_not_asked_for_in_words_is_offered_instead(watching, set_up, clock):
+    # Navidrome: nothing, then only a clean copy, then the explicit one.
+    soulsync = FakeSoulSync()
+    downloads = watching(soulsync, FakeLibrary(clock, songs=[[], [GOOBA_CLEAN], [GOOBA]]), set_up)
+
+    assert downloads.download("Gooba by 6ix9ine", "track", "kitchen", asked=False) == {
+        "success": True, "message": "I haven't got Gooba by 6ix9ine. Do you want me to download it?",
+        "ask_first": GOOBA_REQUEST}
+    # Looked for first, as for "download X".
+    assert downloads.download("Gooba by 6ix9ine", "track", "kitchen", asked=False)["message"] == (
+        "You've only got a clean version of Gooba by 6ix9ine. Do you want me to download the explicit one?")
+    assert downloads.download("Gooba by 6ix9ine", "track", "kitchen", asked=False)["message"] == (
+        "You've already got Gooba by 6ix9ine.")
+    assert soulsync.requested == [] and _watches() == []
 
 
 def test_navidrome_out_of_reach_requests_nothing(watching, set_up, clock):

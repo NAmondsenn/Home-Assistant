@@ -60,6 +60,10 @@ DIDNT_WORK = "Sorry, that didn't work. Try asking again."
 # What Claude is told when a read went wrong, rather than the error itself.
 READ_FAILED = "That couldn't be read."
 
+# The words which ask for a download outright, whole - "download Gooba", "get me Rumours" -
+# so "forget" or "together" isn't one. See LLMHandler._asked_to_download.
+DOWNLOAD_WORDS = re.compile(r"\b(?:download|get)\b", re.IGNORECASE)
+
 # Claude's way to say what it heard was speech from what's playing - a line from a film,
 # picked up as if said to Nova - rather than a request. Offered with every request, as is
 # what the instructions say of it, so neither changes as a film starts or stops, and the
@@ -200,6 +204,26 @@ class LLMHandler:
         last = self.history[-1]
         return ("album" in last.get("user", "").lower()
                 or "album" in last.get("assistant", "").lower())
+
+    def _asked_to_download(self, text: str) -> bool:
+        """
+        Whether the user's own words asked for a download - "download Gooba", "get me
+        Rumours" - in what they just said or in the exchange before it, so "Gooba"
+        answering "What would you like me to download?" still counts.
+
+        Without it, anything said back to "Do you want me to download it?" which isn't a
+        plain yes - "okay", or a "yes" after the follow-up window ran out - would reach
+        Claude, which could take it for one and download. The assistant's own words never
+        count, as they ask the question.
+
+        Args:
+            text: What the user just said.
+
+        Returns:
+            True if "download" or "get" is one of their words, now or in the exchange before.
+        """
+        said = [text] + ([self.history[-1].get("user", "")] if self.history else [])
+        return any(DOWNLOAD_WORDS.search(words) for words in said)
 
     @staticmethod
     def _action_from_tool_use(block) -> Action:
@@ -619,6 +643,10 @@ class LLMHandler:
                     logger.info("Album wasn't asked for by name, playing the track instead")
                     action.params["search_type"] = "track"
 
+            # Nor is anything downloaded unless the user's own words asked for it - see
+            # _asked_to_download. Read now, before this exchange is in the history.
+            asked_to_download = self._asked_to_download(text)
+
             # What a read tool gives is for Claude alone, and never said as it is - so one
             # still in the final response, beside another tool, past MOST_READS or with no
             # way to read, is dropped. Claude's own words are kept, unless there are none.
@@ -645,6 +673,15 @@ class LLMHandler:
             self.history.append({"user": text, "assistant": response_text, "at": time.monotonic(),
                                  "tools": [(action.tool, dict(action.params)) for action in actions],
                                  "model_text": response_text})
+
+            # A download the user's words didn't ask for is only offered, by Nova's own
+            # offer_download, which only asks - for a plain yes, as pc_power only asks. After
+            # the history, which keeps Claude's own call, as it made it: the answer it's shown
+            # is the question.
+            if not asked_to_download and any(action.tool == "download_music" for action in actions):
+                logger.info("Claude asked for a download the user's words didn't, so it's offered instead")
+                actions = [Action("offer_download", dict(action.params)) if action.tool == "download_music"
+                           else action for action in actions]
 
             # Stops the history from growing indefinitely by only keeping a specified number of exchanges,
             # this is defined by history_length.

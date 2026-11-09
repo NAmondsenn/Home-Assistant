@@ -1455,7 +1455,7 @@ def test_play_says_what_it_says_today_with_no_offer(make_executor, downloads):
 def test_downloading_needs_downloads(make_executor):
     executor = make_executor()
     assert "download_music" not in {schema["name"] for schema in executor.tool_schemas()}
-    for tool_name in ("download_music", "request_download"):
+    for tool_name in ("download_music", "request_download", "offer_download"):
         result = executor.execute(Action(tool_name, {"query": "Gooba"}))
         assert (result.ok, result.say) == (False, "Downloading music isn't set up.")
 
@@ -1485,6 +1485,18 @@ def test_only_the_users_yes_can_request_without_checking(make_executor, download
     result = executor.execute(Action("request_download", {"query": "Gooba", "search_type": "track"}))
     assert (result.ok, result.say, result.confirm) == (True, "Asked SoulSync for Gooba.", "later")
     assert downloads.started == [(Wanted("Gooba", None, "track"), "kitchen")]
+
+
+def test_a_download_claude_wasnt_asked_for_in_words_is_only_offered(make_executor, downloads):
+    executor = make_executor(downloads=downloads, satellite="kitchen")
+    assert "offer_download" not in {schema["name"] for schema in executor.tool_schemas()}
+
+    # Nova's own, in place of Claude's download_music - see LLMHandler.process_query.
+    result = executor.execute(Action("offer_download", {"query": "Gooba by 6ix9ine", "search_type": "track"}))
+
+    assert (result.ok, result.say) == (True, "I haven't got Gooba by 6ix9ine. Do you want me to download it?")
+    assert result.ask_first == Action("request_download", {"query": "Gooba by 6ix9ine", "search_type": "track"})
+    assert downloads.started == []
 
 
 def test_claude_is_told_how_to_ask_for_a_download(make_executor, downloads):

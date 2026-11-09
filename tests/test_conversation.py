@@ -6,9 +6,11 @@ actions, so each rule can be checked on its own.
 """
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
+from voice_assistant import network
 from voice_assistant.actions import Action, ActionExecutor, ActionResult
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
@@ -16,6 +18,7 @@ from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation, Reply
 from voice_assistant.downloads import NOT_SET_UP, Downloads
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.intents import LocalIntents
+from voice_assistant.llm import LLMHandler
 from voice_assistant.pc import PCPower
 from voice_assistant.timeline import Timeline
 
@@ -921,35 +924,53 @@ class NotInNavidrome:
         return {"success": False, "message": f"I couldn't find {query} on Navidrome.", "missing": True}
 
 
+class NothingFound:
+    """Stands in for Navidrome's library, which hasn't got anything either."""
+
+    def find_songs(self, title, artist):
+        return []
+
+    def find_album_tracks(self, title, artist):
+        return []
+
+
 class AskedDownloads(Downloads):
-    """The real Downloads, noting each request a yes makes - (query, search_type, satellite) - and watching none."""
+    """
+    The real Downloads, noting each request a yes makes - (query, search_type, satellite) -
+    and each download started - (its name, satellite) - and watching none.
+    """
 
     def __init__(self, config):
-        super().__init__(config, lambda satellite, message: None, soulsync=lambda: None, library=lambda: None)
-        self.requested = []
+        super().__init__(config, lambda satellite, message: None, soulsync=lambda: None, library=NothingFound)
+        self.requested, self.started = [], []
 
     def request(self, query, search_type, satellite):
         self.requested.append((query, search_type, satellite))
         return super().request(query, search_type, satellite)
 
     def start(self, wanted, satellite):
+        self.started.append((wanted.name, satellite))
         return True
 
 
 @pytest.fixture
-def downloading(make_config, monkeypatch):
-    """
-    Makes a conversation on the kitchen satellite, with the real actions, Navidrome
-    without anything asked for, and downloading set up with made-up settings - Claude
-    asking to play Gooba, then answering each reply given.
-    """
+def download_settings(make_config, monkeypatch):
+    """Downloading set up, with made-up settings."""
     monkeypatch.setenv("SOULSYNC_API_KEY", "made-up-key")
     monkeypatch.setenv("NAVIDROME_PASSWORD", "made-up-password")
-    config = make_config(soulsync={"url": "http://soulsync.local:8008"},
-                         navidrome={"url": "http://navidrome.local:4533", "username": "nova"})
+    return make_config(soulsync={"url": "http://soulsync.local:8008"},
+                       navidrome={"url": "http://navidrome.local:4533", "username": "nova"})
 
+
+@pytest.fixture
+def downloading(download_settings):
+    """
+    Makes a conversation on the kitchen satellite, with the real actions, Navidrome
+    without anything asked for, and downloading set up - Claude asking to play Gooba,
+    then answering each reply given.
+    """
     def make(*replies):
-        downloads = AskedDownloads(config)
+        downloads = AskedDownloads(download_settings)
         actions = ActionExecutor(music=NotInNavidrome(), downloads=downloads, satellite="kitchen")
         llm = FakeLLM(_answer("Okay.", Action("play_music", {"query": "Gooba by 6ix9ine", "search_type": "track"},
                                               from_model=True)), *replies)
@@ -1005,6 +1026,93 @@ def test_an_offer_left_unanswered_requests_nothing(downloading):
     conversation.handle("yes", follow_up=True)
 
     assert downloads.requested == [] and llm.asked == ["play Gooba by 6ix9ine", "yes"]
+
+
+class FakeClaude:
+    """
+    Stands in for the Anthropic client, so the real LLMHandler's rules are used: each
+    request is answered with the next reply given - its text, then any tool calls, as
+    (name, input) pairs.
+    """
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.messages = self
+
+    def create(self, **request):
+        text, *calls = self.replies.pop(0)
+        uses = [SimpleNamespace(type="tool_use", id=f"toolu_{index}", name=name, input=dict(params))
+                for index, (name, params) in enumerate(calls)]
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)] + uses,
+                               stop_reason="tool_use" if calls else "end_turn")
+
+
+GOOBA_TRACK = {"query": "Gooba by 6ix9ine", "search_type": "track"}
+OFFERED_GOOBA = "I haven't got Gooba by 6ix9ine. Do you want me to download it?"
+
+
+@pytest.fixture
+def downloading_with_claude(download_settings, monkeypatch):
+    """
+    Makes a conversation as downloading does, but with the real LLMHandler, Claude
+    answering each request with the next of the FakeClaude replies given.
+    """
+    monkeypatch.setattr(network, "online", lambda: True)
+
+    def make(*replies):
+        downloads = AskedDownloads(download_settings)
+        actions = ActionExecutor(music=NotInNavidrome(), downloads=downloads, satellite="kitchen")
+        llm = LLMHandler(api_key=None)
+        llm.client = FakeClaude(*replies)
+        return _conversation(llm=llm, actions=actions), downloads, llm
+
+    return make
+
+
+@pytest.mark.parametrize("answer", ["okay", "go on then", "fine"])
+def test_anything_but_a_plain_yes_to_the_offer_only_asks_again_whatever_claude_calls(downloading_with_claude,
+                                                                                  answer):
+    conversation, downloads, llm = downloading_with_claude(("Okay.", ("play_music", GOOBA_TRACK)),
+                                                           ("Okay.", ("download_music", GOOBA_TRACK)))
+    assert conversation.handle("play Gooba by 6ix9ine").say == OFFERED_GOOBA
+
+    # Not a plain yes, so it's Claude's - which downloads on it.
+    reply = conversation.handle(answer, follow_up=True)
+
+    assert (reply.say, reply.listen_again) == (OFFERED_GOOBA, True)
+    assert downloads.started == [] and downloads.requested == []
+    # A plain yes to the question asked again requests it.
+    assert conversation.handle("yes", follow_up=True).say == ""
+    assert downloads.requested == [("Gooba by 6ix9ine", "track", "kitchen")]
+
+
+def test_a_yes_once_the_offer_has_lapsed_only_asks_again(downloading_with_claude):
+    conversation, downloads, llm = downloading_with_claude(("Okay.", ("play_music", GOOBA_TRACK)),
+                                                           ("Okay.", ("download_music", GOOBA_TRACK)))
+    conversation.handle("play Gooba by 6ix9ine")
+
+    # Said with the wake word, after the follow-up window ran out.
+    conversation.start()
+
+    assert conversation.handle("yes").say == OFFERED_GOOBA
+    assert downloads.started == [] and downloads.requested == []
+
+
+def test_download_x_still_downloads_straight_away(downloading_with_claude):
+    conversation, downloads, llm = downloading_with_claude(("Okay.", ("download_music", GOOBA_TRACK)))
+
+    assert conversation.handle("download Gooba by 6ix9ine").say == ""
+    assert downloads.started == [("Gooba by 6ix9ine", "kitchen")]
+
+
+def test_the_answer_to_what_to_download_still_downloads(downloading_with_claude):
+    conversation, downloads, llm = downloading_with_claude(("Okay.", ("download_music", {})),
+                                                           ("Okay.", ("download_music", GOOBA_TRACK)))
+    reply = conversation.handle("download something")
+    assert (reply.say, reply.listen_again) == ("What would you like me to download?", True)
+
+    assert conversation.handle("Gooba by 6ix9ine", follow_up=True).say == ""
+    assert downloads.started == [("Gooba by 6ix9ine", "kitchen")]
 
 
 def test_the_chime_can_be_a_setting_read_at_each_answer():

@@ -89,6 +89,52 @@ def test_a_download_is_an_album_only_when_asked_for_by_name(llm):
     assert llm.process_query("download the album rumours")["actions"][0].params["search_type"] == "album"
 
 
+GOOBA_DOWNLOAD = {"query": "Gooba by 6ix9ine", "search_type": "track"}
+OFFERED_GOOBA = "I haven't got Gooba by 6ix9ine. Do you want me to download it?"
+
+
+@pytest.mark.parametrize("said", ["download gooba by 6ix9ine", "Get me Gooba.", "yeah, download it",
+                                  "can you get it for me"])
+def test_a_download_asked_for_in_words_is_claudes_to_make(llm, said):
+    llm.client = FakeClient(_reply("Okay.", _tool("download_music", **GOOBA_DOWNLOAD)))
+    assert llm.process_query(said)["actions"] == [Action("download_music", GOOBA_DOWNLOAD, from_model=True)]
+
+
+@pytest.mark.parametrize("said", ["okay", "okay thanks", "go on then", "budget", "forget it", "together", "yes"])
+def test_a_download_not_asked_for_in_words_is_only_offered(llm, said):
+    # "okay" to "Do you want me to download it?" isn't a plain yes, so it reaches Claude - which
+    # downloading on it would make the strict yes worth nothing.
+    llm.history = [{"user": "play gooba by 6ix9ine", "assistant": OFFERED_GOOBA}]
+    llm.client = FakeClient(_reply("Okay.", _tool("download_music", **GOOBA_DOWNLOAD)))
+
+    # Asked as Nova's own action, which only offers - as pc_power only ever asks.
+    assert llm.process_query(said)["actions"] == [Action("offer_download", GOOBA_DOWNLOAD)]
+    # Claude's history keeps its own call, as it made it.
+    assert llm.history[-1]["tools"] == [("download_music", GOOBA_DOWNLOAD)]
+
+
+def test_a_download_asked_for_in_the_exchange_before_is_claudes_to_make(llm):
+    # The user's own words then, so "Gooba" answers "What would you like me to download?".
+    llm.client = FakeClient(_reply("Okay.", _tool("download_music", **GOOBA_DOWNLOAD)))
+    llm.history = [{"user": "download something", "assistant": "What would you like me to download?"}]
+    assert llm.process_query("Gooba")["actions"][0].tool == "download_music"
+
+    # Never the assistant's own words...
+    llm.history = [{"user": "play gooba", "assistant": "What would you like me to download?"}]
+    assert llm.process_query("Gooba")["actions"][0].tool == "offer_download"
+
+    # ...nor anything before the exchange just gone.
+    llm.history = [{"user": "download rumours", "assistant": "Okay."},
+                   {"user": "what's the time", "assistant": "It's 3 PM."}]
+    assert llm.process_query("Gooba")["actions"][0].tool == "offer_download"
+
+
+def test_only_a_download_is_offered_instead(llm):
+    llm.client = FakeClient(_reply("Okay.", _tool("play_music", **GOOBA_DOWNLOAD),
+                                   _tool("download_music", use_id="toolu_2", **GOOBA_DOWNLOAD)))
+    assert [action.tool for action in llm.process_query("okay")["actions"]] == ["play_music", "offer_download"]
+
+
 # What the model is told
 
 def test_the_time_is_given_on_the_12_hour_clock(llm, monkeypatch):

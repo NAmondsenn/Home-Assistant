@@ -488,6 +488,19 @@ class ActionExecutor:
     def request_download(self, query: Optional[str] = None, search_type: Optional[str] = None):
         return self.downloads.request(query, search_type, self.satellite)
 
+    # Run in place of Claude's download_music when the user's own words never asked for a
+    # download (see LLMHandler.process_query) - "okay" to "Do you want me to download it?"
+    # isn't a plain yes, so it's asked again rather than taken for one.
+    @tool(
+        "Offer to download a song or album, for a plain yes.",
+        needs="downloads",
+        for_model=False,
+        query={"type": "string", "description": "What to download, as Claude gave it."},
+        search_type={"type": "string", "enum": ["track", "album", "artist"], "description": "What it names."},
+    )
+    def offer_download(self, query: Optional[str] = None, search_type: Optional[str] = None):
+        return self.downloads.download(query, search_type, self.satellite, asked=False)
+
     @tool(
         "Pause, skip, go back a track, start the current track again, or report what is "
         "currently playing. This tool never starts music: a bare 'play', 'resume' or "
