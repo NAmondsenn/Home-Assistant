@@ -13,6 +13,7 @@ import requests
 from voice_assistant import volume as volume_module
 from voice_assistant.actions import NOT_A_COMMAND, Action, ActionExecutor, ActionResult, confirm
 from voice_assistant.batteries import Battery
+from voice_assistant.downloads import Downloads, Wanted
 from voice_assistant.volume import VolumeControl
 
 
@@ -1369,3 +1370,138 @@ def test_the_pc_needs_home_assistant():
     executor = ActionExecutor()
     assert "pc_power" not in {schema["name"] for schema in executor.tool_schemas()}
     assert executor.execute(Action("pc_power", {"action": "on"})).say == "Your PC needs Home Assistant."
+
+
+# Downloads - see downloads.py
+
+class FakeNavidromePlayer:
+    """Stands in for NavidromePlayer, answering every play with the reply given - by default, that it hasn't got it."""
+
+    name = "Navidrome"
+    needs_internet = False
+
+    def __init__(self, missing=True, reply=None):
+        self.missing = missing
+        self.reply = reply
+        self.played = []
+
+    def play(self, query=None, search_type=None):
+        self.played.append((query, search_type))
+        if self.reply is not None:
+            return dict(self.reply)
+        return {"success": False, "message": f"I couldn't find {query} on Navidrome.", "missing": self.missing}
+
+
+class EmptyLibrary:
+    """Stands in for Navidrome's library, with nothing in it."""
+
+    def find_songs(self, title, artist):
+        return []
+
+    def find_album_tracks(self, title, artist):
+        return []
+
+
+@pytest.fixture
+def downloads(make_config, monkeypatch):
+    """
+    The real Downloads, set up with made-up settings and Navidrome empty, whose watches
+    are only noted - as (Wanted, satellite) in its started - so SoulSync is never asked.
+    """
+    monkeypatch.setenv("SOULSYNC_API_KEY", "made-up-key")
+    monkeypatch.setenv("NAVIDROME_PASSWORD", "made-up-password")
+    config = make_config(music={"offer_downloads": True}, soulsync={"url": "http://soulsync.local:8008"},
+                         navidrome={"url": "http://navidrome.local:4533", "username": "nova"})
+    made = Downloads(config, lambda satellite, message: None, soulsync=lambda: None, library=EmptyLibrary)
+    made.started = []
+    made.start = lambda wanted, satellite: made.started.append((wanted, satellite)) or True
+    return made
+
+
+GOOBA_PLAYED = Action("play_music", {"query": "Gooba by 6ix9ine", "search_type": "track"})
+
+
+def test_play_offers_a_download_for_something_navidrome_hasnt_got(make_executor, downloads):
+    player = FakeNavidromePlayer(missing=True)
+    result = make_executor(player, downloads=downloads).execute(GOOBA_PLAYED)
+
+    assert (result.ok, result.say) == (True, "I haven't got Gooba by 6ix9ine. Do you want me to download it?")
+    assert result.ask_first == Action("request_download", {"query": "Gooba by 6ix9ine", "search_type": "track"})
+    assert player.played == [("Gooba by 6ix9ine", "track")] and downloads.started == []
+
+
+@pytest.mark.parametrize("player, said", [
+    (FakeNavidromePlayer(missing=False), "I couldn't find Gooba by 6ix9ine on Navidrome."),
+    # Navidrome couldn't be asked, which isn't the same as it not having it.
+    (FakeNavidromePlayer(reply={"success": False, "message": "I can't reach Navidrome right now."}),
+     "I can't reach Navidrome right now."),
+])
+def test_play_offers_nothing_unless_navidrome_hasnt_got_it(make_executor, downloads, player, said):
+    result = make_executor(player, downloads=downloads).execute(GOOBA_PLAYED)
+    assert (result.ok, result.say, result.ask_first) == (False, said, None)
+
+
+def test_play_says_what_it_says_today_with_no_offer(make_executor, downloads):
+    # Without downloads at all...
+    result = make_executor(FakeNavidromePlayer()).execute(GOOBA_PLAYED)
+    assert (result.say, result.ask_first) == ("I couldn't find Gooba by 6ix9ine on Navidrome.", None)
+
+    # ...or with offer() giving none: here, the offer switched off on the page.
+    downloads.config.apply({("music", "offer_downloads"): False})
+    result = make_executor(FakeNavidromePlayer(), downloads=downloads).execute(GOOBA_PLAYED)
+    assert (result.say, result.ask_first) == ("I couldn't find Gooba by 6ix9ine on Navidrome.", None)
+
+
+def test_downloading_needs_downloads(make_executor):
+    executor = make_executor()
+    assert "download_music" not in {schema["name"] for schema in executor.tool_schemas()}
+    for tool_name in ("download_music", "request_download"):
+        result = executor.execute(Action(tool_name, {"query": "Gooba"}))
+        assert (result.ok, result.say) == (False, "Downloading music isn't set up.")
+
+
+def test_a_download_is_asked_for_from_the_satellite_and_said_later(make_executor, downloads):
+    executor = make_executor(downloads=downloads, satellite="kitchen")
+
+    result = executor.execute(Action("download_music", {"query": "Rumours by Fleetwood Mac", "search_type": "album"},
+                                     from_model=True))
+
+    assert (result.ok, result.say, result.confirm) == (True, "Asked SoulSync for Rumours by Fleetwood Mac.", "later")
+    assert downloads.started == [(Wanted("Rumours", "Fleetwood Mac", "album"), "kitchen")]
+    # Nothing said now, nor the model's "Okay." in its place: "Rumours by Fleetwood Mac requested." comes later.
+    assert confirm([result], fallback="Okay.") == ([], [])
+
+
+def test_only_the_users_yes_can_request_without_checking(make_executor, downloads):
+    executor = make_executor(downloads=downloads, satellite="kitchen")
+    names_offered = {schema["name"] for schema in executor.tool_schemas()}
+    assert "download_music" in names_offered and "request_download" not in names_offered
+
+    result = executor.execute(Action("request_download", {"query": "Gooba"}, from_model=True))
+    assert (result.ok, result.say) == (False, "Sorry, I can't do that.")
+    assert downloads.started == []
+
+    # The yes, which only the conversation gives.
+    result = executor.execute(Action("request_download", {"query": "Gooba", "search_type": "track"}))
+    assert (result.ok, result.say, result.confirm) == (True, "Asked SoulSync for Gooba.", "later")
+    assert downloads.started == [(Wanted("Gooba", None, "track"), "kitchen")]
+
+
+def test_claude_is_told_how_to_ask_for_a_download(make_executor, downloads):
+    schema = {schema["name"]: schema for schema in make_executor(downloads=downloads).tool_schemas()}["download_music"]
+    assert schema["description"].startswith("Download a song or an album the user hasn't got yet")
+    assert schema["input_schema"]["properties"]["search_type"]["enum"] == ["track", "album", "artist"]
+    assert schema["input_schema"]["required"] == []
+
+
+def test_a_result_said_later_is_neither_said_nor_chimed_now():
+    later = ActionResult.from_reply({"success": True, "message": "Asked SoulSync for Gooba.", "later": True})
+    assert later.confirm == "later"
+    assert confirm([later]) == ([], [])
+    assert confirm([later], chime_enabled=False, fallback="Okay.") == ([], [])
+    # Beside something which is said, only that is.
+    timer = ActionResult(True, "Timer set for 10 minutes.")
+    assert confirm([later, timer], fallback="Okay.") == ([], ["Timer set for 10 minutes."])
+    # A failure is still said.
+    failed = ActionResult.from_reply({"success": False, "message": "SoulSync isn't answering.", "later": True})
+    assert confirm([failed]) == ([], ["SoulSync isn't answering."])

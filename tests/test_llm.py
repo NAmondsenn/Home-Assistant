@@ -81,6 +81,14 @@ def test_an_album_is_only_played_when_asked_for_by_name(llm):
     assert llm.process_query("play the chronic album")["actions"][0].params["search_type"] == "album"
 
 
+def test_a_download_is_an_album_only_when_asked_for_by_name(llm):
+    # Downloading a whole album for a song asked for is minutes of SoulSync's time, and files nobody wanted.
+    llm.client = FakeClient(_reply("Okay.", _tool("download_music", query="Rumours by Fleetwood Mac",
+                                                  search_type="album")))
+    assert llm.process_query("download rumours")["actions"][0].params["search_type"] == "track"
+    assert llm.process_query("download the album rumours")["actions"][0].params["search_type"] == "album"
+
+
 # What the model is told
 
 def test_the_time_is_given_on_the_12_hour_clock(llm, monkeypatch):

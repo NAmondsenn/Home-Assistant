@@ -12,6 +12,7 @@ import threading
 import pytest
 import requests
 
+from voice_assistant.actions import Action
 from voice_assistant.downloads import NOT_SET_UP, POLL_EVERY, SCAN_AFTER, Downloads, Wanted
 from voice_assistant.navidrome import NavidromeLibrary
 from voice_assistant.soulsync import MCP_OFF, NOT_ANSWERING, NOT_FOUND, AlbumRequest, Progress, SoulSync, SoulSyncError
@@ -153,14 +154,24 @@ def config(make_config):
 
 
 @pytest.fixture
+def set_up(make_config, monkeypatch):
+    """Settings with SoulSync and Navidrome set up - made up - so a download can be asked for."""
+    monkeypatch.setenv("SOULSYNC_API_KEY", "made-up-key")
+    monkeypatch.setenv("NAVIDROME_PASSWORD", "made-up-password")
+    return make_config(music={"song_download_minutes": 10, "album_download_minutes": 30},
+                       soulsync={"url": "http://soulsync.local:8008"},
+                       navidrome={"url": "http://navidrome.local:4533", "username": "nova"})
+
+
+@pytest.fixture
 def watching(config, clock, said):
-    """Makes Downloads which asks the fakes given, on the fake clock."""
-    def make(soulsync, library):
+    """Makes Downloads which asks the fakes given, on the fake clock - with the settings given, if any."""
+    def make(soulsync, library, settings=None):
         def say(satellite, message):
             said.append((satellite, message))
             clock.said_at.append(clock.time)
 
-        return Downloads(config, say, soulsync=lambda: soulsync, library=lambda: library, now=clock.now,
+        return Downloads(settings or config, say, soulsync=lambda: soulsync, library=lambda: library, now=clock.now,
                          wait=clock.wait)
 
     return make
@@ -187,8 +198,8 @@ def running(config, clock, said):
     """
     made = []
 
-    def make(soulsync, library):
-        downloads = Downloads(config, lambda satellite, message: said.append((satellite, message)),
+    def make(soulsync, library, settings=None):
+        downloads = Downloads(settings or config, lambda satellite, message: said.append((satellite, message)),
                               soulsync=lambda: soulsync, library=lambda: library, now=clock.now)
         made.append(downloads)
         return downloads
@@ -660,3 +671,162 @@ def test_soulsync_and_navidrome_are_made_from_the_settings_as_they_are_when_used
     monkeypatch.delenv("SOULSYNC_API_KEY")
     monkeypatch.delenv("NAVIDROME_PASSWORD")
     assert downloads._soulsync() is None and downloads._library() is None
+
+
+# Asked for by voice - "download X", and the offer after "play X" finds nothing
+
+GOOBA_REQUEST = Action("request_download", {"query": "Gooba by 6ix9ine", "search_type": "track"})
+
+
+def test_downloading_with_nothing_set_up_says_so(make_config, clock):
+    soulsync = FakeSoulSync()
+    downloads = Downloads(make_config(), lambda satellite, message: None, soulsync=lambda: soulsync,
+                          library=lambda: FakeLibrary(clock), now=clock.now, wait=clock.wait)
+
+    assert downloads.download("Gooba by 6ix9ine", "track", "kitchen") == {"success": False, "message": NOT_SET_UP}
+    assert downloads.request("Gooba by 6ix9ine", "track", "kitchen") == {"success": False, "message": NOT_SET_UP}
+    assert soulsync.requested == [] and _watches() == []
+
+
+def test_a_whole_artist_is_never_downloaded(watching, set_up, clock):
+    soulsync = FakeSoulSync()
+    downloads = watching(soulsync, FakeLibrary(clock), set_up)
+
+    for ask in (downloads.download, downloads.request):
+        assert ask("Fleetwood Mac", "artist", "kitchen") == {
+            "success": False, "message": "I only download songs and albums, not a whole artist."}
+    assert soulsync.requested == [] and _watches() == []
+
+
+@pytest.mark.parametrize("query", [None, "", "  "])
+def test_nothing_to_download_is_asked_for(watching, set_up, clock, query):
+    downloads = watching(FakeSoulSync(), FakeLibrary(clock), set_up)
+    assert downloads.download(query, "track", "kitchen") == {
+        "success": False, "message": "What would you like me to download?"}
+
+
+@pytest.mark.parametrize("had", [[GOOBA], [GOOBA_CLEAN, GOOBA]])
+def test_something_already_had_is_never_requested(watching, set_up, clock, had):
+    soulsync = FakeSoulSync()
+    downloads = watching(soulsync, FakeLibrary(clock, songs=[had]), set_up)
+
+    assert downloads.download("Gooba by 6ix9ine", None, "kitchen") == {
+        "success": True, "message": "You've already got Gooba by 6ix9ine."}
+    assert soulsync.requested == [] and _watches() == []
+
+
+def test_already_got_names_what_navidrome_has(watching, set_up):
+    # "download rumours" - named as Navidrome has it, not as it was asked for.
+    class Library:
+        def find_album_tracks(self, title, artist):
+            assert (title, artist) == ("rumours", None)
+            return [DREAMS, GO_YOUR_OWN_WAY, THE_CHAIN]
+
+    downloads = watching(FakeSoulSync(), Library(), set_up)
+
+    assert downloads.download("rumours", "album", "kitchen") == {
+        "success": True, "message": "You've already got Rumours by Fleetwood Mac."}
+
+
+def test_only_a_clean_copy_had_offers_the_explicit_one(watching, set_up, clock):
+    soulsync = FakeSoulSync()
+    downloads = watching(soulsync, FakeLibrary(clock, songs=[[GOOBA_CLEAN]]), set_up)
+
+    reply = downloads.download("Gooba by 6ix9ine", "track", "kitchen")
+
+    assert reply == {"success": True, "message": "You've only got a clean version of Gooba by 6ix9ine. "
+                                                "Do you want me to download the explicit one?",
+                     "ask_first": GOOBA_REQUEST}
+    assert soulsync.requested == [] and _watches() == []
+
+
+def test_an_album_with_any_clean_track_offers_the_explicit_one(watching, set_up, clock):
+    # A clean edition marks only the tracks it bleeped - the rest are as the explicit one's.
+    library = FakeLibrary(clock, tracks=[[DREAMS, _track(5, "Gold Dust Woman", clean=True)]])
+    downloads = watching(FakeSoulSync(), library, set_up)
+
+    reply = downloads.download("Rumours by Fleetwood Mac", "album", "kitchen")
+
+    assert reply["message"] == ("You've only got a clean version of Rumours by Fleetwood Mac. "
+                                "Do you want me to download the explicit one?")
+    assert reply["ask_first"] == Action("request_download",
+                                        {"query": "Rumours by Fleetwood Mac", "search_type": "album"})
+
+
+def test_a_download_is_started_and_nothing_said_until_soulsync_answers(watching, set_up, clock, said):
+    # Navidrome: nothing when asked, nothing when the watch starts, then Gooba.
+    soulsync = FakeSoulSync([DONE])
+    downloads = watching(soulsync, FakeLibrary(clock, songs=[[], [], [GOOBA]]), set_up)
+
+    assert downloads.download("Gooba by 6ix9ine", "track", "kitchen") == {
+        "success": True, "message": "Asked SoulSync for Gooba by 6ix9ine.", "later": True}
+
+    # The rest is the watch's, said to the satellite that asked.
+    assert _all_ended()
+    assert said == [GOOBA_REQUESTED, GOOBA_DOWNLOADED]
+    assert soulsync.requested == [("Gooba", "6ix9ine")]
+
+
+def test_a_yes_requests_without_looking_in_navidrome_again(watching, set_up, clock, said):
+    # Only the clean copy, which the offer was about - and which isn't the download.
+    library = FakeLibrary(clock, songs=[[GOOBA_CLEAN], [GOOBA_CLEAN, GOOBA]])
+    soulsync = FakeSoulSync([DONE])
+    downloads = watching(soulsync, library, set_up)
+
+    assert downloads.request("Gooba by 6ix9ine", "track", "kitchen") == {
+        "success": True, "message": "Asked SoulSync for Gooba by 6ix9ine.", "later": True}
+
+    assert _all_ended()
+    assert said == [GOOBA_REQUESTED, GOOBA_DOWNLOADED]
+    assert soulsync.requested == [("Gooba", "6ix9ine")]
+
+
+def test_the_same_thing_asked_for_while_it_waits_is_requested_once(running, set_up, clock):
+    soulsync = FakeSoulSync()
+    downloads = running(soulsync, FakeLibrary(clock), set_up)
+    assert downloads.download("Gooba by 6ix9ine", "track", "kitchen")["later"]
+
+    # Named as it's asked for this time.
+    for ask in (downloads.download, downloads.request):
+        assert ask("gooba by 6ix9ine", "track", "bedroom") == {
+            "success": True, "message": "I'm already getting gooba by 6ix9ine."}
+    assert downloads.offer("Gooba by 6ix9ine", "track") is None
+    assert downloads.waiting() == ["Gooba by 6ix9ine"]
+
+    downloads.stop()
+    assert _all_ended()
+    assert soulsync.requested == [("Gooba", "6ix9ine")]
+
+
+def test_navidrome_out_of_reach_requests_nothing(watching, set_up, clock):
+    soulsync = FakeSoulSync()
+    library = FakeLibrary(clock, songs=[requests.ConnectionError("made-up refusal")])
+    downloads = watching(soulsync, library, set_up)
+
+    assert downloads.download("Gooba by 6ix9ine", "track", "kitchen") == {
+        "success": False, "message": "I can't reach Navidrome right now."}
+    assert soulsync.requested == [] and _watches() == []
+
+
+def test_the_offer_is_only_for_a_song_or_album_and_can_be_switched_off(watching, set_up, clock):
+    downloads = watching(FakeSoulSync(), FakeLibrary(clock), set_up)
+
+    assert downloads.offer("Gooba by 6ix9ine", "track") == {
+        "success": True, "message": "I haven't got Gooba by 6ix9ine. Do you want me to download it?",
+        "ask_first": GOOBA_REQUEST}
+    assert downloads.offer("Rumours by Fleetwood Mac", "album")["ask_first"] == Action(
+        "request_download", {"query": "Rumours by Fleetwood Mac", "search_type": "album"})
+    assert downloads.offer("Gooba", None)["message"] == "I haven't got Gooba. Do you want me to download it?"
+    assert downloads.offer("Fleetwood Mac", "artist") is None and downloads.offer("jazz", "playlist") is None
+    assert downloads.offer(None, None) is None
+
+    # music.offer_downloads off on the page, used straight away.
+    set_up.apply({("music", "offer_downloads"): False})
+    assert downloads.offer("Gooba by 6ix9ine", "track") is None
+    set_up.apply({("music", "offer_downloads"): True})
+    assert downloads.offer("Gooba by 6ix9ine", "track") is not None
+
+    # Or SoulSync not set up.
+    set_up.apply({("soulsync", "url"): ""})
+    assert downloads.offer("Gooba by 6ix9ine", "track") is None
+    assert _watches() == []

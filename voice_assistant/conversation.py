@@ -165,18 +165,24 @@ class Conversation:
         """
         timeline = timeline or Timeline()
 
-        # Answering "Shut down the PC?" - read before anything else, the follow-up window's
-        # going straight to Claude included, and only once: whatever's said next drops it.
-        # Only a yes runs it, and as Nova's own action, never the model's.
+        # Answering "Shut down the PC?" or "Do you want me to download it?" - read before
+        # anything else, the follow-up window's going straight to Claude included, and only
+        # once: whatever's said next drops it. Only a yes runs it, and as Nova's own action,
+        # never the model's.
         asked_first, self.asked_first = self.asked_first, None
         if asked_first is not None:
             answer = agreed(text) if follow_up else None
             if answer is not None:
                 timeline.note(outcome="asked_first_answer")
-                said = (self._run([Action(asked_first.tool, asked_first.params)])[0].say if answer
-                        else "Okay, I'll leave it.")
+                result = self._run([Action(asked_first.tool, asked_first.params)])[0] if answer else None
+                said = result.say if result is not None else "Okay, I'll leave it."
                 logger.info(f"{asked_first.tool} {'run' if answer else 'not run'} on the user's answer")
+                # Kept for Claude even when nothing's said now - "Asked SoulSync for Gooba." -
+                # as the API refuses an exchange with no reply.
                 self.llm.remember(text, said)
+                if result is not None and result.ok and result.confirm == "later":
+                    # "Gooba requested." comes once SoulSync has it.
+                    return Reply()
                 return Reply(say=said)
             # Anything else is a fresh request, and nothing is done.
 

@@ -1,10 +1,11 @@
 """
 Downloads Module.
 
-Watches a song or album SoulSync was asked for until Navidrome has it, then says
-how it went - on the satellite that asked, through the say it's given. Each request
-is watched on a thread of its own, so waiting never holds up a conversation, and
-several can wait at once.
+Asks SoulSync for a song or album the user asked for - "download X", or a yes to the
+offer made when "play X" finds nothing - and watches it until Navidrome has it, then
+says how it went - on the satellite that asked, through the say it's given. Each
+request is watched on a thread of its own, so waiting never holds up a conversation,
+and several can wait at once.
 
 SoulSync saying a download is done isn't enough: it's downloaded only once Navidrome
 has it, and only what wasn't in Navidrome when it was asked for counts, so an old
@@ -23,6 +24,7 @@ from typing import Callable, Dict, List, Optional, Set, Union
 import requests
 
 from voice_assistant import music
+from voice_assistant.actions import Action
 from voice_assistant.navidrome import (CLEAN_VERSIONS, NavidromeError, NavidromeLibrary, _says_version, is_clean,
                                        likeness, normalise, split_by)
 from voice_assistant.soulsync import AlbumRequest, Progress, SoulSync, SoulSyncError
@@ -47,6 +49,17 @@ NOT_SET_UP = ("Downloading music isn't set up. SoulSync's address goes in Settin
 # Said after "I couldn't download X." when SoulSync queued none of an album: it only
 # queues the tracks it hasn't got and isn't already getting.
 NOTHING_QUEUED = "SoulSync says it already has every track, or is already getting them."
+
+# Said for "download" everything by an artist, which can mean dozens of albums - the user
+# said a whole discography "could go wrong".
+WHOLE_ARTIST = "I only download songs and albums, not a whole artist."
+
+# Asked when "download" comes with nothing to download.
+WHAT_TO_DOWNLOAD = "What would you like me to download?"
+
+# What can be offered after "play X" finds nothing - a song, or an album. None is a song,
+# as play_music takes it.
+OFFERED = (None, "track", "album")
 
 # The time limits, in minutes from the request, when the settings don't say - as
 # config.yaml has them.
@@ -103,6 +116,17 @@ class Wanted:
         6IX9INE" is Gooba by 6ix9ine - to tell whether it's already waiting.
         """
         return f"{self.kind}: {normalise(self.name)}"
+
+
+def _as_had(wanted: Wanted, found: List[Dict]) -> str:
+    """
+    What Navidrome has of a request, named as Navidrome has it - "Rumours by Fleetwood
+    Mac" for "download rumours" - from the first of it which isn't clean.
+    """
+    track = next((track for track in found if not is_clean(track)), found[0])
+    title = track.get("album" if wanted.kind == "album" else "title") or wanted.title
+    artist = track.get("artist")
+    return f"{title} by {artist}" if artist else title
 
 
 def _couldnt(wanted: Wanted, reason: Optional[str]) -> str:
@@ -189,7 +213,7 @@ def _album_downloaded(wanted: Wanted, tracks: List[Dict]) -> str:
 
 
 class Downloads:
-    """Watches each download asked for, on a thread of its own, and says how it went."""
+    """Takes each download asked for, watches it on a thread of its own, and says how it went."""
 
     def __init__(self, config, say: Callable[[Optional[str], str], None],
                  soulsync: Optional[Callable[[], Optional[SoulSync]]] = None,
@@ -242,6 +266,140 @@ class Downloads:
         if not address or not (os.getenv("SOULSYNC_API_KEY") or "").strip():
             return NOT_SET_UP
         return music._missing(self.config, "navidrome")
+
+    def offer(self, query: Optional[str], search_type: Optional[str]) -> Optional[Dict]:
+        """
+        The offer to download what "play X" found nothing for, said in place of "I
+        couldn't find X on Navidrome." - a yes to it runs request_download.
+
+        Args:
+            query: What was asked to be played, e.g. "Gooba by 6ix9ine".
+            search_type: What it names, as play_music was given it.
+
+        Returns:
+            The offer, with 'ask_first' the request on a yes - or None when there's none
+            to make: it isn't a song or an album, the offer is switched off on the
+            settings page (music.offer_downloads), downloading isn't set up, or it's
+            already being got.
+        """
+        if not (query or "").strip() or search_type not in OFFERED:
+            return None
+        if not self.config.section("music").get("offer_downloads", True) or self.problem():
+            return None
+        wanted = Wanted.from_query(query, search_type)
+        if self._is_waiting(wanted):
+            return None
+        return {"success": True, "message": f"I haven't got {wanted.name}. Do you want me to download it?",
+                "ask_first": Action("request_download", {"query": query, "search_type": search_type})}
+
+    def download(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str]) -> Dict:
+        """
+        Asks SoulSync for a song or album, for "download X" - unless Navidrome already
+        has it, when that's said instead, and nothing is requested.
+
+        Args:
+            query: What to download, e.g. "Gooba by 6ix9ine".
+            search_type: "album" for an album; "artist", everything by an artist, is
+                refused; anything else is a song.
+            satellite: The satellite that asked, which is told how it went - or None.
+
+        Returns:
+            Dict with 'success' and 'message' - and 'later', True, once it's requested,
+            as nothing is said until SoulSync has it ("X requested."), or 'ask_first',
+            the request on a yes, when Navidrome has only a clean version of it.
+        """
+        return self._ask(query, search_type, satellite, look=True)
+
+    def request(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str]) -> Dict:
+        """
+        Asks SoulSync for a song or album on the user's yes to an offer - as download
+        does, but without looking in Navidrome again, which was done to make the offer.
+        A yes to having the explicit version of what Navidrome has only clean would
+        otherwise be offered it again.
+
+        Args:
+            query: What to download, as the offer was made for it.
+            search_type: As the offer was made for it.
+            satellite: The satellite that asked, which is told how it went - or None.
+
+        Returns:
+            As download.
+        """
+        return self._ask(query, search_type, satellite, look=False)
+
+    def _ask(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str],
+             look: bool) -> Dict:
+        """
+        What download and request share: what stops the request, if anything does,
+        else the request, started.
+
+        Args:
+            query: What to download.
+            search_type: What it names.
+            satellite: The satellite that asked, or None.
+            look: Whether to look in Navidrome for it first.
+
+        Returns:
+            As download.
+        """
+        problem = self.problem()
+        if problem:
+            return {"success": False, "message": problem}
+        if search_type == "artist":
+            return {"success": False, "message": WHOLE_ARTIST}
+        if not (query or "").strip():
+            return {"success": False, "message": WHAT_TO_DOWNLOAD}
+        wanted = Wanted.from_query(query, search_type)
+        # Before Navidrome is asked, which would offer the explicit one again while it's
+        # still on its way - and named as it's asked for this time.
+        already = {"success": True, "message": f"I'm already getting {wanted.name}."}
+        if self._is_waiting(wanted):
+            return already
+        if look:
+            had = self._in_navidrome(query, search_type, wanted)
+            if had:
+                return had
+        if not self.start(wanted, satellite):
+            # Asked for elsewhere since it was checked.
+            return already
+        # Kept in Claude's history; "X requested." is said once SoulSync has it.
+        return {"success": True, "message": f"Asked SoulSync for {wanted.name}.", "later": True}
+
+    def _is_waiting(self, wanted: Wanted) -> bool:
+        """Whether the same request is already waiting."""
+        with self._lock:
+            return wanted.key in self._waiting
+
+    def _in_navidrome(self, query: str, search_type: Optional[str], wanted: Wanted) -> Optional[Dict]:
+        """
+        What to say in place of a request, when Navidrome has it or can't be asked -
+        or None, to request it.
+
+        Args:
+            query: What to download, for the request on a yes.
+            search_type: What it names, for the request on a yes.
+            wanted: What it asks for.
+
+        Returns:
+            Navidrome's failure, which requests nothing - it may well have it; the offer
+            of the explicit one when what it has is clean; else "You've already got X.".
+        """
+        try:
+            found = self._find(self._library(), wanted)
+        except NAVIDROME_ERRORS as e:
+            return {"success": False, "message": NavidromeLibrary._failure_message(e)}
+        if not found:
+            return None
+        # A song is had clean when every copy of it is. An album is when any of its tracks
+        # is: a clean edition marks only the tracks it bleeped, and the rest look like the
+        # explicit edition's.
+        if (any if wanted.kind == "album" else all)(is_clean(track) for track in found):
+            return {"success": True, "message": f"You've only got a clean version of {wanted.name}. "
+                                                "Do you want me to download the explicit one?",
+                    "ask_first": Action("request_download", {"query": query, "search_type": search_type})}
+        had = _as_had(wanted, found)
+        logger.info(f"Navidrome already has {had}, so {wanted.name} isn't requested")
+        return {"success": True, "message": f"You've already got {had}."}
 
     def start(self, wanted: Wanted, satellite: Optional[str]) -> bool:
         """

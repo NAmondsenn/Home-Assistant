@@ -13,6 +13,7 @@ from voice_assistant.actions import Action, ActionExecutor, ActionResult
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation, Reply
+from voice_assistant.downloads import NOT_SET_UP, Downloads
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.intents import LocalIntents
 from voice_assistant.pc import PCPower
@@ -906,6 +907,104 @@ def test_a_yes_to_more_than_the_pcs_question_presses_nothing(tmp_path, actions):
     assert reply.listen_again and reply.say.count("?") == 2
     conversation.handle("yes", follow_up=True)
     assert home.pressed == [] and llm.asked == ["shut it all down", "yes"]
+
+
+# Asking before downloading - see downloads.py
+
+class NotInNavidrome:
+    """Stands in for NavidromePlayer, which hasn't got anything it's asked to play."""
+
+    name = "Navidrome"
+    needs_internet = False
+
+    def play(self, query=None, search_type=None):
+        return {"success": False, "message": f"I couldn't find {query} on Navidrome.", "missing": True}
+
+
+class AskedDownloads(Downloads):
+    """The real Downloads, noting each request a yes makes - (query, search_type, satellite) - and watching none."""
+
+    def __init__(self, config):
+        super().__init__(config, lambda satellite, message: None, soulsync=lambda: None, library=lambda: None)
+        self.requested = []
+
+    def request(self, query, search_type, satellite):
+        self.requested.append((query, search_type, satellite))
+        return super().request(query, search_type, satellite)
+
+    def start(self, wanted, satellite):
+        return True
+
+
+@pytest.fixture
+def downloading(make_config, monkeypatch):
+    """
+    Makes a conversation on the kitchen satellite, with the real actions, Navidrome
+    without anything asked for, and downloading set up with made-up settings - Claude
+    asking to play Gooba, then answering each reply given.
+    """
+    monkeypatch.setenv("SOULSYNC_API_KEY", "made-up-key")
+    monkeypatch.setenv("NAVIDROME_PASSWORD", "made-up-password")
+    config = make_config(soulsync={"url": "http://soulsync.local:8008"},
+                         navidrome={"url": "http://navidrome.local:4533", "username": "nova"})
+
+    def make(*replies):
+        downloads = AskedDownloads(config)
+        actions = ActionExecutor(music=NotInNavidrome(), downloads=downloads, satellite="kitchen")
+        llm = FakeLLM(_answer("Okay.", Action("play_music", {"query": "Gooba by 6ix9ine", "search_type": "track"},
+                                              from_model=True)), *replies)
+        return _conversation(llm=llm, actions=actions), downloads, llm
+
+    return make
+
+
+def test_yes_to_a_download_offer_requests_it_and_says_nothing_yet(downloading):
+    conversation, downloads, llm = downloading()
+    reply = conversation.handle("play Gooba by 6ix9ine")
+    assert (reply.say, reply.listen_again) == ("I haven't got Gooba by 6ix9ine. Do you want me to download it?", True)
+    assert downloads.requested == []
+
+    reply = conversation.handle("yes please", follow_up=True)
+
+    # "Gooba by 6ix9ine requested." comes from the watch, once SoulSync has it.
+    assert (reply.say, reply.sounds, reply.listen_again) == ("", [], False)
+    assert downloads.requested == [("Gooba by 6ix9ine", "track", "kitchen")]
+    # Never empty, which the API refuses, and never sent to Claude.
+    assert llm.remembered[-1] == ("yes please", "Asked SoulSync for Gooba by 6ix9ine.")
+    assert llm.asked == ["play Gooba by 6ix9ine"]
+
+
+def test_a_yes_which_cant_request_says_why(downloading, monkeypatch):
+    conversation, downloads, llm = downloading()
+    conversation.handle("play Gooba by 6ix9ine")
+    # The key taken off under Keys before the answer came.
+    monkeypatch.delenv("SOULSYNC_API_KEY")
+
+    assert conversation.handle("yes", follow_up=True).say == NOT_SET_UP
+    assert llm.remembered[-1] == ("yes", NOT_SET_UP)
+
+
+@pytest.mark.parametrize("answer", ["thanks", "stop", "no", "okay thanks"])
+def test_anything_but_a_plain_yes_to_a_download_offer_requests_nothing(downloading, answer):
+    conversation, downloads, llm = downloading(_answer("You're welcome."), _answer("Okay."))
+    conversation.handle("play Gooba by 6ix9ine")
+
+    conversation.handle(answer, follow_up=True)
+
+    assert downloads.requested == []
+    # Either way, it's gone.
+    conversation.handle("yes", follow_up=True)
+    assert downloads.requested == []
+
+
+def test_an_offer_left_unanswered_requests_nothing(downloading):
+    conversation, downloads, llm = downloading(_answer("Okay."))
+    conversation.handle("play Gooba by 6ix9ine")
+
+    conversation.start()
+    conversation.handle("yes", follow_up=True)
+
+    assert downloads.requested == [] and llm.asked == ["play Gooba by 6ix9ine", "yes"]
 
 
 def test_the_chime_can_be_a_setting_read_at_each_answer():

@@ -50,6 +50,7 @@ UNAVAILABLE = {
     "lists": "Lists need Home Assistant.",
     "pc": "Your PC needs Home Assistant.",
     "calendar": "The calendar isn't set up yet.",
+    "downloads": "Downloading music isn't set up.",
 }
 
 # The most days of calendar read at once - a fortnight is already a lot to listen to -
@@ -98,7 +99,9 @@ class ActionResult:
             success chime; "music" leaves it to the music changing, e.g. the next
             song starting; "sound" plays its own sound; "note" says it after
             whatever else is said, rather than instead of it - "I'll remember that",
-            after the answer to the question it came up in.
+            after the answer to the question it came up in; "later" leaves it to an
+            announcement which comes later - "Gooba requested.", once SoulSync has
+            the download asked for.
         sound: The sound, for "sound" - e.g. "volume_beep.wav".
         sound_category: Which volume the sound plays at.
         understood: False when Home Assistant's Assist matched nothing in what was
@@ -135,6 +138,8 @@ class ActionResult:
         ok = bool(reply.get("success"))
         say = reply.get("message") or ""
         kept = {"private": bool(reply.get("private")), "ask_first": reply.get("ask_first")}
+        if ok and reply.get("later"):
+            return cls(ok, say, confirm="later", **kept)
         if ok and reply.get("silent"):
             return cls(ok, say, confirm="music", **kept)
         if ok and reply.get("note"):
@@ -155,7 +160,9 @@ def confirm(results: List[ActionResult], chime_enabled: bool = True,
 
     A self-confirming action's message is only ever logged, never spoken, even when
     there's something else to say as well: a reminder offer tacked onto a skipped
-    song used to have the skip's own message read out in front of it.
+    song used to have the skip's own message read out in front of it. One said later
+    isn't said or chimed now either: "Asked SoulSync for Gooba." is followed by "Gooba
+    requested." once SoulSync has it, and a chime now would only say it twice.
 
     Args:
         results: What each action returned, in the order they ran.
@@ -178,7 +185,7 @@ def confirm(results: List[ActionResult], chime_enabled: bool = True,
         messages.append(fallback)
     for result in others:
         sound = None
-        if result.ok and result.confirm == "music":
+        if result.ok and result.confirm in ("music", "later"):
             continue
         if result.ok and result.confirm == "sound" and result.sound:
             sound = (result.sound, result.sound_category)
@@ -256,7 +263,8 @@ class ActionExecutor:
     """Runs an Action against the part of the assistant it's for."""
 
     def __init__(self, music=None, clock=None, volume=None, weather=None, home=None, memory=None, ntfy=None,
-                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None, calendar=None):
+                 satellite: Optional[str] = None, batteries=None, lists=None, pc=None, calendar=None,
+                 downloads=None):
         """
         Args:
             music: The music player - SpotifyController - or None if there isn't one.
@@ -277,6 +285,8 @@ class ActionExecutor:
                 set up.
             calendar: GoogleCalendar, for the user's calendars, or None if Google isn't
                 set up.
+            downloads: Downloads, for music fetched through SoulSync, or None if there's
+                none. It says itself when SoulSync isn't set up.
         """
         self.music = music
         self.clock = clock
@@ -290,6 +300,7 @@ class ActionExecutor:
         self.lists = lists
         self.pc = pc
         self.calendar = calendar
+        self.downloads = downloads
         # What was last asked, and what the assistant said - or the last alert, and
         # all of it - for "send that to my phone". Kept up to date by the Conversation.
         self.last_answer: Optional[Tuple[str, str]] = None
@@ -425,7 +436,12 @@ class ActionExecutor:
         },
     )
     def play_music(self, query: Optional[str] = None, search_type: Optional[str] = None):
-        return self._music_offline() or self.music.play(query or None, search_type=search_type)
+        reply = self._music_offline() or self.music.play(query or None, search_type=search_type)
+        # Navidrome hasn't got it - not merely couldn't be asked - so it's offered for
+        # download instead, if it can be.
+        if reply.get("missing") and self.downloads is not None:
+            return self.downloads.offer(query, search_type) or reply
+        return reply
 
     @tool(
         "Play one of the user's own saved playlists, for requests like 'play my workout "
@@ -438,6 +454,39 @@ class ActionExecutor:
     )
     def play_playlist(self, name: str = ""):
         return self._music_offline() or self.music.play_playlist(name or "")
+
+    @tool(
+        "Download a song or an album the user hasn't got yet, for 'download X', 'get me X' or "
+        "'download the album X by Y'. Correct obvious mis-transcriptions, and give it as 'title by "
+        "artist' when you know the artist. Pass the title as the user said it: never add 'live', "
+        "'remix' or any other version unless they named it. For everything by an artist, call it "
+        "with search_type 'artist' - it explains it can't.",
+        needs="downloads",
+        query={"type": "string", "description": "What to download, spelled correctly, e.g. 'Gooba by 6ix9ine'."},
+        search_type={
+            "type": "string",
+            "enum": ["track", "album", "artist"],
+            "description": (
+                "Only 'album' if the user says the word album, and 'artist' for everything by "
+                "an artist rather than one song or album."
+            ),
+        },
+    )
+    def download_music(self, query: Optional[str] = None, search_type: Optional[str] = None):
+        return self.downloads.download(query, search_type, self.satellite)
+
+    # Only ever run by the conversation, on the user's yes to an offer to download - so
+    # Claude, which isn't offered it, can't skip looking in Navidrome first, nor download
+    # what play_music only offered.
+    @tool(
+        "Download a song or album, once the user has said yes to having it downloaded.",
+        needs="downloads",
+        for_model=False,
+        query={"type": "string", "description": "What to download, as the offer was made for it."},
+        search_type={"type": "string", "enum": ["track", "album"], "description": "What it names, if anything."},
+    )
+    def request_download(self, query: Optional[str] = None, search_type: Optional[str] = None):
+        return self.downloads.request(query, search_type, self.satellite)
 
     @tool(
         "Pause, skip, go back a track, start the current track again, or report what is "
