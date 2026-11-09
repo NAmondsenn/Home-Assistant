@@ -309,6 +309,10 @@ The page can also be served through Nginx Proxy Manager (NPM), at `https://nova.
 
 Then open `https://nova.<your domain>`. Until you log in, it shows only a login form, and none of Nova's own is served - only the page's files, which are all in this repository. A login lasts 30 days on that device and can do everything the tailnet address can - keys and settings included. Keys are never shown, but a login can change where Nova finds Home Assistant, Navidrome, ntfy or MQTT, and Nova would send that service's token or password to the new address once it restarts, so a login is worth as much as the keys. On a shared or lost device, use Log out (under Keys, on that address) or Log out everywhere, which ends every login made with the page password, whichever device - from the tailnet address too. Replacing the page password at the NPM address asks for the current one as well. After 5 wrong passwords in a row, a device's tries are refused for a minute; NPM says which device each try is from, in the `X-Real-IP` header it sends by default. A forgotten page password is set again at the tailnet address.
 
+### A clock display
+
+A small touchscreen clock can sit beside a satellite as Nova's face: the time and weather, your next events, and what's playing, with a glowing orb while Nova listens and a sound wave while it speaks. Hold a finger on it to talk, swipe or tap for the next page, and its volume buttons change Nova's volume. The brain serves the page, on a port of its own (`display.port`, off until you set one), to a kiosk app on the clock with a key made on the settings page. See [docs/clock-display.md](docs/clock-display.md) to set one up.
+
 ### The wake word model
 
 "Hey Nova" is a custom [openWakeWord](https://github.com/dscripka/openWakeWord) model, `models/hey_nova.onnx`. It isn't in this repository, and none comes with Nova, so you train one or supply your own. Only satellites listen for it.
