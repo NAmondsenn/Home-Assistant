@@ -1,0 +1,71 @@
+<h2>Nova on the clock: first go at the pages</h2>
+<p class="subtitle">Shown at half the clock's real size (800 x 480). Middle button steps through them. Placeholder content.</p>
+
+<style>
+  .clk { width: 400px; height: 240px; border-radius: 14px; background: #0d1117; color: #e6edf3;
+         font-family: system-ui, sans-serif; position: relative; overflow: hidden; box-sizing: border-box; padding: 18px 22px; }
+  .clk .dots { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; font-size: 10px; letter-spacing: 4px; color: #3d4450; }
+  .clk .dots b { color: #9aa4b2; }
+  .clk .dim { color: #8b949e; }
+  .grid4 { display: flex; flex-wrap: wrap; gap: 22px; }
+  .grid4 figure { margin: 0; }
+  .grid4 figcaption { font-size: 13px; margin-top: 6px; opacity: .8; }
+</style>
+
+<div class="grid4">
+
+<figure>
+<div class="clk">
+  <div style="font-size:72px;font-weight:300;line-height:1;margin-top:10px">21:47</div>
+  <div class="dim" style="font-size:16px;margin-top:6px">Sunday 8 November</div>
+  <div style="position:absolute;right:22px;top:26px;text-align:right">
+    <div style="font-size:34px">9&deg;</div>
+    <div class="dim" style="font-size:13px">Light rain</div>
+    <div class="dim" style="font-size:12px;margin-top:4px">H 11&deg; &middot; L 5&deg;</div>
+  </div>
+  <div style="position:absolute;left:22px;bottom:30px;font-size:13px" class="dim">Next: Lecture &middot; Mon 10:00</div>
+  <div class="dots"><b>&#9679;</b> &#9679; &#9679;</div>
+</div>
+<figcaption>1. Home: time, date, weather, next event</figcaption>
+</figure>
+
+<figure>
+<div class="clk">
+  <div style="font-size:15px;margin-bottom:10px">Coming up</div>
+  <div style="font-size:13px;line-height:1.9">
+    <div><span class="dim" style="display:inline-block;width:92px">Mon 10:00</span>Lecture</div>
+    <div><span class="dim" style="display:inline-block;width:92px">Mon 14:00</span>Lab</div>
+    <div><span class="dim" style="display:inline-block;width:92px">Tue 19:30</span>Dinner</div>
+    <div><span class="dim" style="display:inline-block;width:92px">Wed</span>Bins out</div>
+    <div><span class="dim" style="display:inline-block;width:92px">2 Dec</span>Report due</div>
+  </div>
+  <div class="dots">&#9679; <b>&#9679;</b> &#9679;</div>
+</div>
+<figcaption>2. Upcoming events (from HA calendars)</figcaption>
+</figure>
+
+<figure>
+<div class="clk" style="display:flex;gap:16px;align-items:center">
+  <div style="width:120px;height:120px;border-radius:8px;background:linear-gradient(135deg,#6e40c9,#d2a8ff);flex:none"></div>
+  <div style="min-width:0">
+    <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:1px">Navidrome &middot; Office</div>
+    <div style="font-size:18px;margin-top:4px">Song title</div>
+    <div class="dim" style="font-size:13px">Artist &middot; Album</div>
+    <div style="height:3px;background:#30363d;border-radius:2px;margin-top:14px;width:200px"><div style="width:40%;height:3px;background:#d2a8ff;border-radius:2px"></div></div>
+    <div class="dim" style="font-size:11px;margin-top:4px">1:32 / 3:48</div>
+  </div>
+  <div class="dots">&#9679; &#9679; <b>&#9679;</b></div>
+</div>
+<figcaption>3. Now playing (Navidrome or Jellyfin, whichever is playing)</figcaption>
+</figure>
+
+<figure>
+<div class="clk" style="display:flex;flex-direction:column;align-items:center;justify-content:center">
+  <div style="width:70px;height:70px;border-radius:50%;background:radial-gradient(circle,#58a6ff 0%,#1f6feb55 60%,transparent 70%);box-shadow:0 0 30px #1f6feb"></div>
+  <div style="margin-top:14px;font-size:15px">Listening&hellip;</div>
+  <div class="dim" style="font-size:13px;margin-top:6px">"turn the desk lights down"</div>
+</div>
+<figcaption>Overlay: while you hold to talk or after the wake word</figcaption>
+</figure>
+
+</div>
