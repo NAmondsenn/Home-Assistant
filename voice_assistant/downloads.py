@@ -23,8 +23,8 @@ from typing import Callable, Dict, List, Optional, Set, Union
 import requests
 
 from voice_assistant import music
-from voice_assistant.navidrome import (VERSIONS, NavidromeError, NavidromeLibrary, _says_version, is_clean, likeness,
-                                       normalise, split_by)
+from voice_assistant.navidrome import (CLEAN_VERSIONS, NavidromeError, NavidromeLibrary, _says_version, is_clean,
+                                       likeness, normalise, split_by)
 from voice_assistant.soulsync import AlbumRequest, Progress, SoulSync, SoulSyncError
 
 # Logger setup
@@ -110,22 +110,24 @@ def _couldnt(wanted: Wanted, reason: Optional[str]) -> str:
     return f"I couldn't download {wanted.name}." + (f" {reason}" if reason else "")
 
 
-def _says_a_version(part: str) -> bool:
-    """Whether a bracketed or dashed part of a title says which version it is, as version_of reads one."""
-    return any(_says_version(part, version) for version in VERSIONS)
+def _says_clean(part: str) -> bool:
+    """Whether a bracketed or dashed part of a title says it's a clean version, as version_of reads one."""
+    return any(_says_version(part, version) for version in CLEAN_VERSIONS)
 
 
 def _bare_title(title: str) -> str:
     """
-    A track's title without any part saying which version it is, normalised, so each
-    track is counted once: "Dreams (Clean)" and "Dreams - Radio Edit" are "dreams",
-    as Dreams is. "Dreams (2004 Remaster)" keeps its remaster, which is no version.
+    A track's title without any part saying it's a clean version, normalised, so a
+    clean copy and the explicit one count as one track: "Dreams (Clean)" and "Dreams
+    - Radio Edit" are "dreams", as Dreams is. Any other version is a track of its
+    own - a deluxe edition's "Dreams (Live)" is one more than Dreams - and "Dreams
+    (2004 Remaster)" keeps its remaster, which is no version at all.
     """
     head, _, tail = title.partition(" - ")
-    if tail and _says_a_version(tail):
+    if tail and _says_clean(tail):
         title = head
-    title = BRACKETED.sub(lambda part: "" if _says_a_version(part.group(1) or part.group(2) or "")
-                          else part.group(0), title)
+    title = BRACKETED.sub(lambda part: "" if _says_clean(part.group(1) or part.group(2) or "") else part.group(0),
+                          title)
     return normalise(title)
 
 

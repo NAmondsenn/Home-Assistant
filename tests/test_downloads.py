@@ -350,6 +350,11 @@ def test_a_part_owned_album_is_downloaded_once_what_soulsync_queued_has_landed(w
     assert downloads._watch(RUMOURS_WANTED, "kitchen") == "Rumours by Fleetwood Mac has been downloaded."
     assert clock.said_at[-1] == 2 * POLL_EVERY  # long before its time limit
 
+    # With only five of the nine in by its time limit, it's out of the nine.
+    library = FakeLibrary(clock, tracks=[had, had + queued[:5]])
+    watching(FakeSoulSync(album=AlbumRequest(None, [], 11, 9)), library)._watch(RUMOURS_WANTED, "kitchen")
+    assert said[-1] == ("kitchen", "Only 5 of the 9 tracks of Rumours by Fleetwood Mac came down.")
+
 
 def test_an_album_soulsync_queued_none_of_is_said_at_once(watching, clock, said):
     downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 11, 0)), FakeLibrary(clock))
@@ -370,6 +375,23 @@ def test_a_clean_copy_and_the_explicit_one_of_a_track_count_once(watching, clock
 
     assert said[-1] == ("kitchen", "Only 2 of the 3 tracks of Rumours by Fleetwood Mac came down.")
     assert 1800 <= clock.given_up_at < 1800 + POLL_EVERY
+
+
+def test_a_live_take_of_a_track_is_a_track_of_its_own(watching, clock, said):
+    # A deluxe edition's live Dreams beside the studio one.
+    landed = [DREAMS, _track(5, "Dreams (Live)"), THE_CHAIN]
+    downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 3, 3)), FakeLibrary(clock, tracks=[[], landed]))
+
+    downloads._watch(RUMOURS_WANTED, "kitchen")
+
+    assert said[-1] == ("kitchen", "Rumours by Fleetwood Mac has been downloaded.")
+    assert clock.said_at[-1] == POLL_EVERY
+
+    # A radio edit, though, is a clean copy of Dreams, so it and Dreams are one track.
+    landed = [DREAMS, _track(6, "Dreams - Radio Edit"), _track(5, "Dreams (Live)"), THE_CHAIN]
+    watching(FakeSoulSync(album=AlbumRequest(None, [], 4, 4)),
+             FakeLibrary(clock, tracks=[[], landed]))._watch(RUMOURS_WANTED, "kitchen")
+    assert said[-1] == ("kitchen", "Only 3 of the 4 tracks of Rumours by Fleetwood Mac came down.")
 
 
 def test_an_album_with_clean_tracks_says_how_many(watching, clock, said, caplog):
