@@ -62,7 +62,10 @@ class FakePlayer:
 
 
 class FakeSession:
-    """Stands in for a connected satellite's session - what a hold and the volume buttons reach."""
+    """
+    Stands in for a connected satellite's session - what a hold and the volume buttons
+    reach, and what the real feed reads and watches.
+    """
 
     def __init__(self, playing=True):
         self.volume = FakeVolume()
@@ -71,6 +74,24 @@ class FakeSession:
         self.stops = 0
         self.will_listen = True
         self.boops = []
+        self.home = None
+        self.activity = "idle"
+        self.heard = ""
+        self.muted = False
+        self.watchers = []
+
+    def watch(self, watcher):
+        self.watchers.append(watcher)
+
+    def unwatch(self, watcher):
+        if watcher in self.watchers:
+            self.watchers.remove(watcher)
+
+    def change(self, activity):
+        """Changes what Nova is doing and tells the watchers, as the session does."""
+        self.activity = activity
+        for watcher in list(self.watchers):
+            watcher()
 
     def listen_now(self):
         self.listens += 1
@@ -632,3 +653,68 @@ def test_no_satellite_at_all_isnt_connected(served, parts, clocks):
     assert status == 200 and json.loads(body)["connected"] is False
     assert _json(_ask(served, "/display/api/hold", key, {"action": "start"})) == {"listening": False}
     assert _ask(served, "/display/api/volume", key, {"direction": "up"})[0] == 409
+
+
+# The real feed, through the long poll
+
+def _real_feed(served, brain):
+    """Puts a real DisplayFeed behind the server, on a brain with no Home Assistant, weather or calendar."""
+    brain.home = brain.weather = brain.calendar = None
+    served.feed = DisplayFeed(brain)
+    return served.feed
+
+
+def _poll(served, key, since, answers):
+    """A clock's long poll for the version after since, on a thread of its own - its answer and when it came."""
+    def ask():
+        answer = _ask(served, f"/display/api/state?since={since}", key)
+        answers.append((answer, time.monotonic()))
+
+    poll = threading.Thread(target=ask, daemon=True)
+    poll.start()
+    return poll
+
+
+def test_a_waiting_clock_hears_nova_listening_at_once(served, parts, clocks, monkeypatch):
+    # The feed's watcher alone must wake the poll: rechecking only every ten seconds,
+    # and held up to twenty, the answer can't come from the poll asking again.
+    monkeypatch.setattr(server_module, "RECHECK", 10)
+    monkeypatch.setattr(server_module, "LONGEST_WAIT", 20)
+    brain = parts[0]
+    session = brain.sessions["pi"]
+    feed = _real_feed(served, brain)
+    waits = []
+    real_wait = feed.wait
+    feed.wait = lambda *asked: waits.append(asked) or real_wait(*asked)
+    _, key = clocks.add("Desk", "pi")
+    version = _json(_ask(served, "/display/api/state", key))["version"]
+    answers = []
+    poll = _poll(served, key, version, answers)
+    _until(lambda: waits)
+    changed = time.monotonic()
+    session.change("listening")
+    poll.join(5)
+    (status, _, body), answered = answers[0]
+    assert status == 200 and json.loads(body)["nova"] == "listening" and json.loads(body)["version"] != version
+    assert answered - changed < 1
+
+
+def test_stop_answers_a_waiting_poll_promptly(served, parts, clocks, monkeypatch):
+    monkeypatch.setattr(server_module, "LONGEST_WAIT", 20)
+    brain = parts[0]
+    feed = _real_feed(served, brain)
+    waits = []
+    real_wait = feed.wait
+    feed.wait = lambda *asked: waits.append(asked) or real_wait(*asked)
+    _, key = clocks.add("Desk", "pi")
+    version = _json(_ask(served, "/display/api/state", key))["version"]
+    answers = []
+    poll = _poll(served, key, version, answers)
+    _until(lambda: waits)
+    stopping = time.monotonic()
+    served.stop()
+    poll.join(5)
+    (status, _, body), answered = answers[0]
+    # Answered with the state as it is, long before the twenty seconds are up.
+    assert status == 200 and json.loads(body)["version"] == version
+    assert answered - stopping < 1
