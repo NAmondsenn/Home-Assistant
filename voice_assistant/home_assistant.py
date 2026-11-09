@@ -55,7 +55,7 @@ import re
 import time
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import requests
 
@@ -262,6 +262,44 @@ PLAYING_MEDIA_TEMPLATE = """
 # What's playing is asked every few seconds, so Home Assistant being slow mustn't hold a
 # check up for long - the next one is only moments away.
 PLAYING_MEDIA_TIMEOUT = 2
+
+# Renders every Jellyfin media player which is playing or paused as JSON - e.g.
+# [{"entity_id": "media_player.jellyfin_tv", "name": "Jellyfin TV", "area": "Living room",
+# "state": "playing", "title": "Song", "artist": "Artist", "album": "Album", "picture":
+# "/api/media_player_proxy/media_player.jellyfin_tv?token=...", "position": 61.5, "duration":
+# 240, "updated": 1762700000.25}] - for the display's music page. A player is Jellyfin's by
+# its integration, as Home Assistant's app's devices are, not by its name. "updated" is when
+# the position was read, in epoch seconds, so the page can carry on counting from it. Anything
+# the player doesn't say is null.
+JELLYFIN_MEDIA_TEMPLATE = """
+{%- set found = namespace(players=[]) -%}
+{%- set jellyfin = integration_entities('jellyfin') -%}
+{%- for player in states.media_player if player.entity_id in jellyfin
+                                         and player.state in ('playing', 'paused') -%}
+  {%- set updated = player.attributes.get('media_position_updated_at') -%}
+  {%- set found.players = found.players + [{
+    'entity_id': player.entity_id,
+    'name': player.attributes.get('friendly_name') or player.entity_id,
+    'area': area_name(player.entity_id),
+    'state': player.state,
+    'title': player.attributes.get('media_title'),
+    'artist': player.attributes.get('media_artist'),
+    'album': player.attributes.get('media_album_name'),
+    'picture': player.attributes.get('entity_picture'),
+    'position': player.attributes.get('media_position'),
+    'duration': player.attributes.get('media_duration'),
+    'updated': updated | as_timestamp(none) if updated else none
+  }] -%}
+{%- endfor -%}
+{{ found.players | tojson }}
+"""
+
+# The path Home Assistant serves a media player's picture from, which is all Nova fetches
+# for the display.
+PICTURE_PATH = "/api/media_player_proxy/"
+
+# The most of a picture Nova reads, in bytes - an album's cover is a few hundred kilobytes.
+MAX_PICTURE = 2 * 1024 * 1024
 
 # Renders every device of the Home Assistant app - a phone, tablet or Mac - as JSON, with
 # where its tracker says it is and the place its geocoded location sensor names, e.g.
@@ -960,6 +998,71 @@ class HomeAssistant:
         return [{"entity_id": player["entity_id"], "name": player["name"], "area": player["area"],
                  "device": player["device"], "source": player["source"]}
                 for player in json.loads(self._template(PLAYING_MEDIA_TEMPLATE, timeout=PLAYING_MEDIA_TIMEOUT))]
+
+    def jellyfin_media(self) -> List[Dict]:
+        """
+        Every Jellyfin media player that is playing or paused, for the display's music page.
+
+        Returns:
+            One dict for each, with "entity_id", "name" (its friendly name, else its entity
+            id), "area" (or None), "state" ("playing" or "paused"), "title", "artist" and
+            "album" (each None if the player doesn't say), "picture" (the path Home
+            Assistant serves its picture from, for picture(), or None), "position" and
+            "duration" (seconds, or None) and "updated" (when the position was read, in
+            epoch seconds, or None).
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked, or turned
+                the template down - see _template.
+            ValueError: If it didn't answer with JSON. An answer of the wrong shape
+                raises KeyError or TypeError - callers catch batteries.HOME_FAILURES,
+                which has all three.
+        """
+        return [{"entity_id": player["entity_id"], "name": player["name"], "area": player["area"],
+                 "state": player["state"], "title": player["title"], "artist": player["artist"],
+                 "album": player["album"], "picture": player["picture"],
+                 "position": _seconds(player["position"]), "duration": _seconds(player["duration"]),
+                 "updated": _seconds(player["updated"])}
+                for player in json.loads(self._template(JELLYFIN_MEDIA_TEMPLATE, timeout=PLAYING_MEDIA_TIMEOUT))]
+
+    def picture(self, path: str) -> Tuple[bytes, str]:
+        """
+        Fetches a media player's picture from Home Assistant, which wants Nova's token - so
+        the display, which has none, can be given it.
+
+        Args:
+            path: The picture's path as a player gives it, e.g.
+                "/api/media_player_proxy/media_player.tv?token=abc" - nothing else is fetched.
+
+        Returns:
+            The picture's bytes and its content type, e.g. "image/jpeg" ("application/
+            octet-stream" if Home Assistant doesn't say).
+
+        Raises:
+            ValueError: If the path isn't a media player's picture, or the picture is over
+                MAX_PICTURE bytes. Nothing is asked of Home Assistant in the first case.
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
+        # The path is added to Home Assistant's address, so it can't leave the proxy's:
+        # "/api/media_player_proxy/../states" would be the states, whatever is said of dots
+        # encoded as "%2e".
+        if (not path.startswith(PICTURE_PATH) or any(ord(char) < 33 or char == "\\" for char in path)
+                or ".." in unquote(path)):
+            raise ValueError("That isn't a media player's picture")
+        response = self._request("GET", path, stream=True)
+        try:
+            length = response.headers.get("Content-Length", "")
+            if length.isdigit() and int(length) > MAX_PICTURE:
+                raise ValueError("That picture is too big")
+            # Read a piece at a time, as the length may not be said - or may be a lie.
+            body = b""
+            for chunk in response.iter_content(65536):
+                body += chunk
+                if len(body) > MAX_PICTURE:
+                    raise ValueError("That picture is too big")
+        finally:
+            response.close()
+        return body, response.headers.get("Content-Type") or "application/octet-stream"
 
     def app_devices(self) -> List[Dict]:
         """
@@ -1829,6 +1932,13 @@ def _script_name(name: str) -> str:
     if len(words) > 1 and words[-1] in ("script", "scene", "routine"):
         words = words[:-1]
     return "".join(words)
+
+
+def _seconds(value) -> Optional[float]:
+    """A time or length from a template as seconds, e.g. 61 as 61.0 - None if it has none, or isn't a number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
 
 
 def _slug(name: str) -> str:

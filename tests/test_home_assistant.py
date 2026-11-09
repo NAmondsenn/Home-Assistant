@@ -40,14 +40,24 @@ def london(monkeypatch):
 
 
 class FakeResponse:
-    def __init__(self, body, status=200):
+    def __init__(self, body, status=200, headers=None):
         self.body = body
         self.status_code = status
+        self.headers = headers or {}
         # The template endpoint answers in plain text, not JSON.
         self.text = body if isinstance(body, str) else ""
+        self.closed = False
 
     def json(self):
         return self.body
+
+    def iter_content(self, size):
+        """A picture's bytes, a piece at a time as requests gives a streamed body."""
+        for start in range(0, len(self.body), size):
+            yield self.body[start:start + size]
+
+    def close(self):
+        self.closed = True
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -2480,6 +2490,97 @@ def test_no_value_of_novas_is_written_into_the_playing_template(make_home):
 def test_whats_playing_raises_when_home_assistant_cant_say(make_home, answer, raises):
     with pytest.raises(raises):
         make_home({"/api/template": answer}).playing_media()
+
+
+# What Jellyfin is playing, for the display
+
+def _jellyfin_row(entity_id="media_player.jellyfin_tv", state="playing", **shown):
+    """One player as JELLYFIN_MEDIA_TEMPLATE renders it, with a song's details unless a test says otherwise."""
+    row = {"entity_id": entity_id, "name": "Jellyfin TV", "area": "Living room", "state": state,
+           "title": "Song", "artist": "Artist", "album": "Album",
+           "picture": "/api/media_player_proxy/media_player.jellyfin_tv?token=abc&cache=1",
+           "position": 61.5, "duration": 240, "updated": 1762700000.25}
+    row.update(shown)
+    return row
+
+
+def test_jellyfin_media_reads_the_template(make_home):
+    rows = [_jellyfin_row(),
+            _jellyfin_row("media_player.jellyfin_pc", "paused", name="Jellyfin PC", area=None, title="Film",
+                          artist=None, album=None, picture=None, position=None, duration=None, updated=None)]
+    home = make_home({"/api/template": FakeResponse(json.dumps(rows))})
+    assert home.jellyfin_media() == rows
+    (method, path, sent), = home._session.requests
+    assert (method, path) == ("POST", "/api/template")
+    assert home._session.timeouts == [home_assistant.PLAYING_MEDIA_TIMEOUT]
+    template = sent["json"]["template"]
+    assert template == home_assistant.JELLYFIN_MEDIA_TEMPLATE
+    # Jellyfin's players are known by the integration, and only the ones playing or paused are kept.
+    assert "integration_entities('jellyfin')" in template
+    assert "'playing'" in template and "'paused'" in template
+    assert "media_position_updated_at" in template and "as_timestamp" in template
+    assert "| tojson" in template
+
+
+def test_jellyfin_media_turns_numbers_from_the_template_into_floats(make_home):
+    row = _jellyfin_row(position=61, duration=240, updated=1762700000)
+    home = make_home({"/api/template": FakeResponse(json.dumps([row]))})
+    media, = home.jellyfin_media()
+    assert [type(media[key]) for key in ("position", "duration", "updated")] == [float, float, float]
+    assert (media["position"], media["duration"], media["updated"]) == (61.0, 240.0, 1762700000.0)
+
+
+@pytest.mark.parametrize("answer, raises", [
+    (requests.ConnectionError("down"), requests.ConnectionError),
+    (FakeResponse("", status=403), requests.HTTPError),
+    (FakeResponse("<html>not JSON</html>"), ValueError)])
+def test_jellyfin_media_raises_when_home_assistant_cant_say(make_home, answer, raises):
+    with pytest.raises(raises):
+        make_home({"/api/template": answer}).jellyfin_media()
+
+
+PICTURE = "/api/media_player_proxy/media_player.tv?token=x"
+
+
+def test_picture_only_fetches_media_player_pictures(make_home):
+    home = make_home({PICTURE: FakeResponse(b"jpeg bytes", headers={"Content-Type": "image/jpeg"})})
+    assert home.picture(PICTURE) == (b"jpeg bytes", "image/jpeg")
+    (method, path, sent), = home._session.requests
+    assert (method, path) == ("GET", PICTURE)
+    for other in ("/api/states", "/api/template", "api/media_player_proxy/x", "", "/api/media_player_proxy"):
+        with pytest.raises(ValueError):
+            home.picture(other)
+    # Nothing but the one picture was asked for.
+    assert len(home._session.requests) == 1
+
+
+@pytest.mark.parametrize("path", [
+    "/api/media_player_proxy/../states", "/api/media_player_proxy/%2e%2e/states",
+    "/api/media_player_proxy/%2E%2e/states", "/api/media_player_proxy/media_player.tv\r\nX: y"])
+def test_picture_does_not_climb_out_of_the_proxy_path(make_home, path):
+    home = make_home({})
+    with pytest.raises(ValueError):
+        home.picture(path)
+    assert home._session.requests == []
+
+
+def test_picture_is_at_most_two_megabytes(make_home):
+    limit = 2 * 1024 * 1024
+    home = make_home({PICTURE: FakeResponse(b"x" * limit, headers={"Content-Type": "image/png"})})
+    body, kind = home.picture(PICTURE)
+    assert (len(body), kind) == (limit, "image/png")
+    # One byte over is refused, whether Home Assistant says how long it is or not.
+    for headers in ({}, {"Content-Length": str(limit + 1)}):
+        home = make_home({PICTURE: FakeResponse(b"x" * (limit + 1), headers={"Content-Type": "image/png", **headers})})
+        with pytest.raises(ValueError, match="too big"):
+            home.picture(PICTURE)
+
+
+def test_a_picture_without_a_type_is_a_stream_of_bytes_and_a_failure_raises(make_home):
+    home = make_home({PICTURE: FakeResponse(b"abc")})
+    assert home.picture(PICTURE) == (b"abc", "application/octet-stream")
+    with pytest.raises(requests.HTTPError):
+        make_home({PICTURE: FakeResponse(b"", status=404)}).picture(PICTURE)
 
 
 # The Home Assistant app's devices, as live check 4 found them

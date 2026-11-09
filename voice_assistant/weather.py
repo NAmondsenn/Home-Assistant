@@ -105,6 +105,38 @@ class Weather:
             message += f" That's Home Assistant's forecast from {format_duration(now.timestamp() - reported)} ago."
         return {"success": True, "message": message}
 
+    def today(self, now: Optional[datetime] = None) -> Optional[Dict]:
+        """
+        Today's weather as numbers and words, for the display's weather page - what forecast
+        says in a sentence, from the same entity and the same calls.
+
+        Args:
+            now: The time to give it for, or None for now.
+
+        Returns:
+            Dict with 'temperature' (right now, e.g. 9.4), 'condition' (in the words Nova
+            says, e.g. "partly cloudy" - empty for one it doesn't say, such as "exceptional"),
+            and today's 'high' and 'low' (None where Met gives none). The page capitalises
+            the condition. None without a weather entity to go by: none at all, one which
+            is unavailable, or one which has no temperature.
+
+        Raises:
+            requests.RequestException: If Home Assistant couldn't be asked.
+            ValueError: If its states or forecast can't be read.
+        """
+        now = (now or datetime.now()).astimezone()
+        entities = self.home.weather_entities()
+        if not entities:
+            return None
+        entity = self._entity(entities)
+        temperature = entity["attributes"].get("temperature")
+        if entity["state"] in ("unavailable", "unknown") or not _is_number(temperature):
+            return None
+        daily = _on(self.home.forecasts(entity["id"], "daily"), now.date())
+        entry = daily[0] if daily else {}
+        return {"temperature": temperature, "condition": CONDITIONS.get(entity["state"], ""),
+                "high": _number(entry.get("temperature")), "low": _number(entry.get("templow"))}
+
     def entities(self) -> List[Dict]:
         """
         Every weather entity Home Assistant has, for the settings page.
@@ -153,6 +185,11 @@ class Weather:
 def _is_number(value) -> bool:
     """Whether Met gave a number to say, e.g. 14.4 - not "mild", True (which Python counts as 1) or NaN."""
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _number(value) -> Optional[float]:
+    """The value if it is a number to show, e.g. 14.4, else None - as _is_number decides."""
+    return value if _is_number(value) else None
 
 
 def _when(entry: Dict) -> Optional[datetime]:

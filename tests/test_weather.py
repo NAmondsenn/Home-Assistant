@@ -295,3 +295,59 @@ def test_the_weather_choice_is_only_offered_with_more_than_one(choices):
         with pytest.raises(ValueError, match="Home Assistant isn't showing that weather just now."):
             weather.choose(made_up)
     assert choices.get("entity") == "weather.other_place"
+
+
+# Today as numbers and words, for the display's weather page
+
+def test_today_gives_numbers_and_words(choices):
+    home = FakeHome(entities=[_entity(state="rainy", temperature=9.4)], daily=[_day(0, high=11, low=5), _day(1)])
+    assert Weather(home, choices).today(now=NOW) == {"temperature": 9.4, "condition": "raining", "high": 11, "low": 5}
+    # The words are the ones Nova says, so "partlycloudy" is not shown as one.
+    home = FakeHome(entities=[_entity(state="partlycloudy")])
+    assert Weather(home, choices).today(now=NOW)["condition"] == "partly cloudy"
+    # Only the daily forecast is asked for, and for the chosen entity.
+    assert home.asked == [("weather.forecast_home", "daily")]
+
+
+def test_today_has_no_high_or_low_without_a_forecast_for_today(choices):
+    home = FakeHome(entities=[_entity(temperature=9.4)], daily=[_day(1), _day(2)])
+    assert Weather(home, choices).today(now=NOW) == {"temperature": 9.4, "condition": "partly cloudy",
+                                                     "high": None, "low": None}
+    # A high or low which is not a number is left out, as it is when Nova says it.
+    home = FakeHome(daily=[_day(0, high="mild", low=None)])
+    today = Weather(home, choices).today(now=NOW)
+    assert (today["high"], today["low"]) == (None, None)
+
+
+def test_today_is_none_without_weather_to_show(choices):
+    assert Weather(FakeHome(entities=[]), choices).today(now=NOW) is None
+    home = FakeHome(entities=[_entity(state="unavailable")])
+    assert Weather(home, choices).today(now=NOW) is None
+    assert home.asked == []
+    # A temperature which is missing leaves nothing to show.
+    assert Weather(FakeHome(entities=[_entity(temperature=None)]), choices).today(now=NOW) is None
+
+
+def test_today_leaves_a_condition_nova_does_not_say_empty(choices):
+    home = FakeHome(entities=[_entity(state="exceptional")])
+    assert Weather(home, choices).today(now=NOW)["condition"] == ""
+
+
+def test_today_uses_the_chosen_entity(choices):
+    home = FakeHome(entities=[_entity("weather.home", temperature=1.0), _entity("weather.other", temperature=2.0)])
+    choices.change(lambda state: state.update(entity="weather.other"))
+    assert Weather(home, choices).today(now=NOW)["temperature"] == 2.0
+    assert home.asked == [("weather.other", "daily")]
+
+
+def test_today_raises_when_home_assistant_cant_say(choices):
+    # The display keeps its last good weather, so the failure is for its poll to catch.
+    with pytest.raises(requests.ConnectionError):
+        Weather(FakeHome(down=True), choices).today(now=NOW)
+
+    class GoesDown(FakeHome):
+        def forecasts(self, entity_id, kind):
+            raise requests.Timeout("timed out")
+
+    with pytest.raises(requests.Timeout):
+        Weather(GoesDown(), choices).today(now=NOW)
