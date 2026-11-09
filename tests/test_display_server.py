@@ -560,6 +560,24 @@ def test_unknown_actions_and_directions_are_refused(served, parts, clocks, path,
         assert status == 400 and (session.listens, session.boops) == (0, [])
 
 
+def _handlers():
+    """How many requests are being handled now, each on a thread of its own."""
+    return sum("process_request_thread" in thread.name for thread in threading.enumerate())
+
+
+def test_an_idle_connection_doesnt_hold_up_stopping(served):
+    # server_close() waits for each connection's thread while block_on_close says to -
+    # so one opened and left quiet could hold the brain's shutdown for REQUEST_TIMEOUT.
+    # Python 3.13.5 leaves daemon threads out of that wait already; block_on_close says so outright.
+    assert served._server.block_on_close is False
+    before = _handlers()
+    with socket.create_connection(("127.0.0.1", served.port), timeout=5):
+        _until(lambda: _handlers() > before)
+        stopping = time.monotonic()
+        served.stop()
+        assert time.monotonic() - stopping < 2
+
+
 def test_a_body_shorter_than_it_says_is_given_up_on(served, parts, clocks, monkeypatch):
     monkeypatch.setattr(server_module._Handler, "timeout", 0.2)
     _, key = clocks.add("Desk", "pi")

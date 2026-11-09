@@ -152,7 +152,12 @@ class DisplayServer:
         except OSError as e:
             logger.error(f"Couldn't start the clock displays' server on port {self.port}: {e}")
             return False
+        # So no connection holds the brain's shutdown: server_close() waits for each
+        # connection's thread while block_on_close says to, and one opened and left quiet
+        # would keep it waiting REQUEST_TIMEOUT. The brain's Python (3.13.5) leaves daemon
+        # threads out of that wait already; block_on_close says so outright, rather than lean on it.
         server.daemon_threads = True
+        server.block_on_close = False
         server.display_server = self
         self._stopping.clear()
         self._server = server
