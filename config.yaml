@@ -52,10 +52,12 @@ music:
   # "spotify", which needs Spotify Premium.
   player: "spotify"
   # Whether Nova offers to download a song or album Navidrome hasn't got, through
-  # SoulSync, when you ask to play it. "Download X" works either way.
+  # SoulSync, when you ask to play it. "Download X" works either way. See
+  # docs/decisions/0012.
   offer_downloads: true
   # How long Nova waits for a download to appear in Navidrome before saying it couldn't
-  # get it, counted from the request. Read at each check, so a change is used straight away.
+  # get it, counted from the request. Read at each check, so a change is used straight
+  # away. See docs/decisions/0012.
   song_download_minutes: 10
   album_download_minutes: 30
 
@@ -67,8 +69,9 @@ navidrome:
 
 soulsync:
   # SoulSync's address, e.g. "http://soulsync.local:8008", for music Nova downloads when
-  # Navidrome hasn't got it. The key, made in SoulSync's own settings, goes in
-  # ~/.config/nova/.env as SOULSYNC_API_KEY.
+  # Navidrome hasn't got it. The key, made in SoulSync's own settings with admin scope,
+  # goes in ~/.config/nova/.env as SOULSYNC_API_KEY. Albums also need "Answer MCP
+  # requests at /mcp" switched on there. See docs/decisions/0012.
   url: ""
 
 spotify:

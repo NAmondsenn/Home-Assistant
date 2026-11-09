@@ -6,7 +6,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 1. **The brain's memory while music plays** - measured during a 100-minute music session: the main heap stayed flat while the threads' malloc arenas grew from 48 to 253 MB. So the brain's unit now sets `MALLOC_ARENA_MAX=2`, to be confirmed by the same measurement once it's deployed.
 2. **The minor findings parked by each plan's reviews** - done: fixed in one round (about 120 commits, 14 tasks).
-3. **Music fetched by voice** - an album or song that isn't in Navidrome fetched through the homelab's own downloaders and played once it's there. Not designed yet.
+3. **Music fetched by voice** - a song or album that isn't in Navidrome fetched through SoulSync by "download X", or by a yes to the offer after "play X", and said to be downloaded once Navidrome has it - not played. Designed ([decisions/0012](decisions/0012-music-fetched-by-voice.md)) and built, waiting for the hand checks in the [release checklist](release-checklist.md).
 4. **Football scores**, from FotMob or Home Assistant. Not designed yet.
 5. **Phase 6** - push-to-talk clients for Windows and macOS.
 

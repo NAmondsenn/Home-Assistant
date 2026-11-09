@@ -8,7 +8,7 @@ It's built in two halves - see [docs/decisions/0006](docs/decisions/0006-the-pi-
 
 - **Timers and reminders** - "set a timer for ten minutes", "remind me to take the pizza out in 20 minutes", "remind me at 4pm to call mum". Timers ring until they're answered, for up to ten minutes; reminders come back every half a minute for five. Both survive a restart.
 - **Alarms** - "wake me up at 7 on weekdays". They ring in bursts, building up from quiet, with gaps for "Hey Nova, stop" to be heard in.
-- **Music** - from your own [Navidrome](https://www.navidrome.org/) server, or from Spotify: play a song, artist, album, genre or playlist (or your liked songs), pause, skip, go back, shuffle, repeat, "what's this song?". The music pauses while Nova is talking, and comes back when it's done. Navidrome's plays through Nova itself, so it pauses instantly and keeps working with the internet down.
+- **Music** - from your own [Navidrome](https://www.navidrome.org/) server, or from Spotify: play a song, artist, album, genre or playlist (or your liked songs), pause, skip, go back, shuffle, repeat, "what's this song?". The music pauses while Nova is talking, and comes back when it's done. Navidrome's plays through Nova itself, so it pauses instantly and keeps working with the internet down. With SoulSync set up, "download Gooba by 6ix9ine" or "download the album Rumours by Fleetwood Mac" fetches what Navidrome hasn't got, and "play" something missing offers to - see "Fetching music by voice" below.
 - **Volume** - for Nova's voice, for timers and alarms, and for the music, each kept separately.
 - **The lights** - "turn off the kitchen lights", "set the living room lights to 30 percent", "make the lamp blue", "make the lights warmer", through Home Assistant. Short commands like "lights on" mean the lights in the room Nova is in.
 - **In Home Assistant** - Nova is a device there, with its volumes, next alarm, timers, stop, restart, a box to make it say something, and a switch to mute its microphone. See "Nova in Home Assistant" below.
@@ -156,6 +156,32 @@ navidrome:
 ```
 
 Songs are fetched as MP3 - Navidrome converts anything else as it sends it - and decoded with ffmpeg on the brain, which `setup.sh --brain` installs. Your liked songs are the ones starred in Navidrome. Nova never sends the password itself, only a salted hash of it, as Navidrome's API has it.
+
+**Fetching music by voice.** With SoulSync, which finds music on Soulseek and files it straight into the folder Navidrome scans, Nova can get a song or album Navidrome hasn't got. Say "download Gooba by 6ix9ine", "get me Gooba" or "download the album Rumours by Fleetwood Mac". Or ask to play something Navidrome hasn't got: Nova says "I haven't got Gooba by 6ix9ine. Do you want me to download it?", and a plain yes said straight back ("yes", "go ahead", "do it") requests it - anything else leaves it. Switch the offer off with "Offer to download what Navidrome hasn't got" on the settings page, under Music (`music.offer_downloads`); "download" works either way. A download needs "download" or "get" in your own words, or that yes: if Claude takes some other answer for a request, such as "okay", it's only offered again for a plain yes. The settings page's Play never offers one, as nothing there can hear a yes.
+
+- **Songs and albums, never a whole artist** - "download everything by Fleetwood Mac" is refused, as a whole discography could mean dozens of albums. A download isn't played when it lands, and Nova never deletes a file. What Navidrome already has isn't requested ("You've already got Rumours by Fleetwood Mac."), and the same thing asked for twice while it waits is requested once ("I'm already getting X.").
+- **The original release, not a clean one** - Nova asks for the plain title, never a live, remix or other version unless you named it, and for an album it passes over the clean, edited and censored editions, judged by their titles and by MusicBrainz's notes ("clean", "edited", "censored", "radio edit"). SoulSync can't tell a clean song from an explicit one, so Nova checks what landed: a track is clean if Navidrome marks it so, or, unmarked, its title or its album's says "(Clean)", "(Clean Version)", "(Radio Edit)" or the like in a bracket or after " - ". A clean word only counts when nothing but "version" or "edit" follows it there, so "(feat. Clean Bandit)" isn't one, nor is a song called "Clean". If all Navidrome has of what you ask for is a clean version, Nova says "You've only got a clean version of X. Do you want me to download the explicit one?"
+- **What's said** - "X requested." once SoulSync has taken it, and "X has been downloaded." once it's in Navidrome. If it can't be got: "I couldn't download X.", then why when SoulSync said - or "X came down as a clean version." for a song, with the track named in the log so you can replace it by hand. An album is downloaded once the tracks SoulSync queued have landed - it skips those the library already has or is already getting, so with two of Rumours' eleven in the library, nine is all of it - counted by title, so a clean and an explicit copy of one song are one track and a live or remix take is its own. If SoulSync queues none of it, Nova says so at once ("SoulSync says it already has every track, or is already getting them."). An album that only partly came down is "Only 9 of the 11 tracks of X came down.", and one with clean tracks "X has been downloaded, but 2 of its tracks came down as clean versions."
+- **Where it's said** - on the satellite that asked, after its announcement sound as for an alert, at any hour: the quiet hours don't apply, as it's only ever the outcome of your own request. With that satellite away or not able to say it, it goes to your phone through ntfy (`ntfy.phone`, see below), and with no phone topic either it's only logged. Waiting never holds up a conversation, and several downloads can wait at once. One still waiting when the brain stops is forgotten, and logged.
+- **How long it waits** - 10 minutes for a song and 30 for an album, from the request (`music.song_download_minutes` and `music.album_download_minutes`, on the settings page under Music and used at the next check), asking SoulSync and Navidrome every 15 seconds. Navidrome's own file watcher picks new files up. Nova asks it to scan, once, a minute after SoulSync says it's done and Navidrome still hasn't got it - or, as SoulSync never says an album is done, shortly before time runs out. At the limit it says what it found. SoulSync may carry on, and anything which lands later is simply in Navidrome.
+
+To set it up:
+
+1. In SoulSync's own settings, make an API key with admin scope - one which can only read can't request anything - and switch its API on. Albums go through SoulSync's MCP tools, which only answer with "Answer MCP requests at /mcp" switched on there too; with it off, Nova says "SoulSync's MCP is off, so it can't download albums. Turn it on in SoulSync's settings."
+2. Put the key under Keys on the settings page (SoulSync's), or on the brain add it to `~/.config/nova/.env` yourself. It's used once Nova restarts, and never logged:
+
+   ```
+   SOULSYNC_API_KEY=the-key
+   ```
+3. Put SoulSync's address under Settings on the settings page, under Music (used straight away), or in `~/.config/nova/config.yaml`:
+
+   ```yaml
+   soulsync:
+     url: "http://soulsync.local:8008"
+   ```
+4. Make Nova's Navidrome user an administrator, so it's allowed to ask Navidrome to scan. Without that, Nova's log says Navidrome refused, and it waits for Navidrome's own scan instead.
+
+Without the address or the key, "download X" says "Downloading music isn't set up. SoulSync's address goes in Settings, under Music, and its key under Keys.", and "play" something missing says what it always did.
 
 **Spotify.** Spotify Premium is needed. Its client ID and secret (`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, from Spotify's developer dashboard) go under Keys on the settings page, or in the brain's `~/.config/nova/.env` yourself, and your Spotify app has to list the brain's `SPOTIFY_REDIRECT_URI` as a redirect URI - setup.sh sets it to `http://127.0.0.1:8888/callback`. Once Nova has restarted with them, sign in on the settings page, under Music. Spotify's page opens in a new tab, and once you've agreed it sends you to an address that doesn't load: paste that address back on the settings page. Every satellite's Spotify uses the sign-in from its next command, with no restart. Without the page, sign in on the brain instead, as its user - it prints a link to open in a browser:
 
@@ -354,6 +380,7 @@ The settings most likely to need changing:
 | Setting | What it's for |
 | --- | --- |
 | `music.player` | `navidrome` or `spotify`. |
+| `music.offer_downloads`, `music.song_download_minutes`, `music.album_download_minutes`, `soulsync.url` | Whether Nova offers to download a song or album Navidrome hasn't got when you ask to play it, how many minutes it waits for one to appear in Navidrome (10 for a song, 30 for an album), and SoulSync's address - see "Fetching music by voice". On the settings page, under Music, and used straight away. SoulSync's key goes under Keys. |
 | `backend.address` | On a satellite, its brain, as `name:port`. |
 | `thresholds.vad_threshold` | How sure Nova must be that it's hearing speech. Raise it if noise keeps it listening; lower it if quiet speech is missed. |
 | `thresholds.silence_duration` | How long a pause ends what you're saying. |

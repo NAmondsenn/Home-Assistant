@@ -47,6 +47,15 @@ With Navidrome (`music.player: navidrome`), and again with Spotify if you still 
 12. While it plays: "Hey Nova, turn it down" - the music, not Nova, gets quieter.
 13. While it plays, let a reminder go off - the music pauses for it.
 
+With Navidrome, and SoulSync set up (its address under Settings, its key under Keys, MCP on in SoulSync for albums). Pick a song and an album Navidrome hasn't got:
+
+13a. "Hey Nova, download" the song, "by" its artist - a beep and "... requested.", and later another beep and "... has been downloaded." It isn't played.
+13b. "Hey Nova, play" something Navidrome hasn't got - "I haven't got ... Do you want me to download it?" Say "thanks": nothing is requested. Ask for it again and say "yes" - it's requested, as in 13a.
+13c. "Hey Nova, download" something Navidrome has - "You've already got ...", and nothing is requested.
+13d. "Hey Nova, download everything by" an artist - "I only download songs and albums, not a whole artist."
+13e. "Hey Nova, download the album ... by ..." - "... requested.", then a beep and "... has been downloaded." or, within 30 minutes, "Only N of the M tracks of ... came down."
+13f. "Hey Nova, download" another song, then switch its satellite off before it's done - the outcome arrives on the phone, as a "Music download" notification.
+
 ## Timers, reminders and alarms
 
 14. A one-minute timer; when it rings, "Hey Nova, stop". It stops straight away, not at the end of its sound - and the log says "Dismissed by voice without asking the model", even if it was heard as something like "bus stop" or "soap".
