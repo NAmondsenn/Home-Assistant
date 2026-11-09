@@ -10,6 +10,7 @@ folder, readable by this user only. See docs/decisions/0013-the-clock-display.md
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -18,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from voice_assistant import paths
 from voice_assistant.storage import load_json, save_json
+
+logger = logging.getLogger(__name__)
 
 # What a new clock starts with: dim enough for a bedside table, and back to the first
 # page a minute after it was last touched.
@@ -38,6 +41,7 @@ LONGEST_NAME = 30
 _CHANGEABLE = ("satellite", "brightness", "home_after")
 
 _NOT_A_SLUG_CHARACTER = re.compile(r"[^a-z0-9]+")
+_DIGEST = re.compile("[0-9a-f]{64}")
 
 
 def _key_hash(key: str) -> str:
@@ -47,6 +51,48 @@ def _key_hash(key: str) -> str:
 def _is_whole_number(value: Any) -> bool:
     # bool is an int to Python, but "brightness": true is a mistake, not 1.
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _field_problem(field: str, value: Any) -> Optional[str]:
+    """
+    Args:
+        field: "satellite", "brightness" or "home_after".
+        value: What it would be.
+
+    Returns:
+        Why it can't be, as a sentence for the page, or None if it can.
+    """
+    if field == "satellite" and value is not None and (not isinstance(value, str) or not value):
+        return "A clock's satellite has to be a satellite's name, or none."
+    if field == "brightness" and not (_is_whole_number(value) and 0 <= value <= 100):
+        return "A clock's brightness has to be a whole number from 0 to 100."
+    if field == "home_after" and not (
+            _is_whole_number(value) and SHORTEST_HOME_AFTER <= value <= LONGEST_HOME_AFTER):
+        return (f"A clock's time before it goes home has to be a whole number of seconds "
+                f"from {SHORTEST_HOME_AFTER} to {LONGEST_HOME_AFTER}.")
+    return None
+
+
+def _is_a_clock(one: Any) -> bool:
+    """
+    Args:
+        one: An entry from the file.
+
+    Returns:
+        Whether it has every field of a clock, each fit to be one's. Checked at
+        load, as a hand-edited entry, e.g. a key_hash of 5, would otherwise make
+        find() raise on a request.
+    """
+    if not isinstance(one, dict):
+        return False
+    if not isinstance(one.get("id"), str) or not one["id"]:
+        return False
+    if not isinstance(one.get("name"), str) or not one["name"]:
+        return False
+    # An uppercase digest would never match, and a non-ASCII one makes compare_digest raise.
+    if not isinstance(one.get("key_hash"), str) or not _DIGEST.fullmatch(one["key_hash"]):
+        return False
+    return all(field in one and _field_problem(field, one[field]) is None for field in _CHANGEABLE)
 
 
 def _listed(stored: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,20 +115,40 @@ class Displays:
         Reads the file once, so a clock removed by hand needs the brain restarted;
         the settings page is the one way to change them while it runs.
 
+        A file which can't be read, or holds anything that isn't a clock, is not
+        allowed to stop the brain starting: it starts with no clocks, so every key is
+        refused, and the file is left alone - add, renew, change and remove raise
+        OSError rather than save over it, as that would lose the keys in it.
+
         Args:
             path: The file they are kept in.
-
-        Raises:
-            OSError or ValueError: If the file is there but can't be read - a broken
-                one is not taken for having no clocks, as the next add would
-                overwrite it.
         """
         self.path = path
         self._lock = threading.Lock()
-        stored = load_json(path, [])
-        if not isinstance(stored, list) or not all(isinstance(one, dict) for one in stored):
-            raise ValueError(f"{path} doesn't hold a list of clocks")
-        self._stored: List[Dict[str, Any]] = stored
+        self._unreadable = False
+        self._stored: List[Dict[str, Any]] = []
+        try:
+            stored = load_json(path, [])
+            if not isinstance(stored, list) or not all(_is_a_clock(one) for one in stored):
+                raise ValueError("not a list of clocks")
+            if len({one["id"] for one in stored}) != len(stored):
+                raise ValueError("an id is there twice")
+        except (OSError, ValueError) as e:
+            # Once, as this is the one read.
+            logger.error(f"Could not read the clock displays, so there are none and none can be "
+                         f"changed until {path} is fixed or removed ({type(e).__name__})")
+            self._unreadable = True
+            return
+        self._stored = stored
+
+    def _refuse_if_unreadable(self):
+        """
+        Raises:
+            OSError: If the file couldn't be read at the start, whatever is asked of
+                it, so the page says why rather than "no such clock".
+        """
+        if self._unreadable:
+            raise OSError(f"{os.path.basename(self.path)} couldn't be read, so it isn't overwritten")
 
     def _save(self, stored: List[Dict[str, Any]]):
         """
@@ -90,8 +156,9 @@ class Displays:
         couldn't be saved isn't one the brain admits until it restarts.
 
         Raises:
-            OSError: If they couldn't be saved.
+            OSError: If they couldn't be saved, or the file couldn't be read at the start.
         """
+        self._refuse_if_unreadable()
         save_json(self.path, stored)
         self._stored = stored
 
@@ -114,6 +181,7 @@ class Displays:
         return candidate
 
     def _find_id(self, stored: List[Dict[str, Any]], display_id: str) -> Dict[str, Any]:
+        self._refuse_if_unreadable()
         for one in stored:
             if one["id"] == display_id:
                 return one
@@ -148,8 +216,9 @@ class Displays:
         name = name.strip() if isinstance(name, str) else ""
         if not name or len(name) > LONGEST_NAME:
             raise ValueError(f"A clock's name has to be 1 to {LONGEST_NAME} characters.")
-        if satellite is not None and (not isinstance(satellite, str) or not satellite):
-            raise ValueError("A clock's satellite has to be a satellite's name, or none.")
+        problem = _field_problem("satellite", satellite)
+        if problem:
+            raise ValueError(problem)
         key = secrets.token_urlsafe(32)
         with self._lock:
             if len(self._stored) >= MOST_DISPLAYS:
@@ -197,24 +266,21 @@ class Displays:
                 is out of its limits.
             OSError: If it couldn't be saved.
         """
+        if not isinstance(changes, dict):
+            raise ValueError("A clock's changes have to be a set of fields.")
         for field, value in changes.items():
             if field not in _CHANGEABLE:
                 raise ValueError(f"A clock's {field} can't be changed here.")
-            if field == "satellite" and value is not None and (not isinstance(value, str) or not value):
-                raise ValueError("A clock's satellite has to be a satellite's name, or none.")
-            if field == "brightness" and not (_is_whole_number(value) and 0 <= value <= 100):
-                raise ValueError("A clock's brightness has to be a whole number from 0 to 100.")
-            if field == "home_after" and not (
-                    _is_whole_number(value) and SHORTEST_HOME_AFTER <= value <= LONGEST_HOME_AFTER):
-                raise ValueError(f"A clock's time before it goes home has to be a whole number of seconds "
-                                 f"from {SHORTEST_HOME_AFTER} to {LONGEST_HOME_AFTER}.")
+            problem = _field_problem(field, value)
+            if problem:
+                raise ValueError(problem)
         with self._lock:
             self._find_id(self._stored, display_id)
             changed = [{**one, **changes} if one["id"] == display_id else one for one in self._stored]
             self._save(changed)
             return _listed(self._find_id(changed, display_id))
 
-    def remove(self, display_id: str):
+    def remove(self, display_id: str) -> None:
         """
         Args:
             display_id: The clock's id.

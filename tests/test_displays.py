@@ -115,3 +115,54 @@ def test_clocks_with_the_same_name_get_their_own_ids(tmp_path):
     assert displays.find(second_key)["id"] == second["id"]
     # A name which is no letters or digits still makes an id.
     assert displays.add("!!!", None)[0]["id"]
+
+
+def test_a_broken_file_starts_no_clocks_and_is_left_alone(tmp_path):
+    path = str(tmp_path / "displays.json")
+    for broken in ("{not json", '{"a": 1}'):
+        with open(path, "w") as file:
+            file.write(broken)
+
+        displays = Displays(path)
+
+        assert displays.listed() == []
+        assert displays.find("anything") is None
+        for change in (lambda: displays.add("Desk", None), lambda: displays.renew("desk"),
+                       lambda: displays.change("desk", {"brightness": 40}), lambda: displays.remove("desk")):
+            with pytest.raises(OSError):
+                change()
+        with open(path) as file:
+            assert file.read() == broken
+
+
+def test_a_hand_edited_clock_makes_the_file_unreadable(tmp_path):
+    path = str(tmp_path / "displays.json")
+    good = {"id": "desk", "name": "Desk", "satellite": "pi", "brightness": 70, "home_after": 60,
+            "key_hash": "0" * 64}
+    for bad in ({**good, "key_hash": 5}, {**good, "key_hash": "ABC"}, {**good, "key_hash": "\u00e9" * 64},
+                {**good, "brightness": 200}, {**good, "home_after": "60"}, {**good, "satellite": 3},
+                {**good, "name": None}, {key: value for key, value in good.items() if key != "id"},
+                good, "desk"):
+        entries = [bad] if bad is not good else [good, good]
+        with open(path, "w") as file:
+            json.dump(entries, file)
+
+        displays = Displays(path)
+
+        assert displays.listed() == []
+        assert displays.find("anything") is None
+        with pytest.raises(OSError):
+            displays.add("Desk", None)
+
+    with open(path, "w") as file:
+        json.dump([good], file)
+    assert Displays(path).listed()[0]["id"] == "desk"
+
+
+def test_changes_must_be_a_set_of_fields(tmp_path):
+    displays = Displays(str(tmp_path / "displays.json"))
+    entry, _ = displays.add("Desk", None)
+
+    for bad in (None, 40, "brightness", [("brightness", 40)]):
+        with pytest.raises(ValueError):
+            displays.change(entry["id"], bad)
