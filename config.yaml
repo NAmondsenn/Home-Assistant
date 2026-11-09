@@ -128,6 +128,12 @@ settings_page:
   # The addresses answered on that port - NPM's alone. Nothing is until it's set.
   proxy_from: []
 
+display:
+  # The port the clock displays connect on, e.g. 8767, on every address, as a clock is on
+  # the home Wi-Fi rather than the tailnet - each with a key made on the settings page,
+  # under Clock displays. See docs/decisions/0013. 0 switches it off. Used once Nova restarts.
+  port: 0
+
 conversation:
   history_length: 5
   # Seconds an exchange is remembered for, once a new conversation starts.

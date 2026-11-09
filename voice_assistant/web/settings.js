@@ -67,7 +67,7 @@ const TYPED = new Set(["text", "password", "number", "time", "url", "search", "e
 // The forms always on show, which empty themselves once sent - so anything in one which
 // differs from how the page drew it is half done, wherever the focus has gone since: a
 // time picked for an alarm, then its Repeats tapped, say.
-const ALWAYS_SHOWN = ["add-alarm", "add-satellite", "play-something"];
+const ALWAYS_SHOWN = ["add-alarm", "add-satellite", "add-display", "play-something"];
 
 // The colours offered as swatches on a light which can be set to one, as a hue in
 // degrees and a saturation in percent.
@@ -117,6 +117,7 @@ const GROUPS = [
   ["Notifications", ["ntfy."]],
   ["Listening", ["thresholds."]],
   ["Privacy", ["logging."]],
+  ["Clock displays", ["display."]],
 ];
 
 // The night's two settings - quiet hours, which there are none of while they're the same.
@@ -133,6 +134,10 @@ let muted = false;
 // after - or null for the default. The choice is only offered when there's more than one.
 let satellites = [];
 let chosen = null;
+
+// The port the brain serves the clock displays on, as /api/state last said - 0 while it
+// doesn't - for the address a clock's new key is opened at.
+let displaysPort = 0;
 
 // The timers on the page, ticked down every second, as [where it's shown, when it's due].
 let counting = [];
@@ -458,6 +463,10 @@ async function load() {
   drawIfChanged("clock", state.clock, showClock);
   drawIfChanged("memories", state.memories, showMemories);
   drawIfChanged("own-routines", state.routines, showOwnRoutines);
+  displaysPort = state.displays.port;
+  // Drawn again as satellites come and go too, for each clock's "Hears through".
+  drawIfChanged("displays", [state.displays.list, satellites.map((satellite) => [satellite.name, satellite.default])],
+    () => showDisplays(state.displays.list));
   drawIfChanged("keys", state.keys, showKeys);
   drawIfChanged("settings", state.settings, showSettings);
   showSettingsProblem(state.settings_problem);
@@ -699,12 +708,13 @@ function changedField(field) {
 // Whether anything's being typed or changed which a reload would lose: a field with the
 // focus, anything in a form always on show, an editor or question open, a sign-in half
 // done, a key or the page password half put in, settings not yet saved, the login form -
-// or a satellite's password, which is shown only the once, on its way or on show.
+// or a satellite's password or a clock's key, each shown only the once, on its way or on show.
 function editingSomething() {
-  if (passwordComing) return true;
+  if (passwordComing || displayKeyComing) return true;
   if (TYPED.has(document.activeElement && document.activeElement.type)) return true;
   if (ALWAYS_SHOWN.some((id) => [...document.getElementById(id).elements].some(changedField))) return true;
-  const open = ["routine-editor", "renew-panel", "password-panel", "spotify-finish", "google-finish", "login"];
+  const open = ["routine-editor", "renew-panel", "password-panel", "display-key-panel", "spotify-finish", "google-finish",
+                "login"];
   if (open.some((id) => !document.getElementById(id).hidden)) return true;
   return Boolean(document.getElementById("keys").querySelector(".key.open")
     || document.getElementById("page-password").querySelector(".key.open")
@@ -995,6 +1005,162 @@ function showPassword(name, password, added) {
 function closePassword() {
   document.getElementById("password-text").textContent = "";
   document.getElementById("password-panel").hidden = true;
+}
+
+// The clock displays
+
+// Each clock's brightness slider as last drawn - for whether one has a step on its way,
+// which a redraw would set back.
+let displaySenders = [];
+// Whether a clock's key's been asked for and not yet shown - as passwordComing.
+let displayKeyComing = false;
+
+// The satellites a clock can hear through, as a select's options: the default first, as
+// "", which is what a clock keeps while it has none of its own - and one since removed,
+// for a clock still set to it, so it isn't shown as the default's when it isn't.
+function displaySatelliteOptions(current) {
+  const fallback = satellites.find((satellite) => satellite.default);
+  const options = [new Option(fallback ? `The default (${fallback.name})` : "The default", ""),
+                   ...satellites.map((satellite) => new Option(satellite.name, satellite.name))];
+  if (current && !satellites.some((satellite) => satellite.name === current)) {
+    options.push(new Option(`${current} (removed)`, current));
+  }
+  return options;
+}
+
+function showDisplays(displays) {
+  const list = document.getElementById("displays");
+  // Not while a number is being typed, nor a slider held or one of its steps on its way,
+  // which a redraw would set back - tried again next time.
+  const typing = document.activeElement;
+  if (typing && typing.type === "number" && list.contains(typing)) return false;
+  if (list.querySelector(":active") || displaySenders.some((sender) => sender.busy)) return false;
+  displaySenders = [];
+  list.replaceChildren(...(displays.length ? displays.map(displayRow) : [emptyRow("No clocks have been added.")]));
+  // The add form's choice is kept while it's still offered.
+  const select = document.getElementById("add-display-satellite");
+  const kept = select.value;
+  select.replaceChildren(...displaySatelliteOptions(null));
+  select.value = satellites.some((satellite) => satellite.name === kept) ? kept : "";
+  return true;
+}
+
+// A clock: its name, "New key" and "Remove", then the satellite it hears through, its
+// brightness and how soon it goes back to Home - each sent as it's changed.
+function displayRow(display) {
+  const row = element("li");
+  const top = element("div", undefined, "top");
+  const what = element("span", display.name, "what");
+  const actions = element("span", undefined, "actions");
+  const renew = element("button", "New key", "button quiet");
+  renew.type = "button";
+  renew.setAttribute("aria-label", `Give the ${display.name} clock a new key`);
+  renew.addEventListener("click", () => newDisplayKey(display));
+  const remove = element("button", "Remove", "button quiet danger");
+  remove.type = "button";
+  remove.setAttribute("aria-label", `Remove the ${display.name} clock`);
+  remove.addEventListener("click", () => removeDisplay(display));
+  actions.append(renew, remove);
+  top.append(icon("i-display"), what, actions);
+
+  const hears = element("div", undefined, "choice");
+  const hearsLabel = element("label", "Hears through");
+  hearsLabel.htmlFor = `display-satellite-${display.id}`;
+  const holder = element("span", undefined, "select");
+  const select = element("select");
+  select.id = hearsLabel.htmlFor;
+  select.replaceChildren(...displaySatelliteOptions(display.satellite));
+  select.value = display.satellite || "";
+  select.addEventListener("change", () => change("/api/displays/change",
+    { id: display.id, changes: { satellite: select.value || null } }));
+  holder.append(select, icon("i-chevron"));
+  hears.append(hearsLabel, holder);
+
+  // Sent as it's dragged, as a volume is, so the clock's screen follows the finger.
+  const level = element("div", undefined, "level");
+  const levelLabel = element("label", "Brightness");
+  levelLabel.htmlFor = `display-brightness-${display.id}`;
+  const output = element("output", undefined, "value");
+  output.setAttribute("for", levelLabel.htmlFor);
+  const slider = element("input");
+  Object.assign(slider, { type: "range", id: levelLabel.htmlFor, min: 0, max: 100, step: 1 });
+  drawLevel(slider, output, display.brightness);
+  const sender = steadily(VOLUME_EVERY, (brightness) => send("/api/displays/change",
+    { id: display.id, changes: { brightness } })
+    .then((result) => {
+      if (!result.success) toast(result.message || "Couldn't change the brightness.", false);
+    })
+    .catch(() => toast("Couldn't reach Nova.", false)));
+  sender.settled(display.brightness);
+  slider.addEventListener("input", () => {
+    drawLevel(slider, output, Number(slider.value));
+    sender.send(Number(slider.value));
+  });
+  displaySenders.push(sender);
+  level.append(levelLabel, output, slider);
+
+  const home = element("div", undefined, "choice");
+  const homeLabel = element("label", "Back to Home after, in seconds");
+  homeLabel.htmlFor = `display-home-${display.id}`;
+  const box = element("input");
+  Object.assign(box, { type: "number", id: homeLabel.htmlFor, min: 10, max: 3600, step: 1, value: display.home_after });
+  box.inputMode = "numeric";
+  box.addEventListener("change", () => change("/api/displays/change",
+    { id: display.id, changes: { home_after: Number(box.value) } }));
+  // Enter ends the typing, as leaving the box does, as a battery's mark does.
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") box.blur();
+  });
+  home.append(homeLabel, box);
+
+  row.append(top, hears, level, home);
+  return row;
+}
+
+// The old key stops working at once, so the clock shows nothing until its kiosk app
+// opens the new address - asked first, as a tap too many would leave it blank.
+async function newDisplayKey(display) {
+  if (!confirm(`A new key for the ${display.name} clock? Its old one stops working now, so it shows nothing `
+    + "until its kiosk app opens the new address.")) return;
+  displayKeyComing = true;
+  try {
+    const result = await change("/api/displays/key", { id: display.id });
+    if (result.success && result.key) showDisplayKey(display.name, result, false);
+  } finally {
+    displayKeyComing = false;
+  }
+}
+
+async function removeDisplay(display) {
+  if (!confirm(`Remove the ${display.name} clock? It stops working now, and can't until it's added again.`)) return;
+  await change("/api/displays/remove", { id: display.id });
+}
+
+// A clock's key, just made, and the address its kiosk app opens - as a satellite's
+// password, put straight into the panel's text and kept nowhere else, the key and the
+// address both taken off the page as the panel's closed. The brain's address on the
+// Wi-Fi isn't one the page can know, so it's said in words.
+function showDisplayKey(name, result, added) {
+  document.getElementById("display-key-about").textContent = added
+    ? `The ${name} clock's key, shown only this once:`
+    : `The ${name} clock's new key, shown only this once:`;
+  document.getElementById("display-key-text").textContent = result.key;
+  document.getElementById("display-key-how").replaceChildren(...(displaysPort
+    ? ["Open ", element("code", `http://<the brain's address>:${displaysPort}${result.path}`),
+       " in the clock's kiosk app, with the brain's address on your Wi-Fi."]
+    : ["Nova isn't serving the clocks yet: set “Port the clock displays connect on” under Settings and "
+       + "restart Nova, then open ", element("code", `http://<the brain's address>:<that port>${result.path}`),
+       " in the clock's kiosk app."]));
+  const copy = document.getElementById("display-key-copy");
+  copy.textContent = "Copy";
+  document.getElementById("display-key-panel").hidden = false;
+  copy.focus();
+}
+
+function closeDisplayKey() {
+  document.getElementById("display-key-text").textContent = "";
+  document.getElementById("display-key-how").replaceChildren();
+  document.getElementById("display-key-panel").hidden = true;
 }
 
 // Looks after another satellite, showing what's its own from the start.
@@ -2473,6 +2639,42 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.getElementById("password-close").addEventListener("click", closePassword);
+
+  document.getElementById("add-display").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const field = document.getElementById("add-display-name");
+    const name = field.value.trim();
+    if (!name) return;
+    displayKeyComing = true;
+    try {
+      // Always with its satellite - null for the default's.
+      const satellite = document.getElementById("add-display-satellite").value || null;
+      const result = await change("/api/displays/add", { display: { name, satellite } });
+      if (result.success && result.key) {
+        field.value = "";
+        showDisplayKey(result.display.name, result, true);
+      }
+    } finally {
+      displayKeyComing = false;
+    }
+  });
+  // As a satellite's password: copied from the panel's own text, or selected there.
+  const copyKey = document.getElementById("display-key-copy");
+  copyKey.addEventListener("click", async () => {
+    const shown = document.getElementById("display-key-text");
+    try {
+      await navigator.clipboard.writeText(shown.textContent);
+      copyKey.textContent = "Copied";
+    } catch (error) {
+      const range = document.createRange();
+      range.selectNodeContents(shown);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      toast("Couldn't copy it, so it's selected - copy it from there.", false);
+    }
+  });
+  document.getElementById("display-key-close").addEventListener("click", closeDisplayKey);
   document.getElementById("renew-name").addEventListener("input", () => {
     document.getElementById("renew-go").disabled = document.getElementById("renew-name").value !== renewing;
   });

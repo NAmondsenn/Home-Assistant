@@ -35,6 +35,7 @@ from voice_assistant.brain import Brain
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
+from voice_assistant.displays import Displays
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.lists import Lists
 from voice_assistant.ntfy import Ntfy
@@ -226,6 +227,13 @@ class FakeSession:
         self.stopped += 1
 
 
+class NoDisplays:
+    """Stands in for the clock displays, for a test which has none."""
+
+    def listed(self):
+        return []
+
+
 class FakeBrain:
     """Stands in for the brain: what every satellite shares, and the sessions of those connected."""
 
@@ -235,6 +243,7 @@ class FakeBrain:
         self.clock, self.memory = FakeClock(), FakeMemory()
         self.ntfy = self.stt = self.routines = self.batteries = self.config = self.calendar = None
         self.home = self.lists = self.weather = self.pc = None
+        self.displays, self.display_server = NoDisplays(), None
         self._night = Ntfy("")
         self.ran = []
         for name, part in parts.items():
@@ -2251,6 +2260,158 @@ def test_restarting_asks_the_brain_to_stop_for_a_restart(files):
     page.brain.restart = lambda: asked.append("restart") or "Restarting."
     page._restart = None
     assert page.restart(LOGIN) == {"success": True, "message": "Restarting."} and asked == ["restart"]
+
+
+# The clock displays
+
+def _with_displays(files, **parts):
+    """A page over a brain with the bedroom and the kitchen, and clocks kept in the test's own folder."""
+    displays = Displays(str(files / "displays.json"))
+    return _page(known=["bedroom", "kitchen"], displays=displays, **parts), displays
+
+
+def test_add_display_shows_the_key_once(files, caplog):
+    caplog.set_level(logging.INFO)
+    page, displays = _with_displays(files, display_server=SimpleNamespace(port=8767))
+
+    result = page.add_display("Desk", "bedroom", LOGIN)
+
+    key = result["key"]
+    assert result["success"] and result["message"] == "Added the Desk clock. Its key is shown only this once."
+    assert result["display"] == {"id": "desk", "name": "Desk", "satellite": "bedroom", "brightness": 70,
+                                 "home_after": 60}
+    # Only the part after the address, which the page doesn't know - it's the brain's on the Wi-Fi.
+    assert result["path"] == "/display#key=" + key
+    assert displays.find(key)["id"] == "desk"
+    state = page.state()
+    assert state["displays"] == {"list": [result["display"]], "port": 8767}
+    assert key not in json.dumps(state) and key not in caplog.text
+    assert f"Settings page: {LOGIN} added the Desk clock" in caplog.text
+    # One for no satellite of its own hears for the default.
+    assert page.add_display("Hall", None, LOGIN)["display"]["satellite"] is None
+
+
+def test_a_new_display_key_is_shown_once_and_the_old_one_refused(files, caplog):
+    caplog.set_level(logging.INFO)
+    page, displays = _with_displays(files)
+    old = page.add_display("Desk", "bedroom", LOGIN)["key"]
+
+    result = page.new_display_key("desk", LOGIN)
+
+    assert result["success"] and result["message"] == "The Desk clock has a new key. It's shown only this once."
+    assert result["path"] == "/display#key=" + result["key"] and result["display"]["id"] == "desk"
+    assert displays.find(old) is None and displays.find(result["key"])["id"] == "desk"
+    assert result["key"] not in caplog.text and f"Settings page: {LOGIN} gave the Desk clock a new key" in caplog.text
+    assert page.new_display_key("ghost", LOGIN) == {"success": False, "message": "There is no such clock."}
+
+
+def test_display_satellite_must_be_known(files):
+    page, displays = _with_displays(files)
+    said = {"success": False, "message": "There's no satellite called ghost."}
+
+    assert page.add_display("Desk", "ghost", LOGIN) == said
+    assert displays.listed() == []
+
+    page.add_display("Desk", "bedroom", LOGIN)
+    assert page.change_display("desk", {"satellite": "ghost"}, LOGIN) == said
+    assert displays.listed()[0]["satellite"] == "bedroom"
+    # Another the brain lets in, or none, which is the default's.
+    assert page.change_display("desk", {"satellite": "kitchen"}, LOGIN)["display"]["satellite"] == "kitchen"
+    assert page.change_display("desk", {"satellite": None}, LOGIN)["display"]["satellite"] is None
+
+    # A satellites' file which can't be read can't tell, so a satellite named is refused.
+    def broken():
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    page.brain.satellites = broken
+    unreadable = {"success": False, "message": "The satellites' file can't be read, so nothing was changed."}
+    assert page.add_display("Hall", "bedroom", LOGIN) == unreadable
+    assert page.change_display("desk", {"satellite": "bedroom"}, LOGIN) == unreadable
+    assert page.change_display("desk", {"brightness": 40}, LOGIN)["success"]
+
+
+def test_change_display_saves_brightness(files, caplog):
+    caplog.set_level(logging.INFO)
+    page, displays = _with_displays(files)
+    page.add_display("Desk", "bedroom", LOGIN)
+
+    result = page.change_display("desk", {"brightness": 30, "home_after": 120}, LOGIN)
+
+    assert result["success"] and result["message"] == "Saved. The Desk clock has it straight away."
+    assert (result["display"]["brightness"], result["display"]["home_after"]) == (30, 120)
+    # Kept, for the brain's next start.
+    assert Displays(str(files / "displays.json")).listed()[0]["brightness"] == 30
+    assert f"Settings page: {LOGIN} changed the Desk clock" in caplog.text
+    # Displays' own sentence, as it says what's wrong.
+    refused = page.change_display("desk", {"brightness": 101}, LOGIN)
+    assert not refused["success"] and "brightness" in refused["message"]
+    assert displays.listed()[0]["brightness"] == 30
+    assert page.change_display("ghost", {"brightness": 40}, LOGIN) == {"success": False,
+                                                                       "message": "There is no such clock."}
+
+
+def test_remove_display(files, caplog):
+    caplog.set_level(logging.INFO)
+    page, displays = _with_displays(files)
+    key = page.add_display("Desk", "bedroom", LOGIN)["key"]
+
+    assert page.remove_display("desk", LOGIN) == {"success": True, "message": "Removed the Desk clock."}
+
+    assert displays.listed() == [] and displays.find(key) is None
+    assert page.state()["displays"]["list"] == []
+    assert f"Settings page: {LOGIN} removed the Desk clock" in caplog.text
+    assert page.remove_display("desk", LOGIN) == {"success": False, "message": "There is no such clock."}
+
+
+def test_a_display_change_that_couldnt_be_saved_says_so(files, caplog):
+    # A file which couldn't be read as the brain started is never saved over, as that
+    # would lose the clocks' keys in it.
+    (files / "displays.json").write_text("not json")
+    page, displays = _with_displays(files)
+    said = {"success": False, "message": "Couldn't save the clocks - the brain's log says why."}
+
+    assert page.add_display("Desk", None, LOGIN) == said
+    assert page.remove_display("desk", LOGIN) == said
+    assert (files / "displays.json").read_text() == "not json"
+    assert "Settings page: couldn't save the clocks" in caplog.text
+
+
+def test_display_routes_need_the_page_headers(files, monkeypatch):
+    monkeypatch.setattr(page_module, "STOP_CHECK", 0.02)
+    page, displays = _with_displays(files)
+    page.start()
+    try:
+        add = {"display": {"name": "Desk", "satellite": "bedroom"}}
+        # As another website open in the user's browser would send it.
+        assert _ask(page, "/api/displays/add", add)[0] == 403
+        assert displays.listed() == []
+
+        def post(path, body):
+            status, _, answer = _ask(page, path, body, X_Nova="page")
+            assert status == 200
+            return json.loads(answer)
+
+        # The page's script adds the satellite looked after to every change, which mustn't be taken for the clock's.
+        added = post("/api/displays/add", {**add, "satellite": "kitchen"})
+        assert added["success"] and added["display"]["satellite"] == "bedroom"
+        assert _ask(page, "/api/displays/remove", {"id": "desk"})[0] == 403
+        assert post("/api/displays/change", {"id": "desk", "changes": {"brightness": 20}})["display"]["brightness"] == 20
+        renewed = post("/api/displays/key", {"id": "desk"})
+        assert renewed["success"] and displays.find(renewed["key"])["id"] == "desk"
+        assert post("/api/displays/remove", {"id": "desk"})["success"] and displays.listed() == []
+    finally:
+        page.stop()
+
+
+def test_the_page_has_the_clock_displays_section(served):
+    html = _ask(served, "/")[2]
+    script = _ask(served, "/settings.js")[2]
+    assert b'id="displays"' in html and b'id="add-display"' in html and b"Clock displays</h2>" in html
+    for path in (b'"/api/displays/add"', b'"/api/displays/change"', b'"/api/displays/key"', b'"/api/displays/remove"'):
+        assert path in script
+    # The key is put on the page only as text, as a satellite's password is.
+    assert b'getElementById("display-key-text").textContent = ' in script
+    assert _page().state()["displays"] == {"list": [], "port": 0}
 
 
 # The batteries

@@ -313,6 +313,35 @@
         </form>
       </section>
 
+      <section aria-labelledby="displays-title">
+        <h2 class="heading" id="displays-title" tabindex="-1"><svg class="icon" aria-hidden="true"><use href="#i-display"></use></svg>Clock displays</h2>
+        <ul class="list displays" id="displays"></ul>
+        <!-- A clock's key, just made: put straight into the text here and nowhere else,
+             and gone from the page once the panel's closed, as a satellite's password is. -->
+        <div class="panel password" id="display-key-panel" hidden>
+          <p class="about" id="display-key-about"></p>
+          <div class="entry">
+            <code class="secret" id="display-key-text"></code>
+            <button type="button" class="button" id="display-key-copy">Copy</button>
+          </div>
+          <p class="how" id="display-key-how"></p>
+          <button type="button" class="button quiet" id="display-key-close">Done</button>
+        </div>
+        <form class="panel add" id="add-display">
+          <label class="field"><span>New clock</span>
+            <input type="text" id="add-display-name" required maxlength="30" placeholder="e.g. Desk" autocomplete="off">
+          </label>
+          <label class="field"><span>Hears through</span>
+            <span class="select">
+              <select id="add-display-satellite"></select>
+              <svg class="icon" aria-hidden="true"><use href="#i-chevron"></use></svg>
+            </span>
+          </label>
+          <button type="submit" class="button quiet">Add a clock</button>
+        </form>
+        <p class="hint">Holding a finger on a clock makes Nova listen through its satellite's microphone. A change here reaches the clock within a second.</p>
+      </section>
+
       <section class="double" aria-labelledby="memory-title">
         <h2 class="heading" id="memory-title"><svg class="icon" aria-hidden="true"><use href="#i-memory"></use></svg>Memory</h2>
         <ul class="list" id="memories"></ul>
@@ -356,6 +385,7 @@
     <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
     <symbol id="i-microphone" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><path d="M12 17.5V21"/></symbol>
     <symbol id="i-voice" viewBox="0 0 24 24"><path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5h-9l-4.5 3.5v-3.5H5A1.5 1.5 0 0 1 3.5 15V7A1.5 1.5 0 0 1 5 5.5z"/></symbol>
+    <symbol id="i-display" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="12" rx="2"/><path d="M12 8.5V11l2 1.2"/><path d="M9 20.5h6"/></symbol>
     <symbol id="i-alarm" viewBox="0 0 24 24"><circle cx="12" cy="13" r="7"/><path d="M12 9.5V13l2.5 1.5"/><path d="M4.5 5.5l3-2.5"/><path d="M19.5 5.5l-3-2.5"/></symbol>
     <symbol id="i-timer" viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7"/><path d="M12 10v3.5"/><path d="M9.5 3h5"/><path d="M12 3v3.5"/></symbol>
     <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18.5V6l10-2v12.5"/><circle cx="6.5" cy="18.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/></symbol>

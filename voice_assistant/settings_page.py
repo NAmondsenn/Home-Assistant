@@ -124,6 +124,7 @@ EDITABLE = [
     ("mqtt", "host", "Home Assistant's MQTT host", "restart"),
     ("mqtt", "port", "Its port", "restart"),
     ("mqtt", "username", "Nova's MQTT user", "restart"),
+    ("display", "port", "Port the clock displays connect on", "restart"),
 ]
 # How the page says which each is.
 NOW = "Used straight away"
@@ -625,6 +626,7 @@ class SettingsPage:
                  "set": any(secrets.get(spelling) for spelling in [name] + OLDER_NAMES.get(name, []))}
                 for name, label in KEYS]
         routines = self.brain.routines
+        server = self.brain.display_server
         return {"status": self._status(),
                 "satellites": self._satellites(names) if names is not None else [],
                 # Said as that, rather than as there being no satellites.
@@ -636,6 +638,9 @@ class SettingsPage:
                 "clock": self.brain.clock.overview(satellite=chosen),
                 "memories": self.brain.memory.facts(),
                 "routines": routines.all() if routines is not None else [],
+                # Never a clock's key, which only adding one or a new key answers with.
+                # The port is the one the brain is serving them on, 0 while it isn't.
+                "displays": {"list": self.brain.displays.listed(), "port": server.port if server else 0},
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,
@@ -1794,6 +1799,149 @@ class SettingsPage:
         logger.info(f"Settings page: {who} made the {name} satellite the default")
         return {"success": True, "message": f"{name} is the default now."}
 
+    # The clock displays. Their file keeps its own lock, as the satellites' passwords
+    # do, so none of these holds _saving either. See docs/decisions/0013.
+
+    def _display_satellite_problem(self, satellite) -> Optional[str]:
+        """
+        Args:
+            satellite: The satellite a clock is to hear for, as the page sent it - or
+                None, for the default's.
+
+        Returns:
+            Why it can't be, as a sentence for the page, or None if it can.
+        """
+        if satellite is None:
+            return None
+        if not isinstance(satellite, str):
+            return "That didn't make sense."
+        names = self._satellite_names()
+        if names is None:
+            return SATELLITES_UNREADABLE
+        if satellite not in names:
+            return f"There's no satellite called {satellite}."
+        return None
+
+    def _display_named(self, display_id) -> Optional[Dict]:
+        """The clock with this id, as Displays lists it, or None if there's none."""
+        return next((one for one in self.brain.displays.listed() if one["id"] == display_id), None)
+
+    @staticmethod
+    def _displays_unsaved(e: OSError) -> Dict:
+        """Logs why the clocks couldn't be saved - the file, say - and says so to the page."""
+        logger.error(f"Settings page: couldn't save the clocks: {e}")
+        return {"success": False, "message": "Couldn't save the clocks - the brain's log says why."}
+
+    @staticmethod
+    def _with_key(message: str, display: Optional[Dict], key: str) -> Dict:
+        """
+        An answer with a clock's key, for the page to show once with where the clock's
+        kiosk app opens it - only the path, as the brain's address on the Wi-Fi isn't
+        one the page can know.
+        """
+        return {"success": True, "message": message, "display": display, "key": key,
+                "path": f"/display#key={key}"}
+
+    def add_display(self, name, satellite, who: str) -> Dict:
+        """
+        Adds a clock display, with a key made up for it.
+
+        Args:
+            name: What the page calls it, e.g. "Desk".
+            satellite: The satellite whose microphone a hold on it listens through,
+                or None for the default's.
+            who: The Tailscale login adding it, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message' - and once added, 'display', 'key' and
+            'path', for the page to show once. Only this and new_display_key ever
+            answer with a key.
+        """
+        problem = self._display_satellite_problem(satellite)
+        if problem:
+            return {"success": False, "message": problem}
+        try:
+            display, key = self.brain.displays.add(name, satellite)
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except OSError as e:
+            return self._displays_unsaved(e)
+        logger.info(f"Settings page: {who} added the {display['name']} clock")
+        return self._with_key(f"Added the {display['name']} clock. Its key is shown only this once.", display, key)
+
+    def new_display_key(self, display_id, who: str) -> Dict:
+        """
+        Gives a clock display a new key, refusing the old one from now on.
+
+        Args:
+            display_id: The clock's id, as the page sent it.
+            who: The Tailscale login asking, for the log.
+
+        Returns:
+            As add_display.
+        """
+        try:
+            key = self.brain.displays.renew(display_id)
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except OSError as e:
+            return self._displays_unsaved(e)
+        display = self._display_named(display_id)
+        # Removed on another device since, its name's no longer known - and the key is no use.
+        name = display["name"] if display else display_id
+        logger.info(f"Settings page: {who} gave the {name} clock a new key")
+        return self._with_key(f"The {name} clock has a new key. It's shown only this once.", display, key)
+
+    def change_display(self, display_id, changes, who: str) -> Dict:
+        """
+        Changes a clock display's satellite, brightness or time before it goes home -
+        the clock has them at once, as its long poll checks it every second.
+
+        Args:
+            display_id: The clock's id, as the page sent it.
+            changes: What to change, as Displays.change takes it.
+            who: The Tailscale login changing it, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message' - and once changed, 'display', as it is now.
+        """
+        if isinstance(changes, dict) and "satellite" in changes:
+            problem = self._display_satellite_problem(changes["satellite"])
+            if problem:
+                return {"success": False, "message": problem}
+        try:
+            display = self.brain.displays.change(display_id, changes)
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except OSError as e:
+            return self._displays_unsaved(e)
+        logger.info(f"Settings page: {who} changed the {display['name']} clock's {', '.join(sorted(changes))}")
+        return {"success": True, "message": f"Saved. The {display['name']} clock has it straight away.",
+                "display": display}
+
+    def remove_display(self, display_id, who: str) -> Dict:
+        """
+        Removes a clock display, which is refused from that moment - a long poll it's
+        waiting on included.
+
+        Args:
+            display_id: The clock's id, as the page sent it.
+            who: The Tailscale login removing it, for the log.
+
+        Returns:
+            Dict with 'success' and a 'message'.
+        """
+        display = self._display_named(display_id)
+        try:
+            self.brain.displays.remove(display_id)
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except OSError as e:
+            return self._displays_unsaved(e)
+        name = display["name"] if display else display_id
+        logger.info(f"Settings page: {who} removed the {name} clock")
+        return {"success": True, "message": f"Removed the {name} clock."}
+
     # The page's password, for NPM
 
     def _try_password(self, typed: str, device: str) -> Optional[str]:
@@ -1945,6 +2093,14 @@ ACTIONS: Dict[str, Callable[[SettingsPage, Dict, str], Dict]] = {
     "/api/satellites/password": lambda page, body, who: page.new_password(body["name"], who),
     "/api/satellites/remove": lambda page, body, who: page.remove_satellite(body["name"], who),
     "/api/satellites/default": lambda page, body, who: page.make_default(body["name"], who),
+    # A new clock's fields are sent as one, as the page adds the satellite it's looking
+    # after to every change it sends, which would otherwise be taken for the clock's.
+    # Its satellite is always sent - null for the default's.
+    "/api/displays/add": lambda page, body, who: page.add_display(
+        body["display"]["name"], body["display"]["satellite"], who),
+    "/api/displays/change": lambda page, body, who: page.change_display(body["id"], body["changes"], who),
+    "/api/displays/key": lambda page, body, who: page.new_display_key(body["id"], who),
+    "/api/displays/remove": lambda page, body, who: page.remove_display(body["id"], who),
     "/api/logout-everywhere": lambda page, body, who: page.log_out_everywhere(who),
 }
 

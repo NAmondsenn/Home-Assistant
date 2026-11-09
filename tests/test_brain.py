@@ -36,6 +36,7 @@ from voice_assistant import session as session_module
 from voice_assistant import settings_page as settings_page_module
 from voice_assistant.batteries import Battery, BatteryChoices, BatteryWatcher
 from voice_assistant.config import Config
+from voice_assistant.displays import Displays
 from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
 from voice_assistant.media_watch import MediaWatcher
@@ -222,6 +223,7 @@ def make_brain(tmp_path, monkeypatch, make_config, passwords):
     monkeypatch.setattr(brain_module, "_speech_to_text", lambda config, tts: FakeSpeechToText())
     happened = []
     monkeypatch.setattr(brain_module, "Session", lambda brain, satellite: FakeSession(brain, satellite, happened))
+    monkeypatch.setattr(brain_module, "Displays", lambda: Displays(str(tmp_path / "displays.json")))
     made = []
 
     def make(**sections):
@@ -1766,6 +1768,53 @@ def test_the_settings_page_is_given_the_brain_to_look_after_every_satellite_by(m
     brain = make_brain(settings_page={"port": 8765, "allow": ["you@example.com"]})
     assert brain.settings_page.brain is brain
     assert brain.satellites() == ["bedroom", "kitchen"]
+
+
+def _display_threads():
+    return [thread.name for thread in threading.enumerate() if thread.name in ("display", "display-server")]
+
+
+def _running(brain):
+    """Runs the brain on a thread of its own, giving what's set once run() has returned."""
+    done = threading.Event()
+    threading.Thread(target=lambda: (brain.run(), done.set()), daemon=True).start()
+    assert wait_for(lambda: brain.port)
+    return done
+
+
+def test_display_server_off_by_default(brain):
+    assert isinstance(brain.displays, Displays) and brain.display_server is None
+    done = _running(brain)
+    try:
+        # Nothing listens for clocks, and with none to serve, nothing reads Home Assistant for them either.
+        assert _display_threads() == []
+    finally:
+        brain.stop()
+    assert done.wait(5)
+
+
+def test_display_server_starts_and_stops(make_brain):
+    held = socket.socket()
+    held.bind(("127.0.0.1", 0))
+    port = held.getsockname()[1]
+    held.close()
+    brain = make_brain(display={"port": port})
+    assert brain.display_server.port == port
+    assert (brain.display_server.displays, brain.display_server.feed) == (brain.displays, brain.display_feed)
+    # Not until run(), as the settings page isn't.
+    with pytest.raises(OSError):
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+
+    done = _running(brain)
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/display", timeout=5) as response:
+        assert response.status == 200
+    assert sorted(_display_threads()) == ["display", "display-server"]
+
+    brain.stop()
+    assert done.wait(5)
+    with pytest.raises(OSError):
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+    assert wait_for(lambda: not _display_threads())
 
 
 def test_a_restart_stops_the_brain_cleanly_and_says_it_was_asked_for(brain, monkeypatch):

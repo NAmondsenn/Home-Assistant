@@ -32,6 +32,9 @@ from voice_assistant import logging_setup, paths, protocol, storage, watchdog
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock, spoken_clock_time
+from voice_assistant.display_feed import DisplayFeed
+from voice_assistant.display_server import DisplayServer
+from voice_assistant.displays import Displays
 from voice_assistant.google_calendar import READ_FAILURES, GoogleCalendar
 from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
@@ -361,6 +364,15 @@ class Brain:
         # switched off - see settings_page.py. It looks each satellite's session up at
         # every request, so it never holds one which has gone.
         self.settings_page = SettingsPage.from_config(config, self)
+
+        # The clock displays, their page and what each shows - see docs/decisions/0013.
+        # The clocks are always kept, so the settings page can add one before display.port
+        # is set; the server is None until it is, and the feed is only started with it,
+        # so with no clocks served nothing reads Home Assistant for them.
+        self.displays = Displays()
+        self.display_feed = DisplayFeed(self)
+        self.display_server: Optional[DisplayServer] = DisplayServer.from_config(
+            config, self, self.displays, self.display_feed)
 
     def _make_battery_watcher(self) -> BatteryWatcher:
         """
@@ -1476,6 +1488,9 @@ class Brain:
             self.ntfy.start()
         if self.settings_page:
             self.settings_page.start()
+        if self.display_server:
+            self.display_feed.start()
+            self.display_server.start()
         threading.Thread(target=self._run_routines_when_due, daemon=True, name="routines").start()
         if self.batteries:
             self.batteries.start()
@@ -1542,9 +1557,10 @@ class Brain:
     def _clean_up(self):
         """
         Closes everything down in order - the clock, so nothing else starts ringing,
-        then the batteries, what's playing, ntfy and the settings page, then every
-        satellite's session, so its device in Home Assistant and its music stop - and
-        then the Piper process kept waiting for the next thing to say.
+        then the batteries, what's playing, ntfy, the settings page and the clock
+        displays' server and feed, then every satellite's session, so its device in Home
+        Assistant and its music stop - and then the Piper process kept waiting for the
+        next thing to say.
         """
         self.running = False
         self.clock.stop()
@@ -1558,6 +1574,10 @@ class Brain:
             self.ntfy.stop()
         if self.settings_page:
             self.settings_page.stop()
+        # The server first, so no clock asks for more while the feed stops watching the sessions.
+        if self.display_server:
+            self.display_server.stop()
+            self.display_feed.stop()
         self.stop()
         self.tts.close()
         # Stopped properly, so the next start isn't taken for a restart after a problem.

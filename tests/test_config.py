@@ -261,6 +261,7 @@ IN_AND_OUT = {
     ("soulsync", "url"): (["http://soulsync.local:8008", ""], ["soulsync.local", "ftp://soulsync.local"]),
     ("music", "song_download_minutes"): ([1, 10, 60], [0, 61, 10.5, True]),
     ("music", "album_download_minutes"): ([1, 30, 240], [0, 241, 30.5, True]),
+    ("display", "port"): ([0, 8766, 65535], [-1, 70000, 8766.5, True]),
 }
 
 
@@ -294,6 +295,13 @@ def test_the_repositorys_config_has_the_download_settings(tmp_path):
     assert (music["song_download_minutes"], music["album_download_minutes"]) == (10, 30)
     # No address until the user gives SoulSync's, so downloading says it isn't set up.
     assert config.section("soulsync")["url"] == ""
+
+
+def test_the_clock_displays_port_has_its_limit_and_is_off_unless_set(tmp_path):
+    assert limit_problem("display", "port", 0) is None and limit_problem("display", "port", 8766) is None
+    assert limit_problem("display", "port", 70000) == "should be a whole number from 0 to 65535"
+    # Nothing listens on the network for clocks until the user gives a port.
+    assert Config(path=str(tmp_path / "none.yaml")).section("display")["port"] == 0
 
 
 def test_an_out_of_range_value_stops_the_start_naming_it(tmp_path):

@@ -77,6 +77,8 @@ LIMITS: Dict[Tuple[str, str], Limit] = {
     ("voice", "speed"): Limit("number", 0.75, 1.5),
     # 0 is NPM's listener switched off.
     ("settings_page", "proxy_port"): Limit("number", 0, 65535, True),
+    # 0 is the clock displays' server switched off.
+    ("display", "port"): Limit("number", 0, 65535, True),
 }
 
 _TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
