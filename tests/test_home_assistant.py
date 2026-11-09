@@ -2519,7 +2519,25 @@ def test_jellyfin_media_reads_the_template(make_home):
     assert "integration_entities('jellyfin')" in template
     assert "'playing'" in template and "'paused'" in template
     assert "media_position_updated_at" in template and "as_timestamp" in template
+    # The local picture is preferred, as entity_picture is a web address when the integration's images are remote.
+    assert "entity_picture_local') or player.attributes.get('entity_picture')" in template
     assert "| tojson" in template
+
+
+@pytest.mark.parametrize("seen, shown", [
+    ("/api/media_player_proxy/media_player.tv?token=abc", "/api/media_player_proxy/media_player.tv?token=abc"),
+    ("https://jellyfin.example.com/Items/1/Images/Primary", None),
+    ("http://jellyfin.example.com/cover.jpg", None),
+    ("/api/states", None),
+    (None, None)])
+def test_jellyfin_media_only_gives_a_picture_path_picture_would_fetch(make_home, seen, shown):
+    # A web address would be refused by picture(), so the feed is never given one.
+    home = make_home({"/api/template": FakeResponse(json.dumps([_jellyfin_row(picture=seen)]))})
+    media, = home.jellyfin_media()
+    assert media["picture"] == shown
+    if shown:
+        home._session.answers[shown] = FakeResponse(b"jpeg", headers={"Content-Type": "image/jpeg"})
+        assert home.picture(media["picture"]) == (b"jpeg", "image/jpeg")
 
 
 def test_jellyfin_media_turns_numbers_from_the_template_into_floats(make_home):

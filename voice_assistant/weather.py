@@ -134,7 +134,7 @@ class Weather:
             return None
         daily = _on(self.home.forecasts(entity["id"], "daily"), now.date())
         entry = daily[0] if daily else {}
-        return {"temperature": temperature, "condition": CONDITIONS.get(entity["state"], ""),
+        return {"temperature": float(temperature), "condition": CONDITIONS.get(entity["state"], ""),
                 "high": _number(entry.get("temperature")), "low": _number(entry.get("templow"))}
 
     def entities(self) -> List[Dict]:
@@ -188,8 +188,8 @@ def _is_number(value) -> bool:
 
 
 def _number(value) -> Optional[float]:
-    """The value if it is a number to show, e.g. 14.4, else None - as _is_number decides."""
-    return value if _is_number(value) else None
+    """The value as a float if it is a number to show, e.g. 14.4 (or 11 as 11.0), else None - as _is_number decides."""
+    return float(value) if _is_number(value) else None
 
 
 def _when(entry: Dict) -> Optional[datetime]:

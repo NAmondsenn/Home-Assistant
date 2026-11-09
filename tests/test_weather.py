@@ -309,6 +309,13 @@ def test_today_gives_numbers_and_words(choices):
     assert home.asked == [("weather.forecast_home", "daily")]
 
 
+def test_today_gives_floats_even_for_whole_numbers(choices):
+    home = FakeHome(entities=[_entity(temperature=9)], daily=[_day(0, high=11, low=5)])
+    today = Weather(home, choices).today(now=NOW)
+    assert [type(today[key]) for key in ("temperature", "high", "low")] == [float, float, float]
+    assert (today["temperature"], today["high"], today["low"]) == (9.0, 11.0, 5.0)
+
+
 def test_today_has_no_high_or_low_without_a_forecast_for_today(choices):
     home = FakeHome(entities=[_entity(temperature=9.4)], daily=[_day(1), _day(2)])
     assert Weather(home, choices).today(now=NOW) == {"temperature": 9.4, "condition": "partly cloudy",

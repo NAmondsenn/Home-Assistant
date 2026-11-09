@@ -270,7 +270,10 @@ PLAYING_MEDIA_TIMEOUT = 2
 # 240, "updated": 1762700000.25}] - for the display's music page. A player is Jellyfin's by
 # its integration, as Home Assistant's app's devices are, not by its name. "updated" is when
 # the position was read, in epoch seconds, so the page can carry on counting from it. Anything
-# the player doesn't say is null.
+# the player doesn't say is null. A picture is the player's entity_picture_local when it has
+# one - Home Assistant gives the full web address of the image in entity_picture instead when
+# the integration says its images can be reached from outside, and only the local path is
+# Home Assistant's own to serve.
 JELLYFIN_MEDIA_TEMPLATE = """
 {%- set found = namespace(players=[]) -%}
 {%- set jellyfin = integration_entities('jellyfin') -%}
@@ -285,7 +288,7 @@ JELLYFIN_MEDIA_TEMPLATE = """
     'title': player.attributes.get('media_title'),
     'artist': player.attributes.get('media_artist'),
     'album': player.attributes.get('media_album_name'),
-    'picture': player.attributes.get('entity_picture'),
+    'picture': player.attributes.get('entity_picture_local') or player.attributes.get('entity_picture'),
     'position': player.attributes.get('media_position'),
     'duration': player.attributes.get('media_duration'),
     'updated': updated | as_timestamp(none) if updated else none
@@ -1007,7 +1010,9 @@ class HomeAssistant:
             One dict for each, with "entity_id", "name" (its friendly name, else its entity
             id), "area" (or None), "state" ("playing" or "paused"), "title", "artist" and
             "album" (each None if the player doesn't say), "picture" (the path Home
-            Assistant serves its picture from, for picture(), or None), "position" and
+            Assistant serves its picture from, for picture() - None if the player has none,
+            or only a web address such as "https://example.com/cover.jpg" which picture()
+            would refuse), "position" and
             "duration" (seconds, or None) and "updated" (when the position was read, in
             epoch seconds, or None).
 
@@ -1020,7 +1025,7 @@ class HomeAssistant:
         """
         return [{"entity_id": player["entity_id"], "name": player["name"], "area": player["area"],
                  "state": player["state"], "title": player["title"], "artist": player["artist"],
-                 "album": player["album"], "picture": player["picture"],
+                 "album": player["album"], "picture": _proxy_path(player["picture"]),
                  "position": _seconds(player["position"]), "duration": _seconds(player["duration"]),
                  "updated": _seconds(player["updated"])}
                 for player in json.loads(self._template(JELLYFIN_MEDIA_TEMPLATE, timeout=PLAYING_MEDIA_TIMEOUT))]
@@ -1932,6 +1937,11 @@ def _script_name(name: str) -> str:
     if len(words) > 1 and words[-1] in ("script", "scene", "routine"):
         words = words[:-1]
     return "".join(words)
+
+
+def _proxy_path(value) -> Optional[str]:
+    """A picture's path if it is one Home Assistant serves, e.g. "/api/media_player_proxy/media_player.tv?token=a" - else None."""
+    return value if isinstance(value, str) and value.startswith(PICTURE_PATH) else None
 
 
 def _seconds(value) -> Optional[float]:
