@@ -266,8 +266,34 @@ def test_a_song_is_given_up_on_after_ten_minutes(watching, clock, said):
     assert downloads._watch(GOOBA_WANTED, "kitchen") == "I couldn't download Gooba by 6ix9ine."
     assert said[-1] == ("kitchen", "I couldn't download Gooba by 6ix9ine.")
     assert 600 <= clock.given_up_at < 600 + POLL_EVERY
-    # Navidrome is only asked to scan once SoulSync says it's done.
-    assert library.scans == []
+    # SoulSync never saying it's done, Navidrome is asked to scan once, in time for the last look.
+    assert library.scans == [600 - SCAN_AFTER - POLL_EVERY]
+
+
+def test_a_song_soulsync_never_says_is_done_is_found_by_the_scan_before_its_time_is_up(watching, clock, said):
+    # Left "downloading" by SoulSync, and only in Navidrome once it has scanned.
+    library = FakeLibrary(clock)
+    library.songs = [[], lambda: [GOOBA] if library.scans else []]
+    downloads = watching(FakeSoulSync([WAITING]), library)
+
+    downloads._watch(GOOBA_WANTED, "kitchen")
+
+    assert said == [GOOBA_REQUESTED, GOOBA_DOWNLOADED]
+    assert clock.said_at[-1] == 600 - SCAN_AFTER  # the poll after the scan
+    assert library.scans == [600 - SCAN_AFTER - POLL_EVERY]
+
+
+def test_there_is_only_ever_one_scan(watching, config, clock, said):
+    # Scanned as its ten minutes ran out, the limit is raised to an hour, and SoulSync
+    # then says it's done - with Navidrome still without it.
+    clock.later.append((530, lambda: config.apply({("music", "song_download_minutes"): 60})))
+    library = FakeLibrary(clock)
+    downloads = watching(FakeSoulSync([WAITING] * (600 // POLL_EVERY) + [DONE]), library)
+
+    downloads._watch(GOOBA_WANTED, "kitchen")
+
+    assert library.scans == [600 - SCAN_AFTER - POLL_EVERY]
+    assert 3600 <= clock.given_up_at < 3600 + POLL_EVERY
 
 
 def test_the_time_limits_are_read_as_they_are_now(watching, config, clock, said):
@@ -384,6 +410,17 @@ def test_part_of_an_album_by_the_time_limit_says_how_much(watching, clock, said)
 
     # And with none of it by then:
     watching(FakeSoulSync(), FakeLibrary(clock))._watch(RUMOURS_WANTED, "kitchen")
+    assert said[-1] == ("kitchen", "I couldn't download Rumours by Fleetwood Mac.")
+
+
+def test_an_album_with_nothing_new_by_then_is_scanned_once_before_its_time_is_up(watching, clock, said):
+    # SoulSync never says an album is done, as it gives nothing to follow it by.
+    library = FakeLibrary(clock)
+    downloads = watching(FakeSoulSync(), library)
+
+    downloads._watch(RUMOURS_WANTED, "kitchen")
+
+    assert library.scans == [1800 - SCAN_AFTER - POLL_EVERY]
     assert said[-1] == ("kitchen", "I couldn't download Rumours by Fleetwood Mac.")
 
 

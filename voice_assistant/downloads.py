@@ -35,7 +35,10 @@ logger = logging.getLogger(__name__)
 POLL_EVERY = 15
 
 # Seconds after SoulSync says it's done before Navidrome, still without it, is asked
-# to scan its folders. It finds new files in its own time, which can be a while.
+# to scan its folders - once. Navidrome finds new files itself, so this is only in
+# case it hasn't. SoulSync never says an album is done, and can leave a song
+# "downloading", so without its word the scan is asked for this long and a poll
+# before the time limit instead, and the last look sees what it found.
 SCAN_AFTER = 60
 
 NOT_SET_UP = ("Downloading music isn't set up. SoulSync's address goes in Settings, under Music, "
@@ -324,7 +327,8 @@ class Downloads:
         done_at: Optional[float] = None
         scanned = False
         while not self._wait(POLL_EVERY):
-            if self._now() - started >= self._limit(wanted):
+            limit = self._limit(wanted)
+            if self._now() - started >= limit:
                 new = self._look(library, wanted, before, new)
                 return self._tell(satellite, self._last_word(wanted, request, new))
             if done_at is None:
@@ -337,14 +341,28 @@ class Downloads:
             outcome = self._landed(wanted, request, new)
             if outcome:
                 return self._tell(satellite, outcome)
-            if done_at is not None and not scanned and self._now() - done_at >= SCAN_AFTER:
+            why = None if scanned else self._scan_due(wanted, started, done_at, limit)
+            if why:
                 # Once only: a scan Navidrome refused - Nova's user not an admin - or
                 # one which didn't find it won't do better asked again.
                 scanned = True
-                logger.info(f"SoulSync is done with {wanted.name}, but Navidrome hasn't got it yet, "
-                            f"so it's asked to scan")
+                logger.info(f"{why}, so Navidrome is asked to scan")
                 library.start_scan()
         return ""
+
+    def _scan_due(self, wanted: Wanted, started: float, done_at: Optional[float], limit: float) -> Optional[str]:
+        """
+        Why Navidrome is to be asked to scan now, or None if it isn't yet: SCAN_AFTER
+        seconds after SoulSync said it was done, or - with no word from SoulSync -
+        that long and a poll before the time limit.
+        """
+        now = self._now()
+        if done_at is not None:
+            if now - done_at >= SCAN_AFTER:
+                return f"SoulSync is done with {wanted.name}, but Navidrome hasn't got it"
+        elif now - started >= limit - SCAN_AFTER - POLL_EVERY:
+            return f"Time is nearly up for {wanted.name}, and SoulSync hasn't said it's done"
+        return None
 
     def _tell(self, satellite: Optional[str], message: str) -> str:
         """
