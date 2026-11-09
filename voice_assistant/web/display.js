@@ -311,10 +311,20 @@ let eventsDrawn = null;
 
 // Once a second, on the second: the time, and the music's progress, which Nova only
 // sends as it changes - its position at a moment, which the page moves on from itself.
+// The next second is set going first, and each drawn on its own, so a mistake drawing
+// one - a state Nova sent that the page can't read, say - never stops the clock.
 function tick() {
-  drawTime();
-  drawProgress();
   setTimeout(tick, 1000 - (novaNow() % 1000) + 5);
+  try {
+    drawTime();
+  } catch (error) {
+    console.error("Couldn't draw the time:", error);
+  }
+  try {
+    drawProgress();
+  } catch (error) {
+    console.error("Couldn't draw the music's progress:", error);
+  }
 }
 
 function drawTime() {
