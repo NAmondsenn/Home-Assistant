@@ -41,12 +41,20 @@ const REFUSED_WAIT = 60000;
 const POLL_WITHIN = 40000;
 const SEND_WITHIN = 10000;
 
+// The soonest a long poll is asked again after one answered with nothing new, in
+// milliseconds - see follow.
+const QUICKEST = 1000;
+
 // How long the volume shows after a button's pressed, in milliseconds.
 const VOLUME_SHOWN = 1500;
 
 // How long Nova's state says to wait before going back to Home once the music stops,
 // for a state without one, in seconds - the settings page's own default.
 const HOME_AFTER = 60;
+
+// What goes between two things on a line, e.g. "Artist · Album" - en spaces, as
+// Outfit's own spaces are narrow enough to run the words into the dot.
+const BETWEEN = "\u2002·\u2002";
 
 const DAY_MS = 86400000;
 const PAGES = ["home", "coming-up", "now-playing"];
@@ -101,11 +109,19 @@ function setText(element, text) {
 // The key
 
 // The key from "#key=..." if the address has one, kept for next time and taken off the
-// address; else the one kept last time, or null.
+// address; else the one kept last time, or null - null too for one which can't be read,
+// e.g. "#key=%E0", so the page says it has no key rather than stopping dead.
 function readKey() {
   const given = /(?:^#|&)key=([^&]+)/.exec(location.hash);
-  let found = given ? decodeURIComponent(given[1]) : null;
   if (given) history.replaceState(null, "", location.pathname + location.search);
+  let found = null;
+  if (given) {
+    try {
+      found = decodeURIComponent(given[1]);
+    } catch (error) {
+      return null;
+    }
+  }
   try {
     if (found) localStorage.setItem(KEY_STORE, found);
     else found = localStorage.getItem(KEY_STORE);
@@ -152,40 +168,53 @@ async function ask(path, { body = null, within = SEND_WITHIN, blob = false, keep
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Follows Nova's state for as long as the page is open: each answer is shown and the
-// next asked for with its version, which Nova holds until something changes.
+// next asked for with its version, which Nova holds until something changes. Only Nova
+// being out of reach makes the page offline - a state the page fails to draw is logged
+// and the next asked for, so a mistake here never passes for Nova being away.
 async function follow() {
   let version = null;
   let failures = 0;
   for (;;) {
-    let wait = 0;
+    const asked = Date.now();
+    let answer;
     try {
-      const answer = await ask(API + (version === null ? "state" : `state?since=${version}`), { within: POLL_WITHIN });
-      if (answer.status === 200) {
-        failures = 0;
-        version = answer.data.version;
-        showMessage(null);
-        show(answer.data);
-      } else {
-        // Asked afresh next time, without a version, so it's answered at once.
-        version = null;
-        if (answer.status === 401) {
-          showMessage("Nova didn't accept this clock's key", "Trying again every minute.");
-          wait = REFUSED_WAIT;
-        } else if (answer.status === 429) {
-          wait = REFUSED_WAIT;
-        } else {
-          failures += 1;
-          wait = BACKOFF[Math.min(failures, BACKOFF.length) - 1];
-        }
-        setOnline(false);
-      }
+      answer = await ask(API + (version === null ? "state" : `state?since=${version}`), { within: POLL_WITHIN });
     } catch (error) {
       version = null;
       failures += 1;
-      wait = BACKOFF[Math.min(failures, BACKOFF.length) - 1];
       setOnline(false);
+      await pause(BACKOFF[Math.min(failures, BACKOFF.length) - 1]);
+      continue;
     }
-    if (wait) await pause(wait);
+    if (answer.status !== 200) {
+      // Asked afresh next time, without a version, so it's answered at once.
+      version = null;
+      let wait = REFUSED_WAIT;
+      if (answer.status === 401) {
+        showMessage("Nova didn't accept this clock's key", "Trying again every minute.");
+      } else if (answer.status !== 429) {
+        failures += 1;
+        wait = BACKOFF[Math.min(failures, BACKOFF.length) - 1];
+      }
+      setOnline(false);
+      await pause(wait);
+      continue;
+    }
+    failures = 0;
+    let same = false;
+    try {
+      same = answer.data.version === version;
+      version = answer.data.version;
+      showMessage(null);
+      show(answer.data);
+    } catch (error) {
+      console.error("Couldn't draw Nova's state:", error);
+      same = true;
+    }
+    // Nova answers the same version early only as it stops - asked again at once, it
+    // would answer at once again, over and over until it's gone. A state which can't be
+    // drawn waits as long, so a mistake can't set the page asking as fast as it can.
+    if (same && Date.now() - asked < QUICKEST) await pause(QUICKEST);
   }
 }
 
@@ -299,7 +328,7 @@ function drawWeather() {
   const bounds = [];
   if (weather.high !== null && weather.high !== undefined) bounds.push(`H ${Math.round(weather.high)}°`);
   if (weather.low !== null && weather.low !== undefined) bounds.push(`L ${Math.round(weather.low)}°`);
-  setText($("high-low"), bounds.join(" · "));
+  setText($("high-low"), bounds.join(BETWEEN));
   $("high-low").hidden = !bounds.length;
 }
 
@@ -327,7 +356,7 @@ function drawEvents() {
   }));
   $("no-events").hidden = events.length > 0;
   const next = events[0];
-  setText($("next"), next ? `Next: ${next.title} · ${eventWhen(next, today)}` : "");
+  setText($("next"), next ? `Next: ${next.title}${BETWEEN}${eventWhen(next, today)}` : "");
 }
 
 function drawMusic() {
@@ -336,9 +365,9 @@ function drawMusic() {
   $("nothing-playing").hidden = Boolean(music);
   drawCover(music);
   if (!music) return;
-  setText($("source"), [music.source, music.room].filter(Boolean).join(" · "));
+  setText($("source"), [music.source, music.room].filter(Boolean).join(BETWEEN));
   setText($("title"), music.title);
-  setText($("artist"), [music.artist, music.album].filter(Boolean).join(" · "));
+  setText($("artist"), [music.artist, music.album].filter(Boolean).join(BETWEEN));
   $("artist").hidden = !music.artist && !music.album;
   drawProgress();
 }
@@ -482,12 +511,13 @@ function startHold() {
   holding = holding.then(() => ask(API + "hold", { body: { action: "start" } })).catch(() => {});
 }
 
-// Ends a hold Nova was told of - sent straight away, rather than after its start, as the
-// page goes, with keepalive so it's sent even so.
+// Ends a hold Nova was told of, with keepalive, so it's sent even if the page is hidden
+// or going meanwhile - and as the page goes, straight away rather than after its start,
+// which may never come back to a page that's gone.
 function endHold(going = false) {
   if (!holdSent) return;
   holdSent = false;
-  const send = () => ask(API + "hold", { body: { action: "end" }, keepalive: going });
+  const send = () => ask(API + "hold", { body: { action: "end" }, keepalive: true });
   if (going) send().catch(() => {});
   else holding = holding.then(send).catch(() => {});
 }
@@ -501,6 +531,10 @@ function dropTouch(going = false) {
 
 document.addEventListener("touchstart", (event) => {
   event.preventDefault();
+  // One finger on the screen, yet one still followed: its touchend was lost, which
+  // would otherwise leave every later touch taken for a second finger. It's let go of,
+  // a hold ended, and this touch begun afresh.
+  if (touch && event.touches.length === 1) dropTouch();
   if (touch) {
     // A second finger: whatever the first was doing isn't a tap or a swipe now - but a
     // hold already begun carries on until the first finger lifts.
@@ -568,10 +602,17 @@ function showVolume(volume) {
   }, VOLUME_SHOWN);
 }
 
-// The arrow keys stand in for the buttons in a desktop browser, for trying the page out.
+// The arrow keys stand in for the buttons in a desktop browser, for trying the page out,
+// and the volume keys count where a browser passes them to the page, e.g. "AudioVolumeUp".
 document.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowUp") novaVolume("up");
-  else if (event.key === "ArrowDown") novaVolume("down");
+  if (event.key === "ArrowUp" || event.key === "AudioVolumeUp") novaVolume("up");
+  else if (event.key === "ArrowDown" || event.key === "AudioVolumeDown") novaVolume("down");
+});
+
+// Anything the Content-Security-Policy stops, said in the console - Fully Kiosk's
+// fully.bind() runs its handler as a string, which the policy may turn down on the clock.
+document.addEventListener("securitypolicyviolation", (event) => {
+  console.error(`Blocked by the page's policy (${event.violatedDirective}): ${event.blockedURI || "inline code"}`);
 });
 
 function start() {

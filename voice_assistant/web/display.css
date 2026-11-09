@@ -354,17 +354,18 @@ h1 {
   50% { transform: scaleY(1); }
 }
 
-/* The volume, for a moment after a button's pressed - over everything but a message. */
+/* The volume, for a moment after a button's pressed - over everything but a message,
+ * along the bottom over the dots, where it covers nothing on any page. */
 
 .volume {
   position: absolute;
-  top: 28px;
+  bottom: 8px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 16px 28px;
+  padding: 10px 26px;
   border-radius: 40px;
   background: #161b22;
   border: 1px solid #30363d;
