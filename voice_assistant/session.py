@@ -22,7 +22,7 @@ import queue
 import re
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from voice_assistant import paths, storage
 from voice_assistant.actions import ActionExecutor
@@ -34,7 +34,7 @@ from voice_assistant.llm import LLMHandler
 from voice_assistant.logging_setup import transcripts_logged
 from voice_assistant.music import MusicHold, make_player
 from voice_assistant.network import online
-from voice_assistant.recording import RATE, record_until_silence
+from voice_assistant.recording import RATE, AudioFeed, record_until_silence
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.settings_page import change_volume, volume_levels
 from voice_assistant.spotify_controller import brains_speaker
@@ -144,8 +144,18 @@ class Session:
         self._stops = 0
 
         # What the assistant is doing - "idle", "listening", "thinking" or "speaking" -
-        # for the settings page's star. Only ever read for show.
-        self.activity = "idle"
+        # for the settings page's star and the clock displays. Only ever read for show.
+        self._activity = "idle"
+        # What it last heard the user say in this conversation - "What time is it?" -
+        # for a clock display to show. Empty from the moment it starts listening again.
+        self._heard = ""
+        # Told of each change to either, for a clock display waiting on one - see watch.
+        self._watchers: List[Callable[[], None]] = []
+        self._watchers_lock = threading.Lock()
+        # The feed a finger held on a clock display opened, so lifting it ends that
+        # recording - see listen_now. Forgotten once let go, or once its conversation is over.
+        self._held: Optional[AudioFeed] = None
+        self._held_lock = threading.Lock()
         # The last volume beep the settings page played, stopped as the next starts,
         # so dragging a slider doesn't pile them up - see boop.
         self._last_boop = None
@@ -368,6 +378,97 @@ class Session:
         speakers = [session.satellite.speaker_name or brains_speaker(self.config) for session in sessions]
         return self.brain.media.playing_in(self.home.area, devices, speakers)
 
+    # For a clock display - see docs/decisions/0013
+
+    @property
+    def activity(self) -> str:
+        """What the assistant is doing: "idle", "listening", "thinking" or "speaking"."""
+        return self._activity
+
+    @activity.setter
+    def activity(self, activity: str):
+        # Only a real change is told, as every request sets "listening" twice - once as
+        # the conversation starts and again as its recording does.
+        if activity != self._activity:
+            self._activity = activity
+            self._tell_watchers()
+
+    @property
+    def heard(self) -> str:
+        """What the assistant last heard the user say in this conversation, or "" while it listens."""
+        return self._heard
+
+    @heard.setter
+    def heard(self, heard: str):
+        if heard != self._heard:
+            self._heard = heard
+            self._tell_watchers()
+
+    def watch(self, watcher: Callable[[], None]):
+        """
+        Has a watcher told each time activity or heard changes, from the thread which
+        changed it - so it should only take note, as a clock display's long poll does.
+
+        Args:
+            watcher: Called with nothing. One which raises is logged, and the rest are
+                still told.
+        """
+        with self._watchers_lock:
+            self._watchers.append(watcher)
+
+    def unwatch(self, watcher: Callable[[], None]):
+        """
+        Stops telling a watcher. Nothing happens for one which wasn't watching.
+
+        Args:
+            watcher: As given to watch.
+        """
+        with self._watchers_lock:
+            if watcher in self._watchers:
+                self._watchers.remove(watcher)
+
+    def _tell_watchers(self):
+        # Called on a copy, outside the lock, so a watcher which unwatches - or watches
+        # again - as it's told can't deadlock or change the list being gone through.
+        with self._watchers_lock:
+            watchers = list(self._watchers)
+        for watcher in watchers:
+            try:
+                watcher()
+            except Exception as e:
+                # A display gone wrong mustn't stop the conversation it was watching.
+                logger.warning(f"A watcher of the {self.satellite.name} satellite failed: {e}", exc_info=True)
+
+    def listen_now(self) -> bool:
+        """
+        Starts a conversation as if the wake word had been heard - for a finger held on a
+        clock display. Muted or not makes no difference: muting stops the wake word, not
+        a hold made on purpose.
+
+        Returns:
+            True once the satellite has been asked to listen. False while a conversation
+            is going, a hold is already open, or the satellite has gone.
+        """
+        with self._held_lock:
+            if (self._held is not None or not self._idle.is_set() or self._closed.is_set()
+                    or not self.satellite.connected):
+                return False
+            # Nothing from before, as there's no wake word at the start of it to leave out.
+            self._held = self.satellite.listen()
+            self.satellite.wakes.put({"talked_over": False, "pre_roll": 0, "feed": self._held})
+        return True
+
+    def stop_held(self):
+        """
+        Ends the recording a hold started, as the finger is lifted - what was said so far
+        is what's answered. Nothing happens without one, or once its recording has ended
+        by itself, at the end of the user's speech.
+        """
+        with self._held_lock:
+            feed, self._held = self._held, None
+        if feed is not None:
+            self.satellite.stop_listening(feed)
+
     # Running
 
     def run(self):
@@ -452,6 +553,11 @@ class Session:
             # The satellite silences anything going off when it hears the wake word, and
             # leaves it to the brain to let it back.
             self.speaker.allow("announcement")
+            # A hold which started this is over with it, so the next can start another,
+            # rather than waiting for a finger already lifted to be let go of.
+            with self._held_lock:
+                if self._held is wake["feed"]:
+                    self._held = None
             self.activity = "idle"
             self._idle.set()
             self.music.release()
@@ -531,6 +637,7 @@ class Session:
             speech_timeout = thresholds.get("follow_up_timeout", speech_timeout * 2)
 
         self.activity = "listening"
+        self.heard = ""
 
         # A short sound to say it's listening, since on a headless Pi there's otherwise no
         # way to tell the wake word was heard, or when to start talking. The satellite
@@ -614,6 +721,7 @@ class Session:
             return None
 
         timeline.note(text_chars=len(text))
+        self.heard = text
         self._show(f"You: {text}")
 
         # Everything between hearing the request and answering it - see conversation.py.

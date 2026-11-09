@@ -1053,6 +1053,142 @@ def test_a_session_started_before_the_save_uses_the_new_value(brain, connect, ma
     assert durations == [1.2, 1.2]
 
 
+# For a clock display - see docs/decisions/0013
+
+def test_a_hold_starts_a_conversation_like_a_wake(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation(Reply(say="Okay."))
+    brain.stt.texts = ["What time is it?"]
+    pi.answers = [said(before=0)]
+    heard = []
+    session.watch(lambda: heard.append(session.heard))
+    thread = running(session)
+
+    assert session.listen_now()
+    assert wait_for(lambda: pi.messages("allow"))
+    assert len(pi.messages("listen")) == 1
+    # Heard and answered as a fresh request, not as the answer to a question.
+    assert session.conversation.heard == [("What time is it?", False)]
+    assert session.heard == "What time is it?" and "What time is it?" in heard
+    assert brain.tts.said == ["Okay."]
+
+    # Over once its conversation is, so letting go then stops nothing, and the next
+    # hold starts another.
+    assert wait_for(lambda: session._idle.is_set())
+    session.stop_held()
+    assert len(pi.messages("stop_listening")) == 1
+    assert session.listen_now()
+    assert wait_for(lambda: len(pi.messages("listen")) == 2)
+    pi.go()
+    thread.join(5)
+
+
+def test_a_hold_works_while_muted(connect, make_session):
+    # Muting stops the wake word, not a finger held on the clock on purpose - "when nova
+    # muted, the mic should still work".
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.set_muted(True)
+
+    assert session.listen_now()
+    assert wait_for(lambda: pi.messages("listen"))
+    assert not satellite.wakes.empty()
+
+
+def test_no_second_hold_during_a_conversation(brain, connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    # A second hold before the first has been answered isn't another.
+    assert session.listen_now()
+    assert not session.listen_now()
+    assert satellite.wakes.qsize() == 1
+    session.stop_held()
+    satellite.wakes.get_nowait()
+
+    session.conversation = ScriptedConversation(Reply(say="Today, you've got..."))
+    brain.stt.texts = ["What's on today?"]
+    # The reply plays on, so the conversation is still going.
+    pi.held = {1}
+    thread = running(session)
+    pi.wake(said())
+    assert wait_for(lambda: pi.messages("play_stream"))
+
+    assert not session.listen_now()
+    # Letting go of a hold which never was does nothing to the conversation.
+    session.stop_held()
+    time.sleep(0.1)
+    assert len(pi.messages("listen")) == 1 and satellite.wakes.empty()
+    assert len(pi.messages("stop_listening")) == 2 and session.activity == "speaking"
+    pi.go()
+    thread.join(5)
+
+
+def test_letting_go_ends_the_recording(connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    # Without a hold, letting go does nothing.
+    session.stop_held()
+
+    assert session.listen_now()
+    feed = satellite.wakes.get_nowait()["feed"]
+    session.stop_held()
+    session.stop_held()
+    assert wait_for(lambda: pi.messages("stop_listening"))
+    time.sleep(0.1)
+    # Only the once, for that recording - which ends what's recorded of it.
+    assert len(pi.messages("stop_listening")) == 1
+    assert pi.messages("stop_listening")[0]["recording"] == pi.messages("listen")[0]["recording"]
+    assert len(feed.listen(0).read(RATE)) == 0
+
+
+def test_a_hold_on_a_satellite_which_has_gone_is_refused(connect, make_session):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    pi.go()
+    assert wait_for(lambda: not satellite.connected)
+
+    assert not session.listen_now()
+    assert satellite.wakes.empty()
+
+
+def test_watchers_hear_each_change(brain, connect, make_session, caplog):
+    satellite, pi = connect()
+    session = make_session(satellite)
+    session.conversation = ScriptedConversation(Reply(say="Okay."))
+    brain.stt.texts = ["Turn the lights on."]
+    seen = []
+
+    def watcher():
+        seen.append(session.activity)
+
+    def broken():
+        raise RuntimeError("The display has gone")
+
+    session.watch(watcher)
+    session.watch(broken)
+    thread = running(session)
+    pi.wake(said())
+    assert wait_for(lambda: pi.messages("allow") and session._idle.is_set())
+
+    # One which fails is logged, and the conversation carries on regardless.
+    assert brain.tts.said == ["Okay."]
+    assert "listening" in seen and seen[-1] == "idle"
+    assert seen.index("listening") < len(seen) - 1
+    assert any("The display has gone" in record.getMessage() for record in caplog.records)
+
+    # Told only of a change, and not once it's stopped watching.
+    told = len(seen)
+    session.activity = "idle"
+    assert len(seen) == told
+    session.unwatch(watcher)
+    session.unwatch(broken)
+    session.activity = "thinking"
+    assert len(seen) == told
+    pi.go()
+    thread.join(5)
+
+
 # The satellite's device in Home Assistant
 
 def test_home_assistant_sees_and_changes_nova_as_the_settings_page_does(brain, connect, make_session):
