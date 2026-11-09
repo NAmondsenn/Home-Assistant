@@ -57,6 +57,12 @@ WHOLE_ARTIST = "I only download songs and albums, not a whole artist."
 # Asked when "download" comes with nothing to download.
 WHAT_TO_DOWNLOAD = "What would you like me to download?"
 
+# The questions which end an offer to download. LLMHandler._asked_to_download reads them,
+# as the request which made an offer - "play Get Lucky" - never makes its answer a yes.
+DOWNLOAD_IT = "Do you want me to download it?"
+DOWNLOAD_EXPLICIT = "Do you want me to download the explicit one?"
+OFFERS = (DOWNLOAD_IT, DOWNLOAD_EXPLICIT)
+
 # What can be offered after "play X" finds nothing - a song, or an album. None is a song,
 # as play_music takes it.
 OFFERED = (None, "track", "album")
@@ -325,7 +331,7 @@ class Downloads:
     @staticmethod
     def _offered(query: str, search_type: Optional[str], wanted: Wanted) -> Dict:
         """The offer to download what Navidrome hasn't got, with the request on a yes."""
-        return {"success": True, "message": f"I haven't got {wanted.name}. Do you want me to download it?",
+        return {"success": True, "message": f"I haven't got {wanted.name}. {DOWNLOAD_IT}",
                 "ask_first": Action("request_download", {"query": query, "search_type": search_type})}
 
     def download(self, query: Optional[str], search_type: Optional[str], satellite: Optional[str],
@@ -436,8 +442,8 @@ class Downloads:
             return None
         had = _as_had(wanted, found)
         if had is None:
-            return {"success": True, "message": f"You've only got a clean version of {wanted.name}. "
-                                                "Do you want me to download the explicit one?",
+            return {"success": True,
+                    "message": f"You've only got a clean version of {wanted.name}. {DOWNLOAD_EXPLICIT}",
                     "ask_first": Action("request_download", {"query": query, "search_type": search_type})}
         logger.info(f"Navidrome already has {had}, so {wanted.name} isn't requested")
         return {"success": True, "message": f"You've already got {had}."}

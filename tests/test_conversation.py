@@ -1086,6 +1086,21 @@ def test_anything_but_a_plain_yes_to_the_offer_only_asks_again_whatever_claude_c
     assert downloads.requested == [("Gooba by 6ix9ine", "track", "kitchen")]
 
 
+def test_get_in_the_songs_name_doesnt_make_okay_a_yes(downloading_with_claude):
+    get_lucky = {"query": "Get Lucky by Daft Punk", "search_type": "track"}
+    offered = "I haven't got Get Lucky by Daft Punk. Do you want me to download it?"
+    conversation, downloads, llm = downloading_with_claude(("Okay.", ("play_music", get_lucky)),
+                                                           ("Okay.", ("download_music", get_lucky)))
+    assert conversation.handle("play Get Lucky by Daft Punk").say == offered
+
+    reply = conversation.handle("okay", follow_up=True)
+
+    assert (reply.say, reply.listen_again) == (offered, True)
+    assert downloads.started == [] and downloads.requested == []
+    assert conversation.handle("yes", follow_up=True).say == ""
+    assert downloads.requested == [("Get Lucky by Daft Punk", "track", "kitchen")]
+
+
 def test_a_yes_once_the_offer_has_lapsed_only_asks_again(downloading_with_claude):
     conversation, downloads, llm = downloading_with_claude(("Okay.", ("play_music", GOOBA_TRACK)),
                                                            ("Okay.", ("download_music", GOOBA_TRACK)))

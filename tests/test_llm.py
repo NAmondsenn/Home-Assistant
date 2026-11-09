@@ -129,6 +129,20 @@ def test_a_download_asked_for_in_the_exchange_before_is_claudes_to_make(llm):
     assert llm.process_query("Gooba")["actions"][0].tool == "offer_download"
 
 
+@pytest.mark.parametrize("asked, offer", [
+    ("play get lucky by daft punk", "I haven't got Get Lucky by Daft Punk. Do you want me to download it?"),
+    ("get me get lucky", "You've only got a clean version of Get Lucky. Do you want me to download the explicit one?"),
+])
+def test_the_request_which_made_an_offer_doesnt_count_for_its_answer(llm, asked, offer):
+    # "get" in a song's name, or in the request itself, mustn't make "okay" to the offer a yes.
+    llm.client = FakeClient(_reply("Okay.", _tool("download_music", query="Get Lucky", search_type="track")))
+    llm.history = [{"user": asked, "assistant": offer}]
+    assert llm.process_query("okay")["actions"][0].tool == "offer_download"
+    # The answer's own words still do.
+    llm.history = [{"user": asked, "assistant": offer}]
+    assert llm.process_query("yeah, get it")["actions"][0].tool == "download_music"
+
+
 def test_only_a_download_is_offered_instead(llm):
     llm.client = FakeClient(_reply("Okay.", _tool("play_music", **GOOBA_DOWNLOAD),
                                    _tool("download_music", use_id="toolu_2", **GOOBA_DOWNLOAD)))

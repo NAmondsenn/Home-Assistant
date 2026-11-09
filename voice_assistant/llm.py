@@ -24,6 +24,7 @@ import anthropic
 from anthropic import Anthropic
 from voice_assistant.actions import Action, bare_acknowledgement
 from voice_assistant.clock import spoken_clock_time
+from voice_assistant.downloads import OFFERS
 from voice_assistant.intents import not_a_list, points_back
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant import network
@@ -214,7 +215,9 @@ class LLMHandler:
         Without it, anything said back to "Do you want me to download it?" which isn't a
         plain yes - "okay", or a "yes" after the follow-up window ran out - would reach
         Claude, which could take it for one and download. The assistant's own words never
-        count, as they ask the question.
+        count, as they ask the question. Nor does an exchange which ended in an offer: its
+        request made the offer, and "play Get Lucky" would make "okay" to it a yes. Its
+        answer needs a plain yes, or the words itself.
 
         Args:
             text: What the user just said.
@@ -222,7 +225,9 @@ class LLMHandler:
         Returns:
             True if "download" or "get" is one of their words, now or in the exchange before.
         """
-        said = [text] + ([self.history[-1].get("user", "")] if self.history else [])
+        said = [text]
+        if self.history and not any(offer in (self.history[-1].get("assistant") or "") for offer in OFFERS):
+            said.append(self.history[-1].get("user") or "")
         return any(DOWNLOAD_WORDS.search(words) for words in said)
 
     @staticmethod
