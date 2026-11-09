@@ -8,15 +8,15 @@
 
 **Builder's calls made here:** pushing is a long-poll (`/display/api/state?since=`), not WebSocket or SSE, because the brain has no WebSocket server, the page must send its key in a header, and a held request is plain standard library. "What Nova heard" is the final text once the recording ends, since the speech-to-text gives no partial text today. The display server listens on its own port (`display.port`, off by default) on every address, because the settings page and satellite port listen on 127.0.0.1 only and the clock is on home Wi-Fi.
 
-**Tech Stack:** Python 3 standard library (`http.server`, `threading`), the existing `requests`-based Home Assistant client and Google calendar; plain HTML, CSS and JavaScript for the page; pytest on the Pi; Node 22 (`~/tools/node`) only for the gesture test.
+**Tech Stack:** Python 3 standard library (`http.server`, `threading`), the existing `requests`-based Home Assistant client and Google calendar; plain HTML, CSS and JavaScript for the page; pytest on the Pi; Node 22 (`<node>`) only for the gesture test.
 
 **Spec:** `docs/decisions/0013-the-clock-display.md` (mockup: `docs/decisions/0013-clock-display-mockup.html`). Read both before any task.
 
 ## Global Constraints
 
-- Work in the worktree `/home/nathaniel/work/Home-Assistant-clock`, branch `clock-display`. Never touch `/home/nathaniel/work/Home-Assistant` (another session's music build lives there). No `git stash`.
-- Tests: `nice -n 19 timeout 900 bash ~/nova/tools/pi_test_clock.sh <pytest args>` (copies this worktree to the Pi and runs pytest there). Check `cat /proc/loadavg` first and wait if the first number is above 3. Run only the task's test file while working; one full run (`-x`) before the task's commit; never two runs at once; no repeat runs for flakiness. Ruff: `ssh -o BatchMode=yes pi 'cd /tmp/nova-check/clock-work && /tmp/nova-check-pytest/bin/ruff check .'` after a test run has copied the tree.
-- Node (gesture test only): `nice -n 19 timeout 120 ~/tools/node/bin/node --max-old-space-size=768 --test --test-concurrency=1 tests/web/*.test.mjs`. No equality asserts on large objects or DOM nodes.
+- Work in the worktree `<worktree>`, branch `clock-display`. Never touch the main checkout (`<main checkout>`, another session's music build lives there). No `git stash`.
+- Tests: `nice -n 19 timeout 900 bash <test script> <pytest args>` (copies this worktree to the Pi and runs pytest there). Check `cat /proc/loadavg` first and wait if the first number is above 3. Run only the task's test file while working; one full run (`-x`) before the task's commit; never two runs at once; no repeat runs for flakiness. Ruff: `ssh -o BatchMode=yes pi 'cd /tmp/nova-check/clock-work && /tmp/nova-check-pytest/bin/ruff check .'` after a test run has copied the tree.
+- Node (gesture test only): `nice -n 19 timeout 120 <node> --max-old-space-size=768 --test --test-concurrency=1 tests/web/*.test.mjs`. No equality asserts on large objects or DOM nodes.
 - Never `ps` on the Pi; never deploy, push or restart anything.
 - Code style (the user's): full-sentence comments in British spelling with spaced " - " dashes, explaining why, with concrete quoted examples; Google-style `Args:`/`Returns:`/`Raises:` docstrings; module docstrings like the existing ones, pointing at `docs/decisions/0013`; no comments on obvious lines; no new dependencies; no hard-coded hosts or paths; keep each file's line endings.
 - Commits: one per task, a plain sentence title, ending with the line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Each task adds tests that fail on the old code.
@@ -58,7 +58,7 @@
   - `test_change_keeps_to_its_limits`: `change(id, {"brightness": 40, "home_after": 120})` saves both; `{"brightness": 101}`, `{"home_after": 5}`, `{"name": "x"}` and an unknown id each raise ValueError.
   - `test_kept_across_a_restart`: a second `Displays(same path)` finds the same key.
   - `test_names_must_be_sensible`: empty or 40-character names raise ValueError; an 11th clock raises ValueError.
-- [ ] **Step 2: Run** `bash ~/nova/tools/pi_test_clock.sh tests/test_displays.py` - expect import failure.
+- [ ] **Step 2: Run** `bash <test script> tests/test_displays.py` - expect import failure.
 - [ ] **Step 3: Implement `Displays`** in `voice_assistant/displays.py`. Keys are stored as SHA-256 hex, compared with `hmac.compare_digest`; ids are a short slug of the name made unique; writes go through `storage.save_json` under a `threading.Lock`; the file is read once at start (`storage.load_json`). Follow `satellite_passwords.py` for shape and `page_password.Logins` for hashing.
 - [ ] **Step 4: Run the task's tests** - expect pass; then the full suite with `-x`.
 - [ ] **Step 5: Commit** "Keep the clock displays and their keys".
@@ -83,7 +83,7 @@
   - `test_no_second_hold_during_a_conversation`: while a conversation is running, `listen_now()` is False and no second `listen` is sent.
   - `test_letting_go_ends_the_recording`: after `listen_now()`, `stop_held()` sends `stop_listening` for that recording; a second `stop_held()`, and one with no hold, send nothing and raise nothing.
   - `test_watchers_hear_each_change`: a watcher appending `session.activity` sees `"listening"` then later `"idle"` in a wake's conversation; a watcher that raises doesn't stop the conversation; after `unwatch` it's no longer called.
-- [ ] **Step 2: Run** `bash ~/nova/tools/pi_test_clock.sh tests/test_session.py -k "hold or watcher or letting_go"` - expect failures.
+- [ ] **Step 2: Run** `bash <test script> tests/test_session.py -k "hold or watcher or letting_go"` - expect failures.
 - [ ] **Step 3: Implement** in `session.py`: rename the attribute to `_activity` behind a property with a setter that notifies only on a real change; set `heard` where the final text is known (`:625`) and clear it where listening starts; `listen_now` and `stop_held` with a lock around the held feed. Clear the held feed when the conversation it started ends.
 - [ ] **Step 4: Run** the task's tests, then the full suite with `-x`.
 - [ ] **Step 5: Commit** "Let a session be watched and made to listen by a held finger".
@@ -197,7 +197,7 @@
   - `tests/test_brain.py`: `test_display_server_off_by_default` (port 0 -> `display_server` None, nothing listening) and `test_display_server_starts_and_stops` (a free port from the test, started in `run`, stopped in `_clean_up`).
   - `tests/test_config.py`: the `display.port` limit accepts 0 and 8766 and refuses 70000.
 - [ ] **Step 2: Run** the three files - expect failures.
-- [ ] **Step 3: Implement** the wiring, configuration, page methods and routes, then the section's HTML and JS. Check the settings page by hand in a desktop browser if possible; at least run `~/tools/node/bin/node --check voice_assistant/web/settings.js`.
+- [ ] **Step 3: Implement** the wiring, configuration, page methods and routes, then the section's HTML and JS. Check the settings page by hand in a desktop browser if possible; at least run `<node> --check voice_assistant/web/settings.js`.
 - [ ] **Step 4: Run** the files, then the full suite with `-x`.
 - [ ] **Step 5: Commit** "Wire the clock displays into the brain and the settings page".
 
