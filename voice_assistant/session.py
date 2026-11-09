@@ -388,7 +388,8 @@ class Session:
     @activity.setter
     def activity(self, activity: str):
         # Only a real change is told, as every request sets "listening" twice - once as
-        # the conversation starts and again as its recording does.
+        # the conversation starts and again as its recording does. Told on this thread,
+        # perhaps with the announcement lock held - see watch.
         if activity != self._activity:
             self._activity = activity
             self._tell_watchers()
@@ -406,8 +407,11 @@ class Session:
 
     def watch(self, watcher: Callable[[], None]):
         """
-        Has a watcher told each time activity or heard changes, from the thread which
-        changed it - so it should only take note, as a clock display's long poll does.
+        Has a watcher told each time activity or heard changes. It's called from the
+        thread which made the change, sometimes with the announcement lock held - an
+        announcement or a routine says "speaking" as it starts - so a watcher must only
+        take note, as a clock display's long poll does: never block, and never call
+        announce, run_routine or listen_now.
 
         Args:
             watcher: Called with nothing. One which raises is logged, and the rest are
@@ -554,9 +558,12 @@ class Session:
             # leaves it to the brain to let it back.
             self.speaker.allow("announcement")
             # A hold which started this is over with it, so the next can start another,
-            # rather than waiting for a finger already lifted to be let go of.
+            # rather than waiting for a finger already lifted to be let go of. So is one
+            # whose recording has ended: held just as the wake word started this, its
+            # wake was answered part way through as talked over, and kept open, it would
+            # refuse every later hold until a lift which may never come.
             with self._held_lock:
-                if self._held is wake["feed"]:
+                if self._held is not None and (self._held is wake["feed"] or self._held.ended):
                     self._held = None
             self.activity = "idle"
             self._idle.set()

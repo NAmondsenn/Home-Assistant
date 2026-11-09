@@ -1073,15 +1073,39 @@ def test_a_hold_starts_a_conversation_like_a_wake(brain, connect, make_session):
     assert session.heard == "What time is it?" and "What time is it?" in heard
     assert brain.tts.said == ["Okay."]
 
-    # Over once its conversation is, so letting go then stops nothing, and the next
-    # hold starts another.
+    # Over once its conversation is, so the next hold starts another without the first
+    # being let go of - and letting go of that one ends only its own recording.
     assert wait_for(lambda: session._idle.is_set())
-    session.stop_held()
-    assert len(pi.messages("stop_listening")) == 1
     assert session.listen_now()
     assert wait_for(lambda: len(pi.messages("listen")) == 2)
+    session.stop_held()
+    assert wait_for(lambda: len(pi.messages("stop_listening")) == 2)
+    assert pi.messages("stop_listening")[1]["recording"] == pi.messages("listen")[1]["recording"]
     pi.go()
     thread.join(5)
+
+
+def test_a_hold_taken_up_part_way_through_a_conversation_is_over_with_it(make_session):
+    # Held just as a wake word started a conversation, the hold's wake waits in the queue
+    # and is answered there as talked over - so it isn't what the conversation started
+    # from. Kept open after it, every later hold would be refused until a lift which may
+    # never come.
+    session = make_session()
+    session.conversation = ScriptedConversation()
+    assert session.listen_now()
+    held = session.satellite.wakes.get_nowait()
+    after = [dict(held, talked_over=True), None]
+
+    def handle(feed, timeline, pre_roll=None):
+        # As the end of each recording does - see Session._handle_interaction.
+        session.satellite.stop_listening(feed)
+        return after.pop(0)
+
+    session._handle_interaction = handle
+    session._converse({"talked_over": False, "feed": AudioFeed()})
+    assert after == []
+
+    assert session.listen_now()
 
 
 def test_a_hold_works_while_muted(connect, make_session):

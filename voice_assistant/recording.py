@@ -244,6 +244,12 @@ class AudioFeed:
             self._condition.notify_all()
 
     @property
+    def ended(self) -> bool:
+        """Whether nothing more is coming - by end(), or a reader finding it stalled."""
+        with self._condition:
+            return self._ended
+
+    @property
     def position(self) -> int:
         """How many samples have been fed so far - the position of "now"."""
         with self._condition:
