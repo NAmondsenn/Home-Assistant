@@ -55,7 +55,7 @@ What the user wants, in his words: "the display be like the date / time and weat
 
 9. **Only the clock can drive Nova from the display.** Hold to talk and the volume buttons control a satellite, so whatever the clock connects to needs a credential made on the settings page, like a satellite's, never an open endpoint on the network. The page itself shows the user's calendar, so it is guarded the same way.
 
-10. **When the brain is away.** The clock keeps showing the time from its own clock, with a small mark that Nova is offline, and reconnects by itself. Touches and buttons do nothing until it is back.
+10. **When the brain is away.** The clock keeps showing the time from its own clock, with a small mark that Nova is offline, and reconnects by itself. Hold to talk and the volume buttons do nothing until it is back; swiping and tapping between pages still work, since they need nothing from the brain (a ruling made while building, 9 Nov).
 
 **Flashing (done by the user, by hand, before building on the clock).**
 - The backup is in a folder on his Mac, copied to the NAS. It is the only way back to stock.
