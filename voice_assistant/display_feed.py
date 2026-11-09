@@ -148,10 +148,11 @@ class DisplayFeed:
                 session.unwatch(watcher)
             self._watching.clear()
 
-    def state(self, satellite: str) -> Dict:
+    def state(self, satellite: Optional[str]) -> Dict:
         """
         Args:
-            satellite: The satellite's name, e.g. "pi".
+            satellite: The satellite's name, e.g. "pi" - or None while there's none to
+                name, whose state is never connected.
 
         Returns:
             Its state now, as the page reads it - see the plan's contract. One never
@@ -167,12 +168,12 @@ class DisplayFeed:
         with self._changed:
             return dict(self._states[satellite], now=self._now())
 
-    def wait(self, satellite: str, since: int, timeout: float) -> Dict:
+    def wait(self, satellite: Optional[str], since: int, timeout: float) -> Dict:
         """
         Waits for a satellite's state to change from the version a clock has - its long poll.
 
         Args:
-            satellite: The satellite's name.
+            satellite: The satellite's name, or None - see state.
             since: The version the clock has.
             timeout: The most seconds to wait.
 
@@ -346,7 +347,7 @@ class DisplayFeed:
 
     def _read_music(self, satellite: str, now: float):
         """Reads what Nova is playing on a satellite, if it's due - or at once for a session not read before."""
-        session = self._brain.session_for(satellite)
+        session = self._session(satellite)
         player = getattr(session, "music_player", None)
         if player is None:
             self._music.pop(satellite, None)
@@ -360,6 +361,15 @@ class DisplayFeed:
         found = self._attempt(f"what Nova is playing on the {satellite} satellite", player.now_playing, HOME_FAILURES)
         self._music[satellite] = (session, None if found is _FAILED else found, now)
 
+    def _session(self, satellite: Optional[str]):
+        """
+        A satellite's session, or None if it isn't connected - and always for None, which
+        a clock asks for only when there's no satellite to name. The brain's
+        session_for(None) would give the default's instead, or raise with the
+        satellites' file unreadable.
+        """
+        return self._brain.session_for(satellite) if satellite else None
+
     # Building
 
     def _build(self, satellite: str):
@@ -368,7 +378,7 @@ class DisplayFeed:
             with self._changed:
                 # Forgotten before reading, so a change told while this builds is built again.
                 self._told.discard(satellite)
-            session = self._brain.session_for(satellite)
+            session = self._session(satellite)
             self._watch(satellite, session)
             built = self._contents(satellite, session, self._now())
             with self._changed:

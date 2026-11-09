@@ -181,6 +181,18 @@ def test_an_unknown_satellite_isnt_connected():
     assert state["volume"] == {"category": "general", "percent": 0}
 
 
+def test_no_satellite_isnt_the_default():
+    # A clock asks for no satellite only when there's none to name - the brain's
+    # session_for(None) would give the default's, or raise, so it's never asked.
+    rig = Rig()
+    rig.brain.session_for = lambda satellite: rig.session if satellite is None else rig.brain.sessions.get(satellite)
+    state = rig.feed.state(None)
+    assert set(state) == KEYS and state["connected"] is False and state["music"] is None
+    assert rig.session.watchers == [] and rig.session.music_player.asked == 0
+    rig.feed.check()
+    assert rig.feed.state(None)["connected"] is False
+
+
 def test_without_home_assistant_or_a_calendar_theres_simply_less():
     rig = Rig()
     rig.brain.weather = rig.brain.calendar = rig.brain.home = None

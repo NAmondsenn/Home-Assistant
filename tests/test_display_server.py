@@ -12,6 +12,7 @@ import pytest
 import requests
 
 from voice_assistant import display_server as server_module
+from voice_assistant.display_feed import DisplayFeed
 from voice_assistant.display_server import DisplayServer
 from voice_assistant.displays import Displays
 from voice_assistant.page_password import TRIES_EACH
@@ -190,6 +191,14 @@ def _json(answer):
     return json.loads(answer[2])
 
 
+def _until(happened, seconds=5):
+    """Waits for something another thread does, failing rather than hanging if it never does."""
+    deadline = time.monotonic() + seconds
+    while not happened():
+        assert time.monotonic() < deadline, "it never happened"
+        time.sleep(0.01)
+
+
 def test_its_only_there_when_switched_on(make_config, parts):
     brain, clocks, feed = parts
     assert DisplayServer.from_config(make_config(display={"port": 0}), brain, clocks, feed) is None
@@ -204,6 +213,11 @@ def test_static_page_needs_no_key(served):
     assert headers["Content-Type"].startswith("text/html")
     assert "default-src 'self'" in headers["Content-Security-Policy"]
     assert headers["Cache-Control"] == "no-store" and headers["X-Content-Type-Options"] == "nosniff"
+    # Covers are fetched with the clock's key and shown from blob: addresses - nothing else is let in.
+    assert "img-src 'self' blob:" in headers["Content-Security-Policy"]
+    assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    _, headers, _ = _ask(served, "/display/api/state")
+    assert "img-src 'self' blob:" in headers["Content-Security-Policy"]
 
 
 def test_unknown_paths_are_not_found(served, clocks):
@@ -245,8 +259,7 @@ def test_removed_clock_is_refused_at_once(served, parts, clocks):
     # A long poll on the version the clock already has, which would wait LONGEST_WAIT.
     polling = threading.Thread(target=lambda: answers.append(_ask(served, "/display/api/state?since=7", key)))
     polling.start()
-    while not feed.waits[1:]:
-        time.sleep(0.01)
+    _until(lambda: feed.waits[1:])
     started = time.monotonic()
     clocks.remove(entry["id"])
     polling.join(5)
@@ -313,8 +326,7 @@ def test_state_waits_for_a_change(served, parts, clocks):
     answers = []
     polling = threading.Thread(target=lambda: answers.append(_ask(served, "/display/api/state?since=7", key)))
     polling.start()
-    while not feed.waits:
-        time.sleep(0.01)
+    _until(lambda: feed.waits)
     started = time.monotonic()
     feed.version = 8
     polling.join(5)
@@ -334,8 +346,7 @@ def test_a_change_on_the_settings_page_is_answered_at_once(served, parts, clocks
     answers = []
     polling = threading.Thread(target=lambda: answers.append(_ask(served, "/display/api/state?since=7", key)))
     polling.start()
-    while not feed.waits:
-        time.sleep(0.01)
+    _until(lambda: feed.waits)
     started = time.monotonic()
     clocks.change(entry["id"], {"brightness": 20, "satellite": "bedroom"})
     polling.join(5)
@@ -529,10 +540,12 @@ def test_jellyfins_cover_when_home_assistant_fails(served, parts, clocks, fails)
     assert _ask(served, "/display/api/cover?kind=home&id=media_player.office_tv", key)[0] == 404
 
 
-def test_jellyfins_cover_must_be_a_picture(served, parts, clocks):
+@pytest.mark.parametrize("kind", ["text/html", "image/svg+xml", "application/octet-stream"])
+def test_jellyfins_cover_must_be_a_picture(served, parts, clocks, kind):
     # Home Assistant's answer is served from the clock's own address, so anything but a
-    # picture - a page, say - could run as the clock's page does.
-    parts[0].home.kind = "text/html"
+    # plain picture - a page, or an SVG, which can hold a script - could run as the
+    # clock's page does.
+    parts[0].home.kind = kind
     _, key = clocks.add("Desk", "pi")
     assert _ask(served, "/display/api/cover?kind=home&id=media_player.office_tv", key)[0] == 404
 
@@ -541,3 +554,31 @@ def test_jellyfins_cover_without_home_assistant(served, parts, clocks):
     parts[0].home = None
     _, key = clocks.add("Desk", "pi")
     assert _ask(served, "/display/api/cover?kind=home&id=media_player.office_tv", key)[0] == 404
+
+
+def test_novas_cover_must_be_a_picture(served, parts, clocks):
+    player = parts[0].sessions["pi"].music_player
+    player.cover = lambda: (b"<svg/>", "image/svg+xml")
+    _, key = clocks.add("Desk", "pi")
+    assert _ask(served, "/display/api/cover?kind=nova&id=al-1", key)[0] == 404
+
+
+def test_no_satellite_at_all_isnt_connected(served, parts, clocks):
+    # The real feed, on a brain with no satellites it can name - its satellites' file
+    # unreadable - whose session_for(None) raises, as the brain's does then.
+    brain, _, _ = parts
+    brain.home = brain.weather = brain.calendar = None
+
+    def no_default():
+        raise OSError("The satellites' file can't be read")
+
+    def session_for(satellite):
+        return brain.sessions.get(satellite or no_default())
+
+    brain.default_satellite, brain.session_for = no_default, session_for
+    served.feed = DisplayFeed(brain)
+    _, key = clocks.add("Desk", None)
+    status, _, body = _ask(served, "/display/api/state", key)
+    assert status == 200 and json.loads(body)["connected"] is False
+    assert _json(_ask(served, "/display/api/hold", key, {"action": "start"})) == {"listening": False}
+    assert _ask(served, "/display/api/volume", key, {"direction": "up"})[0] == 409

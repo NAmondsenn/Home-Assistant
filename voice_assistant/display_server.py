@@ -47,6 +47,19 @@ FILES = {"/display": ("display.html", "text/html; charset=utf-8"),
 
 API = "/display/api/"
 
+# The settings page's, but for one thing: the page fetches each cover with its key and
+# shows it from a blob: address, as an <img> can't send the key itself - so pictures may
+# come from blob: as well as the page's own address. Sent with every answer.
+DISPLAY_HEADERS = {
+    **SAFETY_HEADERS,
+    "Content-Security-Policy": ("default-src 'self'; img-src 'self' blob:; frame-ancestors 'none'; "
+                                "base-uri 'none'; form-action 'self'"),
+}
+
+# The only kinds of picture a cover is served as. Not "image/svg+xml", which can hold a
+# script, nor anything else Home Assistant might send, e.g. "text/html".
+PICTURES = ("image/jpeg", "image/png", "image/webp", "image/gif")
+
 # The most a hold or a volume press may send, in bytes - each is a word or two of JSON,
 # e.g. {"action": "start"}.
 MOST_BODY = 1024
@@ -297,9 +310,9 @@ class DisplayServer:
             found = self._jellyfins_cover(cover_id)
         else:
             return None
-        # It's served from the clock page's own address, so anything but a picture - a
-        # page Home Assistant sent, say - could otherwise run as the clock's page does.
-        if found is None or not found[1].startswith("image/"):
+        # It's served from the clock page's own address, so anything but a plain picture
+        # - a page Home Assistant sent, say - could otherwise run as the clock's page does.
+        if found is None or found[1].split(";")[0].strip().lower() not in PICTURES:
             return None
         return found
 
@@ -519,7 +532,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        for name, value in {**(headers or {}), **SAFETY_HEADERS}.items():
+        for name, value in {**(headers or {}), **DISPLAY_HEADERS}.items():
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
