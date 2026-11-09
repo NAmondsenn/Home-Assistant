@@ -1229,7 +1229,8 @@ class SettingsPage:
         if session.music_player is None or session.actions is None:
             return {"success": False, "message": self._why_no_player()}
         if action == "play":
-            result = session.actions.play_music(str(query).strip() or None)
+            # Without the offer to download what Navidrome hasn't got: the page can't hear a yes.
+            result = session.actions.play_without_offer(str(query).strip() or None)
         elif action == "playlist":
             result = session.actions.play_playlist(str(playlist))
         elif action in PLAYBACK:

@@ -436,12 +436,26 @@ class ActionExecutor:
         },
     )
     def play_music(self, query: Optional[str] = None, search_type: Optional[str] = None):
-        reply = self._music_offline() or self.music.play(query or None, search_type=search_type)
+        reply = self.play_without_offer(query, search_type)
         # Navidrome hasn't got it - not merely couldn't be asked - so it's offered for
         # download instead, if it can be.
         if reply.get("missing") and self.downloads is not None:
             return self.downloads.offer(query, search_type) or reply
         return reply
+
+    def play_without_offer(self, query: Optional[str] = None, search_type: Optional[str] = None) -> Dict:
+        """
+        Plays something as play_music does, but never offers to download what Navidrome
+        hasn't got - for the settings page, where nobody is listening for a yes.
+
+        Args:
+            query: What to play, or None to carry on.
+            search_type: What the query names, as play_music takes it.
+
+        Returns:
+            What the music player says.
+        """
+        return self._music_offline() or self.music.play(query or None, search_type=search_type)
 
     @tool(
         "Play one of the user's own saved playlists, for requests like 'play my workout "

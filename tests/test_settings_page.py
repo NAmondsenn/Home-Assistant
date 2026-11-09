@@ -27,6 +27,7 @@ import requests
 import yaml
 
 from voice_assistant import logging_setup, paths, storage
+from voice_assistant.actions import Action, ActionExecutor
 from voice_assistant.batteries import BatteryChoices, BatteryWatcher
 from voice_assistant import clock as clock_module
 from voice_assistant import settings_page as page_module
@@ -36,6 +37,7 @@ from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.config import Config
 from voice_assistant.displays import Displays
+from voice_assistant.downloads import Downloads
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.lists import Lists
 from voice_assistant.ntfy import Ntfy
@@ -149,7 +151,7 @@ class FakeActions:
     def __init__(self):
         self.asked = []
 
-    def play_music(self, query=None):
+    def play_without_offer(self, query=None):
         self.asked.append(("play", query))
         return {"success": True, "message": f"Playing {query}" if query else "Resumed playback", "silent": True}
 
@@ -1029,6 +1031,27 @@ def test_the_music_buttons_go_through_the_same_actions_as_asking_out_loud(files)
     assert actions.asked == [("play", "Gooba by 6ix9ine"), ("play", None), ("playlist", "Workout"), ("pause", None)]
     assert page.play("eject", LOGIN) == {"success": False, "message": "That isn't something the music does."}
     assert not _page().play("pause", LOGIN)["success"]
+
+
+def test_play_on_the_page_says_what_it_cant_find_and_offers_no_download(files, make_config, monkeypatch):
+    # Nobody's listening for a yes to "Do you want me to download it?" on the page.
+    class NotInNavidrome(FakePlayer):
+        def play(self, query=None, search_type=None):
+            return {"success": False, "message": f"I couldn't find {query} on Navidrome.", "missing": True}
+
+    monkeypatch.setenv("SOULSYNC_API_KEY", "made-up-key")
+    monkeypatch.setenv("NAVIDROME_PASSWORD", "made-up-password")
+    downloads = Downloads(make_config(soulsync={"url": "http://soulsync.local:8008"},
+                                      navidrome={"url": "http://navidrome.local:4533", "username": "nova"}),
+                          lambda satellite, message: None)
+    actions = ActionExecutor(music=NotInNavidrome(), downloads=downloads)
+    # Asked out loud, it's offered.
+    assert actions.execute(Action("play_music", {"query": "Gooba"})).ask_first is not None
+
+    page = _page(sessions={"bedroom": FakeSession(music=actions.music, actions=actions)})
+
+    assert page.play("play", LOGIN, query="Gooba") == {"success": False,
+                                                       "message": "I couldn't find Gooba on Navidrome."}
 
 
 def test_the_lights_and_scenes_come_from_home_assistant_and_go_back_to_it(files):
