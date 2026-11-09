@@ -137,6 +137,9 @@ class DisplayFeed:
     def stop(self):
         """Stops the thread, waiting briefly for a pass already under way, and stops watching the sessions."""
         self._stopping.set()
+        with self._changed:
+            # So the clocks waiting are answered now, not at the end of their long polls.
+            self._changed.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
@@ -181,12 +184,13 @@ class DisplayFeed:
         while True:
             state = self.state(satellite)
             left = end - time.monotonic()
-            if state["version"] != since or left <= 0:
+            if state["version"] != since or left <= 0 or self._stopping.is_set():
                 return state
             with self._changed:
-                # Checked again with the lock held, as a change told between state() and
-                # here would otherwise wake no one.
-                if satellite not in self._told and self._states[satellite]["version"] == since:
+                # Checked again with the lock held, as a change told - or stop - between
+                # state() and here would otherwise wake no one.
+                if (satellite not in self._told and self._states[satellite]["version"] == since
+                        and not self._stopping.is_set()):
                     self._changed.wait(left)
 
     def poke(self, satellite: str):
@@ -209,7 +213,9 @@ class DisplayFeed:
             satellites = list(self._states)
         self._read(satellites)
         for satellite in satellites:
-            self._build(satellite)
+            # Each on its own, so one satellite's state failing to build - a bug - leaves
+            # the others' up to date.
+            self._attempt(f"the state of the {satellite} satellite", lambda: self._build(satellite), ())
 
     def _run(self):
         while not self._stopping.is_set():
@@ -241,7 +247,13 @@ class DisplayFeed:
             self._changed.notify_all()
 
     def _watch(self, satellite: str, session):
-        """Watches a satellite's session, once - or stops watching one which has gone, or been replaced."""
+        """
+        Watches a satellite's session, once - or stops watching one which has gone, or been
+        replaced. Nothing is watched once the feed is stopping, so a pass still running as
+        stop() returns can't leave a session telling a feed which has gone.
+        """
+        if self._stopping.is_set():
+            session = None
         held = self._watching.get(satellite)
         if held is not None and held[0] is session:
             return
@@ -264,7 +276,8 @@ class DisplayFeed:
 
     def _attempt(self, source: str, read: Callable, expected: tuple):
         """
-        Reads one source, logging a failure once until it works again.
+        Reads one source - or builds one satellite's state - logging a failure once until
+        it works again.
 
         Args:
             source: What's read, as said in the log - e.g. "the weather".
@@ -280,13 +293,16 @@ class DisplayFeed:
         except Exception as e:
             if source not in self._failing:
                 if isinstance(e, expected):
-                    logger.warning(f"Couldn't read {source} for the clock displays, will try again: {e}")
+                    # Only the kind of failure - a requests error names the address, and a
+                    # calendar's address has its id, which may be an email address.
+                    logger.warning(f"Couldn't read {source} for the clock displays, will try again: "
+                                   f"{type(e).__name__}")
                 else:
                     logger.exception(f"Reading {source} for the clock displays failed, will try again")
                 self._failing.add(source)
             return _FAILED
         if source in self._failing:
-            logger.info(f"{source[0].upper()}{source[1:]} is read for the clock displays again.")
+            logger.info(f"{source[0].upper()}{source[1:]} is back for the clock displays.")
             self._failing.discard(source)
         return found
 

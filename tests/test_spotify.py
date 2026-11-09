@@ -668,6 +668,30 @@ def test_the_page_is_told_whats_playing_on_spotify(make_controller):
     assert controller.now_playing() is None
 
 
+class FailingNowPlaying:
+    """A client whose every look at what's playing fails, as with Spotify's servers down."""
+
+    def current_playback(self):
+        raise ConnectionError("Spotify is down")
+
+
+def test_what_spotify_is_playing_failing_is_logged_once_until_it_works(make_controller, caplog):
+    controller = make_controller(cached=SAVED)
+    controller.sp = FailingNowPlaying()
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=spotify_controller.__name__):
+        # A clock display asks every five seconds, so a night of Spotify being down would bury the log.
+        assert controller.now_playing() is None and controller.now_playing() is None
+        assert [record.levelno for record in caplog.records] == [logging.ERROR]
+        controller.sp = FakeNowPlaying(PLAYBACK)
+        controller.now_playing()
+        controller.now_playing()
+        assert [record.levelno for record in caplog.records] == [logging.ERROR, logging.INFO]
+        controller.sp = FailingNowPlaying()
+        controller.now_playing()
+        assert [record.levelno for record in caplog.records] == [logging.ERROR, logging.INFO, logging.ERROR]
+
+
 def test_a_cover_only_ever_comes_from_where_spotify_said(make_controller, monkeypatch):
     controller = make_controller(cached=SAVED)
     controller.sp = FakeNowPlaying(PLAYBACK)

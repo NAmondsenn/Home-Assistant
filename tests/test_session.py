@@ -1176,6 +1176,18 @@ def test_a_hold_on_a_satellite_which_has_gone_is_refused(connect, make_session):
     assert satellite.wakes.empty()
 
 
+def test_watchers_hear_a_mute_change(connect, make_session):
+    satellite, _ = connect()
+    session = make_session(satellite)
+    seen = []
+    session.watch(lambda: seen.append(session.muted))
+    session.set_muted(True)
+    session.set_muted(True)
+    session.set_muted(False)
+    # Told only of a change, after it's made - so a clock's muted mark comes and goes at once.
+    assert seen == [True, False]
+
+
 def test_watchers_hear_each_change(brain, connect, make_session, caplog):
     satellite, pi = connect()
     session = make_session(satellite)

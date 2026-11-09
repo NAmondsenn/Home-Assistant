@@ -256,6 +256,20 @@ def test_stop_unwatches_the_sessions():
     rig.feed.start()
     rig.feed.stop()
     assert rig.session.watchers == []
+    # Nor is one watched again by a build after it - a pass still running as it stopped.
+    rig.feed.poke("pi")
+    assert rig.session.watchers == []
+
+
+def test_stop_wakes_the_waiting_clocks():
+    rig = Rig()
+    before = rig.feed.state("pi")["version"]
+    answers = []
+    waiter = threading.Thread(target=lambda: answers.append(rig.feed.wait("pi", before, 5)), daemon=True)
+    waiter.start()
+    rig.feed.stop()
+    waiter.join(1)
+    assert not waiter.is_alive() and answers[0]["version"] == before
 
 
 # What's playing
@@ -351,7 +365,7 @@ def test_poke_shows_a_volume_change_at_once():
 
 def test_events_are_the_next_five_not_over():
     rig = Rig()
-    calendar = "Ola's calendar"
+    calendar = "Work"
     found = [{"summary": "Gym", "start": _at(8), "end": _at(9), "all_day": False},
              {"summary": "Bin day", "start": date(2026, 11, 9), "end": None, "all_day": True},
              {"summary": "Lecture", "start": _at(9, 30), "end": _at(10, 30), "all_day": False},
@@ -359,7 +373,7 @@ def test_events_are_the_next_five_not_over():
              {"summary": "Dentist", "start": _at(9, day=10), "end": _at(10, day=10), "all_day": False},
              {"summary": "Coursework due", "start": date(2026, 11, 12), "end": None, "all_day": True},
              {"summary": "Party", "start": _at(20, day=14), "end": _at(23, day=14), "all_day": False}]
-    rig.brain.calendar = FakeCalendar(*[dict(event, calendar=calendar, calendar_id="ola@gmail.com") for event in found])
+    rig.brain.calendar = FakeCalendar(*[dict(event, calendar=calendar, calendar_id="someone@example.com") for event in found])
     events = rig.feed.state("pi")["events"]
     assert [event["title"] for event in events] == ["Bin day", "Lecture", "Lunch", "Dentist", "Coursework due"]
     assert all(set(event) == {"title", "start", "all_day"} for event in events)
@@ -412,7 +426,7 @@ def test_failures_keep_the_last_good(caplog):
                 rig.time += 600
             assert rig.brain.weather.asked >= 3
             state = rig.feed.state("pi")
-            assert any(thread.name == "display" and thread.is_alive() for thread in threading.enumerate())
+            assert rig.feed._thread.is_alive()
     finally:
         rig.feed.stop()
     assert state["weather"]["temperature"] == 9.4
@@ -440,6 +454,34 @@ def test_a_failing_build_doesnt_end_the_thread():
     try:
         for _ in range(20):
             time.sleep(0.01)
-        assert any(thread.name == "display" and thread.is_alive() for thread in threading.enumerate())
+        assert rig.feed._thread.is_alive()
     finally:
         rig.feed.stop()
+
+
+def test_one_satellite_failing_to_build_doesnt_stop_the_others(caplog):
+    rig = Rig()
+    den = FakeSession()
+    rig.brain.sessions["den"] = den
+    rig.feed.state("pi")
+    rig.feed.state("den")
+    broken = FakeSession()
+    broken.volume = None
+    rig.brain.sessions["pi"] = broken
+    den.muted = True
+    with caplog.at_level(logging.WARNING):
+        rig.feed.check()
+        rig.feed.check()
+    assert rig.feed.state("den")["muted"] is True
+    # Logged once while it keeps failing, not once a pass.
+    assert len([record for record in caplog.records if "pi satellite" in record.getMessage()]) == 1
+
+
+def test_a_calendars_id_is_never_logged(caplog):
+    rig = Rig()
+    rig.brain.calendar.fails = requests.HTTPError(
+        "404 Client Error: Not Found for url: https://www.googleapis.com/calendar/v3/calendars/someone%40example.com/events")
+    with caplog.at_level(logging.DEBUG):
+        rig.feed.state("pi")
+    assert any("events" in record.getMessage() for record in caplog.records)
+    assert not any("someone" in record.getMessage() for record in caplog.records)

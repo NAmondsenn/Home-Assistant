@@ -293,7 +293,11 @@ class Session:
         Args:
             muted: True to stop the satellite hearing the wake word.
         """
+        changed = bool(muted) != self._muted
         self._muted = bool(muted)
+        if changed:
+            # So a clock display's muted mark comes and goes at once - see watch.
+            self._tell_watchers()
         try:
             storage.save_json(self._muted_file, {"muted": self._muted})
         except OSError as e:
@@ -407,7 +411,7 @@ class Session:
 
     def watch(self, watcher: Callable[[], None]):
         """
-        Has a watcher told each time activity or heard changes. It's called from the
+        Has a watcher told each time activity, heard or muted changes. It's called from the
         thread which made the change, sometimes with the announcement lock held - an
         announcement or a routine says "speaking" as it starts - so a watcher must only
         take note, as a clock display's long poll does: never block, and never call

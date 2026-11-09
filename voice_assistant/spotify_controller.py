@@ -324,6 +324,9 @@ class SpotifyController:
         # last one fetched with its address - see cover.
         self._cover_url = None
         self._cover: Optional[Tuple[str, Tuple[bytes, str]]] = None
+        # Whether looking at what's playing last failed, so it's logged once until it works
+        # again - a clock display looks every five seconds.
+        self._now_playing_failing = False
         if not self._authenticate():
             logger.warning("Spotify isn't signed in to - sign in on the settings page, under Music.")
 
@@ -1339,8 +1342,13 @@ class SpotifyController:
         try:
             current = self.sp.current_playback()
         except Exception as e:
-            logger.error(f"Checking what's playing failed: {e}")
+            if not self._now_playing_failing:
+                logger.error(f"Checking what's playing failed, will try again: {e}")
+            self._now_playing_failing = True
             return None
+        if self._now_playing_failing:
+            logger.info("Spotify says what's playing again.")
+            self._now_playing_failing = False
         item = (current or {}).get("item")
         if not item:
             return None
