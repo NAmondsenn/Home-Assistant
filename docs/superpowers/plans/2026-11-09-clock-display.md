@@ -16,7 +16,7 @@
 
 - Work in the worktree `/home/nathaniel/work/Home-Assistant-clock`, branch `clock-display`. Never touch `/home/nathaniel/work/Home-Assistant` (another session's music build lives there). No `git stash`.
 - Tests: `nice -n 19 timeout 900 bash ~/nova/tools/pi_test_clock.sh <pytest args>` (copies this worktree to the Pi and runs pytest there). Check `cat /proc/loadavg` first and wait if the first number is above 3. Run only the task's test file while working; one full run (`-x`) before the task's commit; never two runs at once; no repeat runs for flakiness. Ruff: `ssh -o BatchMode=yes pi 'cd /tmp/nova-check/clock-work && /tmp/nova-check-pytest/bin/ruff check .'` after a test run has copied the tree.
-- Node (gesture test only): `nice -n 19 timeout 120 ~/tools/node/bin/node --max-old-space-size=768 --test --test-concurrency=1 tests/web/`. No equality asserts on large objects or DOM nodes.
+- Node (gesture test only): `nice -n 19 timeout 120 ~/tools/node/bin/node --max-old-space-size=768 --test --test-concurrency=1 tests/web/*.test.mjs`. No equality asserts on large objects or DOM nodes.
 - Never `ps` on the Pi; never deploy, push or restart anything.
 - Code style (the user's): full-sentence comments in British spelling with spaced " - " dashes, explaining why, with concrete quoted examples; Google-style `Args:`/`Returns:`/`Raises:` docstrings; module docstrings like the existing ones, pointing at `docs/decisions/0013`; no comments on obvious lines; no new dependencies; no hard-coded hosts or paths; keep each file's line endings.
 - Commits: one per task, a plain sentence title, ending with the line `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Each task adds tests that fail on the old code.
