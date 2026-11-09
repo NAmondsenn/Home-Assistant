@@ -2,8 +2,77 @@
 <html lang="en-GB">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=800, user-scalable=no">
   <title>Nova</title>
+  <link rel="stylesheet" href="display.css">
+  <script src="display-gestures.js" defer></script>
+  <script src="display.js" defer></script>
 </head>
 <body>
+  <main id="pages">
+    <section id="home" class="page">
+      <div id="time" class="time">--:--</div>
+      <div id="date" class="date dim"></div>
+      <div id="weather" class="weather" hidden>
+        <div id="temperature" class="temperature"></div>
+        <div id="condition" class="condition dim"></div>
+        <div id="high-low" class="high-low dim"></div>
+      </div>
+      <div id="next" class="next dim"></div>
+    </section>
+
+    <section id="coming-up" class="page" hidden>
+      <h1>Coming up</h1>
+      <ol id="events" class="events"></ol>
+      <p id="no-events" class="dim" hidden>Nothing coming up.</p>
+    </section>
+
+    <section id="now-playing" class="page" hidden>
+      <div id="playing" class="playing" hidden>
+        <div class="art"><img id="cover" alt="" hidden></div>
+        <div class="track">
+          <div id="source" class="source dim"></div>
+          <div id="title" class="title"></div>
+          <div id="artist" class="artist dim"></div>
+          <div id="progress" class="progress"><div id="progress-done" class="progress-done"></div></div>
+          <div id="times" class="times dim"></div>
+        </div>
+      </div>
+      <p id="nothing-playing" class="nothing dim">Nothing's playing.</p>
+    </section>
+  </main>
+
+  <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <div id="marks" class="marks">
+    <span id="offline" class="mark offline" hidden>Offline</span>
+    <span id="muted" class="mark muted" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4M4 4l16 16"/></svg>
+      Muted
+    </span>
+  </div>
+
+  <div id="listening" class="overlay" hidden>
+    <div class="orb"></div>
+    <div class="listening">Listening…</div>
+    <div id="heard" class="heard dim" hidden></div>
+  </div>
+
+  <div id="speaking" class="overlay" hidden>
+    <div class="wave" aria-label="Nova is speaking">
+      <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+    </div>
+  </div>
+
+  <div id="volume" class="volume" hidden>
+    <span id="volume-what" class="volume-what"></span>
+    <div class="volume-bar"><div id="volume-level" class="volume-level"></div></div>
+    <span id="volume-percent" class="volume-percent"></span>
+  </div>
+
+  <div id="message" class="overlay message" hidden>
+    <p id="message-text"></p>
+    <p id="message-more" class="dim"></p>
+  </div>
 </body>
 </html>

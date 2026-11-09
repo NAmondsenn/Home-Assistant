@@ -238,6 +238,27 @@ def test_static_page_needs_no_key(served):
     assert "img-src 'self' blob:" in headers["Content-Security-Policy"]
 
 
+@pytest.mark.parametrize("path, content_type", [("/display", "text/html"),
+                                                ("/display.js", "text/javascript"),
+                                                ("/display-gestures.js", "text/javascript"),
+                                                ("/display.css", "text/css")])
+def test_every_page_file_is_served(served, path, content_type):
+    status, headers, body = _ask(served, path)
+    assert status == 200 and body
+    assert headers["Content-Type"].startswith(content_type)
+
+
+def test_the_page_loads_its_files(served):
+    # Each by the address it's served at, beside the page's own - "/display" - so
+    # "display.js" is "/display.js".
+    body = _ask(served, "/display")[2]
+    for name in (b'href="display.css"', b'src="display-gestures.js"', b'src="display.js"'):
+        assert name in body
+    # Its Content-Security-Policy runs no script or style written into the page itself.
+    for inline in (b"<style", b"style=", b"onclick=", b"<script>"):
+        assert inline not in body
+
+
 def test_unknown_paths_are_not_found(served, clocks):
     _, key = clocks.add("Desk", "pi")
     assert _ask(served, "/")[0] == 404
