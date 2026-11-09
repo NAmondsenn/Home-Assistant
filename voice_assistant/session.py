@@ -221,11 +221,13 @@ class Session:
 
         # Everything the assistant can do for the user - see actions.py. The lights are
         # only there once Home Assistant is set up, and the calendar once Google is, and
-        # timers and alarms ring on the satellite they were set from.
+        # timers and alarms ring on the satellite they were set from, as a download is
+        # said there.
         self.actions = ActionExecutor(music=self.music_player, clock=brain.clock, volume=self.volume,
                                       weather=brain.weather, home=self.home, memory=brain.memory,
                                       ntfy=brain.ntfy, satellite=satellite.name, batteries=brain.batteries,
-                                      lists=brain.lists, pc=brain.pc, calendar=brain.calendar)
+                                      lists=brain.lists, pc=brain.pc, calendar=brain.calendar,
+                                      downloads=brain.downloads)
 
         # The everyday commands handled without Claude - see intents.py. The activities are
         # the calendars' names, so "when's gym tomorrow?" is heard once there's a Gym calendar.

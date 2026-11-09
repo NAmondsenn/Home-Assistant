@@ -254,7 +254,8 @@ def brain(tmp_path, monkeypatch, make_config):
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
                            batteries=None, lists=None, pc=None, registry=None, calendar=None, media=None,
-                           tts=FakePiper(), stt=FakeSpeechToText(), sounds_folder=Path(paths.SOUNDS_DIR))
+                           downloads=None, tts=FakePiper(), stt=FakeSpeechToText(),
+                           sounds_folder=Path(paths.SOUNDS_DIR))
 
 
 @pytest.fixture
@@ -1835,6 +1836,12 @@ def test_a_sessions_actions_read_the_brains_calendar(brain, make_session):
     brain.calendar = SimpleNamespace(activity_words=lambda: words, activity_calendars=dict)
     session = make_session()
     assert session.actions.calendar is brain.calendar and session.intents.activities() is words
+
+
+def test_a_sessions_actions_download_through_the_brain(brain, make_session):
+    # One for the brain, so the same thing asked for on two satellites is requested once.
+    brain.downloads = object()
+    assert make_session().actions.downloads is brain.downloads
 
 
 def test_a_sessions_local_rules_know_its_wake_word(brain, make_session):

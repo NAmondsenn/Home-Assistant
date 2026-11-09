@@ -37,6 +37,7 @@ from voice_assistant import settings_page as settings_page_module
 from voice_assistant.batteries import Battery, BatteryChoices, BatteryWatcher
 from voice_assistant.config import Config
 from voice_assistant.displays import Displays
+from voice_assistant.downloads import Downloads
 from voice_assistant.google_calendar import GoogleCalendar
 from voice_assistant.ha_registry import HomeRegistry
 from voice_assistant.media_watch import MediaWatcher
@@ -162,6 +163,7 @@ class FakeSession:
                  start=0.0, length=None, level=1.0, ringing=False):
         self.announced.append(message)
         self.rung = getattr(self, "rung", []) + [ringing]
+        self.sounds = getattr(self, "sounds", []) + [sound]
         return self.said
 
     def alert(self, alert):
@@ -179,7 +181,7 @@ class FakeNtfy:
     """Stands in for ntfy, keeping what was sent."""
 
     def __init__(self):
-        self.reminders, self.restarts = "reminders", "homelab"
+        self.phone, self.reminders, self.restarts = "phone", "reminders", "homelab"
         self.sent = []
 
     def send_soon(self, topic, message, title="", priority=0):
@@ -1919,6 +1921,14 @@ def test_a_second_stop_signal_doesnt_cut_the_cleanup_short(stopping):
     assert stopping.closed == ["clock", "bedroom", "tts"]
 
 
+def test_the_brain_stops_its_downloads_before_its_satellites(stopping):
+    # So what's still waiting is forgotten, rather than its outcome sent to the phone
+    # because the satellite which asked has just been let go.
+    stopping.downloads = Recorder("downloads", stopping.closed)
+    stopping._clean_up()
+    assert stopping.closed == ["clock", "downloads", "bedroom", "tts"]
+
+
 def test_the_brain_needs_none_of_the_satellites_audio_libraries(monkeypatch):
     # The brain has no microphone or speaker, so no PortAudio for sounddevice to load.
     # Imported afresh, with every module of Nova's put back as it was afterwards.
@@ -1998,14 +2008,16 @@ def test_each_topic_is_read_once_for_each_send(brain):
     class Cleared(FakeNtfy):
         def __getattribute__(self, name):
             topic = object.__getattribute__(self, name)
-            if name in ("reminders", "restarts"):
+            if name in ("phone", "reminders", "restarts"):
                 setattr(self, name, "")
             return topic
 
     brain.ntfy = Cleared()
     brain._unanswered({"label": "take the bins out"}, "clock", satellite="bedroom")
     brain._tell_restarted("bedroom")
-    assert [topic for topic, _, _ in brain.ntfy.sent] == ["reminders", "homelab"]
+    # With the kitchen away, its download message goes to the phone.
+    brain._say_download("kitchen", "Gooba by 6ix9ine has been downloaded.")
+    assert [topic for topic, _, _ in brain.ntfy.sent] == ["reminders", "homelab", "phone"]
 
 
 def test_a_routine_runs_by_itself_when_its_due(brain, monkeypatch):
@@ -2629,6 +2641,95 @@ def test_a_warning_or_alert_not_said_to_the_end_counts_as_not_said(brain, connec
     bedroom.said = False
     assert brain._say_battery("Your phone's battery is down to 5%.") is False
     assert brain._alert(Alert("homelab", "Disk nearly full", "")) is False
+
+
+# How a download went, said where it was asked for
+
+def test_the_brains_downloads_tell_through_it(brain):
+    # One for every satellite, so the same thing asked for on two is requested once.
+    assert isinstance(brain.downloads, Downloads) and brain.downloads._say == brain._say_download
+
+
+def test_a_download_message_is_said_on_the_satellite_that_asked(brain, connect):
+    brain.ntfy = FakeNtfy()
+    serving(brain)
+    connect(brain)
+    connect(brain, "kitchen", KITCHEN)
+    bedroom, kitchen = connected(brain), connected(brain, "kitchen")
+
+    brain._say_download("kitchen", "Gooba by 6ix9ine requested.")
+    # Not on the default satellite, nor sent to the phone as well - and with the
+    # announcement's sound first, as an alert has it, rather than rung as the clock is.
+    assert kitchen.announced == ["Gooba by 6ix9ine requested."] and bedroom.announced == []
+    assert kitchen.sounds == ["announcement_sound.wav"] and kitchen.rung == [False]
+    assert brain.ntfy.sent == []
+
+    # Asked with no satellite, the default one says it.
+    brain._say_download(None, "Rumours requested.")
+    assert bedroom.announced == ["Rumours requested."]
+
+
+def test_a_download_message_is_said_in_the_quiet_hours_too(brain, connect, monkeypatch):
+    # It's only ever the outcome of the user's own request, which they're waiting for.
+    brain.ntfy = FakeNtfy()
+    brain.ntfy.quiet = lambda: True
+    monkeypatch.setattr(brain._night, "quiet", lambda: True)
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    kitchen = connected(brain, "kitchen")
+
+    brain._say_download("kitchen", "Gooba by 6ix9ine has been downloaded.")
+    assert kitchen.announced == ["Gooba by 6ix9ine has been downloaded."] and brain.ntfy.sent == []
+
+
+def test_with_its_satellite_away_a_download_message_goes_to_the_phone(brain, connect):
+    brain.ntfy = FakeNtfy()
+    serving(brain)
+    connect(brain)
+    bedroom = connected(brain)
+
+    # Asked from the kitchen, which isn't connected now - and the default satellite
+    # doesn't say it in its place.
+    brain._say_download("kitchen", "Gooba by 6ix9ine has been downloaded.")
+    assert brain.ntfy.sent == [("phone", "Music download", "Gooba by 6ix9ine has been downloaded.")]
+    assert bedroom.announced == []
+
+
+def test_a_download_message_not_said_to_the_end_goes_to_the_phone(brain, connect):
+    brain.ntfy = FakeNtfy()
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    kitchen = connected(brain, "kitchen")
+    # The satellite went mid-sentence, say.
+    kitchen.said = False
+
+    brain._say_download("kitchen", "I couldn't download Gooba by 6ix9ine.")
+    assert kitchen.announced == ["I couldn't download Gooba by 6ix9ine."]
+    assert brain.ntfy.sent == [("phone", "Music download", "I couldn't download Gooba by 6ix9ine.")]
+
+
+def test_a_download_message_with_nowhere_to_go_is_logged_and_never_raises(brain, connect, caplog):
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    kitchen = connected(brain, "kitchen")
+
+    def fail(message, *args, **kwargs):
+        raise OSError("the satellite went mid-sentence")
+
+    kitchen.announce = fail
+    assert brain.ntfy is None
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
+        brain._say_download("kitchen", "Gooba by 6ix9ine requested.")
+        # And the same with ntfy, but no phone topic.
+        brain.ntfy = FakeNtfy()
+        brain.ntfy.phone = ""
+        brain._say_download("kitchen", "Rumours requested.")
+
+    assert brain.ntfy.sent == []
+    # Each logged as a warning, which names what went unsaid.
+    warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert any("Gooba by 6ix9ine requested." in warning for warning in warnings)
+    assert any("Rumours requested." in warning for warning in warnings)
 
 
 # The speech-to-text the brain loads, with its second model for what Nemotron misses.

@@ -35,6 +35,7 @@ from voice_assistant.clock import Clock, spoken_clock_time
 from voice_assistant.display_feed import DisplayFeed
 from voice_assistant.display_server import DisplayServer
 from voice_assistant.displays import Displays
+from voice_assistant.downloads import Downloads
 from voice_assistant.google_calendar import READ_FAILURES, GoogleCalendar
 from voice_assistant.ha_registry import REGISTRY_TIMEOUT, HomeRegistry, HomeSocket
 from voice_assistant.home_assistant import HomeAssistant
@@ -354,6 +355,10 @@ class Brain:
         self.clock = Clock(on_timer_finished=self._announce, on_unanswered=self._unanswered,
                            on_change=self._alarms_changed.set, can_hear=lambda satellite: satellite in self._caught_up,
                            let_in=lambda satellite: not self._gone_from_file(satellite), config=config, start=False)
+        # Music fetched through SoulSync, each download said on the satellite which asked
+        # for it - see downloads.py. One for every satellite, so the same song asked for
+        # on two is only requested once.
+        self.downloads = Downloads(config, say=self._say_download)
 
         # One Piper, and one Nemotron, which every session shares.
         self.tts = TextToSpeech(config)
@@ -1295,6 +1300,36 @@ class Brain:
             logger.warning("A battery warning wasn't said")
         return bool(said)
 
+    def _say_download(self, satellite: Optional[str], message: str) -> None:
+        """
+        Says how a download went on the satellite which asked for it, as Downloads has
+        it said - at any hour, as it's only ever the outcome of the user's own request.
+        With that satellite away, or the message not said, it goes to the user's phone.
+        Never raises: with no phone topic either, it's only logged.
+
+        Args:
+            satellite: The satellite which asked, or None for the default one.
+            message: What to say, e.g. "Gooba by 6ix9ine has been downloaded."
+        """
+        where = f"the {satellite} satellite" if satellite else "the default satellite"
+        try:
+            session = self.session_for(satellite)
+            if session is None:
+                logger.warning(f"A download message wasn't said, as {where} isn't connected")
+            elif session.announce(message):
+                return
+            else:
+                logger.warning(f"A download message wasn't said on {where}")
+        except Exception:
+            # The satellite going away mid-sentence, most likely.
+            logger.exception(f"A download message couldn't be said on {where}")
+        # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
+        phone = self.ntfy.phone if self.ntfy else ""
+        if not phone:
+            logger.warning(f"A download message had nowhere to go, with no phone topic for ntfy: {message}")
+            return
+        self.ntfy.send_soon(phone, message, title="Music download")
+
     def _unanswered(self, timer, kind, satellite=None):
         """
         Sends a reminder nobody answered to the user's phone, once it's stopped ringing.
@@ -1557,13 +1592,16 @@ class Brain:
     def _clean_up(self):
         """
         Closes everything down in order - the clock, so nothing else starts ringing,
-        then the batteries, what's playing, ntfy, the settings page and the clock
-        displays' server and feed, then every satellite's session, so its device in Home
-        Assistant and its music stop - and then the Piper process kept waiting for the
-        next thing to say.
+        and the downloads, so nothing more is said of them, then the batteries, what's
+        playing, ntfy, the settings page and the clock displays' server and feed, then
+        every satellite's session, so its device in Home Assistant and its music stop -
+        and then the Piper process kept waiting for the next thing to say.
         """
         self.running = False
         self.clock.stop()
+        # Before the satellites are let go, so a download which lands meanwhile isn't
+        # sent to the phone because the satellite which asked has just gone.
+        self.downloads.stop()
         if self.batteries:
             self.batteries.stop()
         if self.media:
