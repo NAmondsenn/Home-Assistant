@@ -73,7 +73,7 @@
 - Produces on `Session`:
   - `activity` becomes a property; setting it to a new value calls every watcher.
   - `heard: str` - what Nova last heard in this conversation (the text shown as `You: ...` at `:625`), `""` when a new listen starts; setting it calls the watchers.
-  - `watch(watcher: Callable[[], None]) -> None` and `unwatch(watcher) -> None`. Watchers are called outside any session lock, and one raising is logged, never passed on.
+  - `watch(watcher: Callable[[], None]) -> None` and `unwatch(watcher) -> None`. Watchers are called from the thread that made the change, sometimes with the announcement lock held, so they only take note (never block, announce, run a routine or listen_now); one raising is logged, never passed on.
   - `listen_now() -> bool`: if no conversation is running (`self._idle.is_set()`) and no hold is open, starts one exactly as a wake does - puts `{"talked_over": False, "pre_roll": 0, "feed": self.satellite.listen()}` on `self.satellite.wakes` and keeps the feed - and returns True; otherwise False. Muted or not makes no difference.
   - `stop_held() -> None`: if a held feed is open, `self.satellite.stop_listening(feed)` and forget it; otherwise nothing.
 
