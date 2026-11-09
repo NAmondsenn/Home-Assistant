@@ -661,11 +661,20 @@ class FakeImage:
 
 def test_the_page_is_told_whats_playing_on_spotify(make_controller):
     controller = make_controller(cached=SAVED)
-    controller.sp = FakeNowPlaying(PLAYBACK)
+    controller.sp = FakeNowPlaying(dict(PLAYBACK, device={"name": "kitchen"}))
     assert controller.now_playing() == {"track": "Gooba", "artist": "6ix9ine", "album": "Gooba", "playing": True,
-                                        "position": 61.5, "duration": 125, "cover": "medium"}
+                                        "position": 61.5, "duration": 125, "cover": "medium", "here": True}
     controller.sp = FakeNowPlaying(None)
     assert controller.now_playing() is None
+
+
+@pytest.mark.parametrize("device", [{"name": "Nathaniel's phone"}, None])
+def test_spotify_playing_on_another_device_isnt_here(make_controller, device):
+    # Spotify says what the account plays anywhere, so a clock display would otherwise
+    # show the phone's music as this satellite's, and step this speaker's volume for it.
+    controller = make_controller(cached=SAVED)
+    controller.sp = FakeNowPlaying(dict(PLAYBACK, device=device))
+    assert controller.now_playing()["here"] is False
 
 
 class FailingNowPlaying:

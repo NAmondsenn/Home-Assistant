@@ -1335,7 +1335,10 @@ class SpotifyController:
 
         Returns:
             Dict of its "track", "artist" and "album"; whether it's "playing"; its
-            "position" and "duration" in seconds; and its "cover" id, if any.
+            "position" and "duration" in seconds; its "cover" id, if any; and
+            whether it's playing "here", on this satellite's speaker. Spotify says
+            what the account is playing wherever it is - a phone on the bus, say -
+            so a clock display shows it as this satellite's only when it's here.
         """
         if not self._signed_in():
             return None
@@ -1362,7 +1365,8 @@ class SpotifyController:
                 "album": album.get("name") or "", "playing": bool(current.get("is_playing")),
                 "position": round((current.get("progress_ms") or 0) / 1000, 1),
                 "duration": round(duration / 1000) if duration else None,
-                "cover": self._cover_url.rsplit("/", 1)[-1] if self._cover_url else None}
+                "cover": self._cover_url.rsplit("/", 1)[-1] if self._cover_url else None,
+                "here": ((current.get("device") or {}).get("name") or "").lower() == self.device_name.lower()}
 
     def cover(self) -> Optional[Tuple[bytes, str]]:
         """

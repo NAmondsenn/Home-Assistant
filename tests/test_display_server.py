@@ -459,6 +459,17 @@ def test_volume_steps_music_while_playing_else_voice(served, parts, clocks):
     assert session.volume.levels["alarm"] == 80
 
 
+def test_volume_steps_the_voice_while_spotify_plays_elsewhere(served, parts, clocks):
+    # Spotify playing on the phone isn't Nova's music here - and its volume would be
+    # this satellite's speaker's, not the phone's - so the button steps Nova's voice.
+    session = parts[0].sessions["pi"]
+    session.music_player.song["here"] = False
+    _, key = clocks.add("Desk", "pi")
+    assert _json(_ask(served, "/display/api/volume", key, {"direction": "up"})) == {"category": "general",
+                                                                                     "percent": 70}
+    assert session.volume.levels["music"] == 40
+
+
 def test_volume_stays_between_0_and_100(served, parts, clocks):
     session = parts[0].sessions["pi"]
     session.music_player.song["playing"] = False

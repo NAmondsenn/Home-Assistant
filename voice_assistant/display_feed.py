@@ -75,6 +75,16 @@ def _start(when) -> str:
     return when.strftime("%Y-%m-%dT%H:%M") if isinstance(when, datetime) else when.isoformat()
 
 
+def plays_here(playing: Optional[Dict]) -> bool:
+    """
+    Whether what a satellite's player says is playing is Nova's music on that satellite.
+    Spotify says what the account plays anywhere - the phone in another room, say - and
+    marks it "here" only on the satellite's own speaker; Navidrome plays nowhere else,
+    so says nothing.
+    """
+    return playing is not None and playing.get("here", True) is not False
+
+
 def _seconds(value) -> Optional[float]:
     """A number of seconds as a float, or None for none."""
     return float(value) if value is not None else None
@@ -401,6 +411,9 @@ class DisplayFeed:
         moment = datetime.fromtimestamp(now).astimezone()
         last = self._music.get(satellite)
         playing = last[1] if last is not None and session is not None and last[0] is session else None
+        if not plays_here(playing):
+            # Spotify playing elsewhere isn't this satellite's - Jellyfin may show, and the buttons step the voice.
+            playing = None
         room = session.home.area if session is not None and session.home is not None else None
         return {"connected": session is not None,
                 "nova": session.activity if session is not None else "idle",

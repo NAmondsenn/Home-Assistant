@@ -304,6 +304,18 @@ def test_novas_music_wins_over_jellyfin():
     assert music["cover"] == "/display/api/cover?kind=home&id=media_player.office_tv"
 
 
+def test_spotify_playing_elsewhere_isnt_this_satellites():
+    # Spotify says what the account plays anywhere - the phone in another room, say - so
+    # it's this satellite's music only on this satellite's speaker.
+    rig = Rig(FakeSession(player=FakePlayer("Spotify", song=dict(_song(), here=False))))
+    rig.brain.home.players = [_jellyfin()]
+    state = rig.feed.state("pi")
+    assert state["music"]["source"] == "Jellyfin" and state["volume"] == {"category": "general", "percent": 60}
+    rig.session.music_player.song = dict(_song(), here=True)
+    state = rig.later(5)
+    assert state["music"]["source"] == "Spotify" and state["volume"] == {"category": "music", "percent": 40}
+
+
 def test_novas_music_paused_still_wins():
     rig = Rig()
     rig.session.music_player.song = _song(playing=False)

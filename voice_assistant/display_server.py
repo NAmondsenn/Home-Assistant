@@ -31,6 +31,7 @@ from typing import Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 from voice_assistant.batteries import HOME_FAILURES
+from voice_assistant.display_feed import plays_here
 from voice_assistant.page_password import WAIT, WrongTries
 from voice_assistant.settings_page import (SAFETY_HEADERS, WEB_FOLDER, LogLimit, _held_back, change_volume,
                                            volume_levels)
@@ -284,7 +285,10 @@ class DisplayServer:
             # E.g. Spotify out of reach - its music can't be changed then either, so
             # the button changes Nova's voice, which it can.
             playing = None
-        category = "music" if music is not None and playing and playing.get("playing") is True else "general"
+        # Spotify's music on another of the account's devices isn't Nova's here, and the
+        # button would step this satellite's speaker, not the one playing - so it's the voice's.
+        category = ("music" if music is not None and plays_here(playing) and playing.get("playing") is True
+                    else "general")
         level = volume_levels(session.volume, music)[category]
         step = session.volume.step if direction == "up" else -session.volume.step
         percent = int(max(0, min(100, round(level + step))))
