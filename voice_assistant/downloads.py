@@ -118,14 +118,45 @@ class Wanted:
         return f"{self.kind}: {normalise(self.name)}"
 
 
-def _as_had(wanted: Wanted, found: List[Dict]) -> str:
+def _albums(tracks: List[Dict]) -> List[List[Dict]]:
     """
-    What Navidrome has of a request, named as Navidrome has it - "Rumours by Fleetwood
-    Mac" for "download rumours" - from the first of it which isn't clean.
+    The tracks of an album asked for, album by album, in the order found - so an explicit
+    Rumours and a clean edition beside it, or two albums called Rumours, are two.
     """
-    track = next((track for track in found if not is_clean(track)), found[0])
-    title = track.get("album" if wanted.kind == "album" else "title") or wanted.title
-    artist = track.get("artist")
+    albums: Dict[tuple, List[Dict]] = {}
+    for track in tracks:
+        albums.setdefault((track.get("albumId"), track.get("album")), []).append(track)
+    return list(albums.values())
+
+
+def _as_had(wanted: Wanted, found: List[Dict]) -> Optional[str]:
+    """
+    What Navidrome has of a request other than clean, named as Navidrome has it -
+    "Rumours by Fleetwood Mac" for "download rumours" - or None if all it has is clean.
+
+    A song is had only clean when every copy of it is. An album is when every album
+    found has a clean track: a clean edition marks only the tracks it bleeped, and the
+    rest look like the explicit edition's - but an explicit edition beside it is had.
+
+    Args:
+        wanted: What was asked for.
+        found: Every copy of the song, or every track of the album, Navidrome has.
+
+    Returns:
+        The song's title by its artist, or the album's name by the album's artist -
+        never a track's, which may be a featured one.
+    """
+    if wanted.kind != "album":
+        track = next((track for track in found if not is_clean(track)), None)
+        if track is None:
+            return None
+        title, artist = track.get("title"), track.get("artist")
+    else:
+        album = next((tracks for tracks in _albums(found) if not any(is_clean(track) for track in tracks)), None)
+        if album is None:
+            return None
+        title, artist = album[0].get("album"), album[0].get("albumArtist")
+    title = title or wanted.title
     return f"{title} by {artist}" if artist else title
 
 
@@ -403,14 +434,11 @@ class Downloads:
             return {"success": False, "message": NavidromeLibrary._failure_message(e)}
         if not found:
             return None
-        # A song is had clean when every copy of it is. An album is when any of its tracks
-        # is: a clean edition marks only the tracks it bleeped, and the rest look like the
-        # explicit edition's.
-        if (any if wanted.kind == "album" else all)(is_clean(track) for track in found):
+        had = _as_had(wanted, found)
+        if had is None:
             return {"success": True, "message": f"You've only got a clean version of {wanted.name}. "
                                                 "Do you want me to download the explicit one?",
                     "ask_first": Action("request_download", {"query": query, "search_type": search_type})}
-        had = _as_had(wanted, found)
         logger.info(f"Navidrome already has {had}, so {wanted.name} isn't requested")
         return {"success": True, "message": f"You've already got {had}."}
 

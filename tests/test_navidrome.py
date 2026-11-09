@@ -437,6 +437,14 @@ def test_an_albums_tracks_are_every_track_of_each_matching_album(make_library):
     assert _ids(library.find_album_tracks("Rumours", None)) == ["t1", "t2", "t3", "t5"]
 
 
+def test_each_albums_tracks_carry_its_id_and_artist(make_library):
+    # So two albums called Rumours are told apart, and named by the album's artist, not a track's.
+    library = make_library(_albums_found("a1", "a3"))
+    tracks = library.find_album_tracks("Rumours", None)
+    assert [(track["albumId"], track["albumArtist"]) for track in tracks] == (
+        [("a1", "Fleetwood Mac")] * 3 + [("a3", "Other")])
+
+
 def test_a_live_album_isnt_the_album_asked_for(make_library):
     library = make_library(_albums_found("a1", "a2"))
     assert _ids(library.find_album_tracks("Rumours", "Fleetwood Mac")) == ["t1", "t2", "t3"]

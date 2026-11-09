@@ -30,10 +30,13 @@ GOOBA_REQUESTED = ("kitchen", "Gooba by 6ix9ine requested.")
 GOOBA_DOWNLOADED = ("kitchen", "Gooba by 6ix9ine has been downloaded.")
 
 
-def _track(number, title, clean=False, album="Rumours"):
-    """One of Rumours' tracks as Navidrome describes it - marked clean, or unmarked as most are."""
+def _track(number, title, clean=False, album="Rumours", album_id=None):
+    """
+    One of Rumours' tracks as Navidrome describes it - marked clean, or unmarked as most
+    are - with its album's name, id and artist, as find_album_tracks gives them.
+    """
     return {"id": f"r{number}", "title": title, "artist": "Fleetwood Mac", "album": album,
-            "explicitStatus": "clean" if clean else ""}
+            "albumId": album_id or album, "albumArtist": "Fleetwood Mac", "explicitStatus": "clean" if clean else ""}
 
 
 DREAMS, GO_YOUR_OWN_WAY, THE_CHAIN = (_track(number, title) for number, title in enumerate(RUMOURS_TITLES, 1))
@@ -717,11 +720,12 @@ def test_something_already_had_is_never_requested(watching, set_up, clock, had):
 
 
 def test_already_got_names_what_navidrome_has(watching, set_up):
-    # "download rumours" - named as Navidrome has it, not as it was asked for.
+    # "download rumours" - named as Navidrome has it, not as it was asked for, and by the
+    # album's artist, not its first track's.
     class Library:
         def find_album_tracks(self, title, artist):
             assert (title, artist) == ("rumours", None)
-            return [DREAMS, GO_YOUR_OWN_WAY, THE_CHAIN]
+            return [{**DREAMS, "artist": "Stevie Nicks"}, GO_YOUR_OWN_WAY, THE_CHAIN]
 
     downloads = watching(FakeSoulSync(), Library(), set_up)
 
@@ -741,9 +745,15 @@ def test_only_a_clean_copy_had_offers_the_explicit_one(watching, set_up, clock):
     assert soulsync.requested == [] and _watches() == []
 
 
-def test_an_album_with_any_clean_track_offers_the_explicit_one(watching, set_up, clock):
-    # A clean edition marks only the tracks it bleeped - the rest are as the explicit one's.
-    library = FakeLibrary(clock, tracks=[[DREAMS, _track(5, "Gold Dust Woman", clean=True)]])
+@pytest.mark.parametrize("editions", [
+    # One album: a clean edition marks only the tracks it bleeped - the rest are as the explicit one's.
+    [DREAMS, _track(5, "Gold Dust Woman", clean=True)],
+    # Two, each with a clean track.
+    [DREAMS, _track(5, "Gold Dust Woman", clean=True),
+     _track(6, "Dreams", album="Rumours (Clean)"), _track(7, "Gold Dust Woman", clean=True, album="Rumours (Clean)")],
+])
+def test_an_album_with_a_clean_track_in_every_edition_offers_the_explicit_one(watching, set_up, clock, editions):
+    library = FakeLibrary(clock, tracks=[editions])
     downloads = watching(FakeSoulSync(), library, set_up)
 
     reply = downloads.download("Rumours by Fleetwood Mac", "album", "kitchen")
@@ -752,6 +762,24 @@ def test_an_album_with_any_clean_track_offers_the_explicit_one(watching, set_up,
                                 "Do you want me to download the explicit one?")
     assert reply["ask_first"] == Action("request_download",
                                         {"query": "Rumours by Fleetwood Mac", "search_type": "album"})
+
+
+@pytest.mark.parametrize("clean_edition", [
+    [_track(5, "Dreams", album="Rumours (Clean)"), _track(6, "Gold Dust Woman", clean=True, album="Rumours (Clean)")],
+    # Called the same, told apart by Navidrome's id.
+    [_track(5, "Dreams", album_id="another"), _track(6, "Gold Dust Woman", clean=True, album_id="another")],
+])
+@pytest.mark.parametrize("clean_first", [True, False])
+def test_an_album_had_explicit_beside_a_clean_edition_is_already_got(watching, set_up, clock, clean_edition,
+                                                                     clean_first):
+    explicit = [DREAMS, GO_YOUR_OWN_WAY, THE_CHAIN]
+    soulsync = FakeSoulSync()
+    library = FakeLibrary(clock, tracks=[clean_edition + explicit if clean_first else explicit + clean_edition])
+    downloads = watching(soulsync, library, set_up)
+
+    assert downloads.download("Rumours by Fleetwood Mac", "album", "kitchen") == {
+        "success": True, "message": "You've already got Rumours by Fleetwood Mac."}
+    assert soulsync.requested == [] and _watches() == []
 
 
 def test_a_download_is_started_and_nothing_said_until_soulsync_answers(watching, set_up, clock, said):

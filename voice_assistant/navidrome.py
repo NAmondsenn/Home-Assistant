@@ -340,7 +340,9 @@ class NavidromeLibrary:
     def find_album_tracks(self, title: str, artist: Optional[str]) -> List[Dict]:
         """
         Every track of each album in Navidrome which is the one asked for, each with
-        its album's name, for is_clean to read.
+        its album's name, for is_clean to read - and its id and artist, as albumId and
+        albumArtist, so an explicit edition and a clean one beside it are told apart,
+        and named by the album's artist rather than a track's.
 
         Args:
             title: The album's name as asked for.
@@ -351,7 +353,8 @@ class NavidromeLibrary:
             NavidromeError: If it answered with an error.
         """
         albums = self._matches("album", 10, "name", title, artist)
-        return [{**track, "album": album.get("name") or ""}
+        return [{**track, "album": album.get("name") or "", "albumId": album["id"],
+                 "albumArtist": album.get("artist") or ""}
                 for album in albums for track in self._album_songs(album["id"])]
 
     def start_scan(self) -> bool:
