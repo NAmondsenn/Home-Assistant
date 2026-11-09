@@ -22,8 +22,9 @@ from voice_assistant.storage import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
-# What a new clock starts with: dim enough for a bedside table, and back to the first
-# page a minute after it was last touched.
+# What a new clock starts with: 70% brightness, a middling level - easily read by day,
+# and too bright for a bedside table at night until it's turned down with the clock's
+# slider on the settings page - and back to the first page a minute after its music stops.
 DEFAULT_BRIGHTNESS = 70
 DEFAULT_HOME_AFTER = 60
 
