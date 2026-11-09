@@ -37,6 +37,8 @@ def _track(number, title, clean=False, album="Rumours"):
 DREAMS, GO_YOUR_OWN_WAY, THE_CHAIN = (_track(number, title) for number, title in enumerate(RUMOURS_TITLES, 1))
 # A bonus track of a deluxe edition, which isn't one SoulSync named.
 SILVER_SPRINGS = _track(4, "Silver Springs")
+RUMOURS_ALL = ["Second Hand News", "Dreams", "Never Going Back Again", "Don't Stop", "Go Your Own Way", "Songbird",
+               "The Chain", "You Make Loving Fun", "I Don't Want to Know", "Oh Daddy", "Gold Dust Woman"]
 
 
 def _answer(answers):
@@ -82,7 +84,7 @@ class FakeSoulSync:
 
     def __init__(self, progress=(WAITING,), album=None, fail=None):
         self.progress = list(progress)
-        self.album = album or AlbumRequest(None, [], 3)
+        self.album = album or AlbumRequest(None, [], 3, 3)
         self.fail = fail
         self.requested = []
 
@@ -282,9 +284,9 @@ def test_the_time_limits_are_read_as_they_are_now(watching, config, clock, said)
 # An album
 
 def test_an_album_is_downloaded_once_every_track_soulsync_named_is_in(watching, clock, said):
-    # AlbumRequest(id, ["Dreams", "Go Your Own Way", "The Chain"], 3); Navidrome's grow by one a poll,
-    # with a bonus track SoulSync didn't name among them, which isn't one of the three.
-    soulsync = FakeSoulSync(album=AlbumRequest("made-up-album", RUMOURS_TITLES, 3))
+    # AlbumRequest(id, ["Dreams", "Go Your Own Way", "The Chain"], 3, 3); Navidrome's grow by one a
+    # poll, with a bonus track SoulSync didn't name among them, which isn't one of the three.
+    soulsync = FakeSoulSync(album=AlbumRequest("made-up-album", RUMOURS_TITLES, 3, 3))
     library = FakeLibrary(clock, tracks=[[], [DREAMS, SILVER_SPRINGS], [DREAMS, SILVER_SPRINGS, GO_YOUR_OWN_WAY],
                                          [DREAMS, SILVER_SPRINGS, GO_YOUR_OWN_WAY, THE_CHAIN]])
     downloads = watching(soulsync, library)
@@ -297,17 +299,51 @@ def test_an_album_is_downloaded_once_every_track_soulsync_named_is_in(watching, 
 
 
 def test_an_album_soulsync_only_counted_is_downloaded_once_that_many_new_tracks_are_in(watching, clock, said):
-    # As SoulSync answers: the album's track count and no titles. An old clean copy of
-    # one track was in Navidrome before, and is neither one of the three nor clean.
+    # As SoulSync answers: the album's track count, how many it queued, and no titles. An
+    # old clean copy of one track was in Navidrome before, and is neither one of the
+    # three nor clean.
     old = _track(0, "Dreams", clean=True, album="Rumours (Clean)")
     library = FakeLibrary(clock, tracks=[[old], [old, DREAMS], [old, DREAMS, GO_YOUR_OWN_WAY],
                                          [old, DREAMS, GO_YOUR_OWN_WAY, THE_CHAIN]])
-    downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 3)), library)
+    downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 3, 3)), library)
 
     downloads._watch(RUMOURS_WANTED, "kitchen")
 
     assert said[-1] == ("kitchen", "Rumours by Fleetwood Mac has been downloaded.")
     assert clock.said_at[-1] == 3 * POLL_EVERY
+
+
+def test_a_part_owned_album_is_downloaded_once_what_soulsync_queued_has_landed(watching, clock, said):
+    # Two of its eleven tracks were in Navidrome already, so SoulSync queued nine.
+    tracks = [_track(number, title) for number, title in enumerate(RUMOURS_ALL, 1)]
+    had = [track for track in tracks if track["title"] in ("Dreams", "The Chain")]
+    queued = [track for track in tracks if track not in had]
+    library = FakeLibrary(clock, tracks=[had, had + queued[:5], had + queued])
+    downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 11, 9)), library)
+
+    assert downloads._watch(RUMOURS_WANTED, "kitchen") == "Rumours by Fleetwood Mac has been downloaded."
+    assert clock.said_at[-1] == 2 * POLL_EVERY  # long before its time limit
+
+
+def test_an_album_soulsync_queued_none_of_is_said_at_once(watching, clock, said):
+    downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 11, 0)), FakeLibrary(clock))
+    message = ("I couldn't download Rumours by Fleetwood Mac. SoulSync says it already has every track, "
+               "or is already getting them.")
+
+    assert downloads._watch(RUMOURS_WANTED, "kitchen") == message
+    assert said == [("kitchen", message)]
+    assert clock.time == 0  # not waited for at all
+
+
+def test_a_clean_copy_and_the_explicit_one_of_a_track_count_once(watching, clock, said):
+    # Dreams twice, once clean, and Go Your Own Way - but not The Chain.
+    landed = [DREAMS, _track(5, "Dreams (Clean)"), GO_YOUR_OWN_WAY]
+    downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 3, 3)), FakeLibrary(clock, tracks=[[], landed]))
+
+    downloads._watch(RUMOURS_WANTED, "kitchen")
+
+    assert said[-1] == ("kitchen", "Only 2 of the 3 tracks of Rumours by Fleetwood Mac came down.")
+    assert 1800 <= clock.given_up_at < 1800 + POLL_EVERY
 
 
 def test_an_album_with_clean_tracks_says_how_many(watching, clock, said, caplog):
@@ -326,8 +362,8 @@ def test_an_album_with_clean_tracks_says_how_many(watching, clock, said, caplog)
                                    "as a clean version.")
 
 
-@pytest.mark.parametrize("album", [AlbumRequest("made-up-album", RUMOURS_TITLES, 3), AlbumRequest(None, [], 3)],
-                         ids=["named", "counted"])
+@pytest.mark.parametrize("album", [AlbumRequest("made-up-album", RUMOURS_TITLES, 3, 3),
+                                   AlbumRequest(None, [], 3, 3)], ids=["named", "counted"])
 def test_a_track_which_came_down_both_clean_and_not_isnt_counted_clean(watching, clock, said, album):
     # Two copies of The Chain landed, the clean one first - the album has the explicit one.
     both = [DREAMS, GO_YOUR_OWN_WAY, _track(5, "The Chain", clean=True), THE_CHAIN]
@@ -351,22 +387,18 @@ def test_part_of_an_album_by_the_time_limit_says_how_much(watching, clock, said)
     assert said[-1] == ("kitchen", "I couldn't download Rumours by Fleetwood Mac.")
 
 
-def test_an_album_without_a_track_count_is_downloaded_once_soulsync_is_done_and_some_have_landed(watching, clock,
-                                                                                                 said):
-    # Done at the third poll, with one track in from the second.
-    downloads = watching(FakeSoulSync([WAITING, WAITING, DONE], album=AlbumRequest(None, [], 0)),
-                         FakeLibrary(clock, tracks=[[], [], [DREAMS]]))
+def test_an_album_soulsync_gives_up_on_says_how_much_came_down(watching, clock, said):
+    downloads = watching(FakeSoulSync([WAITING, Progress("failed", NOT_FOUND)]),
+                         FakeLibrary(clock, tracks=[[], [DREAMS]]))
 
     downloads._watch(RUMOURS_WANTED, "kitchen")
 
-    assert said[-1] == ("kitchen", "Rumours by Fleetwood Mac has been downloaded.")
-    assert clock.said_at[-1] == 3 * POLL_EVERY
+    assert said[-1] == ("kitchen", "Only 1 of the 3 tracks of Rumours by Fleetwood Mac came down.")
+    assert clock.said_at[-1] == 2 * POLL_EVERY
 
-    # SoulSync never saying so, what has landed by the time limit is all there is to go by.
-    watching(FakeSoulSync(album=AlbumRequest(None, [], 0)),
-             FakeLibrary(clock, tracks=[[], [DREAMS]]))._watch(RUMOURS_WANTED, "kitchen")
-    assert said[-1] == ("kitchen", "Rumours by Fleetwood Mac has been downloaded.")
-    assert 1800 <= clock.given_up_at - clock.said_at[-2] < 1800 + POLL_EVERY
+    # And with none of it by then, why:
+    watching(FakeSoulSync([Progress("failed", NOT_FOUND)]), FakeLibrary(clock))._watch(RUMOURS_WANTED, "kitchen")
+    assert said[-1] == ("kitchen", "I couldn't download Rumours by Fleetwood Mac. SoulSync couldn't find it.")
 
 
 # When it goes wrong

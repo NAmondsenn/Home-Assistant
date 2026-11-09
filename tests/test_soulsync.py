@@ -205,7 +205,22 @@ def test_an_album_is_found_then_requested_through_mcp(soulsync, http):
     # find_album searches beyond the local network, so it's given longer.
     assert http.timeouts == [MCP_TIMEOUT] * 3
     # SoulSync gives an album's track count but not its titles, and no id to follow it by.
-    assert request == AlbumRequest(None, [], RECORDED_TRACK_COUNT)
+    assert request == AlbumRequest(None, [], RECORDED_TRACK_COUNT, RECORDED_TRACK_COUNT)
+
+
+def test_an_album_partly_had_is_followed_by_the_tracks_soulsync_queued(soulsync, http):
+    # Two of its eleven tracks already in the library, so SoulSync queues the other nine.
+    http.tools["request_album"] = _tool_result({"album": "Rumours", "artist": "Fleetwood Mac",
+                                                "tracks": RECORDED_TRACK_COUNT, "queued": 9,
+                                                "note": "Queued on the wishlist"})
+    request = soulsync.request_album("Rumours", "Fleetwood Mac")
+    assert (request.track_count, request.queued) == (RECORDED_TRACK_COUNT, 9)
+
+    # None queued is none, and an answer which doesn't say is taken as the whole album.
+    http.tools["request_album"] = _tool_result({"album": "Rumours", "tracks": RECORDED_TRACK_COUNT, "queued": 0})
+    assert soulsync.request_album("Rumours", "Fleetwood Mac").queued == 0
+    http.tools["request_album"] = _tool_result({"album": "Rumours", "tracks": RECORDED_TRACK_COUNT})
+    assert soulsync.request_album("Rumours", "Fleetwood Mac").queued == RECORDED_TRACK_COUNT
 
 
 def test_an_album_title_alone_is_searched_for_as_it_is(soulsync, http):

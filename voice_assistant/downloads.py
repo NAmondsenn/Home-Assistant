@@ -14,6 +14,7 @@ deletes a file. See docs/decisions/0012-music-fetched-by-voice.md.
 
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -22,7 +23,8 @@ from typing import Callable, Dict, List, Optional, Set, Union
 import requests
 
 from voice_assistant import music
-from voice_assistant.navidrome import NavidromeError, NavidromeLibrary, is_clean, likeness, normalise, split_by
+from voice_assistant.navidrome import (VERSIONS, NavidromeError, NavidromeLibrary, _says_version, is_clean, likeness,
+                                       normalise, split_by)
 from voice_assistant.soulsync import AlbumRequest, Progress, SoulSync, SoulSyncError
 
 # Logger setup
@@ -39,6 +41,10 @@ SCAN_AFTER = 60
 NOT_SET_UP = ("Downloading music isn't set up. SoulSync's address goes in Settings, under Music, "
               "and its key under Keys.")
 
+# Said after "I couldn't download X." when SoulSync queued none of an album: it only
+# queues the tracks it hasn't got and isn't already getting.
+NOTHING_QUEUED = "SoulSync says it already has every track, or is already getting them."
+
 # The time limits, in minutes from the request, when the settings don't say - as
 # config.yaml has them.
 SONG_MINUTES = 10
@@ -47,6 +53,9 @@ ALBUM_MINUTES = 30
 # What asking Navidrome can raise: out of reach, an error answered, or an answer
 # that wasn't JSON.
 NAVIDROME_ERRORS = (requests.RequestException, NavidromeError, ValueError)
+
+# A bracketed part of a title, as navidrome.version_of finds them.
+BRACKETED = re.compile(r"\(([^)]*)\)|\[([^\]]*)\]")
 
 
 @dataclass(frozen=True)
@@ -98,32 +107,48 @@ def _couldnt(wanted: Wanted, reason: Optional[str]) -> str:
     return f"I couldn't download {wanted.name}." + (f" {reason}" if reason else "")
 
 
-def _track_count(request: AlbumRequest) -> int:
-    """How many tracks the album has, as SoulSync said - 0 if it didn't."""
-    return len(request.tracks) or request.track_count
+def _says_a_version(part: str) -> bool:
+    """Whether a bracketed or dashed part of a title says which version it is, as version_of reads one."""
+    return any(_says_version(part, version) for version in VERSIONS)
+
+
+def _bare_title(title: str) -> str:
+    """
+    A track's title without any part saying which version it is, normalised, so each
+    track is counted once: "Dreams (Clean)" and "Dreams - Radio Edit" are "dreams",
+    as Dreams is. "Dreams (2004 Remaster)" keeps its remaster, which is no version.
+    """
+    head, _, tail = title.partition(" - ")
+    if tail and _says_a_version(tail):
+        title = head
+    title = BRACKETED.sub(lambda part: "" if _says_a_version(part.group(1) or part.group(2) or "")
+                          else part.group(0), title)
+    return normalise(title)
 
 
 def _album_tracks(request: AlbumRequest, new: List[Dict]) -> List[Dict]:
     """
-    The new tracks which are the album's, one for each of its tracks at most. With
-    SoulSync's titles, a title has landed once a new track has every word of it;
-    with only its count, each new track counts, up to that many. A track which came
-    down both clean and explicit counts as the explicit one, as the album has it.
+    The new tracks which are the album's, one a title: a clean copy and the explicit
+    one of the same track - "Dreams (Clean)" and "Dreams" - are one track, the
+    explicit one, as the album has it. With SoulSync's titles, only a new track with
+    every word of one of them counts.
 
     Args:
         request: The AlbumRequest SoulSync gave.
         new: The tracks of the album in Navidrome which weren't there before the request.
 
     Returns:
-        The tracks which have landed.
+        The tracks which have landed, one for each title.
     """
     # Sorted is stable, so this only moves the clean ones after the rest.
     explicit_first = sorted(new, key=is_clean)
     if request.tracks:
-        matches = ([track for track in explicit_first if likeness(track.get("title") or "", title) >= 2]
-                   for title in request.tracks)
-        return [found[0] for found in matches if found]
-    return explicit_first[:request.track_count] if request.track_count else explicit_first
+        explicit_first = [track for track in explicit_first
+                          if any(likeness(track.get("title") or "", title) >= 2 for title in request.tracks)]
+    tracks: Dict[str, Dict] = {}
+    for track in explicit_first:
+        tracks.setdefault(_bare_title(track.get("title") or ""), track)
+    return list(tracks.values())
 
 
 def _clean_ones(wanted: Wanted, tracks: List[Dict]) -> List[Dict]:
@@ -290,6 +315,9 @@ class Downloads:
                        else soulsync.request_song(wanted.title, wanted.artist))
         except SoulSyncError as e:
             return self._tell(satellite, _couldnt(wanted, e.reason))
+        if isinstance(request, AlbumRequest) and request.queued <= 0:
+            # Nothing of it is coming, so there's nothing to wait for.
+            return self._tell(satellite, _couldnt(wanted, NOTHING_QUEUED))
         self._tell(satellite, f"{wanted.name} requested.")
 
         new: List[Dict] = []
@@ -306,7 +334,7 @@ class Downloads:
                 if progress is not None and progress.state == "done":
                     done_at = self._now()
             new = self._look(library, wanted, before, new)
-            outcome = self._landed(wanted, request, new, done=done_at is not None)
+            outcome = self._landed(wanted, request, new)
             if outcome:
                 return self._tell(satellite, outcome)
             if done_at is not None and not scanned and self._now() - done_at >= SCAN_AFTER:
@@ -384,18 +412,16 @@ class Downloads:
             return None
 
     @staticmethod
-    def _landed(wanted: Wanted, request: Union[str, AlbumRequest], new: List[Dict], done: bool) -> Optional[str]:
+    def _landed(wanted: Wanted, request: Union[str, AlbumRequest], new: List[Dict]) -> Optional[str]:
         """
         What to say if the request has landed, or None to wait on. A song has once
-        a copy of it is new in Navidrome; an album once every track SoulSync said
-        it has is - or, with no count from SoulSync, once it's done and some are.
+        a copy of it is new in Navidrome; an album once as many of its tracks are
+        new as SoulSync queued - nine of Rumours' eleven, with the other two had.
         """
         if wanted.kind != "album":
             return _song_outcome(wanted, new)
-        tracks, count = _album_tracks(request, new), _track_count(request)
-        if (count and len(tracks) >= count) or (not count and done and tracks):
-            return _album_downloaded(wanted, tracks)
-        return None
+        tracks = _album_tracks(request, new)
+        return _album_downloaded(wanted, tracks) if len(tracks) >= request.queued else None
 
     @staticmethod
     def _last_word(wanted: Wanted, request: Union[str, AlbumRequest], new: List[Dict],
@@ -412,11 +438,11 @@ class Downloads:
         """
         if wanted.kind != "album":
             return _song_outcome(wanted, new) or _couldnt(wanted, reason)
-        tracks, count = _album_tracks(request, new), _track_count(request)
-        if tracks and len(tracks) < count:
+        tracks = _album_tracks(request, new)
+        if tracks and len(tracks) < request.queued:
             _clean_ones(wanted, tracks)
-            return f"Only {len(tracks)} of the {count} tracks of {wanted.name} came down."
+            return f"Only {len(tracks)} of the {request.queued} tracks of {wanted.name} came down."
         if tracks:
-            # All of it, or - with no count from SoulSync to go by - what there is.
+            # All of it, at the last look.
             return _album_downloaded(wanted, tracks)
         return _couldnt(wanted, reason)

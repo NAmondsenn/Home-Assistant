@@ -83,11 +83,15 @@ class AlbumRequest:
         tracks: The titles of the album's tracks, as SoulSync gave them - empty, as
             it gives only how many there are.
         track_count: How many tracks SoulSync said the album has.
+        queued: How many of them it queued to download - not the ones it already
+            had, or was already getting. Those are what's waited for: with two of
+            Rumours' eleven in the library, nine is all of it.
     """
 
     id: Optional[str]
     tracks: List[str]
     track_count: int
+    queued: int
 
 
 def _said(message: str) -> str:
@@ -366,7 +370,8 @@ class SoulSync:
             artist: Its artist, or None if only the title was given.
 
         Returns:
-            The AlbumRequest, with how many tracks SoulSync said the album has.
+            The AlbumRequest, with how many tracks SoulSync said the album has and
+            how many of them it queued.
 
         Raises:
             SoulSyncError: If SoulSync couldn't be asked, found nothing that will
@@ -379,14 +384,16 @@ class SoulSync:
             raise SoulSyncError(NOT_FOUND)
         requested = self._mcp("request_album", {"album_id": album["album_id"]})
         track_count = requested.get("tracks") or album.get("tracks") or 0
+        # An answer which doesn't say how many it queued is taken as the whole album.
+        queued = track_count if requested.get("queued") is None else requested["queued"]
         logger.info(f"SoulSync is getting {album.get('title')} by {', '.join(map(str, album.get('artists') or []))} "
-                    f"({album['album_id']}): {requested.get('queued')} of {track_count} tracks queued")
+                    f"({album['album_id']}): {queued} of {track_count} tracks queued")
         try:
             self._mcp("process_wishlist", {})
         except SoulSyncError:
             # It's on the wishlist either way, so it still comes down - only later.
             logger.warning("SoulSync's wishlist couldn't be started, so the album waits for its next run")
-        return AlbumRequest(None, [], int(track_count))
+        return AlbumRequest(None, [], int(track_count), int(queued))
 
     def album_progress(self, request: AlbumRequest) -> Progress:
         """
