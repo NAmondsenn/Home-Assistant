@@ -172,6 +172,24 @@ def served(parts, monkeypatch):
     server.stop()
 
 
+def test_start_says_whether_it_could_listen(parts, monkeypatch):
+    monkeypatch.setattr(server_module, "STOP_CHECK", 0.02)
+    brain, clocks, feed = parts
+    held = socket.socket()
+    held.bind(("127.0.0.1", 0))
+    held.listen()
+    try:
+        taken = DisplayServer(brain, clocks, feed, port=held.getsockname()[1], address="127.0.0.1")
+        assert taken.start() is False and not taken.serving
+        free = DisplayServer(brain, clocks, feed, port=0, address="127.0.0.1")
+        assert not free.serving
+        assert free.start() is True and free.serving
+        free.stop()
+        assert not free.serving
+    finally:
+        held.close()
+
+
 def _ask(server, path, key=None, body=None, raw=None, **headers):
     """Asks the display server for something as the clock's page would, with its key if given."""
     data = raw if raw is not None else None if body is None else json.dumps(body).encode()

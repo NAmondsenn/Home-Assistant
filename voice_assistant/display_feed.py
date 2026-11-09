@@ -208,10 +208,13 @@ class DisplayFeed:
         """
         Reads whatever is due and builds every satellite's state once - a pass of the
         thread. A source which fails keeps its last good weather or events, or gives no
-        music, and is logged once until it works again.
+        music, and is logged once until it works again. Until a clock first asks for a
+        satellite's state there is nobody to read for, so nothing is read at all.
         """
         with self._changed:
             satellites = list(self._states)
+        if not satellites:
+            return
         self._read(satellites)
         for satellite in satellites:
             # Each on its own, so one satellite's state failing to build - a bug - leaves

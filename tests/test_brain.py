@@ -1817,6 +1817,28 @@ def test_display_server_starts_and_stops(make_brain):
     assert wait_for(lambda: not _display_threads())
 
 
+def test_a_display_port_in_use_leaves_the_feed_stopped_and_the_brain_working(make_brain, caplog):
+    # Another program already on the port: the feed used to poll Home Assistant for
+    # clocks which could never connect, for as long as the brain ran.
+    held = socket.socket()
+    held.bind(("0.0.0.0", 0))
+    held.listen()
+    port = held.getsockname()[1]
+    caplog.set_level(logging.INFO)
+    try:
+        brain = make_brain(display={"port": port})
+        done = _running(brain)
+        assert wait_for(lambda: "brain is ready" in caplog.text)
+        assert f"Couldn't start the clock displays' server on port {port}" in caplog.text
+        assert _display_threads() == [] and not brain.display_server.serving
+        # Still listening for its satellites.
+        socket.create_connection(("127.0.0.1", brain.port), timeout=1).close()
+        brain.stop()
+        assert done.wait(5)
+    finally:
+        held.close()
+
+
 def test_a_restart_stops_the_brain_cleanly_and_says_it_was_asked_for(brain, monkeypatch):
     monkeypatch.setenv("INVOCATION_ID", "abc")
     monkeypatch.setattr(brain_module, "RESTART_DELAY", 0)

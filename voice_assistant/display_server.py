@@ -134,13 +134,23 @@ class DisplayServer:
             return None
         return cls(brain, displays, feed, port)
 
-    def start(self):
-        """Starts serving, on a thread of its own - or logs why it couldn't, e.g. the port being taken."""
+    @property
+    def serving(self) -> bool:
+        """Whether it's listening - between a start which could and stop."""
+        return self._server is not None
+
+    def start(self) -> bool:
+        """
+        Starts serving, on a thread of its own - or logs why it couldn't, e.g. the port being taken.
+
+        Returns:
+            Whether it's listening, so the brain starts the feed only for a server which is.
+        """
         try:
             server = ThreadingHTTPServer((self.address, self.port), _Handler)
         except OSError as e:
             logger.error(f"Couldn't start the clock displays' server on port {self.port}: {e}")
-            return
+            return False
         server.daemon_threads = True
         server.display_server = self
         self._stopping.clear()
@@ -149,6 +159,7 @@ class DisplayServer:
         threading.Thread(target=server.serve_forever, kwargs={"poll_interval": STOP_CHECK},
                          name="display-server", daemon=True).start()
         logger.info(f"The clock displays' page is on port {self.port}")
+        return True
 
     def stop(self):
         """Stops serving, and answers the long polls still waiting."""

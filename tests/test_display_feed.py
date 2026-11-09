@@ -129,8 +129,10 @@ class FakeHome:
     def __init__(self, *players):
         self.players = list(players)
         self.fails = None
+        self.asked = 0
 
     def jellyfin_media(self):
+        self.asked += 1
         if self.fails is not None:
             raise self.fails
         return list(self.players)
@@ -401,6 +403,22 @@ def test_an_event_ending_drops_off_before_the_next_read():
     assert len(rig.feed.state("pi")["events"]) == 1
     assert rig.later(120)["events"] == []
     assert len(rig.brain.calendar.asked) == 1
+
+
+def test_nothing_is_read_until_a_clock_asks():
+    # Served with no clock asking yet, a pass used to read Jellyfin, the weather and the
+    # calendar all the same - every five seconds, for nobody.
+    rig = Rig()
+    for _ in range(3):
+        rig.time += 600
+        rig.feed.check()
+    assert (rig.brain.home.asked, rig.brain.weather.asked, rig.brain.calendar.asked) == (0, 0, [])
+
+    rig.feed.state("pi")
+    assert (rig.brain.home.asked, rig.brain.weather.asked, len(rig.brain.calendar.asked)) == (1, 1, 1)
+    # And from then on at each pass, as each is due.
+    rig.later(600)
+    assert (rig.brain.home.asked, rig.brain.weather.asked, len(rig.brain.calendar.asked)) == (2, 2, 2)
 
 
 def test_events_and_weather_are_read_on_their_own_schedules():

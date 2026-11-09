@@ -639,8 +639,10 @@ class SettingsPage:
                 "memories": self.brain.memory.facts(),
                 "routines": routines.all() if routines is not None else [],
                 # Never a clock's key, which only adding one or a new key answers with.
-                # The port is the one the brain is serving them on, 0 while it isn't.
-                "displays": {"list": self.brain.displays.listed(), "port": server.port if server else 0},
+                # The port is the one the brain is serving them on, 0 while it isn't -
+                # switched off, or its port taken - so no key is given a dead address.
+                "displays": {"list": self.brain.displays.listed(),
+                             "port": server.port if server is not None and server.serving else 0},
                 "keys": keys,
                 "settings": settings,
                 "settings_problem": problem,

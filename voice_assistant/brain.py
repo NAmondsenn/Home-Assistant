@@ -367,8 +367,9 @@ class Brain:
 
         # The clock displays, their page and what each shows - see docs/decisions/0013.
         # The clocks are always kept, so the settings page can add one before display.port
-        # is set; the server is None until it is, and the feed is only started with it,
-        # so with no clocks served nothing reads Home Assistant for them.
+        # is set; the server is None until it is. run() starts the feed only once the
+        # server is listening, so with the port off or taken there's no feed thread, and
+        # the feed reads nothing until a clock first asks for a satellite's state.
         self.displays = Displays()
         self.display_feed = DisplayFeed(self)
         self.display_server: Optional[DisplayServer] = DisplayServer.from_config(
@@ -1488,9 +1489,8 @@ class Brain:
             self.ntfy.start()
         if self.settings_page:
             self.settings_page.start()
-        if self.display_server:
+        if self.display_server and self.display_server.start():
             self.display_feed.start()
-            self.display_server.start()
         threading.Thread(target=self._run_routines_when_due, daemon=True, name="routines").start()
         if self.batteries:
             self.batteries.start()

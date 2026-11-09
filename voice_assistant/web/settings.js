@@ -1148,8 +1148,8 @@ function showDisplayKey(name, result, added) {
   document.getElementById("display-key-how").replaceChildren(...(displaysPort
     ? ["Open ", element("code", `http://<the brain's address>:${displaysPort}${result.path}`),
        " in the clock's kiosk app, with the brain's address on your Wi-Fi."]
-    : ["Nova isn't serving the clocks yet: set “Port the clock displays connect on” under Settings and "
-       + "restart Nova, then open ", element("code", `http://<the brain's address>:<that port>${result.path}`),
+    : ["Nova isn't serving the clocks - their port is off, or another program has it, which the brain's log says. "
+       + "Set “Port the clock displays connect on” under Settings and restart Nova, then open ", element("code", `http://<the brain's address>:<that port>${result.path}`),
        " in the clock's kiosk app."]));
   const copy = document.getElementById("display-key-copy");
   copy.textContent = "Copy";
@@ -2651,7 +2651,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const satellite = document.getElementById("add-display-satellite").value || null;
       const result = await change("/api/displays/add", { display: { name, satellite } });
       if (result.success && result.key) {
-        field.value = "";
+        // The satellite too, which left chosen would count as half done and hold back an update reload.
+        document.getElementById("add-display").reset();
         showDisplayKey(result.display.name, result, true);
       }
     } finally {

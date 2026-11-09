@@ -2272,7 +2272,7 @@ def _with_displays(files, **parts):
 
 def test_add_display_shows_the_key_once(files, caplog):
     caplog.set_level(logging.INFO)
-    page, displays = _with_displays(files, display_server=SimpleNamespace(port=8767))
+    page, displays = _with_displays(files, display_server=SimpleNamespace(port=8767, serving=True))
 
     result = page.add_display("Desk", "bedroom", LOGIN)
 
@@ -2289,6 +2289,12 @@ def test_add_display_shows_the_key_once(files, caplog):
     assert f"Settings page: {LOGIN} added the Desk clock" in caplog.text
     # One for no satellite of its own hears for the default.
     assert page.add_display("Hall", None, LOGIN)["display"]["satellite"] is None
+
+
+def test_the_displays_port_is_0_while_the_server_isnt_listening(files):
+    # Its port taken, say - so a new key's address doesn't point at a port nothing's on.
+    page, _ = _with_displays(files, display_server=SimpleNamespace(port=8767, serving=False))
+    assert page.state()["displays"]["port"] == 0
 
 
 def test_a_new_display_key_is_shown_once_and_the_old_one_refused(files, caplog):
@@ -2411,6 +2417,8 @@ def test_the_page_has_the_clock_displays_section(served):
         assert path in script
     # The key is put on the page only as text, as a satellite's password is.
     assert b'getElementById("display-key-text").textContent = ' in script
+    # Emptied whole once a clock's added - its satellite too, which left chosen held back the update reload.
+    assert b'getElementById("add-display").reset();' in script
     assert _page().state()["displays"] == {"list": [], "port": 0}
 
 
