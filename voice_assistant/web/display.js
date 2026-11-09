@@ -48,6 +48,11 @@ const QUICKEST = 1000;
 // How long the volume shows after a button's pressed, in milliseconds.
 const VOLUME_SHOWN = 1500;
 
+// Presses the same way closer together than this, in milliseconds, are one press. The
+// kiosk app may hand a button to the page twice - through fully.bind() and as a key -
+// and both routes are kept, in case the page's policy turns the first down.
+const SAME_PRESS = 250;
+
 // How long Nova's state says to wait before going back to Home once the music stops,
 // for a state without one, in seconds - the settings page's own default.
 const HOME_AFTER = 60;
@@ -81,6 +86,9 @@ let utcOffset = null;
 let page = HOME;
 let goingHome = null;
 let volumeHiding = null;
+
+// The last press counted, as {direction, at} in performance.now() milliseconds.
+let lastPress = null;
 
 // The cover being shown or fetched, as coverOf names it, and its blob: address.
 let coverWanted = null;
@@ -585,6 +593,11 @@ document.addEventListener("contextmenu", (event) => event.preventDefault());
 // kiosk app calls it by name.
 function novaVolume(direction) {
   if (online !== true) return;
+  const now = performance.now();
+  // Measured from the last press counted, not the last seen, so a button held down and
+  // repeating still steps four times a second rather than once.
+  if (lastPress && lastPress.direction === direction && now - lastPress.at < SAME_PRESS) return;
+  lastPress = { direction, at: now };
   ask(API + "volume", { body: { direction } }).then((answer) => {
     if (answer.status === 200) showVolume(answer.data);
   }).catch(() => {});
