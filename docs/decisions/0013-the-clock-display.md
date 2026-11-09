@@ -25,7 +25,7 @@ What the user wants, in his words: "the display be like the date / time and weat
 3. **Changing pages by touch.** Swipe left or right to move between pages. A tap moves to the next page. The middle (mute) button is left alone as the clock's power button.
 
 4. **Hold to talk.** Holding a finger on the screen makes Nova listen straight away on this clock's satellite, as if it had heard the wake word, through the Pi's microphone. The brain already sends a satellite `listen` (`protocol.py`), so the clock asks the brain and the brain tells the satellite. Lifting the finger ends the recording, as a pushed-to-talk request should; if the user stops speaking before lifting, Nova's usual end-of-speech detection may end it first. A hold has to be long enough not to be confused with a tap or the start of a swipe.
-   - While the satellite is muted, a hold does not make Nova listen: muted means the microphone is off. The clock shows a muted mark instead of the orb. (Provisional call, made while the user was away; his "yes" to this question was ambiguous, so it is to be confirmed with him. The safe side was taken.)
+   - A hold works while the satellite is muted, too: muting stops the wake word, not a deliberate hold (the user's answer, 9 Nov: "when nova muted, the mic should still work"). The builder makes sure the satellite records for a hold even while muted, and the clock shows that Nova is muted when it isn't being held.
 
 5. **Volume buttons.** Up and down change one of Nova's volumes on this clock's satellite, a step at a time like "louder" and "quieter" by voice:
    - the music volume while Nova's own music is playing there,
