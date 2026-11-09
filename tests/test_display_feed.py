@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import requests
 
+from voice_assistant import display_feed
 from voice_assistant.display_feed import DisplayFeed
 
 # 10:00 on Monday 9 November 2026, the brain's local time.
@@ -433,6 +434,44 @@ def test_nothing_is_read_until_a_clock_asks():
     assert (rig.brain.home.asked, rig.brain.weather.asked, len(rig.brain.calendar.asked)) == (2, 2, 2)
 
 
+def test_a_satellite_no_clock_asks_for_is_forgotten():
+    # A clock unplugged, or removed on the settings page, used to keep Home Assistant,
+    # Spotify and Google being read for it for as long as the brain ran.
+    rig = Rig()
+    version = rig.feed.state("pi")["version"]
+    rig.time += 599
+    rig.feed.check()
+    assert len(rig.session.watchers) == 1
+    rig.time += 1
+    rig.feed.check()
+    assert rig.session.watchers == []
+    asked = (rig.brain.home.asked, rig.brain.weather.asked, len(rig.brain.calendar.asked),
+             rig.session.music_player.asked)
+    for _ in range(3):
+        rig.time += 600
+        rig.feed.check()
+    assert (rig.brain.home.asked, rig.brain.weather.asked, len(rig.brain.calendar.asked),
+            rig.session.music_player.asked) == asked
+    # Asked again, it's read and watched again - with a version a clock still holding
+    # the old one is answered at once for.
+    state = rig.feed.state("pi")
+    assert state["connected"] is True and len(rig.session.watchers) == 1 and state["version"] > version
+    assert rig.session.music_player.asked == asked[3] + 1
+
+
+def test_a_clock_asking_keeps_its_satellite():
+    rig = Rig()
+    rig.feed.state("pi")
+    rig.time += 500
+    rig.feed.wait("pi", 0, 0)
+    rig.time += 500
+    rig.feed.check()
+    assert len(rig.session.watchers) == 1
+    rig.time += 100
+    rig.feed.check()
+    assert rig.session.watchers == []
+
+
 def test_events_and_weather_are_read_on_their_own_schedules():
     rig = Rig()
     rig.feed.state("pi")
@@ -446,7 +485,9 @@ def test_events_and_weather_are_read_on_their_own_schedules():
 
 # Failures
 
-def test_failures_keep_the_last_good(caplog):
+def test_failures_keep_the_last_good(caplog, monkeypatch):
+    # Its clock asks all along, though the brain's time jumps ten minutes at a go.
+    monkeypatch.setattr(display_feed, "FORGET_AFTER", float("inf"))
     rig = Rig(FakeSession(player=FakePlayer("Spotify", song=_song())))
     rig.brain.calendar = FakeCalendar({"summary": "Lunch", "start": _at(13), "end": _at(14), "all_day": False})
     state = rig.feed.state("pi")

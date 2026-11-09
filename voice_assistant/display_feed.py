@@ -33,6 +33,12 @@ JELLYFIN_EVERY = 5.0
 WEATHER_EVERY = 600.0
 EVENTS_EVERY = 300.0
 
+# Seconds without a clock asking for a satellite's state before it's forgotten and its
+# session no longer watched - so a clock unplugged, or removed on the settings page,
+# stops Home Assistant, Spotify and Google being asked for nobody. A clock that's on
+# asks every 25 seconds at least.
+FORGET_AFTER = 600.0
+
 # How far ahead the calendars are read, and how many events are shown. A month, so a quiet
 # week still shows five - the page gives the date of those beyond this week.
 EVENT_DAYS = 31
@@ -93,8 +99,8 @@ def _seconds(value) -> Optional[float]:
 class DisplayFeed:
     """
     Each satellite's state for its clocks, built when a clock first asks and kept up to
-    date from then on. Its version changes with anything a clock shows, so a clock can
-    wait for the next one - see wait.
+    date until none has asked for FORGET_AFTER. Its version changes with anything a clock
+    shows, so a clock can wait for the next one - see wait.
     """
 
     def __init__(self, brain, now: Callable[[], float] = time.time, every: float = 1.0):
@@ -112,6 +118,11 @@ class DisplayFeed:
         self._changed = threading.Condition()
         self._states: Dict[str, Dict] = {}
         self._told: Set[str] = set()
+        # When a clock last asked for each satellite's state, by the brain's time; and the
+        # last version of each forgotten, so one built again carries on from it - a clock
+        # still holding it is then answered at once, not left waiting on a state it hasn't seen.
+        self._asked: Dict[str, float] = {}
+        self._forgotten: Dict[str, int] = {}
         # The first version, from the time in milliseconds, so a clock still holding a
         # version from before the brain restarted - 1762650000000 and on - never holds the
         # new brain's and waits on a state it hasn't seen.
@@ -170,6 +181,7 @@ class DisplayFeed:
             "connected": False.
         """
         with self._changed:
+            self._asked[satellite] = self._now()
             known, told = satellite in self._states, satellite in self._told
         if not known:
             self._read([satellite])
@@ -199,8 +211,10 @@ class DisplayFeed:
                 return state
             with self._changed:
                 # Checked again with the lock held, as a change told - or stop - between
-                # state() and here would otherwise wake no one.
-                if (satellite not in self._told and self._states[satellite]["version"] == since
+                # state() and here would otherwise wake no one. A state forgotten meanwhile
+                # (see _forget_unasked) isn't waited on, but built again by state() at once.
+                held = self._states.get(satellite)
+                if (satellite not in self._told and held is not None and held["version"] == since
                         and not self._stopping.is_set()):
                     self._changed.wait(left)
 
@@ -212,6 +226,9 @@ class DisplayFeed:
         Args:
             satellite: The satellite's name.
         """
+        with self._changed:
+            # A press is a clock asking as much as a poll is.
+            self._asked[satellite] = self._now()
         self._build(satellite)
 
     def check(self):
@@ -219,8 +236,10 @@ class DisplayFeed:
         Reads whatever is due and builds every satellite's state once - a pass of the
         thread. A source which fails keeps its last good weather or events, or gives no
         music, and is logged once until it works again. Until a clock first asks for a
-        satellite's state there is nobody to read for, so nothing is read at all.
+        satellite's state there is nobody to read for, so nothing is read at all - nor
+        for one no clock has asked for in FORGET_AFTER, which is forgotten.
         """
+        self._forget_unasked()
         with self._changed:
             satellites = list(self._states)
         if not satellites:
@@ -247,6 +266,28 @@ class DisplayFeed:
             self._pass_failing = type(e)
         else:
             self._pass_failing = None
+
+    def _forget_unasked(self):
+        """Forgets each satellite no clock has asked for in FORGET_AFTER, and stops watching its session."""
+        now = self._now()
+        with self._building:
+            with self._changed:
+                # Chosen and dropped with the lock held, so a clock asking now - which notes
+                # it first - is never dropped, only built again if it was just before.
+                unasked = [satellite for satellite in self._states
+                           if now - self._asked.get(satellite, float("-inf")) >= FORGET_AFTER]
+                for satellite in unasked:
+                    self._forgotten[satellite] = self._states.pop(satellite)["version"]
+                    self._told.discard(satellite)
+                    self._asked.pop(satellite, None)
+            for satellite in unasked:
+                held = self._watching.pop(satellite, None)
+                if held is not None:
+                    held[0].unwatch(held[1])
+        with self._reading:
+            for satellite in unasked:
+                self._music.pop(satellite, None)
+                self._due.pop(f"music {satellite}", None)
 
     # Watching the sessions
 
@@ -396,7 +437,9 @@ class DisplayFeed:
             built = self._contents(satellite, session, self._now())
             with self._changed:
                 last = self._states.get(satellite)
-                if last is None:
+                if last is None and satellite in self._forgotten:
+                    version = self._forgotten.pop(satellite) + 1
+                elif last is None:
                     version = self._first_version
                 elif _settled(last) != _settled(built):
                     version = last["version"] + 1
