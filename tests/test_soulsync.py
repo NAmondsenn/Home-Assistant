@@ -53,7 +53,7 @@ MCP_OFF = (404, {"error": "not found"})
 def _candidate(title, artist, album_id=None, **more):
     """An album as find_album lists it."""
     return {"album_id": album_id or f"mb-{title}-{artist}".lower().replace(" ", "-"), "title": title,
-            "artists": [artist], "release_date": "1977-02-04", "tracks": RECORDED_TRACK_COUNT, "type": "Album",
+            "artists": [artist], "release_date": "1977-02-04", "tracks": RECORDED_TRACK_COUNT, "type": "album",
             "secondary_types": [], "disambiguation": "", **more}
 
 
@@ -240,15 +240,74 @@ def test_an_edition_musicbrainz_calls_clean_or_live_isnt_the_album_asked_for():
     # album in its secondary types, rather than in the title.
     clean = _candidate("good kid, m.A.A.d city", "Kendrick Lamar", disambiguation="clean")
     live = _candidate("good kid, m.A.A.d city", "Kendrick Lamar", secondary_types=["Live"])
-    explicit = _candidate("good kid, m.A.A.d city", "Kendrick Lamar", disambiguation="deluxe edition")
-    assert pick_album([clean, live, explicit], "good kid maad city", "Kendrick Lamar") is explicit
+    deluxe = _candidate("good kid, m.A.A.d city", "Kendrick Lamar", disambiguation="deluxe edition")
+    assert pick_album([clean, live, deluxe], "good kid maad city", "Kendrick Lamar") is deluxe
     assert pick_album([clean, live], "good kid maad city", "Kendrick Lamar") is None
+
+
+@pytest.mark.parametrize("title, disambiguation", [
+    ("Rumours", "Clean Edition"), ("Rumours", "clean, deluxe edition"), ("Rumours", "censored"),
+    ("Rumours", "clean / Target exclusive"), ("Rumours", "clean (US)"), ("Rumours", "radio edit"),
+    ("Rumours (Clean Edition)", ""), ("Rumours (Censored)", ""), ("Rumours [Edited]", ""),
+    ("Rumours - Clean Version", "")])
+def test_a_clean_edition_however_its_noted_is_never_picked(title, disambiguation):
+    # A disambiguation is a free note on the edition, so a clean word anywhere in it
+    # counts - unlike in a track's title, where "(feat. Clean Bandit)" is a credit.
+    candidate = _candidate(title, "Fleetwood Mac", disambiguation=disambiguation)
+    assert pick_album([candidate], "Rumours", "Fleetwood Mac") is None
+
+
+def test_an_album_called_clean_is_its_title_not_an_edition():
+    # Only a note on the edition counts, as a track's title does in navidrome.version_of.
+    album = _candidate("Clean", "Soccer Mommy")
+    assert pick_album([album], "Clean", "Soccer Mommy") is album
+
+
+def test_the_edition_with_the_swearing_left_in_is_picked_over_one_without():
+    clean_deluxe = _candidate("Rumours", "Fleetwood Mac", disambiguation="clean, deluxe edition")
+    deluxe = _candidate("Rumours", "Fleetwood Mac", disambiguation="deluxe edition")
+    censored = _candidate("Rumours", "Fleetwood Mac", disambiguation="censored")
+    plain = _candidate("Rumours", "Fleetwood Mac")
+    assert pick_album([clean_deluxe, deluxe], "Rumours", "Fleetwood Mac") is deluxe
+    assert pick_album([censored, plain], "Rumours", "Fleetwood Mac") is plain
+
+
+def test_an_edition_musicbrainz_calls_explicit_wins_among_equals():
+    plain = _candidate("Rumours", "Fleetwood Mac")
+    explicit = _candidate("Rumours", "Fleetwood Mac", disambiguation="explicit")
+    assert pick_album([plain, explicit], "Rumours", "Fleetwood Mac") is explicit
+    # Only as a whole word, and never over a closer match.
+    inexplicit = _candidate("Rumours", "Fleetwood Mac", disambiguation="inexplicit")
+    assert pick_album([plain, inexplicit], "Rumours", "Fleetwood Mac") is plain
+    closer = _candidate("Rumours", "Fleetwood Mac")
+    further = _candidate("Rumours Deluxe", "Fleetwood Mac", disambiguation="explicit")
+    assert pick_album([further, closer], "Rumours", "Fleetwood Mac") is closer
 
 
 def test_an_album_by_someone_else_entirely_isnt_picked():
     # Downloading it would put an album nobody asked for into the library for good.
     assert pick_album([_candidate("Rumours", "Someone Else")], "Rumours", "Fleetwood Mac") is None
     assert pick_album([_candidate("Rumours", "Someone Else")], "Rumours", None) is not None
+
+
+def test_an_album_is_by_the_artist_only_with_every_word_of_their_name():
+    # Sharing a word isn't enough: Mac Miller isn't Fleetwood Mac.
+    assert pick_album([_candidate("Rumours", "Mac Miller")], "Rumours", "Fleetwood Mac") is None
+    assert pick_album([_candidate("Tha Carter", "Lil Uzi Vert")], "Tha Carter", "Lil Wayne") is None
+    featuring = _candidate("Rumours", "Fleetwood Mac", artists=["Someone Else", "Fleetwood Mac"])
+    assert pick_album([featuring], "Rumours", "Fleetwood Mac") is featuring
+
+
+def test_the_album_is_picked_over_a_single_of_the_same_name():
+    # find_album "Michael Jackson - Thriller", live on 9 November: eight releases of
+    # the album and two of the single, all called Thriller.
+    single = _candidate("Thriller", "Michael Jackson", album_id="mb-single", type="single", tracks=2)
+    album = _candidate("Thriller", "Michael Jackson", album_id="mb-album", type="album", tracks=9)
+    candidates = [single] + [dict(album, album_id=f"mb-album-{n}") for n in range(8)] + [dict(single)]
+    assert pick_album(candidates, "Thriller", "Michael Jackson") is candidates[1]
+    # Anything else is still picked when it's all there is - an EP asked for by name.
+    ep = _candidate("Paper Walls", "Made Up Band", type="ep", tracks=4)
+    assert pick_album([ep], "Paper Walls", "Made Up Band") is ep
 
 
 def test_no_album_found_says_so(soulsync, http):

@@ -14,6 +14,7 @@ has come down is for Navidrome to say.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -21,7 +22,7 @@ from urllib.parse import quote
 import requests
 
 from voice_assistant import network
-from voice_assistant.navidrome import CLEAN_VERSIONS, VERSIONS, likeness, normalise, version_of
+from voice_assistant.navidrome import CLEAN_VERSIONS, VERSIONS, likeness, normalise
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -38,6 +39,13 @@ NOT_ANSWERING = "SoulSync isn't answering."
 KEY_REFUSED = "SoulSync didn't accept its key, so SOULSYNC_API_KEY under Keys needs checking."
 NOT_FOUND = "SoulSync couldn't find it."
 MCP_OFF = "SoulSync's MCP is off, so it can't download albums. Turn it on in SoulSync's settings."
+
+# Words which, anywhere in a note on an album's edition, say it's had the swearing
+# taken out - see _is_clean_edition.
+CLEAN_EDITION_WORDS = CLEAN_VERSIONS + ("censored",)
+
+# The versions of an album which aren't the one asked for unless they're named.
+OTHER_VERSIONS = tuple(version for version in VERSIONS if version not in CLEAN_VERSIONS)
 
 # A song request's states before it ends. "downloading" can also be its last, with
 # timed_out set, when SoulSync stops following a download that may still be running.
@@ -88,31 +96,57 @@ def _said(message: str) -> str:
     return f"SoulSync said: {message}" + ("" if message.endswith((".", "!", "?")) else ".")
 
 
+def _names(text: str, words: str) -> bool:
+    """Whether text has the word or words, whole: "inexplicit" has no "explicit"."""
+    return f" {words} " in f" {normalise(text)} "
+
+
+def _edition_notes(candidate: Dict) -> List[str]:
+    """
+    What says which edition an album find_album found is: its MusicBrainz
+    disambiguation, a free note such as "clean, deluxe edition", and each bracketed
+    or dashed part of its title, as version_of finds a track's. Each is read on its
+    own, so a ")" in the disambiguation can't run into the title's brackets.
+    """
+    title = candidate.get("title") or ""
+    notes = [text for brackets in re.findall(r"\(([^)]*)\)|\[([^\]]*)\]", title) for text in brackets if text]
+    if " - " in title:
+        notes.append(title.split(" - ", 1)[1])
+    return notes + [str(candidate.get("disambiguation") or "")]
+
+
+def _is_clean_edition(candidate: Dict) -> bool:
+    """
+    Whether an album find_album found has had the swearing taken out. A clean word
+    anywhere in a note on the edition counts - "Clean Edition", "clean / Target
+    exclusive" - unlike in a track's title, where version_of takes "(feat. Clean
+    Bandit)" for a credit.
+    """
+    return any(_names(note, word) for note in _edition_notes(candidate) for word in CLEAN_EDITION_WORDS)
+
+
 def _version(candidate: Dict) -> Optional[str]:
     """
-    Which version of an album find_album found, as navidrome.version_of names them.
-    MusicBrainz says which edition a release is in its disambiguation - "clean",
-    say - and that it's live or a remix album in its secondary types, so both are
-    read with the title.
+    Which other version of an album find_album found is - "live", "remix" and so on,
+    as VERSIONS names them - from its edition notes, or from MusicBrainz's secondary
+    types, which is where it says an album is live or a remix album.
     """
-    name = candidate.get("title") or ""
-    if candidate.get("disambiguation"):
-        name += f" ({candidate['disambiguation']})"
-    kinds = [str(kind).lower() for kind in candidate.get("secondary_types") or []]
-    return version_of(name) or next((kind for kind in kinds if kind in VERSIONS), None)
+    notes = _edition_notes(candidate) + [str(kind) for kind in candidate.get("secondary_types") or []]
+    return next((version for version in OTHER_VERSIONS if any(_names(note, version) for note in notes)), None)
 
 
 def pick_album(candidates: List[Dict], title: str, artist: Optional[str]) -> Optional[Dict]:
     """
     The album find_album found which is the one asked for - never a clean edition,
     and a live album, a remix album or the like only when the title asked names it.
-    Of the rest, the closest is scored as navidrome.best scores, the earliest of
-    equals winning, since SoulSync lists its best guesses first. SoulSync doesn't say
-    which editions are explicit, so there's nothing to prefer them by.
+    Of the rest, the closest is scored as navidrome.best scores. Among equals, an
+    album comes before a single or an EP of the same name - "Thriller" is both - then
+    an edition MusicBrainz notes as explicit, then the earliest, since SoulSync lists
+    its best guesses first.
 
     Args:
         candidates: Albums as find_album lists them, each with its title, artists,
-            disambiguation and secondary types.
+            type, disambiguation and secondary types.
         title: The album as asked for.
         artist: Its artist, or None if only the title was given.
 
@@ -122,16 +156,20 @@ def pick_album(candidates: List[Dict], title: str, artist: Optional[str]) -> Opt
     scored = []
     for index, candidate in enumerate(candidates):
         version = _version(candidate)
-        if version in CLEAN_VERSIONS or (version and f" {version} " not in f" {normalise(title)} "):
+        if _is_clean_edition(candidate) or (version and not _names(title, version)):
             continue
         title_score = likeness(candidate.get("title") or "", title)
-        # Asked for by an artist, an album by someone else entirely isn't picked:
-        # downloaded, it would be in the library for good.
         artist_score = max((likeness(str(name), artist) for name in candidate.get("artists") or []),
                            default=0) if artist else 0
-        if title_score and (artist_score or not artist):
-            scored.append((title_score * 2 + artist_score, -index, candidate))
-    return max(scored, key=lambda scored_candidate: scored_candidate[:2])[2] if scored else None
+        # Asked for by an artist, an album is theirs only with every word of their
+        # name, as navidrome's _asked_for has it - Mac Miller's isn't Fleetwood
+        # Mac's. Downloaded, an album nobody asked for would be in the library for good.
+        if not title_score or (artist and artist_score < 2):
+            continue
+        is_album = str(candidate.get("type") or "").lower() == "album"
+        explicit = any(_names(note, "explicit") for note in _edition_notes(candidate))
+        scored.append(((title_score * 2 + artist_score, is_album, explicit, -index), candidate))
+    return max(scored, key=lambda scored_candidate: scored_candidate[0])[1] if scored else None
 
 
 class SoulSync:
