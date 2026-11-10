@@ -51,7 +51,7 @@ With Navidrome, and SoulSync set up (its address under Settings, its key under K
 
 13a. "Hey Nova, download" the song, "by" its artist - a beep and "... requested.", and later another beep and "... has been downloaded." It isn't played.
 13b. "Hey Nova, play" something Navidrome hasn't got - "I haven't got ... Do you want me to download it?" Say "thanks": nothing is requested. Ask for it again and say "yes" - it's requested, as in 13a.
-13c. "Hey Nova, download" something Navidrome has - "You've already got ...", and nothing is requested.
+13c. "Hey Nova, download" a song Navidrome has - "You've already got ...", and nothing is requested. Then "download the album ..." for one Navidrome has only some tracks of - "... requested.", and later "... has been downloaded." with the rest of it in Navidrome - and for one it has every track of - after a few seconds, a beep and "You've already got ...". If there's an album Navidrome has only a clean version of, "download the album" it and say "yes" to the explicit one - note what SoulSync does.
 13d. "Hey Nova, download everything by" an artist - "I only download songs and albums, not a whole artist."
 13e. "Hey Nova, download the album ... by ..." - "... requested.", then a beep and "... has been downloaded." or, within 30 minutes, "Only N of the M tracks of ... came down."
 13f. "Hey Nova, download" another song, then switch its satellite off before it's done - the outcome arrives on the phone, as a "Music download" notification.

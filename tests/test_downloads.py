@@ -729,18 +729,62 @@ def test_something_already_had_is_never_requested(watching, set_up, clock, had):
     assert soulsync.requested == [] and _watches() == []
 
 
-def test_already_got_names_what_navidrome_has(watching, set_up):
-    # "download rumours" - named as Navidrome has it, not as it was asked for, and by the
-    # album's artist, not its first track's.
+def test_an_album_had_is_asked_for_and_named_as_navidrome_has_it_when_none_is_queued(watching, set_up, said):
+    # "download rumours", which Navidrome has: SoulSync is asked all the same, as Navidrome
+    # may have only some of it. Queuing none, it's had - named as Navidrome had it, not as
+    # it was asked for, and by the album's artist, not its first track's.
     class Library:
         def find_album_tracks(self, title, artist):
             assert (title, artist) == ("rumours", None)
             return [{**DREAMS, "artist": "Stevie Nicks"}, GO_YOUR_OWN_WAY, THE_CHAIN]
 
-    downloads = watching(FakeSoulSync(), Library(), set_up)
+    soulsync = FakeSoulSync(album=AlbumRequest(None, [], 11, 0))
+    downloads = watching(soulsync, Library(), set_up)
 
     assert downloads.download("rumours", "album", "kitchen") == {
+        "success": True, "message": "Asked SoulSync for rumours.", "later": True}
+    assert _all_ended()
+    assert said == [("kitchen", "You've already got Rumours by Fleetwood Mac.")]
+    assert soulsync.requested == [("rumours", None)]
+
+
+def test_a_part_owned_album_asked_for_is_requested_and_lands(watching, set_up, clock, said):
+    # Three of Rumours' eleven in Navidrome, so SoulSync queues the other eight - got, not refused as had.
+    tracks = [_track(number, title) for number, title in enumerate(RUMOURS_ALL, 1)]
+    had, rest = tracks[:3], tracks[3:]
+    soulsync = FakeSoulSync(album=AlbumRequest(None, [], 11, 8))
+    # Navidrome: what it has when asked, the same as the watch starts, then the rest as well.
+    downloads = watching(soulsync, FakeLibrary(clock, tracks=[had, had, had + rest]), set_up)
+
+    assert downloads.download("Rumours by Fleetwood Mac", "album", "kitchen") == {
+        "success": True, "message": "Asked SoulSync for Rumours by Fleetwood Mac.", "later": True}
+    assert _all_ended()
+    assert said == [("kitchen", "Rumours by Fleetwood Mac requested."),
+                    ("kitchen", "Rumours by Fleetwood Mac has been downloaded.")]
+    assert soulsync.requested == [("Rumours", "Fleetwood Mac")]
+
+
+def test_an_album_had_only_clean_with_none_queued_isnt_said_to_be_got(watching, set_up, clock, said):
+    # A yes to the explicit one, of which SoulSync queued nothing: all Navidrome has is
+    # clean, so "You've already got" it would be wrong.
+    clean = [DREAMS, _track(5, "Gold Dust Woman", clean=True)]
+    downloads = watching(FakeSoulSync(album=AlbumRequest(None, [], 11, 0)), FakeLibrary(clock, tracks=[clean]),
+                         set_up)
+
+    assert downloads.request("Rumours by Fleetwood Mac", "album", "kitchen")["later"]
+    assert _all_ended()
+    assert said == [("kitchen", "I couldn't download Rumours by Fleetwood Mac. SoulSync says it already has "
+                                "every track, or is already getting them.")]
+
+
+def test_an_album_had_but_not_asked_for_in_words_is_only_said_to_be_got(watching, set_up, clock):
+    # "I haven't got X. Do you want me to download it?" would be untrue of an album Navidrome has some of.
+    soulsync = FakeSoulSync()
+    downloads = watching(soulsync, FakeLibrary(clock, tracks=[[DREAMS, GO_YOUR_OWN_WAY]]), set_up)
+
+    assert downloads.download("Rumours by Fleetwood Mac", "album", "kitchen", asked=False) == {
         "success": True, "message": "You've already got Rumours by Fleetwood Mac."}
+    assert soulsync.requested == [] and _watches() == []
 
 
 def test_only_a_clean_copy_had_offers_the_explicit_one(watching, set_up, clock):
@@ -780,16 +824,18 @@ def test_an_album_with_a_clean_track_in_every_edition_offers_the_explicit_one(wa
     [_track(5, "Dreams", album_id="another"), _track(6, "Gold Dust Woman", clean=True, album_id="another")],
 ])
 @pytest.mark.parametrize("clean_first", [True, False])
-def test_an_album_had_explicit_beside_a_clean_edition_is_already_got(watching, set_up, clock, clean_edition,
+def test_an_album_had_explicit_beside_a_clean_edition_is_already_got(watching, set_up, clock, said, clean_edition,
                                                                      clean_first):
+    # Not offered the explicit one, which it has: asked for, and with none queued, it's had.
     explicit = [DREAMS, GO_YOUR_OWN_WAY, THE_CHAIN]
-    soulsync = FakeSoulSync()
+    soulsync = FakeSoulSync(album=AlbumRequest(None, [], 11, 0))
     library = FakeLibrary(clock, tracks=[clean_edition + explicit if clean_first else explicit + clean_edition])
     downloads = watching(soulsync, library, set_up)
 
     assert downloads.download("Rumours by Fleetwood Mac", "album", "kitchen") == {
-        "success": True, "message": "You've already got Rumours by Fleetwood Mac."}
-    assert soulsync.requested == [] and _watches() == []
+        "success": True, "message": "Asked SoulSync for Rumours by Fleetwood Mac.", "later": True}
+    assert _all_ended()
+    assert said == [("kitchen", "You've already got Rumours by Fleetwood Mac.")]
 
 
 def test_a_download_is_started_and_nothing_said_until_soulsync_answers(watching, set_up, clock, said):

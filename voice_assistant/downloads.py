@@ -45,8 +45,9 @@ SCAN_AFTER = 60
 NOT_SET_UP = ("Downloading music isn't set up. SoulSync's address goes in Settings, under Music, "
               "and its key under Keys.")
 
-# Said after "I couldn't download X." when SoulSync queued none of an album: it only
-# queues the tracks it hasn't got and isn't already getting.
+# Said after "I couldn't download X." when SoulSync queued none of an album - it only
+# queues the tracks it hasn't got and isn't already getting - and Navidrome had none
+# of it, or only a clean version: see _none_queued.
 NOTHING_QUEUED = "SoulSync says it already has every track, or is already getting them."
 
 # Said for "download" everything by an artist, which can mean dozens of albums - the user
@@ -165,6 +166,24 @@ def _as_had(wanted: Wanted, found: List[Dict]) -> Optional[str]:
 def _couldnt(wanted: Wanted, reason: Optional[str]) -> str:
     """'I couldn't download X.', then the reason if there is one."""
     return f"I couldn't download {wanted.name}." + (f" {reason}" if reason else "")
+
+
+def _none_queued(wanted: Wanted, had: List[Dict]) -> str:
+    """
+    What to say when SoulSync queued none of an album: "You've already got X." if
+    Navidrome had any of it other than clean before it was asked for, named as
+    Navidrome had it - else that SoulSync has, or is getting, every track. An album
+    Navidrome had only clean isn't "got": the explicit one is what was asked for.
+
+    Args:
+        wanted: The album asked for.
+        had: Every track of it Navidrome had before the request.
+
+    Returns:
+        The sentence to say.
+    """
+    name = _as_had(wanted, had)
+    return f"You've already got {name}." if name else _couldnt(wanted, NOTHING_QUEUED)
 
 
 def _says_clean(part: str) -> bool:
@@ -340,7 +359,10 @@ class Downloads:
                  asked: bool = True) -> Dict:
         """
         Asks SoulSync for a song or album, for "download X" - unless Navidrome already
-        has it, when that's said instead, and nothing is requested.
+        has the song, when that's said instead, and nothing is requested. An album
+        Navidrome has is still asked for, as it may have only some of its tracks:
+        SoulSync queues only the rest, and if that's none, the watch says "You've
+        already got X.".
 
         Args:
             query: What to download, e.g. "Gooba by 6ix9ine".
@@ -406,7 +428,7 @@ class Downloads:
         if self._is_waiting(wanted):
             return already
         if look:
-            had = self._in_navidrome(query, search_type, wanted)
+            had = self._in_navidrome(query, search_type, wanted, asked)
             if had:
                 return had
         if not asked:
@@ -422,7 +444,8 @@ class Downloads:
         with self._lock:
             return wanted.key in self._waiting
 
-    def _in_navidrome(self, query: str, search_type: Optional[str], wanted: Wanted) -> Optional[Dict]:
+    def _in_navidrome(self, query: str, search_type: Optional[str], wanted: Wanted,
+                      asked: bool) -> Optional[Dict]:
         """
         What to say in place of a request, when Navidrome has it or can't be asked -
         or None, to request it.
@@ -431,10 +454,13 @@ class Downloads:
             query: What to download, for the request on a yes.
             search_type: What it names, for the request on a yes.
             wanted: What it asks for.
+            asked: Whether the user's own words asked for a download, which an album
+                Navidrome has is still requested on.
 
         Returns:
             Navidrome's failure, which requests nothing - it may well have it; the offer
-            of the explicit one when what it has is clean; else "You've already got X.".
+            of the explicit one when what it has is clean; None for an album asked for
+            in words; else "You've already got X.".
         """
         try:
             found = self._find(self._library(), wanted)
@@ -447,6 +473,12 @@ class Downloads:
             return {"success": True,
                     "message": f"You've only got a clean version of {wanted.name}. {DOWNLOAD_EXPLICIT}",
                     "ask_first": Action("request_download", {"query": query, "search_type": search_type})}
+        if wanted.kind == "album" and asked:
+            # SoulSync files each song it fetches under its album, so a library filled a
+            # song at a time has albums of three tracks in eleven. SoulSync knows which
+            # it has, and queues only the rest - see _none_queued.
+            logger.info(f"Navidrome has {had}, but perhaps not all of it, so SoulSync is asked for the rest")
+            return None
         logger.info(f"Navidrome already has {had}, so {wanted.name} isn't requested")
         return {"success": True, "message": f"You've already got {had}."}
 
@@ -520,7 +552,8 @@ class Downloads:
             # Set up when it was asked for, but not now: the settings changed in between.
             return self._tell(satellite, _couldnt(wanted, self.problem()))
 
-        before = self._had(library, wanted)
+        had = self._had(library, wanted)
+        before = {track.get("id") for track in had}
         started = self._now()
         try:
             request = (soulsync.request_album(wanted.title, wanted.artist) if wanted.kind == "album"
@@ -529,7 +562,7 @@ class Downloads:
             return self._tell(satellite, _couldnt(wanted, e.reason))
         if isinstance(request, AlbumRequest) and request.queued <= 0:
             # Nothing of it is coming, so there's nothing to wait for.
-            return self._tell(satellite, _couldnt(wanted, NOTHING_QUEUED))
+            return self._tell(satellite, _none_queued(wanted, had))
         self._tell(satellite, f"{wanted.name} requested.")
 
         new: List[Dict] = []
@@ -601,18 +634,18 @@ class Downloads:
             return library.find_album_tracks(wanted.title, wanted.artist)
         return library.find_songs(wanted.title, wanted.artist)
 
-    def _had(self, library: NavidromeLibrary, wanted: Wanted) -> Set[str]:
+    def _had(self, library: NavidromeLibrary, wanted: Wanted) -> List[Dict]:
         """
-        Navidrome's ids for what it had of the request before it was made - none if
-        Navidrome couldn't be asked, when anything of it found later counts.
+        What Navidrome had of the request before it was made - nothing if Navidrome
+        couldn't be asked, when anything of it found later counts.
         """
         try:
-            return {track.get("id") for track in self._find(library, wanted)}
+            return self._find(library, wanted)
         except NAVIDROME_ERRORS as e:
             NavidromeLibrary._failure_message(e)
             logger.warning(f"Couldn't see what Navidrome had of {wanted.name} before asking for it, "
                            f"so anything of it found counts as the download")
-            return set()
+            return []
 
     def _look(self, library: NavidromeLibrary, wanted: Wanted, before: Set[str], last: List[Dict]) -> List[Dict]:
         """
