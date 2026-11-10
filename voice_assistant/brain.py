@@ -1605,7 +1605,9 @@ class Brain:
         self.running = False
         self.clock.stop()
         # Before the satellites are let go, so a download which lands meanwhile isn't
-        # sent to the phone because the satellite which asked has just gone.
+        # sent to the phone because the satellite which asked has just gone. A message
+        # already being said as this runs may still go to the phone, as its satellite
+        # goes mid-sentence, and stop() may log that download as forgotten as well.
         self.downloads.stop()
         if self.batteries:
             self.batteries.stop()
