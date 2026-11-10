@@ -2617,6 +2617,8 @@ class DashboardSocket:
         self.configs = configs
         self.boards = [{"url_path": path, "mode": "storage"} for path in configs if path]
         self.fails = fails
+        # Dashboards whose configuration can't be had just now, by url_path, and the error raised for each.
+        self.config_fails = {}
         self.calls = []
 
     def call(self, messages):
@@ -2626,9 +2628,11 @@ class DashboardSocket:
         message, = messages
         if message["type"] == "lovelace/dashboards/list":
             return [self.boards]
+        if message.get("url_path") in self.config_fails:
+            raise self.config_fails[message.get("url_path")]
         config = self.configs.get(message.get("url_path"))
         if config is None:
-            raise HomeSocketError("lovelace/config failed: {'code': 'config_not_found'}")
+            raise HomeSocketError("lovelace/config failed: {'code': 'config_not_found'}", code="config_not_found")
         return [config]
 
 
@@ -2695,10 +2699,25 @@ def test_no_background_at_all(make_home, configs):
     assert _home_with(make_home, configs).dashboard_background() is None
 
 
-def test_no_background_while_home_assistant_cant_be_asked(make_home):
+def test_home_assistant_which_cant_be_asked_raises(make_home):
+    # Raised, not said as no background, so the clock keeps the picture it has through a blip.
     home = _home_with(make_home, {"dashboard-home": {"background": _uploaded()}}, fails=HomeSocketError("timed out"))
-    assert home.dashboard_background() is None
-    # A list of the wrong shape is no background either.
+    with pytest.raises(HomeSocketError):
+        home.dashboard_background()
+
+
+@pytest.mark.parametrize("fails", [HomeSocketError("timed out"),
+                                   HomeSocketError("lovelace/config failed", code="unknown_error")])
+def test_a_dashboard_which_cant_be_read_just_now_raises_rather_than_pass_it_over(make_home, fails):
+    # Passed over, a blip on the first dashboard would put the second's picture on the clock.
+    home = _home_with(make_home, {"dashboard-home": {"background": _uploaded()},
+                                  "dashboard-mobile": {"background": _uploaded("ffff")}})
+    home.socket.config_fails["dashboard-home"] = fails
+    with pytest.raises(HomeSocketError):
+        home.dashboard_background()
+
+
+def test_a_list_of_the_wrong_shape_is_no_background(make_home):
     home = _home_with(make_home, {"dashboard-home": {"background": _uploaded()}})
     home.socket.boards = {"dashboard-home": True}
     assert home.dashboard_background() is None

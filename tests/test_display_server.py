@@ -672,8 +672,8 @@ def test_the_background_is_the_feeds(served, parts, clocks):
     status, headers, body = _ask(served, "/display/api/background", key)
     assert (status, headers["Content-Type"], body) == (200, "image/jpeg", b"a fern")
     feed.picture = None
-    status, _, body = _ask(served, "/display/api/background", key)
-    assert status == 404 and b"fern" not in body
+    answer = _ask(served, "/display/api/background", key)
+    assert answer[0] == 404 and _json(answer) == {"message": "There's no background."}
 
 
 def test_the_background_must_be_a_picture(served, parts, clocks):
@@ -681,13 +681,17 @@ def test_the_background_must_be_a_picture(served, parts, clocks):
     _, _, feed = parts
     feed.picture = (b"<svg/>", "image/svg+xml")
     _, key = clocks.add("Desk", "pi")
-    assert _ask(served, "/display/api/background", key)[0] == 404
+    answer = _ask(served, "/display/api/background", key)
+    assert answer[0] == 404 and _json(answer) == {"message": "There's no background."}
 
 
 def test_the_background_is_fetched_from_home_assistant_once_not_per_request(served, parts, clocks):
     brain = parts[0]
+    brain.weather = brain.calendar = None
     served.feed = DisplayFeed(brain)
     _, key = clocks.add("Desk", "pi")
+    # The page asks for the state first, which names the background.
+    assert _json(_ask(served, "/display/api/state", key))["background"]
     for _ in range(3):
         status, headers, body = _ask(served, "/display/api/background", key)
         assert (status, headers["Content-Type"], body) == (200, "image/jpeg", b"a fern")
@@ -700,9 +704,12 @@ def test_the_background_is_fetched_from_home_assistant_once_not_per_request(serv
 def test_a_background_home_assistant_wont_give_is_not_found(served, parts, clocks):
     brain = parts[0]
     brain.home.fails = ValueError("That isn't a picture")
+    brain.weather = brain.calendar = None
     served.feed = DisplayFeed(brain)
     _, key = clocks.add("Desk", "pi")
-    assert _ask(served, "/display/api/background", key)[0] == 404
+    assert _json(_ask(served, "/display/api/state", key))["background"] is None
+    answer = _ask(served, "/display/api/background", key)
+    assert answer[0] == 404 and _json(answer) == {"message": "There's no background."}
 
 
 def test_no_satellite_at_all_isnt_connected(served, parts, clocks):

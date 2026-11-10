@@ -10,6 +10,7 @@ import requests
 
 from voice_assistant import display_feed
 from voice_assistant.display_feed import DisplayFeed
+from voice_assistant.ha_registry import HomeSocketError
 
 # 10:00 on Monday 9 November 2026, the brain's local time.
 TEN = datetime(2026, 11, 9, 10, 0).astimezone().timestamp()
@@ -136,6 +137,7 @@ class FakeHome:
         self.background_path = None
         self.picture = (b"fern", "image/jpeg")
         self.background_fails = None
+        self.lookup_fails = None
         self.looked_up = 0
         self.fetched = []
 
@@ -147,6 +149,8 @@ class FakeHome:
 
     def dashboard_background(self):
         self.looked_up += 1
+        if self.lookup_fails is not None:
+            raise self.lookup_fails
         return self.background_path
 
     def background(self, path):
@@ -589,12 +593,19 @@ def test_a_calendars_id_is_never_logged(caplog):
 
 # The dashboard's background
 
-def test_the_background_is_none_without_one():
+def test_the_background_is_none_without_one(monkeypatch):
+    monkeypatch.setattr(display_feed, "FORGET_AFTER", float("inf"))
     rig = Rig()
     assert rig.feed.state("pi")["background"] is None and rig.feed.background() is None
+    # Taken off every dashboard, it goes from the clock too.
+    rig.brain.home.background_path = "/local/fern.jpg"
+    assert rig.later(display_feed.BACKGROUND_EVERY)["background"] is not None
+    rig.brain.home.background_path = None
+    assert rig.later(display_feed.BACKGROUND_EVERY)["background"] is None and rig.feed.background() is None
+    rig.brain.home.background_path = "/local/fern.jpg"
+    assert rig.later(display_feed.BACKGROUND_EVERY)["background"] is not None
     rig.brain.home = None
-    rig.time += display_feed.BACKGROUND_EVERY
-    assert rig.feed.background() is None
+    assert rig.later(display_feed.BACKGROUND_EVERY)["background"] is None and rig.feed.background() is None
 
 
 def test_the_background_is_fetched_once_an_hour_and_its_token_follows_the_picture(monkeypatch):
@@ -620,16 +631,17 @@ def test_the_background_is_fetched_once_an_hour_and_its_token_follows_the_pictur
     assert rig.feed.background() == (b"palm", "image/png")
 
 
-def test_the_route_alone_reads_the_background_once_an_hour():
+def test_asking_for_the_background_never_asks_home_assistant():
+    # The clock's request is answered from memory: Home Assistant is only asked as the
+    # state is read, which comes first - the page fetches the picture once the state names it.
     rig = Rig()
     rig.brain.home.background_path = "/local/fern.jpg"
-    assert rig.feed.background() == (b"fern", "image/jpeg")
-    rig.time += display_feed.BACKGROUND_EVERY - 1
-    rig.feed.background()
+    assert rig.feed.background() is None and rig.brain.home.looked_up == 0
+    rig.feed.state("pi")
+    rig.time += display_feed.BACKGROUND_EVERY * 2
+    for _ in range(3):
+        assert rig.feed.background() == (b"fern", "image/jpeg")
     assert rig.brain.home.looked_up == 1
-    rig.time += 1
-    rig.feed.background()
-    assert rig.brain.home.looked_up == 2
 
 
 def test_a_background_which_cant_be_fetched_is_none_and_said_once(caplog, monkeypatch):
@@ -645,3 +657,46 @@ def test_a_background_which_cant_be_fetched_is_none_and_said_once(caplog, monkey
     assert state["background"] is None and rig.feed.background() is None
     said = [record for record in caplog.records if "background" in record.getMessage()]
     assert len(said) == 1 and said[0].exc_info is None
+
+
+def test_home_assistant_away_keeps_the_background_and_tries_again_soon(caplog, monkeypatch):
+    monkeypatch.setattr(display_feed, "FORGET_AFTER", float("inf"))
+    rig = Rig()
+    rig.brain.home.background_path = "/api/image/serve/abc/512x512"
+    token = rig.feed.state("pi")["background"]
+    version = rig.feed.state("pi")["version"]
+    for fails in (HomeSocketError("timed out"), requests.ConnectionError("Home Assistant is down")):
+        rig.brain.home.lookup_fails, rig.brain.home.background_fails = (fails, None) if isinstance(
+            fails, HomeSocketError) else (None, fails)
+        with caplog.at_level(logging.WARNING):
+            state = rig.later(display_feed.BACKGROUND_EVERY)
+        # A blip leaves the clock's picture as it was.
+        assert state["background"] == token and state["version"] == version
+        assert rig.feed.background() == (b"fern", "image/jpeg")
+        # And it's tried again within minutes, not in an hour.
+        looked_up = rig.brain.home.looked_up
+        rig.later(display_feed.BACKGROUND_RETRY - 1)
+        assert rig.brain.home.looked_up == looked_up
+        rig.later(1)
+        assert rig.brain.home.looked_up == looked_up + 1
+    said = [record for record in caplog.records if "background" in record.getMessage()]
+    assert len(said) == 1 and said[0].exc_info is None
+    # Back, with a new picture: it's the clock's at the next try.
+    rig.brain.home.lookup_fails = rig.brain.home.background_fails = None
+    rig.brain.home.picture = (b"palm", "image/png")
+    state = rig.later(display_feed.BACKGROUND_RETRY)
+    assert state["background"] not in (None, token) and rig.feed.background() == (b"palm", "image/png")
+    # Then hourly again.
+    looked_up = rig.brain.home.looked_up
+    rig.later(display_feed.BACKGROUND_EVERY - 1)
+    assert rig.brain.home.looked_up == looked_up
+
+
+def test_a_background_home_assistant_cant_say_at_first_is_tried_again_soon(monkeypatch):
+    monkeypatch.setattr(display_feed, "FORGET_AFTER", float("inf"))
+    rig = Rig()
+    rig.brain.home.background_path = "/local/fern.jpg"
+    rig.brain.home.lookup_fails = HomeSocketError("timed out")
+    assert rig.feed.state("pi")["background"] is None
+    rig.brain.home.lookup_fails = None
+    assert rig.later(display_feed.BACKGROUND_RETRY)["background"] is not None

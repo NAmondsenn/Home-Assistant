@@ -53,6 +53,16 @@ REGISTRY_TIMEOUT = 30.0
 class HomeSocketError(Exception):
     """Home Assistant's WebSocket couldn't be used - no network, a refusal or a bad answer."""
 
+    def __init__(self, message: str, code: Optional[str] = None):
+        """
+        Args:
+            message: What went wrong.
+            code: Home Assistant's own code for an answer which wasn't a success, e.g.
+                "config_not_found" - None for anything else, a timeout say.
+        """
+        super().__init__(message)
+        self.code = code
+
 
 class HomeSocket:
     """One-off conversations with Home Assistant's WebSocket API."""
@@ -174,7 +184,9 @@ class HomeSocket:
                 if answer.get("type") == "result" and answer.get("id") == number:
                     break
             if not answer.get("success"):
-                raise HomeSocketError(f"{message.get('type')} failed: {answer.get('error')}")
+                error = answer.get("error")
+                raise HomeSocketError(f"{message.get('type')} failed: {error}",
+                                      code=error.get("code") if isinstance(error, dict) else None)
             results.append(answer.get("result"))
         return results
 

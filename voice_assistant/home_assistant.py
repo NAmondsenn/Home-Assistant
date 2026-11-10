@@ -1083,13 +1083,14 @@ class HomeAssistant:
             dashboard's first, then the others in Home Assistant's order - e.g.
             "/api/image/serve/<id>/512x512" for an uploaded picture, or "/local/fern.jpg"
             for one in its www folder. None if there's none, or only a web address or some
-            other kind of media, or Home Assistant can't be asked.
+            other kind of media.
+
+        Raises:
+            HomeSocketError: If Home Assistant couldn't be asked for its dashboards, or for
+                one's configuration - so a blip isn't taken for no background, nor for the
+                next dashboard's.
         """
-        try:
-            boards, = self.socket.call([{"type": "lovelace/dashboards/list"}])
-        except HomeSocketError as e:
-            logger.warning(f"Couldn't ask Home Assistant for its dashboards' background: {e}")
-            return None
+        boards, = self.socket.call([{"type": "lovelace/dashboards/list"}])
         if not isinstance(boards, list):
             return None
         url_paths = [None] + [board["url_path"] for board in boards
@@ -1098,9 +1099,12 @@ class HomeAssistant:
             message = {"type": "lovelace/config", **({"url_path": url_path} if url_path else {})}
             try:
                 config, = self.socket.call([message])
-            except HomeSocketError:
-                # As the default dashboard is answered until it's first edited - "config_not_found".
-                continue
+            except HomeSocketError as e:
+                # A dashboard with no configuration - the default is one until it's first
+                # edited - has no background. Anything else may be a blip, and is raised.
+                if e.code == "config_not_found":
+                    continue
+                raise
             path = _background_path(config.get("background") if isinstance(config, dict) else None)
             if path is not None:
                 return path

@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 from voice_assistant.batteries import HOME_FAILURES
 from voice_assistant.google_calendar import READ_FAILURES
+from voice_assistant.ha_registry import HomeSocketError
 from voice_assistant.settings_page import volume_levels
 
 logger = logging.getLogger(__name__)
@@ -37,8 +38,11 @@ EVENTS_EVERY = 300.0
 
 # Seconds between looking the dashboard's background up in Home Assistant and fetching it -
 # a new picture there is the clocks' within the hour, and the clocks asking for it are
-# answered from memory meanwhile, never by asking Home Assistant again.
+# answered from memory meanwhile, never by asking Home Assistant again. After a try which
+# failed - Home Assistant away, say - the picture the clocks have is kept, and Home
+# Assistant asked again sooner.
 BACKGROUND_EVERY = 3600.0
+BACKGROUND_RETRY = WEATHER_EVERY
 
 # Seconds without a clock asking for a satellite's state before it's forgotten and its
 # session no longer watched - so a clock unplugged, or removed on the settings page,
@@ -101,12 +105,6 @@ def plays_here(playing: Optional[Dict]) -> bool:
 def _seconds(value) -> Optional[float]:
     """A number of seconds as a float, or None for none."""
     return float(value) if value is not None else None
-
-
-def _fetch_background(home) -> Optional[Tuple[bytes, str]]:
-    """The dashboard's background from Home Assistant, as background() gives it - or None if there's none."""
-    path = home.dashboard_background()
-    return home.background(path) if path else None
 
 
 class DisplayFeed:
@@ -237,16 +235,15 @@ class DisplayFeed:
 
     def background(self) -> Optional[Tuple[bytes, str]]:
         """
-        The user's dashboard background, for the clocks' page - looked up and fetched again
-        if it's due, at most every BACKGROUND_EVERY however many clocks ask.
+        The user's dashboard background, for the clocks' page - as it was read last, with a
+        satellite's state. Never read here, so a clock's request never waits on Home
+        Assistant: the page fetches the picture once a state has named it.
 
         Returns:
-            The picture and its type, e.g. "image/jpeg" - or None if there's none, or Home
-            Assistant isn't there or wouldn't give it.
+            The picture and its type, e.g. "image/jpeg" - or None if there's none, it hasn't
+            been read yet, or Home Assistant wouldn't give it as a picture.
         """
-        with self._reading:
-            self._read_background(self._now())
-            found = self._background
+        found = self._background
         return found[:2] if found is not None else None
 
     def poke(self, satellite: str):
@@ -432,15 +429,35 @@ class DisplayFeed:
             self._events_read_on = today
 
     def _read_background(self, now: float):
-        """Looks the dashboard's background up and fetches it, if it's due - no background for a failure."""
+        """
+        Looks the dashboard's background up and fetches it, if it's due. Home Assistant
+        saying there's none, or giving something which isn't a picture or is too big, takes
+        it away; any other failure keeps the picture the clocks have, and tries again sooner.
+        """
         if not self._is_due("background", now, BACKGROUND_EVERY):
             return
         home = self._brain.home
-        found = (self._attempt("the dashboard's background", functools.partial(_fetch_background, home),
-                               HOME_FAILURES) if home else None)
-        # Not the last good, as with the weather: a background Home Assistant no longer gives,
-        # or won't give as a picture, goes, and the page keeps its own dark one.
-        if found is None or found is _FAILED:
+        if home is None:
+            self._background = None
+            return
+        refused = []
+
+        def fetch():
+            path = home.dashboard_background()
+            if not path:
+                return None
+            try:
+                return home.background(path)
+            except ValueError:
+                # Its answer, not a blip: the path isn't one Nova fetches, or the picture is
+                # too big or isn't one - which a second look wouldn't change.
+                refused.append(True)
+                raise
+
+        found = self._attempt("the dashboard's background", fetch, HOME_FAILURES + (HomeSocketError,))
+        if found is _FAILED and not refused:
+            self._due["background"] = now + BACKGROUND_RETRY
+        elif found is None or found is _FAILED:
             self._background = None
         else:
             body, kind = found

@@ -77,9 +77,15 @@ def test_a_refused_sign_in_or_a_failed_answer_raises(connect):
 
     failed = FakeConnection({"one": {"success": False, "error": {"code": "unauthorized"}}})
     connect(failed)
-    with pytest.raises(HomeSocketError):
+    with pytest.raises(HomeSocketError) as raised:
         HomeSocket("http://ha.test:8123", "token").call([{"type": "one"}])
     assert failed.closed
+    # Home Assistant's own code for it, so a caller can tell "there's none" from a failure.
+    assert raised.value.code == "unauthorized"
+    connect(FakeConnection(sign_in="auth_invalid"))
+    with pytest.raises(HomeSocketError) as raised:
+        HomeSocket("http://ha.test:8123", "token").call([{"type": "one"}])
+    assert raised.value.code is None
 
 
 def test_a_timeout_raises_and_closes(connect):
