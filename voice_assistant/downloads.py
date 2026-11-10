@@ -15,7 +15,6 @@ deletes a file. See docs/decisions/0012-music-fetched-by-voice.md.
 
 import logging
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -25,8 +24,8 @@ import requests
 
 from voice_assistant import music
 from voice_assistant.actions import Action
-from voice_assistant.navidrome import (CLEAN_VERSIONS, NavidromeError, NavidromeLibrary, _says_version, is_clean,
-                                       likeness, normalise, split_by)
+from voice_assistant.navidrome import (BRACKETED, CLEAN_VERSIONS, DASH, NavidromeError, NavidromeLibrary,
+                                       _says_version, is_clean, likeness, normalise, split_by)
 from voice_assistant.soulsync import AlbumRequest, Progress, SoulSync, SoulSyncError
 
 # Logger setup
@@ -75,9 +74,6 @@ ALBUM_MINUTES = 30
 # What asking Navidrome can raise: out of reach, an error answered, or an answer
 # that wasn't JSON.
 NAVIDROME_ERRORS = (requests.RequestException, NavidromeError, ValueError)
-
-# A bracketed part of a title, as navidrome.version_of finds them.
-BRACKETED = re.compile(r"\(([^)]*)\)|\[([^\]]*)\]")
 
 
 @dataclass(frozen=True)
@@ -183,12 +179,16 @@ def _bare_title(title: str) -> str:
     - Radio Edit" are "dreams", as Dreams is. Any other version is a track of its
     own - a deluxe edition's "Dreams (Live)" is one more than Dreams - and "Dreams
     (2004 Remaster)" keeps its remaster, which is no version at all.
+
+    The clean brackets go first, then a clean dashed part, read as version_of reads
+    one: the other way round, "Dreams - Live at the Forum (Clean)" would have its
+    whole dashed part taken for a clean version, and merge with the studio Dreams.
     """
-    head, _, tail = title.partition(" - ")
-    if tail and _says_clean(tail):
-        title = head
     title = BRACKETED.sub(lambda part: "" if _says_clean(part.group(1) or part.group(2) or "") else part.group(0),
                           title)
+    dashed = DASH.split(title, 1)
+    if len(dashed) == 2 and _says_clean(BRACKETED.sub("", dashed[1])):
+        title = dashed[0]
     return normalise(title)
 
 

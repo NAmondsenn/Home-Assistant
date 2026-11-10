@@ -14,7 +14,7 @@ import pytest
 import requests
 
 from voice_assistant.actions import Action
-from voice_assistant.downloads import NOT_SET_UP, POLL_EVERY, SCAN_AFTER, Downloads, Wanted
+from voice_assistant.downloads import NOT_SET_UP, POLL_EVERY, SCAN_AFTER, Downloads, Wanted, _bare_title
 from voice_assistant.navidrome import NavidromeLibrary
 from voice_assistant.soulsync import MCP_OFF, NOT_ANSWERING, NOT_FOUND, AlbumRequest, Progress, SoulSync, SoulSyncError
 
@@ -390,6 +390,16 @@ def test_a_clean_copy_and_the_explicit_one_of_a_track_count_once(watching, clock
 
     assert said[-1] == ("kitchen", "Only 2 of the 3 tracks of Rumours by Fleetwood Mac came down.")
     assert 1800 <= clock.given_up_at < 1800 + POLL_EVERY
+
+
+def test_only_a_part_saying_clean_is_taken_off_a_title():
+    # The clean bracket goes first, so the dashed part before it is read for what it is:
+    # a live take or a remaster stays a track of its own, rather than merging with Dreams.
+    assert _bare_title("Dreams - Live at the Forum (Clean)") == _bare_title("Dreams - Live at the Forum")
+    assert _bare_title("Dreams - 2004 Remaster (Clean)") == _bare_title("Dreams - 2004 Remaster")
+    assert _bare_title("Dreams - Live at the Forum (Clean)") != "dreams"
+    # A clean part after an en dash, or before a credit, is still one.
+    assert _bare_title("Dreams \u2013 Radio Edit") == _bare_title("Dreams - Radio Edit (feat. X)") == "dreams"
 
 
 def test_a_live_take_of_a_track_is_a_track_of_its_own(watching, clock, said):
