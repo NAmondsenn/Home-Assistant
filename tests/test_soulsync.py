@@ -203,7 +203,8 @@ def test_an_album_is_found_then_requested_through_mcp(soulsync, http):
     assert [call["params"]["name"] for call in http.mcp_calls] == ["find_album", "request_album",
                                                                     "process_wishlist"]
     assert [call["method"] for call in http.mcp_calls] == ["tools/call"] * 3
-    assert http.mcp_calls[0]["params"]["arguments"] == {"query": "Fleetwood Mac - Rumours"}
+    # As many editions as SoulSync gives, for pick_album to choose past the clean and deluxe ones.
+    assert http.mcp_calls[0]["params"]["arguments"] == {"query": "Fleetwood Mac - Rumours", "limit": 25}
     assert http.mcp_calls[1]["params"]["arguments"] == {"album_id": "mb-rumours"}
     assert http.headers["Authorization"] == "Bearer the-key"
     # find_album searches beyond the local network, so it's given longer.
@@ -229,7 +230,7 @@ def test_an_album_partly_had_is_followed_by_the_tracks_soulsync_queued(soulsync,
 
 def test_an_album_title_alone_is_searched_for_as_it_is(soulsync, http):
     soulsync.request_album("Rumours", None)
-    assert http.mcp_calls[0]["params"]["arguments"] == {"query": "Rumours"}
+    assert http.mcp_calls[0]["params"]["arguments"] == {"query": "Rumours", "limit": 25}
 
 
 def test_an_album_is_only_waited_for_as_soulsync_gives_nothing_to_follow(soulsync, http):

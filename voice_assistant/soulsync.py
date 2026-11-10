@@ -33,6 +33,11 @@ REQUEST_TIMEOUT = 10
 # local network, before it answers.
 MCP_TIMEOUT = 30
 
+# How many albums find_album is asked for - the most it takes - so pick_album has
+# every edition to choose from, past the clean and deluxe ones. A popular album
+# has many: Thriller had eight releases of the album and two of the single.
+FIND_ALBUM_LIMIT = 25
+
 # The reasons said after "I couldn't download X."
 NOT_ANSWERING = "SoulSync isn't answering."
 KEY_REFUSED = "SoulSync didn't accept its key, so SOULSYNC_API_KEY under Keys needs checking."
@@ -386,7 +391,8 @@ class SoulSync:
             SoulSyncError: If SoulSync couldn't be asked, found nothing that will
                 do, or refused.
         """
-        found = self._mcp("find_album", {"query": f"{artist} - {title}" if artist else title})
+        found = self._mcp("find_album", {"query": f"{artist} - {title}" if artist else title,
+                                         "limit": FIND_ALBUM_LIMIT})
         albums = found.get("albums") if isinstance(found.get("albums"), list) else []
         album = pick_album([album for album in albums if isinstance(album, dict)], title, artist)
         if album is None or not album.get("album_id"):
