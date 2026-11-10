@@ -1,0 +1,84 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=800, user-scalable=no">
+<style>
+html,body{margin:0;width:800px;height:480px;overflow:hidden;background:#05100a;font-family:sans-serif;color:#eef2ec}
+#bg{position:fixed;inset:0;background:linear-gradient(rgba(0,0,0,.42),rgba(0,0,0,.55)),url(leaves.jpg) center/cover no-repeat}
+.page{position:absolute;inset:0;padding:40px 44px;box-sizing:border-box;transition:opacity .6s}
+.hide{opacity:0;pointer-events:none}
+#time{font-size:150px;font-weight:200;line-height:1;letter-spacing:-2px}
+#date{font-size:30px;color:#c9d4c6;margin-top:6px}
+#wx{position:absolute;right:62px;top:54px;text-align:right}
+#wx b{font-size:58px;font-weight:300;display:block;line-height:1;margin-bottom:10px}#wx div{color:#c9d4c6;font-size:21px;line-height:1;margin-top:12px}
+#next{position:absolute;left:44px;bottom:62px;font-size:22px;color:#c9d4c6}
+#np{display:flex;gap:32px;align-items:center;height:100%}
+#art{width:240px;height:240px;border-radius:16px;background:linear-gradient(135deg,#ffb347,#ff5e62 55%,#c0398b);flex:none;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+#npt{position:absolute;right:58px;top:30px;font-size:26px;font-weight:700;color:#e6ece3}
+.src{font-size:15px;letter-spacing:3px;color:#c9d4c6;text-transform:uppercase}
+.title{font-size:34px;margin:8px 0 4px}.sub{font-size:22px;color:#c9d4c6}
+.bar{height:4px;width:380px;background:rgba(255,255,255,.18);border-radius:2px;margin-top:24px}
+.bar i{display:block;height:4px;width:40%;background:#2f8bff;border-radius:2px}
+/* Nova: JARVIS rings and voice bars outside, Siri-style colour lobes inside. Transforms only. */
+#veil{position:fixed;inset:0;background:rgba(1,3,10,.84);opacity:0;transition:opacity .4s}
+#nova{position:fixed;left:50%;top:46%;width:300px;height:300px;margin:-150px 0 0 -150px;opacity:0;transform:scale(.6) rotate(-30deg);transition:opacity .4s,transform .7s cubic-bezier(.2,.9,.3,1.2)}
+.on #veil{opacity:1}.on #nova{opacity:1;transform:none}
+.ring{position:absolute;inset:0;background-size:100% 100%;will-change:transform}
+.r1{background-image:url(r-outer.png);inset:-14px;opacity:.45;animation:spin 40s linear infinite}
+.r1,.r2,.r3,.bars{display:none}
+.r2{background-image:url(r-violet.png);animation:spin 9s linear infinite reverse}
+.r3{background-image:url(r-inner.png);animation:spin 5s linear infinite}
+.bars{position:absolute;inset:0}
+.bar{position:absolute;left:50%;top:50%;width:3px;height:20px;margin:-10px 0 0 -1.5px}
+.bar i{display:block;width:3px;height:20px;border-radius:2px;background:linear-gradient(#6fd0ff,#2f8bff);transform-origin:50% 100%;transform:scaleY(.25);will-change:transform}
+.bar:nth-child(even) i{background:linear-gradient(#c79bff,#a24dff)}
+#aura{position:absolute;left:50%;top:50%;width:520px;height:520px;margin:-260px 0 0 -260px;border-radius:50%;background:radial-gradient(circle,rgba(90,110,255,.34) 0,rgba(140,80,255,.2) 28%,rgba(70,60,200,.08) 48%,rgba(0,0,0,0) 66%);animation:aura 4.5s ease-in-out infinite;will-change:transform,opacity}
+#aura2{position:absolute;left:50%;top:50%;width:330px;height:330px;margin:-165px 0 0 -165px;border-radius:50%;background:radial-gradient(circle,rgba(120,190,255,.38) 0,rgba(150,90,255,.22) 40%,rgba(0,0,0,0) 70%);animation:aura 3s ease-in-out infinite reverse;will-change:transform,opacity}
+@keyframes aura{0%,100%{transform:scale(.9);opacity:.75}50%{transform:scale(1.08);opacity:1}}
+.speaking #aura{animation-duration:.9s}.speaking #aura2{animation-duration:.6s}.thinking #aura{animation-duration:1.6s}
+.lobes{position:absolute;left:50%;top:50%;width:250px;height:250px;margin:-125px 0 0 -125px}
+.orbit{position:absolute;inset:0;will-change:transform}
+.l{position:absolute;left:50%;top:50%;width:176px;height:146px;margin:-73px 0 0 -88px;mix-blend-mode:screen;will-change:transform}
+.o1{animation:spin 5s linear infinite}.o2{animation:spin 7s linear infinite reverse}.o3{animation:spin 9s linear infinite}.o4{animation:spin 6s linear infinite reverse}.o5{animation:spin 11s linear infinite}
+.o1 .l{background:radial-gradient(ellipse,rgba(47,139,255,1) 0,rgba(47,139,255,.85) 32%,rgba(47,139,255,0) 68%);animation:w1 2.8s ease-in-out infinite}
+.o2 .l{background:radial-gradient(ellipse,rgba(162,77,255,1) 0,rgba(162,77,255,.85) 32%,rgba(162,77,255,0) 68%);animation:w2 3.4s ease-in-out infinite}
+.o3 .l{background:radial-gradient(ellipse,rgba(111,208,255,.95) 0,rgba(111,208,255,.7) 30%,rgba(111,208,255,0) 66%);animation:w3 4s ease-in-out infinite}
+.o4 .l{background:radial-gradient(ellipse,rgba(80,60,230,1) 0,rgba(80,60,230,.8) 32%,rgba(80,60,230,0) 68%);animation:w4 3.1s ease-in-out infinite}
+.o5 .l{background:radial-gradient(ellipse,rgba(200,90,255,.9) 0,rgba(200,90,255,.65) 30%,rgba(200,90,255,0) 66%);animation:w5 3.7s ease-in-out infinite}
+#core{position:absolute;left:50%;top:50%;width:100px;height:100px;margin:-50px 0 0 -50px;border-radius:50%;background:radial-gradient(circle,#f2fbff 0,rgba(200,235,255,.6) 35%,rgba(200,235,255,0) 70%);mix-blend-mode:screen;animation:hum 3s ease-in-out infinite;will-change:transform}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes w1{0%,100%{transform:translateX(32px) scale(1,1)}50%{transform:translateX(46px) scale(1.18,.84)}}
+@keyframes w2{0%,100%{transform:translateX(-30px) rotate(70deg)}50%{transform:translateX(-44px) rotate(95deg) scale(.84,1.18)}}
+@keyframes w3{0%,100%{transform:translateY(28px) rotate(-40deg)}50%{transform:translateY(42px) rotate(-15deg) scale(1.14,.88)}}
+@keyframes w4{0%,100%{transform:translateY(-28px) rotate(20deg)}50%{transform:translateY(-40px) rotate(45deg) scale(.88,1.12)}}
+@keyframes w5{0%,100%{transform:translate(20px,20px) rotate(130deg)}50%{transform:translate(30px,30px) rotate(160deg) scale(1.12,.9)}}
+@keyframes hum{0%,100%{transform:scale(.9)}50%{transform:scale(1.06)}}
+@keyframes eq{0%{transform:scaleY(.2)}100%{transform:scaleY(1)}}
+@keyframes idle{0%,100%{transform:scaleY(.18)}50%{transform:scaleY(.38)}}
+.listening .bar i{animation:idle 2.4s ease-in-out infinite}
+.listening .o1{animation-duration:8s}.listening .o2{animation-duration:10s}.listening .o3{animation-duration:12s}.listening .o4{animation-duration:9s}.listening .o5{animation-duration:14s}
+.thinking #nova{transform:scale(.82)}.thinking .r2{animation-duration:1.6s}.thinking .r3{animation-duration:1s}.thinking .o1,.thinking .o3{animation-duration:1.4s}.thinking .o2{animation-duration:1.8s}
+.speaking .bar i{animation:eq .32s ease-in-out infinite alternate}
+.speaking .l{animation-duration:.6s!important}
+.speaking #core{animation:hum .4s ease-in-out infinite}
+.speaking .o1{animation-duration:2.4s}.speaking .o2{animation-duration:3s}.speaking .o3{animation-duration:3.6s}.speaking .o4{animation-duration:2.7s}.speaking .o5{animation-duration:4s}
+.speaking .r2{animation-duration:4s}.speaking .r3{animation-duration:2.5s}
+#heard{position:fixed;left:0;right:0;top:404px;text-align:center;font-size:24px;color:#d6ecff;opacity:0;transition:opacity .4s}
+.listening #heard,.thinking #heard{opacity:1}
+#tag{position:fixed;left:12px;bottom:8px;font-size:13px;color:rgba(255,255,255,.45)}
+</style></head><body>
+<div id="bg"></div>
+<div class="page" id="home"><div id="time">00:52</div><div id="date">Tuesday 10 November</div>
+<div id="wx"><b>2°</b><div>Foggy</div><div>H 7° &nbsp;·&nbsp; L 1°</div></div><div id="next">Next: Lecture &nbsp;·&nbsp; Tue 11:30</div></div>
+<div class="page hide" id="np"><div id="npt">00:52</div><div id="art"></div><div><div class="src">Navidrome &nbsp;·&nbsp; Office</div><div class="title">Song title</div><div class="sub">Artist &nbsp;·&nbsp; Album</div><div class="bar"><i></i></div></div></div>
+<div id="veil"></div>
+<div id="nova"><div id="aura"></div><div id="aura2"></div><div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div><div class="bars"><div class="bar" style="transform:rotate(0.0deg) translateY(-136px)"><i style="animation-delay:-0.00s"></i></div><div class="bar" style="transform:rotate(7.5deg) translateY(-136px)"><i style="animation-delay:-0.14s"></i></div><div class="bar" style="transform:rotate(15.0deg) translateY(-136px)"><i style="animation-delay:-0.27s"></i></div><div class="bar" style="transform:rotate(22.5deg) translateY(-136px)"><i style="animation-delay:-0.41s"></i></div><div class="bar" style="transform:rotate(30.0deg) translateY(-136px)"><i style="animation-delay:-0.55s"></i></div><div class="bar" style="transform:rotate(37.5deg) translateY(-136px)"><i style="animation-delay:-0.05s"></i></div><div class="bar" style="transform:rotate(45.0deg) translateY(-136px)"><i style="animation-delay:-0.18s"></i></div><div class="bar" style="transform:rotate(52.5deg) translateY(-136px)"><i style="animation-delay:-0.32s"></i></div><div class="bar" style="transform:rotate(60.0deg) translateY(-136px)"><i style="animation-delay:-0.46s"></i></div><div class="bar" style="transform:rotate(67.5deg) translateY(-136px)"><i style="animation-delay:-0.59s"></i></div><div class="bar" style="transform:rotate(75.0deg) translateY(-136px)"><i style="animation-delay:-0.09s"></i></div><div class="bar" style="transform:rotate(82.5deg) translateY(-136px)"><i style="animation-delay:-0.23s"></i></div><div class="bar" style="transform:rotate(90.0deg) translateY(-136px)"><i style="animation-delay:-0.36s"></i></div><div class="bar" style="transform:rotate(97.5deg) translateY(-136px)"><i style="animation-delay:-0.50s"></i></div><div class="bar" style="transform:rotate(105.0deg) translateY(-136px)"><i style="animation-delay:-0.64s"></i></div><div class="bar" style="transform:rotate(112.5deg) translateY(-136px)"><i style="animation-delay:-0.14s"></i></div><div class="bar" style="transform:rotate(120.0deg) translateY(-136px)"><i style="animation-delay:-0.27s"></i></div><div class="bar" style="transform:rotate(127.5deg) translateY(-136px)"><i style="animation-delay:-0.41s"></i></div><div class="bar" style="transform:rotate(135.0deg) translateY(-136px)"><i style="animation-delay:-0.55s"></i></div><div class="bar" style="transform:rotate(142.5deg) translateY(-136px)"><i style="animation-delay:-0.04s"></i></div><div class="bar" style="transform:rotate(150.0deg) translateY(-136px)"><i style="animation-delay:-0.18s"></i></div><div class="bar" style="transform:rotate(157.5deg) translateY(-136px)"><i style="animation-delay:-0.32s"></i></div><div class="bar" style="transform:rotate(165.0deg) translateY(-136px)"><i style="animation-delay:-0.45s"></i></div><div class="bar" style="transform:rotate(172.5deg) translateY(-136px)"><i style="animation-delay:-0.59s"></i></div><div class="bar" style="transform:rotate(180.0deg) translateY(-136px)"><i style="animation-delay:-0.09s"></i></div><div class="bar" style="transform:rotate(187.5deg) translateY(-136px)"><i style="animation-delay:-0.23s"></i></div><div class="bar" style="transform:rotate(195.0deg) translateY(-136px)"><i style="animation-delay:-0.36s"></i></div><div class="bar" style="transform:rotate(202.5deg) translateY(-136px)"><i style="animation-delay:-0.50s"></i></div><div class="bar" style="transform:rotate(210.0deg) translateY(-136px)"><i style="animation-delay:-0.64s"></i></div><div class="bar" style="transform:rotate(217.5deg) translateY(-136px)"><i style="animation-delay:-0.13s"></i></div><div class="bar" style="transform:rotate(225.0deg) translateY(-136px)"><i style="animation-delay:-0.27s"></i></div><div class="bar" style="transform:rotate(232.5deg) translateY(-136px)"><i style="animation-delay:-0.41s"></i></div><div class="bar" style="transform:rotate(240.0deg) translateY(-136px)"><i style="animation-delay:-0.54s"></i></div><div class="bar" style="transform:rotate(247.5deg) translateY(-136px)"><i style="animation-delay:-0.04s"></i></div><div class="bar" style="transform:rotate(255.0deg) translateY(-136px)"><i style="animation-delay:-0.18s"></i></div><div class="bar" style="transform:rotate(262.5deg) translateY(-136px)"><i style="animation-delay:-0.31s"></i></div><div class="bar" style="transform:rotate(270.0deg) translateY(-136px)"><i style="animation-delay:-0.45s"></i></div><div class="bar" style="transform:rotate(277.5deg) translateY(-136px)"><i style="animation-delay:-0.59s"></i></div><div class="bar" style="transform:rotate(285.0deg) translateY(-136px)"><i style="animation-delay:-0.09s"></i></div><div class="bar" style="transform:rotate(292.5deg) translateY(-136px)"><i style="animation-delay:-0.22s"></i></div><div class="bar" style="transform:rotate(300.0deg) translateY(-136px)"><i style="animation-delay:-0.36s"></i></div><div class="bar" style="transform:rotate(307.5deg) translateY(-136px)"><i style="animation-delay:-0.50s"></i></div><div class="bar" style="transform:rotate(315.0deg) translateY(-136px)"><i style="animation-delay:-0.63s"></i></div><div class="bar" style="transform:rotate(322.5deg) translateY(-136px)"><i style="animation-delay:-0.13s"></i></div><div class="bar" style="transform:rotate(330.0deg) translateY(-136px)"><i style="animation-delay:-0.27s"></i></div><div class="bar" style="transform:rotate(337.5deg) translateY(-136px)"><i style="animation-delay:-0.41s"></i></div><div class="bar" style="transform:rotate(345.0deg) translateY(-136px)"><i style="animation-delay:-0.54s"></i></div><div class="bar" style="transform:rotate(352.5deg) translateY(-136px)"><i style="animation-delay:-0.04s"></i></div></div><div class="lobes"><div class="orbit o1"><div class="l"></div></div><div class="orbit o2"><div class="l"></div></div><div class="orbit o3"><div class="l"></div></div><div class="orbit o4"><div class="l"></div></div><div class="orbit o5"><div class="l"></div></div><div id="core"></div></div></div>
+<div id="heard">“turn the desk lights down”</div>
+<div id="tag"></div>
+<script>
+var steps=[["home","",5000],["home","listening",6000],["home","thinking",3000],["home","speaking",6000],["np","",5000],["np","speaking",4000]];
+var i=0;function go(){var s=steps[i%steps.length];i++;
+document.getElementById("home").className="page"+(s[0]=="home"?"":" hide");
+document.getElementById("np").className="page"+(s[0]=="np"?"":" hide");
+document.body.className=s[1]?("on "+s[1]):"";
+document.getElementById("tag").textContent="prototype: "+(s[0]=="np"?"now playing":"home")+(s[1]?" + "+s[1]:"");
+setTimeout(go,s[2]);}go();
+</script></body></html>
