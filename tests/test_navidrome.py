@@ -262,6 +262,11 @@ def test_a_version_is_named_in_brackets_or_after_a_dash():
     assert version_of("Gooba - Sped Up") == "sped up"
     assert version_of("Day69 [Edited Version]") == "edited"
     assert version_of("Gooba") is None and version_of("") is None
+    # An en dash or an em dash is a dash too, and a bracket after the dashed part is a part of its own.
+    assert version_of("Gooba \u2013 Radio Edit") == "radio edit"
+    assert version_of("Gooba \u2014 Clean") == "clean"
+    assert version_of("Gooba - Radio Edit (feat. X)") == "radio edit"
+    assert version_of("Gooba - Clean (Remastered)") == "clean"
 
 
 def test_a_version_is_only_where_a_version_goes_and_a_whole_word():

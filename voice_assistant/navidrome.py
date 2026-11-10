@@ -78,6 +78,12 @@ VERSIONS = ("clean", "edited", "radio edit", "censored", "live", "remix", "acous
             "slowed", "karaoke")
 CLEAN_VERSIONS = ("clean", "edited", "radio edit", "censored")
 
+# Where a name says which version it is: a bracketed part, round or square, or what
+# follows a spaced dash - a hyphen, an en dash or an em dash, as tags have each of
+# them: "Gooba - Radio Edit", "Gooba \u2013 Radio Edit".
+BRACKETED = re.compile(r"\(([^)]*)\)|\[([^\]]*)\]")
+DASH = re.compile(" [-\u2013\u2014] ")
+
 
 class NavidromeError(Exception):
     """Navidrome answered, but with an error - a wrong password, say."""
@@ -167,9 +173,10 @@ def _says_version(part: str, version: str) -> bool:
 def version_of(name: str) -> Optional[str]:
     """
     The first of VERSIONS which a title or album name says it is, in a bracketed
-    part or after a spaced " - ": "Gooba (Clean)" -> "clean", "Gooba - Live at
-    Wembley" -> "live". Anywhere else the word is only part of the title, so Taylor
-    Swift's "Clean" and "Edited Highlights" are no version of anything.
+    part or after a spaced dash (a hyphen, an en dash or an em dash): "Gooba
+    (Clean)" -> "clean", "Gooba - Live at Wembley" -> "live". Anywhere else the
+    word is only part of the title, so Taylor Swift's "Clean" and "Edited
+    Highlights" are no version of anything.
 
     A clean version's word counts only when nothing but "album", "version", "edit"
     or "edition" comes after it in its part: "(Clean Version)", "(Edited Album
@@ -184,9 +191,12 @@ def version_of(name: str) -> Optional[str]:
     """
     name = name or ""
     # Each part on its own, so "(Radio) (Edit)" isn't taken for a radio edit.
-    parts = [text for brackets in re.findall(r"\(([^)]*)\)|\[([^\]]*)\]", name) for text in brackets]
-    if " - " in name:
-        parts.append(name.split(" - ", 1)[1])
+    parts = [text for brackets in BRACKETED.findall(name) for text in brackets]
+    dashed = DASH.split(name, 1)
+    if len(dashed) == 2:
+        # Without its brackets, which are parts of their own: "Gooba - Radio Edit
+        # (feat. X)" is a radio edit, which a credit after it would otherwise hide.
+        parts.append(BRACKETED.sub("", dashed[1]))
     return next((version for version in VERSIONS if any(_says_version(part, version) for part in parts)), None)
 
 
