@@ -223,7 +223,8 @@ class LLMHandler:
             text: What the user just said.
 
         Returns:
-            True if "download" or "get" is one of their words, now or in the exchange before.
+            True if "download" or "get" is one of their words, now or in the exchange
+            before - unless the exchange before ended in an offer to download.
         """
         said = [text]
         if self.history and not any(offer in (self.history[-1].get("assistant") or "") for offer in OFFERS):
