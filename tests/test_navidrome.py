@@ -281,6 +281,13 @@ def test_a_clean_version_says_so_and_nothing_more():
         assert marked_clean(name), name
     assert version_of("Gooba (Live - Radio Edit)") == "radio edit"
     assert version_of("Gooba (Clean Radio Edit)") == "radio edit"
+    # So are "album" and "edition", as the labels tag them, and a censored version is a clean one.
+    for name in ("Gooba (Clean Album Version)", "Gooba (Edited Album Version)", "Gooba (Clean Edition)",
+                 "Gooba (Censored)"):
+        assert marked_clean(name), name
+    assert version_of("Gooba (Censored)") == "censored"
+    # Still not a credit to Clean Bandit, nor their remix.
+    assert not marked_clean("Gooba (feat. Clean Bandit)") and not marked_clean("Gooba (Clean Bandit Remix)")
 
 
 def test_a_credit_to_an_artist_called_clean_isnt_a_clean_version():
@@ -293,6 +300,7 @@ def test_a_credit_to_an_artist_called_clean_isnt_a_clean_version():
     assert version_of("Gooba - Clean Bandit Remix") == "remix"
     # Whichever of its words comes last still counts: this one is a clean version, by Clean Bandit.
     assert version_of("Gooba (Clean Bandit - Clean)") == "clean"
+    assert version_of("Gooba [Clean Bandit Clean Edit]") == "clean"
 
 
 def test_a_credit_to_an_artist_called_clean_is_no_clean_track():
@@ -305,7 +313,7 @@ def test_a_credit_to_an_artist_called_clean_is_no_clean_track():
 
 
 def test_only_some_versions_are_clean_ones():
-    assert CLEAN_VERSIONS == ("clean", "edited", "radio edit")
+    assert CLEAN_VERSIONS == ("clean", "edited", "radio edit", "censored")
     assert all(version in VERSIONS for version in CLEAN_VERSIONS)
     assert marked_clean("Gooba (Clean)") and marked_clean("Gooba - Radio Edit")
     assert not marked_clean("Gooba (Live)") and not marked_clean("Gooba - Remix") and not marked_clean("Gooba")

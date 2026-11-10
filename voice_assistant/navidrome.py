@@ -74,9 +74,9 @@ GENERIC_PLAYLIST_WORDS = {"songs", "song", "music", "playlist", "playlists", "mi
 # The versions of a song or album which aren't the one asked for unless they're named,
 # and the ones which are only the same thing with the swearing taken out. Navidrome
 # has no field for them, so they're read from the names - see version_of.
-VERSIONS = ("clean", "edited", "radio edit", "live", "remix", "acoustic", "instrumental", "sped up", "slowed",
-            "karaoke")
-CLEAN_VERSIONS = ("clean", "edited", "radio edit")
+VERSIONS = ("clean", "edited", "radio edit", "censored", "live", "remix", "acoustic", "instrumental", "sped up",
+            "slowed", "karaoke")
+CLEAN_VERSIONS = ("clean", "edited", "radio edit", "censored")
 
 
 class NavidromeError(Exception):
@@ -153,13 +153,14 @@ def _says_version(part: str, version: str) -> bool:
     """
     Whether a bracketed or dashed part of a name says it's this version.
 
-    A clean version's word must end the part, bar "version" or "edit": "(Clean)",
-    "(Clean Version)" and "(Radio Edit)" say so, but "(feat. Clean Bandit)" and
-    "(Clean Bandit Remix)" only credit an artist called Clean. Taking those for
-    clean versions would have an explicit song reported as a clean one.
+    A clean version's word must end the part, bar "album", "version", "edit" or
+    "edition": "(Clean)", "(Clean Album Version)" and "(Radio Edit)" say so, but
+    "(feat. Clean Bandit)" and "(Clean Bandit Remix)" only credit an artist called
+    Clean. Taking those for clean versions would have an explicit song reported as
+    a clean one.
     """
     if version in CLEAN_VERSIONS:
-        return re.search(rf"(?:^| ){version}(?: (?:version|edit))*$", normalise(part)) is not None
+        return re.search(rf"(?:^| ){version}(?: (?:album|version|edit|edition))*$", normalise(part)) is not None
     return _names_version(part, version)
 
 
@@ -170,10 +171,10 @@ def version_of(name: str) -> Optional[str]:
     Wembley" -> "live". Anywhere else the word is only part of the title, so Taylor
     Swift's "Clean" and "Edited Highlights" are no version of anything.
 
-    A clean version's word counts only when nothing but "version" or "edit" comes
-    after it in its part: "(Clean Version)" and "(Live - Radio Edit)" are clean
-    versions, but "(feat. Clean Bandit)" is no version and "(Clean Bandit Remix)"
-    is a remix.
+    A clean version's word counts only when nothing but "album", "version", "edit"
+    or "edition" comes after it in its part: "(Clean Version)", "(Edited Album
+    Version)" and "(Live - Radio Edit)" are clean versions, but "(feat. Clean
+    Bandit)" is no version and "(Clean Bandit Remix)" is a remix.
 
     Args:
         name: A song's title or an album's name.

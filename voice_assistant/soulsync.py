@@ -42,7 +42,7 @@ MCP_OFF = "SoulSync's MCP is off, so it can't download albums. Turn it on in Sou
 
 # Words which, anywhere in a note on an album's edition, say it's had the swearing
 # taken out - see _is_clean_edition.
-CLEAN_EDITION_WORDS = CLEAN_VERSIONS + ("censored",)
+CLEAN_EDITION_WORDS = CLEAN_VERSIONS
 
 # The versions of an album which aren't the one asked for unless they're named.
 OTHER_VERSIONS = tuple(version for version in VERSIONS if version not in CLEAN_VERSIONS)
