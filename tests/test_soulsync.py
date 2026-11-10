@@ -166,6 +166,10 @@ def test_a_songs_progress_is_waiting_done_or_failed_with_its_reason(soulsync, ht
     assert [url for url, _ in http.got] == [f"{URL}/api/v1/request/{RECORDED_ID}"] * 3
     assert all(headers["Authorization"] == "Bearer the-key" for _, headers in http.got)
 
+    # A reason which isn't words is still SoulSync's, rather than ending the watch.
+    http.progress = [_request("failed", 42)]
+    assert soulsync.song_progress(RECORDED_ID) == Progress("failed", "SoulSync said: 42.")
+
 
 def test_every_state_before_the_end_is_waiting(soulsync, http):
     http.progress = [_request("queued"), _request("searching"), _request("downloading")]

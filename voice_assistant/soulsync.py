@@ -93,9 +93,13 @@ class AlbumRequest:
     queued: int
 
 
-def _said(message: str) -> str:
-    """SoulSync's own words as a reason, with one full stop: "Nobody had it" -> 'SoulSync said: Nobody had it.'"""
-    message = message.strip()
+def _said(message: Any) -> str:
+    """
+    SoulSync's own words as a reason, with one full stop: "Nobody had it" ->
+    'SoulSync said: Nobody had it.' Whatever it gave is read as text, so an error
+    which comes as a number still ends in an answer: 42 -> 'SoulSync said: 42.'
+    """
+    message = str(message).strip()
     return f"SoulSync said: {message}" + ("" if message.endswith((".", "!", "?")) else ".")
 
 
