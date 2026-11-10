@@ -419,6 +419,27 @@ def test_a_real_title_with_clean_or_edited_in_it_is_its_title(make_library):
     assert _ids(found) == ["11"] and not is_clean(found[0])
 
 
+def test_an_artist_asked_for_with_and_is_found_with_an_ampersand_or_a_plus(make_library):
+    # Claude writes "and" where the library has "&" or "+".
+    library = make_library(_songs_found([
+        {"id": "20", "title": "Otis", "artist": "JAY-Z & Kanye West", "album": "Watch the Throne"},
+        {"id": "21", "title": "Otis", "artist": "Kanye West", "album": "Made Up"},
+        {"id": "22", "title": "The Boxer", "artist": "Simon & Garfunkel", "album": "Bridge over Troubled Water"},
+    ]))
+    assert _ids(library.find_songs("Otis", "Jay-Z and Kanye West")) == ["20"]
+    assert _ids(library.find_songs("The Boxer", "Simon and Garfunkel")) == ["22"]
+    library = make_library({
+        "search3": {"searchResult3": {"album": [{"id": "f1", "name": "Lungs", "artist": "Florence + the Machine"}]}},
+        "getAlbum": lambda params: {"album": {"song": [{"id": "f1t1", "title": "Dog Days Are Over"}]}},
+    })
+    assert _ids(library.find_album_tracks("Lungs", "Florence and the Machine")) == ["f1t1"]
+
+
+def test_an_artist_is_still_every_word_of_their_name(make_library):
+    library = make_library(_songs_found([{"id": "23", "title": "Dreams", "artist": "Mac Miller"}]))
+    assert library.find_songs("Dreams", "Fleetwood Mac") == []
+
+
 def test_a_song_isnt_found_when_navidrome_cant_be_asked(make_library):
     library = make_library({"search3": requests.ConnectionError("http://nd/rest/search3?t=abc123token")})
     with pytest.raises(requests.RequestException):

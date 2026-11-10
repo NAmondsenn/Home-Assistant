@@ -120,6 +120,29 @@ def likeness(found: str, wanted: str) -> int:
     return 1 if found_words & wanted_words else 0
 
 
+def artist_likeness(found: str, wanted: str) -> int:
+    """
+    How well an artist matches one asked for, as likeness has it, with the word
+    "and" taken out of both names. Claude says "Jay-Z and Kanye West" where the
+    library has "JAY-Z & Kanye West", and "Florence and the Machine" for "Florence +
+    the Machine" - and an "and" asked for which isn't there would leave a word
+    unmatched, and the artist not theirs.
+
+    Args:
+        found: The artist in the library, or SoulSync's.
+        wanted: The artist as asked for.
+
+    Returns:
+        As likeness: 3 for the same, 2 if every word asked for is there, 1 if some
+        are, 0 if none.
+    """
+    def without_and(name: str) -> str:
+        # A name which is only "and" is kept, so it can still be matched.
+        return " ".join(word for word in normalise(name).split() if word != "and") or normalise(name)
+
+    return likeness(without_and(found), without_and(wanted))
+
+
 def split_by(query: str) -> Tuple[str, Optional[str]]:
     """'Gooba by 6ix9ine' -> ('Gooba', '6ix9ine'); a title alone has no artist."""
     parts = re.split(r"\s+by\s+", query.strip(), flags=re.IGNORECASE)
@@ -229,7 +252,7 @@ def _asked_for(item: Dict, name_key: str, title: str, artist: Optional[str]) -> 
     same thing without the swearing.
     """
     name = item.get(name_key) or ""
-    if likeness(name, title) < 2 or (artist and likeness(item.get("artist") or "", artist) < 2):
+    if likeness(name, title) < 2 or (artist and artist_likeness(item.get("artist") or "", artist) < 2):
         return False
     version = version_of(name)
     return version is None or version in CLEAN_VERSIONS or _names_version(title, version)

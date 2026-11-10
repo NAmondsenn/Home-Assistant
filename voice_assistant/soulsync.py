@@ -21,7 +21,7 @@ from urllib.parse import quote
 import requests
 
 from voice_assistant import network
-from voice_assistant.navidrome import BRACKETED, CLEAN_VERSIONS, DASH, VERSIONS, likeness, normalise
+from voice_assistant.navidrome import BRACKETED, CLEAN_VERSIONS, DASH, VERSIONS, artist_likeness, likeness, normalise
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -164,8 +164,11 @@ def pick_album(candidates: List[Dict], title: str, artist: Optional[str]) -> Opt
         if _is_clean_edition(candidate) or (version and not _names(title, version)):
             continue
         title_score = likeness(candidate.get("title") or "", title)
-        artist_score = max((likeness(str(name), artist) for name in candidate.get("artists") or []),
-                           default=0) if artist else 0
+        # Each artist on their own, and - for "Jay-Z and Kanye West", whom MusicBrainz
+        # lists as two - all of them together.
+        names = [str(name) for name in candidate.get("artists") or []]
+        names += [" ".join(names)] if len(names) > 1 else []
+        artist_score = max((artist_likeness(name, artist) for name in names), default=0) if artist else 0
         # Asked for by an artist, an album is theirs only with every word of their
         # name, as navidrome's _asked_for has it - Mac Miller's isn't Fleetwood
         # Mac's. Downloaded, an album nobody asked for would be in the library for good.

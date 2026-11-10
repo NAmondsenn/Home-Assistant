@@ -313,6 +313,20 @@ def test_an_album_is_by_the_artist_only_with_every_word_of_their_name():
     assert pick_album([featuring], "Rumours", "Fleetwood Mac") is featuring
 
 
+def test_an_artist_named_with_and_is_the_same_as_with_an_ampersand_or_as_two():
+    # Claude writes "and" where the release has "&" or "+", or lists each artist on their own.
+    together = _candidate("Watch the Throne", "Jay-Z", artists=["Jay-Z", "Kanye West"])
+    assert pick_album([together], "Watch the Throne", "Jay-Z and Kanye West") is together
+    assert pick_album([together], "Watch the Throne", "Kanye West and Jay-Z") is together
+    ampersand = _candidate("Bookends", "Simon & Garfunkel")
+    assert pick_album([ampersand], "Bookends", "Simon and Garfunkel") is ampersand
+    plus = _candidate("Lungs", "Florence + the Machine")
+    assert pick_album([plus], "Lungs", "Florence and the Machine") is plus
+    # Still every word: Mac Miller isn't Fleetwood Mac, nor Jay-Z alone Jay-Z and Kanye West.
+    assert pick_album([_candidate("Rumours", "Mac Miller")], "Rumours", "Fleetwood Mac") is None
+    assert pick_album([_candidate("Watch the Throne", "Jay-Z")], "Watch the Throne", "Jay-Z and Kanye West") is None
+
+
 def test_the_album_is_picked_over_a_single_of_the_same_name():
     # find_album "Michael Jackson - Thriller", live on 9 November: eight releases of
     # the album and two of the single, all called Thriller.
