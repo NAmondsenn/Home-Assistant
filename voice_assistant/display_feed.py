@@ -3,8 +3,8 @@ Display Feed Module
 What each clock display shows of its satellite, from decisions 2 and 6 of docs/decisions/0013.
 
 A clock asks the brain for its satellite's state and is answered as soon as any of it
-changes - a long poll - so "Listening..." covers its page the moment Nova hears the wake
-word. What Nova is doing and what it heard arrive through Session.watch as they happen;
+changes - a long poll - so Nova's glowing blob covers its page while it listens, thinks
+or speaks, from the moment Nova hears the wake word. What Nova is doing and what it heard arrive through Session.watch as they happen;
 the rest is read by one thread, each on its own schedule, from what Nova already has:
 Home Assistant's weather, Nova's own Google calendars, the satellite's own player and
 Jellyfin's players in Home Assistant, found at run time - and the user's dashboard

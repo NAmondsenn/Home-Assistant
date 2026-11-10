@@ -2,9 +2,9 @@
 
 A small touchscreen clock that sits with a satellite and shows Nova's face: the time and weather, what's coming up in your calendar, and what's playing. Hold a finger on it to talk to Nova, swipe or tap to change page, and use its volume buttons to change Nova's volume. The satellite still does all the listening and speaking; the clock only shows pages and sends touches and button presses to the brain. The reasons for each choice are in [decisions/0013](decisions/0013-the-clock-display.md).
 
-The clock's background is the picture behind your Home Assistant dashboard. Nova finds it in Home Assistant while it runs (the default dashboard first, then the others) and gives it to the clock, so no picture is kept in Nova or set up on the clock. A new one is picked up within the hour, or within ten minutes if the last read failed. To change it, change the dashboard's background in Home Assistant. With no background there, or while Home Assistant can't be reached, the page stays dark.
+The clock's background is the picture behind your Home Assistant dashboard. Nova finds it in Home Assistant while it runs (the default dashboard first, then the others) and gives it to the clock, so no picture is kept in Nova or set up on the clock. A new one is picked up within the hour, or within ten minutes if the last read failed for a moment (a picture Home Assistant gives that isn't usable clears the old one and waits the hour). To change it, change the dashboard's background in Home Assistant. It must be the dashboard's own background (not a single view's): an uploaded picture or a `/local/` file, as JPEG, PNG or WebP up to 2 MB. A web address or other media source is ignored, and a `/local/` name with a space is refused. While Home Assistant can't be reached the clock keeps the picture it has; with none there, or none read yet since Nova started, the page stays dark.
 
-The brain's side is built and tested, and the page checked in a desktop browser at the clock's size. What's left is the clock itself: it has to be flashed, and then tried by hand (the last section).
+The brain's side is built and tested, the page was checked in a desktop browser at the clock's size, and the clock is flashed and running. The last section lists what to try by hand.
 
 ## What you need
 
@@ -47,7 +47,7 @@ The brain's side is built and tested, and the page checked in a desktop browser 
 
 ## What to check by hand on the clock
 
-Only the clock itself can show these, so they're left for when it's flashed and set up:
+Only the clock itself can show these:
 
 - Each page - Home, Coming up, Now playing - fits the screen, at 800 wide, with nothing cut off.
 - The background is the dashboard's picture, with the text easy to read over it. Changing the dashboard's background in Home Assistant changes it on the clock within the hour. With no dashboard background, the page stays dark.
