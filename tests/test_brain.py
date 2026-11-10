@@ -2708,6 +2708,34 @@ def test_a_download_message_not_said_to_the_end_goes_to_the_phone(brain, connect
     assert brain.ntfy.sent == [("phone", "Music download", "I couldn't download Gooba by 6ix9ine.")]
 
 
+def test_a_download_message_the_satellite_failed_to_say_goes_to_the_phone(brain, connect):
+    brain.ntfy = FakeNtfy()
+    serving(brain)
+    connect(brain, "kitchen", KITCHEN)
+    kitchen = connected(brain, "kitchen")
+
+    def fail(message, *args, **kwargs):
+        raise OSError("the satellite went mid-sentence")
+
+    kitchen.announce = fail
+    brain._say_download("kitchen", "Gooba by 6ix9ine has been downloaded.")
+    assert brain.ntfy.sent == [("phone", "Music download", "Gooba by 6ix9ine has been downloaded.")]
+
+
+def test_a_download_message_the_phone_cant_be_sent_is_logged_and_never_raises(brain, caplog):
+    # With no satellite connected, it goes to the phone - whose thread can't be started.
+    class Unstartable(FakeNtfy):
+        def send_soon(self, topic, message, title="", priority=0):
+            raise RuntimeError("can't start new thread")
+
+    brain.ntfy = Unstartable()
+    with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
+        brain._say_download("kitchen", "Gooba by 6ix9ine has been downloaded.")
+
+    assert any("Gooba by 6ix9ine has been downloaded." in record.getMessage() for record in caplog.records
+               if record.levelno >= logging.ERROR)
+
+
 def test_a_download_message_with_nowhere_to_go_is_logged_and_never_raises(brain, connect, caplog):
     serving(brain)
     connect(brain, "kitchen", KITCHEN)

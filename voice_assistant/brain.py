@@ -1328,7 +1328,12 @@ class Brain:
         if not phone:
             logger.warning(f"A download message had nowhere to go, with no phone topic for ntfy: {message}")
             return
-        self.ntfy.send_soon(phone, message, title="Music download")
+        try:
+            self.ntfy.send_soon(phone, message, title="Music download")
+        except Exception:
+            # Its thread couldn't be started, most likely. Raised, it would end the
+            # download's watch with a traceback instead.
+            logger.exception(f"A download message couldn't be sent to the phone: {message}")
 
     def _unanswered(self, timer, kind, satellite=None):
         """
