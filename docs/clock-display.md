@@ -2,6 +2,8 @@
 
 A small touchscreen clock that sits with a satellite and shows Nova's face: the time and weather, what's coming up in your calendar, and what's playing. Hold a finger on it to talk to Nova, swipe or tap to change page, and use its volume buttons to change Nova's volume. The satellite still does all the listening and speaking; the clock only shows pages and sends touches and button presses to the brain. The reasons for each choice are in [decisions/0013](decisions/0013-the-clock-display.md).
 
+The clock's background is the picture behind your Home Assistant dashboard. Nova finds it in Home Assistant while it runs (the default dashboard first, then the others) and gives it to the clock, so no picture is kept in Nova or set up on the clock. A new one is picked up within the hour, or within ten minutes if the last read failed. To change it, change the dashboard's background in Home Assistant. With no background there, or while Home Assistant can't be reached, the page stays dark.
+
 The brain's side is built and tested, and the page checked in a desktop browser at the clock's size. What's left is the clock itself: it has to be flashed, and then tried by hand (the last section).
 
 ## What you need
@@ -48,11 +50,14 @@ The brain's side is built and tested, and the page checked in a desktop browser 
 Only the clock itself can show these, so they're left for when it's flashed and set up:
 
 - Each page - Home, Coming up, Now playing - fits the screen, at 800 wide, with nothing cut off.
+- The background is the dashboard's picture, with the text easy to read over it. Changing the dashboard's background in Home Assistant changes it on the clock within the hour. With no dashboard background, the page stays dark.
+- Home is tiles: the date and time, the weather, and Next and Later tiles for what's coming up. A long event title is cut off with "..." inside its tile and never spills out. With no events or no weather, the tile says so.
+- Now playing shows the time at the top right.
 - A swipe left or right changes page, and a tap moves to the next. Neither makes Nova listen.
-- Quick taps, one after another and at the very edge of the screen too, never show the listening orb.
-- Holding a finger makes Nova listen through the satellite's microphone (the orb and "Listening…" show), and lifting it ends the recording. Also while Nova is muted: the page then shows a "Muted" mark when it isn't being held.
+- Quick taps, one after another and at the very edge of the screen too, never show the blob.
+- Holding a finger makes Nova listen through the satellite's microphone (the blob appears, with its glowing lobes and aura, and what Nova heard shows under it), and lifting it ends the recording. Also while Nova is muted: the page then shows a "Muted" mark when it isn't being held.
 - The volume buttons change Nova's volume, a step at a time: the music's while Nova's own music plays on that satellite, otherwise its voice, and never the alarms'. If they do nothing, look in the page's console (Fully's web content debugging lets Chrome on a computer show it) for "Blocked by the page's policy" (a "securitypolicyviolation"): Fully runs the buttons' handlers as text, which the page's Content-Security-Policy may turn down on this build. Whether a press also changes the clock's own volume doesn't matter, as its speaker isn't used.
 - Brightness follows the slider on the settings page.
 - Music started on the satellite takes the clock to Now playing, and, once it stops, back to Home after the delay set.
-- The sound wave shows while Nova speaks.
+- The blob shrinks while Nova thinks, and pulses while it speaks. It goes when Nova is idle, and the animation stays smooth.
 - Stop Nova on the brain: the "Offline" mark appears, the time carries on, the pages still swipe while a hold and the volume buttons wait, and the page comes back by itself when Nova does.
