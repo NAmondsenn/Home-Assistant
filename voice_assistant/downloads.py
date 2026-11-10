@@ -314,17 +314,19 @@ class Downloads:
             search_type: What it names, as play_music was given it.
 
         Returns:
-            The offer, with 'ask_first' the request on a yes - or None when there's none
-            to make: it isn't a song or an album, the offer is switched off on the
-            settings page (music.offer_downloads), downloading isn't set up, or it's
-            already being got.
+            "I'm already getting X." when it's being got; else the offer, with
+            'ask_first' the request on a yes - or None when there's none to make: it
+            isn't a song or an album, the offer is switched off on the settings page
+            (music.offer_downloads), or downloading isn't set up.
         """
         if not (query or "").strip() or search_type not in OFFERED:
             return None
-        if not self.config.section("music").get("offer_downloads", True) or self.problem():
-            return None
         wanted = Wanted.from_query(query, search_type)
+        # Before the switch, as it's on its way whatever the page says now - and "I
+        # couldn't find X on Navidrome." would sound as if it never will be.
         if self._is_waiting(wanted):
+            return {"success": True, "message": f"I'm already getting {wanted.name}."}
+        if not self.config.section("music").get("offer_downloads", True) or self.problem():
             return None
         return self._offered(query, search_type, wanted)
 

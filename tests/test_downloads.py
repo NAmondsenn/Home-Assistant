@@ -829,7 +829,9 @@ def test_the_same_thing_asked_for_while_it_waits_is_requested_once(running, set_
     for ask in (downloads.download, downloads.request, functools.partial(downloads.download, asked=False)):
         assert ask("gooba by 6ix9ine", "track", "bedroom") == {
             "success": True, "message": "I'm already getting gooba by 6ix9ine."}
-    assert downloads.offer("Gooba by 6ix9ine", "track") is None
+    # And "play" it says so, rather than that Navidrome hasn't got it.
+    assert downloads.offer("gooba by 6ix9ine", "track") == {
+        "success": True, "message": "I'm already getting gooba by 6ix9ine."}
     assert downloads.waiting() == ["Gooba by 6ix9ine"]
 
     downloads.stop()

@@ -1430,6 +1430,24 @@ def test_play_offers_a_download_for_something_navidrome_hasnt_got(make_executor,
     assert player.played == [("Gooba by 6ix9ine", "track")] and downloads.started == []
 
 
+def test_play_for_something_being_fetched_says_so(make_executor, downloads):
+    # Waiting, as start() notes a request, without a watch to run.
+    wanted = Wanted("Gooba", "6ix9ine", "track")
+    downloads._waiting[wanted.key] = wanted
+    player = FakeNavidromePlayer(missing=True)
+
+    result = make_executor(player, downloads=downloads).execute(GOOBA_PLAYED)
+
+    assert (result.ok, result.say, result.ask_first) == (True, "I'm already getting Gooba by 6ix9ine.", None)
+    assert downloads.started == []
+
+    # The same with the offer switched off on the page, as it's being fetched all the same.
+    downloads.config.apply({("music", "offer_downloads"): False})
+    result = make_executor(player, downloads=downloads).execute(GOOBA_PLAYED)
+    assert (result.say, result.ask_first) == ("I'm already getting Gooba by 6ix9ine.", None)
+    assert downloads.started == []
+
+
 @pytest.mark.parametrize("player, said", [
     (FakeNavidromePlayer(missing=False), "I couldn't find Gooba by 6ix9ine on Navidrome."),
     # Navidrome couldn't be asked, which isn't the same as it not having it.
