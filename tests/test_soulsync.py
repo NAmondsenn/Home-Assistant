@@ -386,6 +386,15 @@ def test_a_refused_key_says_which_key_to_check(soulsync, http):
             ask()
         assert error.value.reason == "SoulSync didn't accept its key, so SOULSYNC_API_KEY under Keys needs checking."
 
+    # A key it knows but won't let request anything - one which can only read - is the same key to check.
+    http.request_answer = http.mcp_answer = _refusal(403, "FORBIDDEN", "This key can't do that")
+    http.progress = [_refusal(403, "FORBIDDEN", "This key can't do that")]
+    for ask in (lambda: soulsync.request_song("Gooba", "6ix9ine"), lambda: soulsync.song_progress(RECORDED_ID),
+                lambda: soulsync.request_album("Rumours", "Fleetwood Mac")):
+        with pytest.raises(SoulSyncError) as error:
+            ask()
+        assert error.value.reason == "SoulSync didn't accept its key, so SOULSYNC_API_KEY under Keys needs checking."
+
 
 def test_soulsync_out_of_reach_is_said_plainly_and_the_key_never_logged(soulsync, http, caplog):
     # The fake raises requests.ConnectionError - with the key in it, to show its words aren't logged.

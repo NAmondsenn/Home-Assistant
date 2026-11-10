@@ -255,7 +255,8 @@ class SoulSync:
         """
         What SoulSync answered, if it wasn't an error. However it was asked, an
         error is in "error": a code and a message, from the REST API or JSON-RPC, or
-        now and then a plain string.
+        now and then a plain string. A 403 is a key it knows but won't let do this -
+        one which can only read - so it's the key to check, as for a 401.
 
         Args:
             status: The status code it answered with.
@@ -266,7 +267,7 @@ class SoulSync:
         """
         error = answer.get("error") if isinstance(answer, dict) else None
         code = error.get("code") if isinstance(error, dict) else None
-        if status == 401 or code == "AUTH_REQUIRED":
+        if status in (401, 403) or code == "AUTH_REQUIRED":
             logger.error("SoulSync refused its key")
             raise SoulSyncError(KEY_REFUSED)
         if status >= 400 or error or not isinstance(answer, dict) or answer.get("success") is False:
