@@ -14,7 +14,8 @@ from voice_assistant.display_feed import DisplayFeed
 # 10:00 on Monday 9 November 2026, the brain's local time.
 TEN = datetime(2026, 11, 9, 10, 0).astimezone().timestamp()
 
-KEYS = {"version", "connected", "nova", "heard", "muted", "now", "utc_offset", "weather", "events", "music", "volume"}
+KEYS = {"version", "connected", "nova", "heard", "muted", "now", "utc_offset", "weather", "events", "music", "volume",
+        "background"}
 MUSIC_KEYS = {"source", "room", "title", "artist", "album", "playing", "position", "duration", "at", "cover"}
 
 
@@ -131,12 +132,28 @@ class FakeHome:
         self.players = list(players)
         self.fails = None
         self.asked = 0
+        # The dashboards' background - none, unless a test gives one - and what fetching it answers.
+        self.background_path = None
+        self.picture = (b"fern", "image/jpeg")
+        self.background_fails = None
+        self.looked_up = 0
+        self.fetched = []
 
     def jellyfin_media(self):
         self.asked += 1
         if self.fails is not None:
             raise self.fails
         return list(self.players)
+
+    def dashboard_background(self):
+        self.looked_up += 1
+        return self.background_path
+
+    def background(self, path):
+        self.fetched.append(path)
+        if self.background_fails is not None:
+            raise self.background_fails
+        return self.picture
 
 
 class FakeBrain:
@@ -568,3 +585,63 @@ def test_a_calendars_id_is_never_logged(caplog):
         rig.feed.state("pi")
     assert any("events" in record.getMessage() for record in caplog.records)
     assert not any("someone" in record.getMessage() for record in caplog.records)
+
+
+# The dashboard's background
+
+def test_the_background_is_none_without_one():
+    rig = Rig()
+    assert rig.feed.state("pi")["background"] is None and rig.feed.background() is None
+    rig.brain.home = None
+    rig.time += display_feed.BACKGROUND_EVERY
+    assert rig.feed.background() is None
+
+
+def test_the_background_is_fetched_once_an_hour_and_its_token_follows_the_picture(monkeypatch):
+    monkeypatch.setattr(display_feed, "FORGET_AFTER", float("inf"))
+    rig = Rig()
+    rig.brain.home.background_path = "/api/image/serve/abc/512x512"
+    state = rig.feed.state("pi")
+    token = state["background"]
+    assert isinstance(token, str) and 0 < len(token) <= 16
+    assert rig.feed.background() == (b"fern", "image/jpeg")
+    # Asked for again and again, it's only looked up and fetched once within the hour.
+    rig.later(display_feed.BACKGROUND_EVERY - 1)
+    rig.feed.background()
+    assert (rig.brain.home.looked_up, rig.brain.home.fetched) == (1, ["/api/image/serve/abc/512x512"])
+    # The same picture an hour on is the same token, and no new version.
+    version = rig.feed.state("pi")["version"]
+    state = rig.later(1)
+    assert rig.brain.home.looked_up == 2 and state["background"] == token and state["version"] == version
+    # A new picture is a new token - and a new version, so the page fetches it again.
+    rig.brain.home.picture = (b"palm", "image/png")
+    state = rig.later(display_feed.BACKGROUND_EVERY)
+    assert state["background"] not in (None, token) and state["version"] != version
+    assert rig.feed.background() == (b"palm", "image/png")
+
+
+def test_the_route_alone_reads_the_background_once_an_hour():
+    rig = Rig()
+    rig.brain.home.background_path = "/local/fern.jpg"
+    assert rig.feed.background() == (b"fern", "image/jpeg")
+    rig.time += display_feed.BACKGROUND_EVERY - 1
+    rig.feed.background()
+    assert rig.brain.home.looked_up == 1
+    rig.time += 1
+    rig.feed.background()
+    assert rig.brain.home.looked_up == 2
+
+
+def test_a_background_which_cant_be_fetched_is_none_and_said_once(caplog, monkeypatch):
+    monkeypatch.setattr(display_feed, "FORGET_AFTER", float("inf"))
+    rig = Rig()
+    rig.brain.home.background_path = "/api/image/serve/abc/512x512"
+    assert rig.feed.state("pi")["background"] is not None
+    rig.brain.home.background_fails = ValueError("That isn't a picture")
+    with caplog.at_level(logging.WARNING):
+        state = rig.later(display_feed.BACKGROUND_EVERY)
+        rig.later(display_feed.BACKGROUND_EVERY)
+    # The page goes back to its own dark background rather than keep a picture Home Assistant no longer gives.
+    assert state["background"] is None and rig.feed.background() is None
+    said = [record for record in caplog.records if "background" in record.getMessage()]
+    assert len(said) == 1 and said[0].exc_info is None

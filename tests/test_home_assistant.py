@@ -2601,6 +2601,146 @@ def test_a_picture_without_a_type_is_a_stream_of_bytes_and_a_failure_raises(make
         make_home({PICTURE: FakeResponse(b"", status=404)}).picture(PICTURE)
 
 
+# The dashboard's background, for the clock display
+
+SERVED = "/api/image/serve/0123abcd/512x512"
+
+
+class DashboardSocket:
+    """
+    Home Assistant's WebSocket with a few dashboards, answering each lovelace/config by its
+    url_path - None for the default dashboard's. A dashboard with no configuration is refused,
+    as Home Assistant refuses the default's when it has never been edited.
+    """
+
+    def __init__(self, configs, fails=None):
+        self.configs = configs
+        self.boards = [{"url_path": path, "mode": "storage"} for path in configs if path]
+        self.fails = fails
+        self.calls = []
+
+    def call(self, messages):
+        self.calls.append(messages)
+        if self.fails is not None:
+            raise self.fails
+        message, = messages
+        if message["type"] == "lovelace/dashboards/list":
+            return [self.boards]
+        config = self.configs.get(message.get("url_path"))
+        if config is None:
+            raise HomeSocketError("lovelace/config failed: {'code': 'config_not_found'}")
+        return [config]
+
+
+def _uploaded(image_id="0123abcd"):
+    """A dashboard's background as Home Assistant's editor saves an uploaded picture."""
+    return {"image": {"media_content_id": f"media-source://image_upload/{image_id}",
+                      "media_content_type": "image/jpeg", "metadata": {"title": "fern.jpg"}},
+            "size": "cover", "alignment": "center", "opacity": 100}
+
+
+def _home_with(make_home, configs, fails=None):
+    home = make_home({})
+    home.socket = DashboardSocket(configs, fails)
+    return home
+
+
+def test_the_background_is_the_first_dashboards_which_has_one(make_home):
+    home = _home_with(make_home, {"dashboard-planner": {"views": []},
+                                  "dashboard-home": {"background": _uploaded(), "views": []},
+                                  "dashboard-mobile": {"background": _uploaded("ffff"), "views": []}})
+    assert home.dashboard_background() == SERVED
+    # The default dashboard first - here it has never been edited, so has no configuration.
+    asked = [messages[0].get("url_path") for messages in home.socket.calls[1:]]
+    assert asked == [None, "dashboard-planner", "dashboard-home"]
+    # Nothing is fetched while looking.
+    assert home._session.requests == []
+
+
+def test_the_default_dashboards_background_comes_first(make_home):
+    home = _home_with(make_home, {None: {"background": _uploaded("dddd")}, "dashboard-home": {"background": _uploaded()}})
+    assert home.dashboard_background() == "/api/image/serve/dddd/512x512"
+
+
+@pytest.mark.parametrize("background, path", [
+    ({"image": "/local/x.jpg"}, "/local/x.jpg"),
+    ({"image": {"media_content_id": "/local/ferns/x.jpg"}}, "/local/ferns/x.jpg"),
+    ({"image": "url(/local/y.png)"}, "/local/y.png"),
+    ("center / cover no-repeat url('/local/y.png') fixed", "/local/y.png"),
+    ('url("media-source://image_upload/abc") center', "/api/image/serve/abc/512x512"),
+    ({"image": "https://example.com/fern.jpg"}, None),
+    ("url(https://example.com/fern.jpg)", None),
+    ({"image": {"media_content_id": "media-source://media_source/local/fern.jpg"}}, None),
+    ({"image": "/local/../secrets.yaml"}, None),
+    ({"image": "/local/%2e%2e/secrets.yaml"}, None),
+    ({"image": "/local/x.jpg\r\nX: y"}, None),
+    ({"image": "media-source://image_upload/../../states"}, None),
+    ({"image": "media-source://image_upload/"}, None),
+    ({"size": "cover"}, None),
+    ("#202020", None),
+    (42, None)])
+def test_what_a_background_is_read_as(make_home, background, path):
+    home = _home_with(make_home, {"dashboard-home": {"background": background}})
+    assert home.dashboard_background() == path
+
+
+def test_a_background_which_cant_be_used_is_passed_over(make_home):
+    home = _home_with(make_home, {"dashboard-home": {"background": {"image": "https://example.com/fern.jpg"}},
+                                  "dashboard-mobile": {"background": _uploaded()}})
+    assert home.dashboard_background() == SERVED
+
+
+@pytest.mark.parametrize("configs", [{}, {"dashboard-home": {"views": []}}, {"dashboard-home": ["not", "a", "config"]}])
+def test_no_background_at_all(make_home, configs):
+    assert _home_with(make_home, configs).dashboard_background() is None
+
+
+def test_no_background_while_home_assistant_cant_be_asked(make_home):
+    home = _home_with(make_home, {"dashboard-home": {"background": _uploaded()}}, fails=HomeSocketError("timed out"))
+    assert home.dashboard_background() is None
+    # A list of the wrong shape is no background either.
+    home = _home_with(make_home, {"dashboard-home": {"background": _uploaded()}})
+    home.socket.boards = {"dashboard-home": True}
+    assert home.dashboard_background() is None
+
+
+@pytest.mark.parametrize("path, kind", [(SERVED, "image/jpeg"), ("/local/ferns/x.png", "image/png"),
+                                        ("/local/x.webp", "image/webp; charset=binary")])
+def test_background_fetches_the_picture(make_home, path, kind):
+    home = make_home({path: FakeResponse(b"picture", headers={"Content-Type": kind})})
+    assert home.background(path) == (b"picture", kind.split(";")[0])
+    (method, asked, _), = home._session.requests
+    assert (method, asked) == ("GET", path)
+
+
+@pytest.mark.parametrize("path", [
+    "/api/states", PICTURE, "/api/image/serve/0123abcd/original", "/api/image/serve/0123abcd/1024x1024",
+    "/api/image/serve/../../states/512x512", "/api/image/serve/0123abcd/512x512?x=1", "/local/../secrets.yaml",
+    "/local/%2e%2e/secrets.yaml", "/local/x.jpg\r\nX: y", "/local\\..\\x", "https://example.com/x.jpg", ""])
+def test_background_fetches_nothing_else(make_home, path):
+    home = make_home({})
+    with pytest.raises(ValueError):
+        home.background(path)
+    assert home._session.requests == []
+
+
+@pytest.mark.parametrize("kind", ["text/html", "image/svg+xml", "image/gif", "application/octet-stream", None])
+def test_background_must_be_a_picture(make_home, kind):
+    home = make_home({SERVED: FakeResponse(b"<html>", headers={"Content-Type": kind} if kind else {})})
+    with pytest.raises(ValueError):
+        home.background(SERVED)
+
+
+def test_background_is_at_most_two_megabytes(make_home):
+    limit = 2 * 1024 * 1024
+    home = make_home({SERVED: FakeResponse(b"x" * limit, headers={"Content-Type": "image/jpeg"})})
+    assert len(home.background(SERVED)[0]) == limit
+    for headers in ({}, {"Content-Length": str(limit + 1)}):
+        home = make_home({SERVED: FakeResponse(b"x" * (limit + 1), headers={"Content-Type": "image/jpeg", **headers})})
+        with pytest.raises(ValueError, match="too big"):
+            home.background(SERVED)
+
+
 # The Home Assistant app's devices, as live check 4 found them
 
 def _rendered_app_device(device="dev25", own_name="s25-ultra", **shown):

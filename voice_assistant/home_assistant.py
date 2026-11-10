@@ -304,6 +304,24 @@ PICTURE_PATH = "/api/media_player_proxy/"
 # The most of a picture Nova reads, in bytes - an album's cover is a few hundred kilobytes.
 MAX_PICTURE = 2 * 1024 * 1024
 
+# Where a dashboard's background is fetched from, for the clock display: a picture uploaded
+# to Home Assistant at 512 pixels square - the largest size it serves besides the original,
+# which at a couple of megabytes is too heavy for the clock - or a file in its www folder,
+# which it serves under /local/. Nothing else is fetched for it.
+UPLOADED = "media-source://image_upload/"
+UPLOADED_PATH = "/api/image/serve/{id}/512x512"
+LOCAL_PATH = "/local/"
+_UPLOADED_ID = re.compile("[A-Za-z0-9_-]+")
+_UPLOADED_SERVED = re.compile("/api/image/serve/[A-Za-z0-9_-]+/512x512")
+
+# A CSS url(), as a dashboard's background was written before Home Assistant's editor had
+# one of its own, e.g. "center / cover no-repeat url('/local/fern.jpg') fixed".
+_CSS_URL = re.compile(r"""url\(\s*['"]?([^'")\s]+)""")
+
+# The kinds of picture a background is fetched as - plain pictures only, never an SVG,
+# which can hold a script, and nothing as heavy to show as a GIF.
+BACKGROUND_TYPES = ("image/jpeg", "image/png", "image/webp")
+
 # Renders every device of the Home Assistant app - a phone, tablet or Mac - as JSON, with
 # where its tracker says it is and the place its geocoded location sensor names, e.g.
 # [{"device": "abc123", "own_name": "s25-ultra", "name_by_user": null, "maker": "samsung",
@@ -1051,9 +1069,78 @@ class HomeAssistant:
         # The path is added to Home Assistant's address, so it can't leave the proxy's:
         # "/api/media_player_proxy/../states" would be the states, whatever is said of dots
         # encoded as "%2e".
-        if (not path.startswith(PICTURE_PATH) or any(ord(char) < 33 or char == "\\" for char in path)
-                or ".." in unquote(path)):
+        if not (path.startswith(PICTURE_PATH) and _stays_put(path)):
             raise ValueError("That isn't a media player's picture")
+        return self._fetch_picture(path)
+
+    def dashboard_background(self) -> Optional[str]:
+        """
+        Where Home Assistant serves the user's dashboard background from, for the clock
+        display - found at run time, so a new picture there is the clock's too.
+
+        Returns:
+            The path of the first dashboard's background which can be fetched - the default
+            dashboard's first, then the others in Home Assistant's order - e.g.
+            "/api/image/serve/<id>/512x512" for an uploaded picture, or "/local/fern.jpg"
+            for one in its www folder. None if there's none, or only a web address or some
+            other kind of media, or Home Assistant can't be asked.
+        """
+        try:
+            boards, = self.socket.call([{"type": "lovelace/dashboards/list"}])
+        except HomeSocketError as e:
+            logger.warning(f"Couldn't ask Home Assistant for its dashboards' background: {e}")
+            return None
+        if not isinstance(boards, list):
+            return None
+        url_paths = [None] + [board["url_path"] for board in boards
+                              if isinstance(board, dict) and isinstance(board.get("url_path"), str)]
+        for url_path in url_paths:
+            message = {"type": "lovelace/config", **({"url_path": url_path} if url_path else {})}
+            try:
+                config, = self.socket.call([message])
+            except HomeSocketError:
+                # As the default dashboard is answered until it's first edited - "config_not_found".
+                continue
+            path = _background_path(config.get("background") if isinstance(config, dict) else None)
+            if path is not None:
+                return path
+        return None
+
+    def background(self, path: str) -> Tuple[bytes, str]:
+        """
+        Fetches a dashboard's background from Home Assistant with Nova's token, for the clock display.
+
+        Args:
+            path: Where dashboard_background found it - an uploaded picture's
+                "/api/image/serve/<id>/512x512" or a "/local/..." file; nothing else is fetched.
+
+        Returns:
+            The picture's bytes and its type, one of BACKGROUND_TYPES.
+
+        Raises:
+            ValueError: If the path is neither, or the answer is over MAX_PICTURE bytes or
+                isn't one of those pictures. Nothing is asked of Home Assistant in the first case.
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
+        if not (_UPLOADED_SERVED.fullmatch(path) or _is_local(path)):
+            raise ValueError("That isn't a dashboard's background")
+        body, kind = self._fetch_picture(path)
+        kind = kind.split(";")[0].strip().lower()
+        if kind not in BACKGROUND_TYPES:
+            raise ValueError("That background isn't a picture")
+        return body, kind
+
+    def _fetch_picture(self, path: str) -> Tuple[bytes, str]:
+        """
+        Reads a picture from Home Assistant, a path picture() or background() has checked.
+
+        Returns:
+            Its bytes and its content type ("application/octet-stream" if Home Assistant doesn't say).
+
+        Raises:
+            ValueError: If it's over MAX_PICTURE bytes.
+            requests.RequestException: If Home Assistant couldn't be asked.
+        """
         response = self._request("GET", path, stream=True)
         try:
             length = response.headers.get("Content-Length", "")
@@ -1937,6 +2024,47 @@ def _script_name(name: str) -> str:
     if len(words) > 1 and words[-1] in ("script", "scene", "routine"):
         words = words[:-1]
     return "".join(words)
+
+
+def _stays_put(path: str) -> bool:
+    """
+    Whether a path added to Home Assistant's address stays where it starts - no ".." to
+    climb out with, however its dots are encoded ("%2e"), no backslash and nothing which
+    could end the request's line, such as a line break.
+    """
+    return not any(ord(char) < 33 or char == "\\" for char in path) and ".." not in unquote(path)
+
+
+def _is_local(path: str) -> bool:
+    """Whether a path is a file in Home Assistant's www folder, e.g. "/local/fern.jpg"."""
+    return path.startswith(LOCAL_PATH) and _stays_put(path)
+
+
+def _background_path(background) -> Optional[str]:
+    """
+    Where Home Assistant serves a dashboard's background from, as its configuration has it.
+
+    Args:
+        background: The configuration's "background" - its editor's {"image": {"media_content_id":
+            "media-source://image_upload/<id>", ...}, "size": "cover", ...}, or {"image":
+            "/local/fern.jpg"}, or CSS as it was written before that, e.g. "center / cover
+            url('/local/fern.jpg') fixed".
+
+    Returns:
+        "/api/image/serve/<id>/512x512" for an uploaded picture, a "/local/..." path as it
+        is, or None for anything else - a web address, other media, a colour or nothing.
+    """
+    image = background.get("image") if isinstance(background, dict) else background
+    if isinstance(image, dict):
+        image = image.get("media_content_id")
+    if not isinstance(image, str):
+        return None
+    found = _CSS_URL.search(image)
+    address = found.group(1) if found else image.strip()
+    if address.startswith(UPLOADED):
+        image_id = address[len(UPLOADED):]
+        return UPLOADED_PATH.format(id=image_id) if _UPLOADED_ID.fullmatch(image_id) else None
+    return address if _is_local(address) else None
 
 
 def _proxy_path(value) -> Optional[str]:

@@ -7,15 +7,17 @@ changes - a long poll - so "Listening..." covers its page the moment Nova hears 
 word. What Nova is doing and what it heard arrive through Session.watch as they happen;
 the rest is read by one thread, each on its own schedule, from what Nova already has:
 Home Assistant's weather, Nova's own Google calendars, the satellite's own player and
-Jellyfin's players in Home Assistant, found at run time.
+Jellyfin's players in Home Assistant, found at run time - and the user's dashboard
+background, found in Home Assistant too and kept here for every clock (see background).
 """
 
 import functools
+import hashlib
 import logging
 import threading
 import time
 from datetime import date, datetime
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 from voice_assistant.batteries import HOME_FAILURES
@@ -32,6 +34,11 @@ ONLINE_MUSIC_EVERY = 5.0
 JELLYFIN_EVERY = 5.0
 WEATHER_EVERY = 600.0
 EVENTS_EVERY = 300.0
+
+# Seconds between looking the dashboard's background up in Home Assistant and fetching it -
+# a new picture there is the clocks' within the hour, and the clocks asking for it are
+# answered from memory meanwhile, never by asking Home Assistant again.
+BACKGROUND_EVERY = 3600.0
 
 # Seconds without a clock asking for a satellite's state before it's forgotten and its
 # session no longer watched - so a clock unplugged, or removed on the settings page,
@@ -96,6 +103,12 @@ def _seconds(value) -> Optional[float]:
     return float(value) if value is not None else None
 
 
+def _fetch_background(home) -> Optional[Tuple[bytes, str]]:
+    """The dashboard's background from Home Assistant, as background() gives it - or None if there's none."""
+    path = home.dashboard_background()
+    return home.background(path) if path else None
+
+
 class DisplayFeed:
     """
     Each satellite's state for its clocks, built when a clock first asks and kept up to
@@ -140,6 +153,10 @@ class DisplayFeed:
         self._events: List[Dict] = []
         self._events_read_on: Optional[date] = None
         self._jellyfin: List[Dict] = []
+        # The dashboard's background as (picture, type, token), or None - the token, a short
+        # hash of the picture, goes in every state so a clock fetches the picture again only
+        # when it changes.
+        self._background: Optional[Tuple[bytes, str, str]] = None
         # Nova's own music on each satellite, as (session, now_playing, when it was read).
         self._music: Dict[str, tuple] = {}
         # The sources failing, so each is logged once until it works again - and the
@@ -217,6 +234,20 @@ class DisplayFeed:
                 if (satellite not in self._told and held is not None and held["version"] == since
                         and not self._stopping.is_set()):
                     self._changed.wait(left)
+
+    def background(self) -> Optional[Tuple[bytes, str]]:
+        """
+        The user's dashboard background, for the clocks' page - looked up and fetched again
+        if it's due, at most every BACKGROUND_EVERY however many clocks ask.
+
+        Returns:
+            The picture and its type, e.g. "image/jpeg" - or None if there's none, or Home
+            Assistant isn't there or wouldn't give it.
+        """
+        with self._reading:
+            self._read_background(self._now())
+            found = self._background
+        return found[:2] if found is not None else None
 
     def poke(self, satellite: str):
         """
@@ -374,6 +405,7 @@ class DisplayFeed:
                 home = self._brain.home
                 found = self._attempt("what Jellyfin is playing", home.jellyfin_media, HOME_FAILURES) if home else []
                 self._jellyfin = [] if found is _FAILED else found
+            self._read_background(now)
             for satellite in satellites:
                 self._read_music(satellite, now)
 
@@ -398,6 +430,21 @@ class DisplayFeed:
             self._events = [{"summary": event["summary"], "start": event["start"], "end": event.get("end"),
                              "all_day": event["all_day"]} for event in found]
             self._events_read_on = today
+
+    def _read_background(self, now: float):
+        """Looks the dashboard's background up and fetches it, if it's due - no background for a failure."""
+        if not self._is_due("background", now, BACKGROUND_EVERY):
+            return
+        home = self._brain.home
+        found = (self._attempt("the dashboard's background", functools.partial(_fetch_background, home),
+                               HOME_FAILURES) if home else None)
+        # Not the last good, as with the weather: a background Home Assistant no longer gives,
+        # or won't give as a picture, goes, and the page keeps its own dark one.
+        if found is None or found is _FAILED:
+            self._background = None
+        else:
+            body, kind = found
+            self._background = (body, kind, hashlib.sha256(kind.encode() + b"\0" + body).hexdigest()[:12])
 
     def _read_music(self, satellite: str, now: float):
         """Reads what Nova is playing on a satellite, if it's due - or at once for a session not read before."""
@@ -458,6 +505,7 @@ class DisplayFeed:
             # Spotify playing elsewhere isn't this satellite's - Jellyfin may show, and the buttons step the voice.
             playing = None
         room = session.home.area if session is not None and session.home is not None else None
+        background = self._background
         return {"connected": session is not None,
                 "nova": session.activity if session is not None else "idle",
                 "heard": session.heard if session is not None else "",
@@ -467,7 +515,8 @@ class DisplayFeed:
                 "events": self._next_events(moment),
                 "music": (self._novas_music(session, playing, room, last[2]) if playing is not None
                           else self._jellyfins_music(room, now)),
-                "volume": self._volume(session, playing)}
+                "volume": self._volume(session, playing),
+                "background": background[2] if background is not None else None}
 
     def _next_events(self, moment: datetime) -> List[Dict]:
         """

@@ -124,6 +124,15 @@ class FakeHome:
             raise self.fails
         return b"a picture", self.kind
 
+    def dashboard_background(self):
+        return "/api/image/serve/abc/512x512"
+
+    def background(self, path):
+        self.fetched.append(path)
+        if self.fails is not None:
+            raise self.fails
+        return b"a fern", "image/jpeg"
+
 
 class FakeBrain:
     def __init__(self, **sessions):
@@ -150,6 +159,7 @@ class FakeFeed:
         self.pokes = []
         self.fails = None
         self.changed = threading.Event()
+        self.picture = (b"a fern", "image/jpeg")
 
     def _state(self, satellite):
         if self.fails is not None:
@@ -168,6 +178,9 @@ class FakeFeed:
 
     def poke(self, satellite):
         self.pokes.append(satellite)
+
+    def background(self):
+        return self.picture
 
 
 @pytest.fixture
@@ -294,7 +307,8 @@ def test_unknown_paths_are_not_found(served, clocks):
 @pytest.mark.parametrize("path, body", [("/display/api/state?since=7", None),
                                         ("/display/api/hold", {"action": "start"}),
                                         ("/display/api/volume", {"direction": "up"}),
-                                        ("/display/api/cover?kind=nova&id=al-1", None)])
+                                        ("/display/api/cover?kind=nova&id=al-1", None),
+                                        ("/display/api/background", None)])
 def test_api_needs_the_key(served, parts, clocks, path, body):
     brain, _, feed = parts
     feed.version = 8
@@ -650,6 +664,45 @@ def test_novas_cover_must_be_a_picture(served, parts, clocks):
     player.cover = lambda: (b"<svg/>", "image/svg+xml")
     _, key = clocks.add("Desk", "pi")
     assert _ask(served, "/display/api/cover?kind=nova&id=al-1", key)[0] == 404
+
+
+def test_the_background_is_the_feeds(served, parts, clocks):
+    _, _, feed = parts
+    _, key = clocks.add("Desk", "pi")
+    status, headers, body = _ask(served, "/display/api/background", key)
+    assert (status, headers["Content-Type"], body) == (200, "image/jpeg", b"a fern")
+    feed.picture = None
+    status, _, body = _ask(served, "/display/api/background", key)
+    assert status == 404 and b"fern" not in body
+
+
+def test_the_background_must_be_a_picture(served, parts, clocks):
+    # Served from the clock page's own address, as a cover is - so never anything which could run there.
+    _, _, feed = parts
+    feed.picture = (b"<svg/>", "image/svg+xml")
+    _, key = clocks.add("Desk", "pi")
+    assert _ask(served, "/display/api/background", key)[0] == 404
+
+
+def test_the_background_is_fetched_from_home_assistant_once_not_per_request(served, parts, clocks):
+    brain = parts[0]
+    served.feed = DisplayFeed(brain)
+    _, key = clocks.add("Desk", "pi")
+    for _ in range(3):
+        status, headers, body = _ask(served, "/display/api/background", key)
+        assert (status, headers["Content-Type"], body) == (200, "image/jpeg", b"a fern")
+    assert brain.home.fetched == ["/api/image/serve/abc/512x512"]
+    # Whatever the clock adds to the address, the brain fetches only Home Assistant's own background.
+    assert _ask(served, "/display/api/background?path=/api/states", key)[0] == 200
+    assert brain.home.fetched == ["/api/image/serve/abc/512x512"]
+
+
+def test_a_background_home_assistant_wont_give_is_not_found(served, parts, clocks):
+    brain = parts[0]
+    brain.home.fails = ValueError("That isn't a picture")
+    served.feed = DisplayFeed(brain)
+    _, key = clocks.add("Desk", "pi")
+    assert _ask(served, "/display/api/background", key)[0] == 404
 
 
 def test_no_satellite_at_all_isnt_connected(served, parts, clocks):

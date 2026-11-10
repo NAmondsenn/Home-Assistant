@@ -16,8 +16,9 @@ too many is turned away unchecked for a minute.
 
 With its key, a clock can wait for its satellite's state to change (see
 display_feed.py), make Nova listen while a finger is held on it, step Nova's volume -
-never the alarm's - and fetch the cover of what's playing. Nothing it sends says what
-the brain fetches: a cover is only ever the one playing now.
+never the alarm's - and fetch the cover of what's playing, and the user's dashboard
+background. Nothing it sends says what the brain fetches: a cover is only ever the one
+playing now, and the background the one Home Assistant's dashboards have, held by the feed.
 """
 
 import json
@@ -89,6 +90,15 @@ STOP_CHECK = 0.5
 # A long poll's version, as the feed gives it - milliseconds since 1970, e.g.
 # "1762650000000", so eighteen digits are enough for a long while yet.
 _VERSION = re.compile("[0-9]{1,18}")
+
+
+def _is_picture(content_type: str) -> bool:
+    """
+    Whether an answer is a plain picture. A cover and the background are served from the
+    clock page's own address, so anything else - a page Home Assistant sent, say - could
+    otherwise run as the clock's page does.
+    """
+    return content_type.split(";")[0].strip().lower() in PICTURES
 
 
 class DisplayServer:
@@ -330,11 +340,18 @@ class DisplayServer:
             found = self._jellyfins_cover(cover_id)
         else:
             return None
-        # It's served from the clock page's own address, so anything but a plain picture
-        # - a page Home Assistant sent, say - could otherwise run as the clock's page does.
-        if found is None or found[1].split(";")[0].strip().lower() not in PICTURES:
-            return None
-        return found
+        return found if found is not None and _is_picture(found[1]) else None
+
+    def background(self) -> Optional[Tuple[bytes, str]]:
+        """
+        The user's dashboard background, as the feed holds it - fetched from Home Assistant
+        at most hourly, however many clocks ask.
+
+        Returns:
+            The picture and its content type, or None if there's none, or it isn't a picture.
+        """
+        found = self.feed.background()
+        return found if found is not None and _is_picture(found[1]) else None
 
     def _novas_cover(self, display: Dict, cover_id: str) -> Optional[Tuple[bytes, str]]:
         session = self.session_of(display)
@@ -406,6 +423,12 @@ class _Handler(BaseHTTPRequestHandler):
             found = server.cover(display, (query.get("kind") or [None])[0], (query.get("id") or [None])[0])
             if found is None:
                 self._send_json({"message": "That isn't playing now."}, 404)
+            else:
+                self._send(200, *found)
+        elif url.path == API + "background":
+            found = server.background()
+            if found is None:
+                self._send_json({"message": "There's no background."}, 404)
             else:
                 self._send(200, *found)
         else:
