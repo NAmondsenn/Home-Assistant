@@ -14,7 +14,6 @@ has come down is for Navidrome to say.
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -22,7 +21,7 @@ from urllib.parse import quote
 import requests
 
 from voice_assistant import network
-from voice_assistant.navidrome import CLEAN_VERSIONS, VERSIONS, likeness, normalise
+from voice_assistant.navidrome import BRACKETED, CLEAN_VERSIONS, DASH, VERSIONS, likeness, normalise
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -109,13 +108,15 @@ def _edition_notes(candidate: Dict) -> List[str]:
     """
     What says which edition an album find_album found is: its MusicBrainz
     disambiguation, a free note such as "clean, deluxe edition", and each bracketed
-    or dashed part of its title, as version_of finds a track's. Each is read on its
-    own, so a ")" in the disambiguation can't run into the title's brackets.
+    or dashed part of its title, as version_of finds a track's - after a hyphen, an
+    en dash or an em dash alike. Each is read on its own, so a ")" in the
+    disambiguation can't run into the title's brackets.
     """
     title = candidate.get("title") or ""
-    notes = [text for brackets in re.findall(r"\(([^)]*)\)|\[([^\]]*)\]", title) for text in brackets if text]
-    if " - " in title:
-        notes.append(title.split(" - ", 1)[1])
+    notes = [text for brackets in BRACKETED.findall(title) for text in brackets if text]
+    dashed = DASH.split(title, 1)
+    if len(dashed) == 2:
+        notes.append(dashed[1])
     return notes + [str(candidate.get("disambiguation") or "")]
 
 

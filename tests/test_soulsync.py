@@ -264,7 +264,7 @@ def test_an_edition_musicbrainz_calls_clean_or_live_isnt_the_album_asked_for():
     ("Rumours", "Clean Edition"), ("Rumours", "clean, deluxe edition"), ("Rumours", "censored"),
     ("Rumours", "clean / Target exclusive"), ("Rumours", "clean (US)"), ("Rumours", "radio edit"),
     ("Rumours (Clean Edition)", ""), ("Rumours (Censored)", ""), ("Rumours [Edited]", ""),
-    ("Rumours - Clean Version", "")])
+    ("Rumours - Clean Version", ""), ("Rumours \u2013 Clean Edition", ""), ("Rumours \u2014 Censored", "")])
 def test_a_clean_edition_however_its_noted_is_never_picked(title, disambiguation):
     # A disambiguation is a free note on the edition, so a clean word anywhere in it
     # counts - unlike in a track's title, where "(feat. Clean Bandit)" is a credit.
