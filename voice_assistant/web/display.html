@@ -9,16 +9,36 @@
   <script src="display.js" defer></script>
 </head>
 <body>
+  <div id="background" class="background"></div>
+
   <main id="pages">
-    <section id="home" class="page">
-      <div id="time" class="time">--:--</div>
-      <div id="date" class="date dim"></div>
-      <div id="weather" class="weather" hidden>
-        <div id="temperature" class="temperature"></div>
-        <div id="condition" class="condition dim"></div>
-        <div id="high-low" class="high-low dim"></div>
+    <section id="home" class="page home">
+      <div class="tile time-tile">
+        <div id="date" class="label"></div>
+        <div id="time" class="time">--:--</div>
       </div>
-      <div id="next" class="next dim"></div>
+      <div class="tile weather-tile">
+        <div class="label">Weather</div>
+        <div id="weather" hidden>
+          <div id="temperature" class="temperature"></div>
+          <div id="condition" class="condition dim"></div>
+          <div id="high-low" class="high-low dim"></div>
+        </div>
+        <div id="no-weather" class="no-weather dim">No weather</div>
+      </div>
+      <div class="tile next-tile">
+        <div class="label">Next</div>
+        <div id="next" hidden>
+          <div id="next-what" class="next-what"></div>
+          <div id="next-when" class="dim"></div>
+        </div>
+        <div id="no-next" class="tile-none dim">Nothing coming up</div>
+      </div>
+      <div class="tile later-tile">
+        <div class="label">Later</div>
+        <div id="later" class="later"></div>
+        <div id="no-later" class="tile-none dim">Nothing coming up</div>
+      </div>
     </section>
 
     <section id="coming-up" class="page" hidden>
@@ -28,6 +48,7 @@
     </section>
 
     <section id="now-playing" class="page" hidden>
+      <div id="playing-time" class="playing-time"></div>
       <div id="playing" class="playing" hidden>
         <div class="art"><img id="cover" alt="" hidden></div>
         <div class="track">
@@ -52,16 +73,21 @@
     </span>
   </div>
 
-  <div id="listening" class="overlay" hidden>
-    <div class="orb"></div>
-    <div class="listening">Listening…</div>
-    <div id="heard" class="heard dim" hidden></div>
-  </div>
-
-  <div id="speaking" class="overlay" hidden>
-    <div class="wave" aria-label="Nova is speaking">
-      <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+  <div id="nova" class="nova" hidden>
+    <div class="veil"></div>
+    <div class="blob">
+      <div class="aura"></div>
+      <div class="aura aura-inner"></div>
+      <div class="lobes">
+        <div class="orbit o1"><div class="lobe"></div></div>
+        <div class="orbit o2"><div class="lobe"></div></div>
+        <div class="orbit o3"><div class="lobe"></div></div>
+        <div class="orbit o4"><div class="lobe"></div></div>
+        <div class="orbit o5"><div class="lobe"></div></div>
+        <div class="core"></div>
+      </div>
     </div>
+    <div id="heard" class="heard"></div>
   </div>
 
   <div id="volume" class="volume" hidden>

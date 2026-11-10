@@ -7,8 +7,8 @@
 // the clock as a wrong try.
 //
 // Everything shown comes from a long poll of /display/api/state, which Nova answers as
-// soon as anything on the clock would change - so "Listening..." covers the page the
-// moment Nova hears the wake word. While Nova can't be reached the time carries on from
+// soon as anything on the clock would change - so Nova's blob covers the page the moment
+// Nova hears the wake word. While Nova can't be reached the time carries on from
 // the clock's own clock, set right by the difference from Nova's when it was last known,
 // with a small mark that Nova is offline; touches and buttons do nothing until it's back.
 //
@@ -53,6 +53,14 @@ const VOLUME_SHOWN = 1500;
 // and both routes are kept, in case the page's policy turns the first down.
 const SAME_PRESS = 250;
 
+// How long the blob takes to fade and shrink away once Nova's done, in milliseconds - the
+// longest of its transitions in display.css - before it's hidden altogether.
+const NOVA_GOES = 700;
+
+// How many events Home's Later tile is given, after the Next tile's - as many as fit on
+// its two lines are shown.
+const LATER = 3;
+
 // How long Nova's state says to wait before going back to Home once the music stops,
 // for a state without one, in seconds - the settings page's own default.
 const HOME_AFTER = 60;
@@ -93,6 +101,16 @@ let lastPress = null;
 // The cover being shown or fetched, as coverOf names it, and its blob: address.
 let coverWanted = null;
 let coverUrl = null;
+
+// The background picture being shown or fetched, as the state's token names it, and its
+// blob: address.
+let backgroundWanted = null;
+let backgroundUrl = null;
+
+// What Nova's doing as the page shows it - "idle" once the blob has gone - and the timer
+// hiding the blob once it's faded out.
+let novaShown = "idle";
+let novaHiding = null;
 
 // The brightness last given to the kiosk app, 0 to 100.
 let brightness = null;
@@ -236,8 +254,8 @@ function showMessage(text, more = "") {
 function setOnline(now) {
   if (online === now) return;
   online = now;
-  drawMarks();
   drawOverlays();
+  drawMarks();
 }
 
 // Showing a state
@@ -248,6 +266,7 @@ function show(next) {
   clockAhead = next.now * 1000 - Date.now();
   utcOffset = next.utc_offset;
   online = true;
+  drawBackground(next.background);
   drawTime();
   drawWeather();
   drawEvents();
@@ -279,6 +298,13 @@ function longDate(wall) {
   return `${DAYS[wall.getUTCDay()]} ${wall.getUTCDate()} ${MONTHS[wall.getUTCMonth()]}`;
 }
 
+// The whole days from today to an event's start, e.g. 1 for tomorrow - below 0 for one
+// begun before today and still on.
+function daysTo(event, today) {
+  const [year, month, day] = event.start.slice(0, 10).split("-").map(Number);
+  return Math.round((Date.UTC(year, month - 1, day) - today) / DAY_MS);
+}
+
 // What day an event comes, as Coming up shows it: "Mon 10:00", "Wed" for one all day,
 // both within the week, then just the date, e.g. "2 Dec". One begun before today and
 // still on is today's.
@@ -288,13 +314,31 @@ function longDate(wall) {
 //     timezone.
 //   today: Midnight today on Nova's wall clock, as wallClock gives it, in milliseconds.
 function eventWhen(event, today) {
-  const [year, month, day] = event.start.slice(0, 10).split("-").map(Number);
-  const starts = Date.UTC(year, month - 1, day);
-  const days = Math.round((starts - today) / DAY_MS);
+  const [, month, day] = event.start.slice(0, 10).split("-").map(Number);
+  const days = daysTo(event, today);
   if (days < 0) return DAYS[new Date(today).getUTCDay()].slice(0, 3);
   if (days >= 7) return `${day} ${MONTHS[month - 1].slice(0, 3)}`;
-  const name = DAYS[new Date(starts).getUTCDay()].slice(0, 3);
+  const name = DAYS[new Date(today + days * DAY_MS).getUTCDay()].slice(0, 3);
   return event.all_day ? name : `${name} ${event.start.slice(11, 16)}`;
+}
+
+// What day an event comes, as Home's Next tile shows it: "Today 11:30", "Tomorrow 09:00",
+// "Today" or "Tomorrow" for one all day or begun before today, then as Coming up has it,
+// e.g. "Wed 15:30" or "2 Dec".
+function nextWhen(event, today) {
+  const days = daysTo(event, today);
+  if (days > 1) return eventWhen(event, today);
+  const name = days === 1 ? "Tomorrow" : "Today";
+  return event.all_day || days < 0 ? name : `${name} ${event.start.slice(11, 16)}`;
+}
+
+// The same for the Later tile, but shorter, as the prototype has it: just "14:30" for one
+// later today - the Next tile already says it's today, as the next event can be no later -
+// and from tomorrow as Coming up has it, e.g. "Wed 15:30", where "Tomorrow" would leave
+// a long title less room.
+function laterWhen(event, today) {
+  if (daysTo(event, today) > 0) return eventWhen(event, today);
+  return event.all_day || daysTo(event, today) < 0 ? "Today" : event.start.slice(11, 16);
 }
 
 // Seconds as "1:32", or "1:02:05" past an hour, as a film on Jellyfin might be.
@@ -329,7 +373,9 @@ function tick() {
 
 function drawTime() {
   const wall = wallClock(novaNow());
-  setText($("time"), `${twoDigits(wall.getUTCHours())}:${twoDigits(wall.getUTCMinutes())}`);
+  const time = `${twoDigits(wall.getUTCHours())}:${twoDigits(wall.getUTCMinutes())}`;
+  setText($("time"), time);
+  setText($("playing-time"), time);
   setText($("date"), longDate(wall));
   if (state && eventsDrawn !== $("date").textContent) drawEvents();
 }
@@ -337,20 +383,27 @@ function drawTime() {
 function drawWeather() {
   const weather = state.weather;
   $("weather").hidden = !weather;
+  $("no-weather").hidden = Boolean(weather);
   if (!weather) return;
   setText($("temperature"), `${Math.round(weather.temperature)}°`);
   // Nova's own words for it, e.g. "light rain" - capitalised to start the line.
   const condition = weather.condition || "";
   setText($("condition"), condition.charAt(0).toUpperCase() + condition.slice(1));
   $("condition").hidden = !condition;
-  const bounds = [];
-  if (weather.high !== null && weather.high !== undefined) bounds.push(`H ${Math.round(weather.high)}°`);
-  if (weather.low !== null && weather.low !== undefined) bounds.push(`L ${Math.round(weather.low)}°`);
-  setText($("high-low"), bounds.join(BETWEEN));
-  $("high-low").hidden = !bounds.length;
+  // "7° / 1°", high then low, or just the one Nova knows, e.g. "High 7°".
+  const known = (value) => value !== null && value !== undefined;
+  const high = known(weather.high) ? `${Math.round(weather.high)}°` : null;
+  const low = known(weather.low) ? `${Math.round(weather.low)}°` : null;
+  let bounds = "";
+  if (high && low) bounds = `${high} / ${low}`;
+  else if (high) bounds = `High ${high}`;
+  else if (low) bounds = `Low ${low}`;
+  setText($("high-low"), bounds);
+  $("high-low").hidden = !bounds;
 }
 
-// Coming up's list and Home's next event, drawn again only when they change or the day does.
+// Coming up's list and Home's Next and Later tiles, drawn again only when they change or
+// the day does.
 let eventsShown = null;
 
 function drawEvents() {
@@ -374,7 +427,25 @@ function drawEvents() {
   }));
   $("no-events").hidden = events.length > 0;
   const next = events[0];
-  setText($("next"), next ? `Next: ${next.title}${BETWEEN}${eventWhen(next, today)}` : "");
+  $("next").hidden = !next;
+  $("no-next").hidden = Boolean(next);
+  setText($("next-what"), next ? next.title : "");
+  setText($("next-when"), next ? nextWhen(next, today) : "");
+  const later = events.slice(1, 1 + LATER);
+  $("later").replaceChildren(...later.map((event) => {
+    const item = document.createElement("span");
+    item.className = "later-event";
+    const what = document.createElement("span");
+    what.className = "later-what";
+    what.textContent = event.title;
+    const when = document.createElement("span");
+    when.className = "later-when dim";
+    when.textContent = laterWhen(event, today);
+    item.append(what, when);
+    return item;
+  }));
+  $("later").hidden = !later.length;
+  $("no-later").hidden = later.length > 0;
 }
 
 function drawMusic() {
@@ -440,6 +511,42 @@ function drawCover(music) {
   });
 }
 
+// Shows his dashboard's picture behind every page, fetched with the key as a cover is,
+// only when the state's token for it changes. The one before stays until the next has
+// come, so the page never flashes dark between them, and is let go of then. Without one,
+// or Nova answering that there's none, the plain dark background shows; failing to reach
+// Nova keeps what's shown, and it's asked for again with the next state.
+//
+// Args:
+//   token: The state's "background", a short token that changes with the picture, or
+//     null for none.
+function drawBackground(token) {
+  const wanted = token || null;
+  if (wanted === backgroundWanted) return;
+  backgroundWanted = wanted;
+  if (!wanted) {
+    showBackground(null);
+    return;
+  }
+  ask(API + "background", { blob: true }).then((answer) => {
+    if (backgroundWanted !== wanted) return;
+    if (answer.status !== 200) {
+      backgroundWanted = null;
+      showBackground(null);
+      return;
+    }
+    showBackground(URL.createObjectURL(answer.data));
+  }).catch(() => {
+    if (backgroundWanted === wanted) backgroundWanted = null;
+  });
+}
+
+function showBackground(url) {
+  $("background").style.backgroundImage = url ? `url("${url}")` : "";
+  if (backgroundUrl) URL.revokeObjectURL(backgroundUrl);
+  backgroundUrl = url;
+}
+
 function playing(music) {
   return Boolean(music && music.playing);
 }
@@ -463,21 +570,41 @@ function followMusic(last, next) {
   }
 }
 
-// Listening or speaking over the page - none while Nova's offline, as what it was doing
-// when it went is no longer known.
+// The blob over the page while Nova listens, thinks or speaks - none while Nova's offline,
+// as what it was doing when it went is no longer known. It's shown by taking "hidden" off
+// and only then adding its classes, so it fades and grows in rather than appearing, and
+// hidden again once it's faded out, so its animations don't go on unseen.
 function drawOverlays() {
-  const nova = online && state ? state.nova : "idle";
-  $("listening").hidden = nova !== "listening" && nova !== "thinking";
-  $("speaking").hidden = nova !== "speaking";
+  let nova = online && state ? state.nova : "idle";
+  if (nova !== "listening" && nova !== "thinking" && nova !== "speaking") nova = "idle";
   const heard = online && state ? state.heard : "";
-  setText($("heard"), heard ? `“${heard}”` : "");
-  $("heard").hidden = !heard;
+  // Kept as it was through the fade out, rather than gone as the blob starts to go.
+  if (nova !== "idle") setText($("heard"), heard ? `“${heard}”` : "");
+  if (nova === novaShown) return;
+  const blob = $("nova");
+  clearTimeout(novaHiding);
+  novaHiding = null;
+  if (nova === "idle") {
+    blob.className = "nova";
+    novaHiding = setTimeout(() => {
+      novaHiding = null;
+      blob.hidden = true;
+      setText($("heard"), "");
+    }, NOVA_GOES);
+  } else {
+    if (blob.hidden) {
+      blob.hidden = false;
+      // Laid out once without "on", so the change to it is a transition.
+      void blob.offsetWidth;
+    }
+    blob.className = `nova on ${nova}`;
+  }
+  novaShown = nova;
 }
 
 function drawMarks() {
   $("offline").hidden = online !== false;
-  const overlay = !$("listening").hidden || !$("speaking").hidden;
-  $("muted").hidden = !(online && state && state.muted) || overlay;
+  $("muted").hidden = !(online && state && state.muted) || novaShown !== "idle";
 }
 
 function setBrightness(level) {
