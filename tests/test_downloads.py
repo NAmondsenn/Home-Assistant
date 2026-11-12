@@ -30,6 +30,9 @@ WAITING, DONE = Progress("waiting"), Progress("done")
 GOOBA_REQUESTED = ("kitchen", "Gooba by 6ix9ine requested.")
 GOOBA_DOWNLOADED = ("kitchen", "Gooba by 6ix9ine has been downloaded.")
 
+# What Claude is told after "Asked SoulSync for X." - never said, as the outcome is said later.
+ON_ITS_WAY = "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it."
+
 # "Endless by Gunner", as speech to text heard Gunna's "endless" live on 12 November,
 # and the song SoulSync found for it.
 ENDLESS_ASKED = Wanted("Endless", "Gunner", "track")
@@ -748,6 +751,40 @@ def test_an_outcome_reached_as_nova_stops_isnt_said(watching, clock, said):
     assert said == [GOOBA_REQUESTED]
 
 
+# What's still on its way, for Claude to answer "what's downloading?" from
+
+def test_with_nothing_waiting_nothing_is_downloading(running, clock):
+    assert running(FakeSoulSync(), FakeLibrary(clock)).describe_waiting() == "Nothing is downloading."
+
+
+def test_whats_waiting_is_named_with_how_long_ago_it_was_asked_for(running, clock):
+    downloads = running(FakeSoulSync(), FakeLibrary(clock))
+    downloads.start(GOOBA_WANTED, "kitchen")
+    clock.time = 150.0
+    downloads.start(RUMOURS_WANTED, "bedroom")
+
+    clock.time = 170.0
+    assert downloads.describe_waiting() == ("Gooba by 6ix9ine, asked for 2 minutes ago. "
+                                            "Rumours by Fleetwood Mac, asked for less than a minute ago.")
+    clock.time = 215.0
+    assert downloads.describe_waiting() == ("Gooba by 6ix9ine, asked for 3 minutes ago. "
+                                            "Rumours by Fleetwood Mac, asked for 1 minute ago.")
+
+    # Gone once Nova stops watching, as each is once it lands or is given up on.
+    downloads.stop()
+    assert _all_ended()
+    assert downloads.describe_waiting() == "Nothing is downloading."
+
+
+def test_one_which_has_landed_isnt_downloading(watching, clock):
+    downloads = watching(FakeSoulSync([DONE]), FakeLibrary(clock, songs=[[], [GOOBA]]))
+
+    assert downloads.start(GOOBA_WANTED, "kitchen")
+    assert _all_ended()
+
+    assert downloads.describe_waiting() == "Nothing is downloading."
+
+
 # Set up or not
 
 def test_without_soulsync_or_navidrome_it_isnt_set_up(make_config, monkeypatch):
@@ -853,7 +890,7 @@ def test_an_album_had_is_asked_for_and_named_as_navidrome_has_it_when_none_is_qu
     downloads = watching(soulsync, Library(), set_up)
 
     assert downloads.download("rumours", "album", "kitchen") == {
-        "success": True, "message": "Asked SoulSync for rumours.", "later": True}
+        "success": True, "message": f"Asked SoulSync for rumours. {ON_ITS_WAY}", "later": True}
     assert _all_ended()
     assert said == [("kitchen", "You've already got Rumours by Fleetwood Mac.")]
     assert soulsync.requested == [("rumours", None)]
@@ -868,7 +905,7 @@ def test_a_part_owned_album_asked_for_is_requested_and_lands(watching, set_up, c
     downloads = watching(soulsync, FakeLibrary(clock, tracks=[had, had, had + rest]), set_up)
 
     assert downloads.download("Rumours by Fleetwood Mac", "album", "kitchen") == {
-        "success": True, "message": "Asked SoulSync for Rumours by Fleetwood Mac.", "later": True}
+        "success": True, "message": f"Asked SoulSync for Rumours by Fleetwood Mac. {ON_ITS_WAY}", "later": True}
     assert _all_ended()
     assert said == [("kitchen", "Rumours by Fleetwood Mac requested."),
                     ("kitchen", "Rumours by Fleetwood Mac has been downloaded.")]
@@ -944,7 +981,7 @@ def test_an_album_had_explicit_beside_a_clean_edition_is_already_got(watching, s
     downloads = watching(soulsync, library, set_up)
 
     assert downloads.download("Rumours by Fleetwood Mac", "album", "kitchen") == {
-        "success": True, "message": "Asked SoulSync for Rumours by Fleetwood Mac.", "later": True}
+        "success": True, "message": f"Asked SoulSync for Rumours by Fleetwood Mac. {ON_ITS_WAY}", "later": True}
     assert _all_ended()
     assert said == [("kitchen", "You've already got Rumours by Fleetwood Mac.")]
 
@@ -955,7 +992,7 @@ def test_a_download_is_started_and_nothing_said_until_soulsync_answers(watching,
     downloads = watching(soulsync, FakeLibrary(clock, songs=[[], [], [GOOBA]]), set_up)
 
     assert downloads.download("Gooba by 6ix9ine", "track", "kitchen") == {
-        "success": True, "message": "Asked SoulSync for Gooba by 6ix9ine.", "later": True}
+        "success": True, "message": f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY}", "later": True}
 
     # The rest is the watch's, said to the satellite that asked.
     assert _all_ended()
@@ -971,7 +1008,7 @@ def test_a_misheard_song_asked_for_is_named_as_soulsync_found_it_from_then_on(wa
 
     # Kept in Claude's history as it was asked for, as SoulSync hasn't been asked yet.
     assert downloads.download("Endless by Gunner", "track", "kitchen") == {
-        "success": True, "message": "Asked SoulSync for Endless by Gunner.", "later": True}
+        "success": True, "message": f"Asked SoulSync for Endless by Gunner. {ON_ITS_WAY}", "later": True}
 
     assert _all_ended()
     assert said == [("kitchen", "endless by Gunna requested."), ("kitchen", "endless by Gunna has been downloaded.")]
@@ -985,7 +1022,7 @@ def test_a_yes_requests_without_looking_in_navidrome_again(watching, set_up, clo
     downloads = watching(soulsync, library, set_up)
 
     assert downloads.request("Gooba by 6ix9ine", "track", "kitchen") == {
-        "success": True, "message": "Asked SoulSync for Gooba by 6ix9ine.", "later": True}
+        "success": True, "message": f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY}", "later": True}
 
     assert _all_ended()
     assert said == [GOOBA_REQUESTED, GOOBA_DOWNLOADED]

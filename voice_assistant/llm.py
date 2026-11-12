@@ -924,10 +924,14 @@ class LLMHandler:
 
         Args:
             user_text: What the user said in that exchange, so only the right one is changed.
-            spoken: What the assistant actually said.
+            spoken: What the assistant actually said - or nothing, when a tool's answer is
+                said later (a download asked for, said once SoulSync has it), which keeps
+                the model's own text, as the API refuses an empty reply.
             tool_answers: What each tool the model called said, in the order called -
                 shown to the model as the tools' own answers (see _earlier_messages).
         """
-        if spoken and self.history and self.history[-1]["user"] == user_text:
+        if not self.history or self.history[-1]["user"] != user_text:
+            return
+        if spoken:
             self.history[-1]["assistant"] = spoken
-            self.history[-1]["tool_answers"] = list(tool_answers)
+        self.history[-1]["tool_answers"] = list(tool_answers)

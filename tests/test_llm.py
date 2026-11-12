@@ -584,6 +584,21 @@ def test_a_tool_which_said_nothing_still_answers_the_model(llm):
     assert len({result["tool_use_id"] for result in answered["content"]}) == 2
 
 
+def test_a_tool_said_later_tells_the_model_what_it_did_and_keeps_its_own_reply(llm):
+    # A download asked for says nothing until SoulSync has it. Told only "Done.", Claude
+    # said a download had finished which had only been asked for.
+    llm.client = FakeClient(_reply("Okay.", _tool("download_music", query="Gooba by 6ix9ine")))
+    llm.process_query("download Gooba by 6ix9ine")
+    llm.record_reply("download Gooba by 6ix9ine", "", ["Asked SoulSync for Gooba by 6ix9ine."])
+
+    llm.client = FakeClient(_reply("It's still on its way."))
+    llm.process_query("is it downloaded yet?")
+    sent = llm.client.requests[0]["messages"]
+    assert [result["content"] for result in sent[2]["content"]] == ["Asked SoulSync for Gooba by 6ix9ine."]
+    # Nothing was said, so its own "Okay." stays, as the API refuses an empty reply.
+    assert sent[3] == {"role": "assistant", "content": "Okay."}
+
+
 def test_record_reply_only_changes_the_matching_exchange(llm):
     llm.history = [{"user": "turn it up", "assistant": "Okay."}]
     llm.record_reply("something else", "Volume 80 percent.")

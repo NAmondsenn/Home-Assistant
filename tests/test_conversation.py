@@ -934,14 +934,25 @@ class NothingFound:
         return []
 
 
+class HasGooba:
+    """Stands in for Navidrome's library, which has Gooba by 6ix9ine."""
+
+    def find_songs(self, title, artist):
+        return [{"id": "1", "title": "Gooba", "artist": "6ix9ine", "album": "Gooba", "explicitStatus": "explicit"}]
+
+
+# What Claude is told after "Asked SoulSync for X." - never said, as the outcome is said later.
+ON_ITS_WAY = "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it."
+
+
 class AskedDownloads(Downloads):
     """
     The real Downloads, noting each request a yes makes - (query, search_type, satellite) -
     and each download started - (its name, satellite) - and watching none.
     """
 
-    def __init__(self, config):
-        super().__init__(config, lambda satellite, message: None, soulsync=lambda: None, library=NothingFound)
+    def __init__(self, config, library=NothingFound):
+        super().__init__(config, lambda satellite, message: None, soulsync=lambda: None, library=library)
         self.requested, self.started = [], []
 
     def request(self, query, search_type, satellite):
@@ -991,7 +1002,7 @@ def test_yes_to_a_download_offer_requests_it_and_says_nothing_yet(downloading):
     assert (reply.say, reply.sounds, reply.listen_again) == ("", [], False)
     assert downloads.requested == [("Gooba by 6ix9ine", "track", "kitchen")]
     # Never empty, which the API refuses, and never sent to Claude.
-    assert llm.remembered[-1] == ("yes please", "Asked SoulSync for Gooba by 6ix9ine.")
+    assert llm.remembered[-1] == ("yes please", f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY}")
     assert llm.asked == ["play Gooba by 6ix9ine"]
 
 
@@ -1038,8 +1049,11 @@ class FakeClaude:
     def __init__(self, *replies):
         self.replies = list(replies)
         self.messages = self
+        # Each request, as it was sent.
+        self.requests = []
 
     def create(self, **request):
+        self.requests.append(request)
         text, *calls = self.replies.pop(0)
         uses = [SimpleNamespace(type="tool_use", id=f"toolu_{index}", name=name, input=dict(params))
                 for index, (name, params) in enumerate(calls)]
@@ -1059,8 +1073,8 @@ def downloading_with_claude(download_settings, monkeypatch):
     """
     monkeypatch.setattr(network, "online", lambda: True)
 
-    def make(*replies):
-        downloads = AskedDownloads(download_settings)
+    def make(*replies, library=NothingFound):
+        downloads = AskedDownloads(download_settings, library)
         actions = ActionExecutor(music=NotInNavidrome(), downloads=downloads, satellite="kitchen")
         llm = LLMHandler(api_key=None)
         llm.client = FakeClaude(*replies)
@@ -1118,6 +1132,42 @@ def test_download_x_still_downloads_straight_away(downloading_with_claude):
 
     assert conversation.handle("download Gooba by 6ix9ine").say == ""
     assert downloads.started == [("Gooba by 6ix9ine", "kitchen")]
+
+
+def _tool_answers(request):
+    """What Claude was told each earlier tool call said, in a request sent to it."""
+    return [block["content"] for message in request["messages"] if isinstance(message["content"], list)
+            for block in message["content"] if block.get("type") == "tool_result"]
+
+
+def test_claude_is_told_a_download_is_only_asked_for(downloading_with_claude):
+    # Live on 12 November, Claude was told only "Done.", and a minute later said the
+    # download had finished - it landed five minutes after that.
+    conversation, downloads, llm = downloading_with_claude(("Okay.", ("download_music", GOOBA_TRACK)),
+                                                           ("It's still on its way.",))
+
+    # Nothing said now: "Gooba by 6ix9ine requested." comes once SoulSync has it.
+    reply = conversation.handle("download Gooba by 6ix9ine")
+    assert (reply.say, reply.sounds) == ("", [])
+    assert downloads.started == [("Gooba by 6ix9ine", "kitchen")]
+
+    conversation.handle("are you downloading any music right now?")
+
+    asked_next = llm.client.requests[1]
+    assert _tool_answers(asked_next) == [f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY}"]
+    # Claude's own words stay its reply, as the API refuses an empty one.
+    assert asked_next["messages"][3] == {"role": "assistant", "content": "Okay."}
+
+
+def test_claude_is_told_whats_already_got(downloading_with_claude):
+    conversation, downloads, llm = downloading_with_claude(("Okay.", ("download_music", GOOBA_TRACK)),
+                                                           ("You're welcome.",), library=HasGooba)
+
+    assert conversation.handle("download Gooba by 6ix9ine").say == "You've already got Gooba by 6ix9ine."
+    conversation.handle("thanks")
+
+    assert _tool_answers(llm.client.requests[1]) == ["You've already got Gooba by 6ix9ine."]
+    assert downloads.started == []
 
 
 def test_the_answer_to_what_to_download_still_downloads(downloading_with_claude):

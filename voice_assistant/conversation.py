@@ -313,6 +313,11 @@ class Conversation:
             response_text = f"{response_text} Also, your {reminder} reminder is still going. Shall I turn it off?".strip()
 
         if not response_text:
+            # A download asked for says nothing until SoulSync has it, but Claude is still
+            # told what its call did - "Asked SoulSync for X. It usually takes..." - rather
+            # than "Done.", which it took for the download finished.
+            if result.get("success") and any(r.ok and r.confirm == "later" for r in action_results):
+                self.llm.record_reply(text, "", _tool_answers(actions, action_results))
             logger.info(f"Action confirmed itself: {[r.say for r in action_results]}", extra=TRANSCRIPT)
             return Reply(sounds=sounds)
 
@@ -336,8 +341,7 @@ class Conversation:
             for index, stand_in in stand_ins.items():
                 if action_results[index].say:
                     recorded = recorded.replace(action_results[index].say, stand_in)
-            self.llm.record_reply(text, recorded, [stand_ins.get(index, action_result.say)
-                                                   for index, action_result in enumerate(action_results)])
+            self.llm.record_reply(text, recorded, _tool_answers(actions, action_results))
 
         # If the assistant asked something, it listens straight away for the answer -
         # but only so many times in a row.
@@ -522,3 +526,16 @@ def _stand_ins(actions: List[Action], results: List[ActionResult]) -> Dict[int, 
     """
     return {index: told_claude(str(action.params.get("device") or "phone"))
             for index, (action, result) in enumerate(zip(actions, results)) if result.private}
+
+
+def _tool_answers(actions: List[Action], results: List[ActionResult]) -> List[str]:
+    """
+    What Claude's history has as each action's answer, in the order they ran - what it
+    said, or a private answer's stand-in.
+
+    Args:
+        actions: The actions the turn ran.
+        results: What each said, in the same order.
+    """
+    stand_ins = _stand_ins(actions, results)
+    return [stand_ins.get(index, result.say) for index, result in enumerate(results)]

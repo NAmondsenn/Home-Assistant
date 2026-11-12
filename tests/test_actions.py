@@ -1031,8 +1031,8 @@ def test_home_status_is_only_offered_with_home_assistant():
     assert schema["input_schema"]["required"] == ["about"]
     assert "home_status" not in offered(ActionExecutor())
     assert ActionExecutor().execute(Action("home_status", {"about": "sunset"})).say == "Home Assistant isn't set up yet."
-    # It's the one tool whose answer goes back to Claude rather than being said.
-    assert ActionExecutor().read_tools() == ["home_status"]
+    # These are the tools whose answers go back to Claude rather than being said.
+    assert ActionExecutor().read_tools() == ["downloads_waiting", "home_status"]
 
 
 # Lists - Assist first, then Nova's own, through a real HomeAssistant and Lists with a fake
@@ -1420,6 +1420,9 @@ def downloads(make_config, monkeypatch):
 
 GOOBA_PLAYED = Action("play_music", {"query": "Gooba by 6ix9ine", "search_type": "track"})
 
+# What Claude is told after "Asked SoulSync for X." - never said, as the outcome is said later.
+ON_ITS_WAY = "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it."
+
 
 def test_play_offers_a_download_for_something_navidrome_hasnt_got(make_executor, downloads):
     player = FakeNavidromePlayer(missing=True)
@@ -1472,8 +1475,9 @@ def test_play_says_what_it_says_today_with_no_offer(make_executor, downloads):
 
 def test_downloading_needs_downloads(make_executor):
     executor = make_executor()
-    assert "download_music" not in {schema["name"] for schema in executor.tool_schemas()}
-    for tool_name in ("download_music", "request_download", "offer_download"):
+    offered = {schema["name"] for schema in executor.tool_schemas()}
+    assert "download_music" not in offered and "downloads_waiting" not in offered
+    for tool_name in ("download_music", "request_download", "offer_download", "downloads_waiting"):
         result = executor.execute(Action(tool_name, {"query": "Gooba"}))
         assert (result.ok, result.say) == (False, "Downloading music isn't set up.")
 
@@ -1484,7 +1488,8 @@ def test_a_download_is_asked_for_from_the_satellite_and_said_later(make_executor
     result = executor.execute(Action("download_music", {"query": "Rumours by Fleetwood Mac", "search_type": "album"},
                                      from_model=True))
 
-    assert (result.ok, result.say, result.confirm) == (True, "Asked SoulSync for Rumours by Fleetwood Mac.", "later")
+    assert (result.ok, result.say, result.confirm) == (
+        True, f"Asked SoulSync for Rumours by Fleetwood Mac. {ON_ITS_WAY}", "later")
     assert downloads.started == [(Wanted("Rumours", "Fleetwood Mac", "album"), "kitchen")]
     # Nothing said now, nor the model's "Okay." in its place: "Rumours by Fleetwood Mac requested." comes later.
     assert confirm([result], fallback="Okay.") == ([], [])
@@ -1501,7 +1506,7 @@ def test_only_the_users_yes_can_request_without_checking(make_executor, download
 
     # The yes, which only the conversation gives.
     result = executor.execute(Action("request_download", {"query": "Gooba", "search_type": "track"}))
-    assert (result.ok, result.say, result.confirm) == (True, "Asked SoulSync for Gooba.", "later")
+    assert (result.ok, result.say, result.confirm) == (True, f"Asked SoulSync for Gooba. {ON_ITS_WAY}", "later")
     assert downloads.started == [(Wanted("Gooba", None, "track"), "kitchen")]
 
 
@@ -1520,8 +1525,28 @@ def test_a_download_claude_wasnt_asked_for_in_words_is_only_offered(make_executo
 def test_claude_is_told_how_to_ask_for_a_download(make_executor, downloads):
     schema = {schema["name"]: schema for schema in make_executor(downloads=downloads).tool_schemas()}["download_music"]
     assert schema["description"].startswith("Download a song or an album the user hasn't got yet")
+    # Told it only asks, so it never says a download has finished which has only been asked for.
+    assert "It only asks for it" in schema["description"] and "never say" in schema["description"]
     assert schema["input_schema"]["properties"]["search_type"]["enum"] == ["track", "album", "artist"]
     assert schema["input_schema"]["required"] == []
+
+
+def test_claude_can_read_whats_downloading(make_executor, downloads):
+    executor = make_executor(downloads=downloads)
+    schema = {schema["name"]: schema for schema in executor.tool_schemas()}["downloads_waiting"]
+    assert schema["description"].startswith("Read which downloads the user asked for are still on their way")
+    # Read for Claude to answer from, never said as it is.
+    assert "downloads_waiting" in executor.read_tools()
+
+    result = executor.execute(Action("downloads_waiting", from_model=True))
+    assert (result.ok, result.say) == (True, "Nothing is downloading.")
+
+    # Waiting, as start() notes a request, without a watch to run.
+    wanted = Wanted("Gooba", "6ix9ine", "track")
+    downloads._waiting[wanted.key] = wanted
+    downloads._asked_at[wanted.key] = time.monotonic() - 130
+    result = executor.execute(Action("downloads_waiting", from_model=True))
+    assert (result.ok, result.say) == (True, "Gooba by 6ix9ine, asked for 2 minutes ago.")
 
 
 def test_a_result_said_later_is_neither_said_nor_chimed_now():

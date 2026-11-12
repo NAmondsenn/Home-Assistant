@@ -57,6 +57,14 @@ WHOLE_ARTIST = "I only download songs and albums, not a whole artist."
 # Asked when "download" comes with nothing to download.
 WHAT_TO_DOWNLOAD = "What would you like me to download?"
 
+# Told to Claude after "Asked SoulSync for X.", as what its call did, and never said: the
+# outcome is said later. Told only "Done.", Claude said on 12 November that a download asked
+# for a minute before had finished - it landed five minutes later.
+ON_ITS_WAY = "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it."
+
+# Claude's answer to "what's downloading?" when nothing is being watched for.
+NOTHING_WAITING = "Nothing is downloading."
+
 # The questions which end an offer to download. LLMHandler._asked_to_download reads them,
 # as the request which made an offer - "play Get Lucky" - never makes its answer a yes.
 DOWNLOAD_IT = "Do you want me to download it?"
@@ -161,6 +169,14 @@ def _as_had(wanted: Wanted, found: List[Dict]) -> Optional[str]:
         title, artist = album[0].get("album"), album[0].get("albumArtist")
     title = title or wanted.title
     return f"{title} by {artist}" if artist else title
+
+
+def _asked_ago(seconds: float) -> str:
+    """How long ago a request was asked for, in whole minutes: "asked for 2 minutes ago" for 2:50."""
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return "asked for less than a minute ago"
+    return f"asked for {minutes} minute{'' if minutes == 1 else 's'} ago"
 
 
 def _couldnt(wanted: Wanted, reason: Optional[str]) -> str:
@@ -300,8 +316,10 @@ class Downloads:
         self._stopping = threading.Event()
         self._wait = wait or self._stopping.wait
         self._lock = threading.Lock()
-        # What's waiting, by its key, in the order it was asked for.
+        # What's waiting, by its key, in the order it was asked for - and when each was
+        # asked for, by the same key, on the clock the time limits use.
         self._waiting: Dict[str, Wanted] = {}
+        self._asked_at: Dict[str, float] = {}
 
     def _own_library(self) -> Optional[NavidromeLibrary]:
         """A NavidromeLibrary from the settings as they are now, or None if they're incomplete."""
@@ -375,7 +393,8 @@ class Downloads:
 
         Returns:
             Dict with 'success' and 'message' - and 'later', True, once it's requested,
-            as nothing is said until SoulSync has it ("X requested."), or 'ask_first',
+            as nothing is said until SoulSync has it ("X requested.") and the message,
+            "Asked SoulSync for X." and ON_ITS_WAY, is only for Claude; or 'ask_first',
             the request on a yes, when it's offered: Navidrome has only a clean version
             of it, or it wasn't asked for in words.
         """
@@ -436,8 +455,8 @@ class Downloads:
         if not self.start(wanted, satellite):
             # Asked for elsewhere since it was checked.
             return already
-        # Kept in Claude's history; "X requested." is said once SoulSync has it.
-        return {"success": True, "message": f"Asked SoulSync for {wanted.name}.", "later": True}
+        # Kept in Claude's history as its call's answer; "X requested." is said once SoulSync has it.
+        return {"success": True, "message": f"Asked SoulSync for {wanted.name}. {ON_ITS_WAY}", "later": True}
 
     def _is_waiting(self, wanted: Wanted) -> bool:
         """Whether the same request is already waiting."""
@@ -498,6 +517,7 @@ class Downloads:
             if wanted.key in self._waiting:
                 return False
             self._waiting[wanted.key] = wanted
+            self._asked_at[wanted.key] = self._now()
         threading.Thread(target=self._watch, args=(wanted, satellite), daemon=True, name="download").start()
         return True
 
@@ -505,6 +525,25 @@ class Downloads:
         """The names of the requests waiting, in the order they were asked for."""
         with self._lock:
             return [wanted.name for wanted in self._waiting.values()]
+
+    def describe_waiting(self) -> str:
+        """
+        What's waiting, for Claude to answer "what's downloading?" from: each request Nova
+        is still watching for, named as it was asked for, with how long ago that was -
+        "Fashion Killa by A$AP Rocky, asked for 2 minutes ago." Only what Nova watches:
+        SoulSync's own queue isn't asked, so anything it carries on with once Nova has
+        given up isn't here.
+
+        Returns:
+            A sentence for each request waiting, in the order they were asked for - or
+            NOTHING_WAITING.
+        """
+        with self._lock:
+            now = self._now()
+            waiting = [(wanted.name, now - self._asked_at[key]) for key, wanted in self._waiting.items()]
+        if not waiting:
+            return NOTHING_WAITING
+        return " ".join(f"{name}, {_asked_ago(seconds)}." for name, seconds in waiting)
 
     def stop(self):
         """
@@ -515,6 +554,7 @@ class Downloads:
         with self._lock:
             forgotten = [wanted.name for wanted in self._waiting.values()]
             self._waiting.clear()
+            self._asked_at.clear()
             self._stopping.set()
         if forgotten:
             logger.warning(f"Forgot {len(forgotten)} download{'' if len(forgotten) == 1 else 's'} still waiting, "
@@ -547,6 +587,7 @@ class Downloads:
             with self._lock:
                 if self._waiting.get(wanted.key) is wanted:
                     del self._waiting[wanted.key]
+                    del self._asked_at[wanted.key]
 
     def _follow(self, wanted: Wanted, satellite: Optional[str], named: List[Wanted]) -> str:
         """

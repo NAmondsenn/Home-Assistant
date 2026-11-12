@@ -471,10 +471,12 @@ class ActionExecutor:
 
     @tool(
         "Download a song or an album the user hasn't got yet, for 'download X', 'get me X' or "
-        "'download the album X by Y'. Correct obvious mis-transcriptions, and give it as 'title by "
-        "artist' when you know the artist. Pass the title as the user said it: never add 'live', "
-        "'remix' or any other version unless they named it. For everything by an artist, call it "
-        "with search_type 'artist' - it explains it can't.",
+        "'download the album X by Y'. It only asks for it: nothing has downloaded when it answers, "
+        "and Nova tells the user itself, usually a few minutes later, once it's in the library or "
+        "couldn't be got - so never say it's downloaded or done. Correct obvious mis-transcriptions, "
+        "and give it as 'title by artist' when you know the artist. Pass the title as the user said "
+        "it: never add 'live', 'remix' or any other version unless they named it. For everything by "
+        "an artist, call it with search_type 'artist' - it explains it can't.",
         needs="downloads",
         query={"type": "string", "description": "What to download, spelled correctly, e.g. 'Gooba by 6ix9ine'."},
         search_type={
@@ -514,6 +516,18 @@ class ActionExecutor:
     )
     def offer_download(self, query: Optional[str] = None, search_type: Optional[str] = None):
         return self.downloads.download(query, search_type, self.satellite, asked=False)
+
+    # Only ever read, by Claude, to answer from - see Downloads.describe_waiting.
+    @tool(
+        "Read which downloads the user asked for are still on their way, for 'what's downloading?', "
+        "'are you downloading anything?' or 'has my song downloaded yet?'. You get each one Nova is "
+        "still waiting for, with how long ago it was asked for, to reply from. One which has landed "
+        "or couldn't be got isn't there: Nova has already told the user which.",
+        needs="downloads",
+        reads=True,
+    )
+    def downloads_waiting(self):
+        return {"success": True, "message": self.downloads.describe_waiting()}
 
     @tool(
         "Pause, skip, go back a track, start the current track again, or report what is "
