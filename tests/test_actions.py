@@ -13,7 +13,7 @@ import requests
 from voice_assistant import volume as volume_module
 from voice_assistant.actions import NOT_A_COMMAND, Action, ActionExecutor, ActionResult, confirm
 from voice_assistant.batteries import Battery
-from voice_assistant.downloads import Downloads, Wanted
+from voice_assistant.downloads import ON_ITS_WAY, Downloads, Wanted
 from voice_assistant.volume import VolumeControl
 
 
@@ -1420,9 +1420,6 @@ def downloads(make_config, monkeypatch):
 
 GOOBA_PLAYED = Action("play_music", {"query": "Gooba by 6ix9ine", "search_type": "track"})
 
-# What Claude is told after "Asked SoulSync for X." - never said, as the outcome is said later.
-ON_ITS_WAY = "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it."
-
 
 def test_play_offers_a_download_for_something_navidrome_hasnt_got(make_executor, downloads):
     player = FakeNavidromePlayer(missing=True)
@@ -1489,7 +1486,7 @@ def test_a_download_is_asked_for_from_the_satellite_and_said_later(make_executor
                                      from_model=True))
 
     assert (result.ok, result.say, result.confirm) == (
-        True, f"Asked SoulSync for Rumours by Fleetwood Mac. {ON_ITS_WAY}", "later")
+        True, f"Asked SoulSync for Rumours by Fleetwood Mac. {ON_ITS_WAY['album']}", "later")
     assert downloads.started == [(Wanted("Rumours", "Fleetwood Mac", "album"), "kitchen")]
     # Nothing said now, nor the model's "Okay." in its place: "Rumours by Fleetwood Mac requested." comes later.
     assert confirm([result], fallback="Okay.") == ([], [])
@@ -1506,7 +1503,8 @@ def test_only_the_users_yes_can_request_without_checking(make_executor, download
 
     # The yes, which only the conversation gives.
     result = executor.execute(Action("request_download", {"query": "Gooba", "search_type": "track"}))
-    assert (result.ok, result.say, result.confirm) == (True, f"Asked SoulSync for Gooba. {ON_ITS_WAY}", "later")
+    assert (result.ok, result.say, result.confirm) == (
+        True, f"Asked SoulSync for Gooba. {ON_ITS_WAY['track']}", "later")
     assert downloads.started == [(Wanted("Gooba", None, "track"), "kitchen")]
 
 

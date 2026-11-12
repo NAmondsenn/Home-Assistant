@@ -177,8 +177,8 @@ class Conversation:
                 result = self._run([Action(asked_first.tool, asked_first.params)])[0] if answer else None
                 said = result.say if result is not None else "Okay, I'll leave it."
                 logger.info(f"{asked_first.tool} {'run' if answer else 'not run'} on the user's answer")
-                # Kept for Claude even when nothing's said now - "Asked SoulSync for Gooba." -
-                # as the API refuses an exchange with no reply.
+                # Kept for Claude even when nothing's said now - "Asked SoulSync for Gooba. It
+                # usually takes a few minutes..." - as the API refuses an exchange with no reply.
                 self.llm.remember(text, said)
                 if result is not None and result.ok and result.confirm == "later":
                     # "Gooba requested." comes once SoulSync has it.

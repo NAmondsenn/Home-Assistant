@@ -521,8 +521,8 @@ class ActionExecutor:
     @tool(
         "Read which downloads the user asked for are still on their way, for 'what's downloading?', "
         "'are you downloading anything?' or 'has my song downloaded yet?'. You get each one Nova is "
-        "still waiting for, with how long ago it was asked for, to reply from. One which has landed "
-        "or couldn't be got isn't there: Nova has already told the user which.",
+        "still waiting for, with how long ago it was asked for, to reply from. One isn't there once it "
+        "has landed, couldn't be got, or Nova stopped watching for it.",
         needs="downloads",
         reads=True,
     )

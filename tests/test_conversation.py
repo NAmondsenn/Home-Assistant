@@ -15,7 +15,7 @@ from voice_assistant.actions import Action, ActionExecutor, ActionResult
 from voice_assistant.choices import ChoiceStore
 from voice_assistant.clock import Clock
 from voice_assistant.conversation import LIGHTS_TIMEOUT, Conversation, Reply
-from voice_assistant.downloads import NOT_SET_UP, Downloads
+from voice_assistant.downloads import NOT_SET_UP, ON_ITS_WAY, Downloads
 from voice_assistant.ha_registry import Entry, Snapshot
 from voice_assistant.intents import LocalIntents
 from voice_assistant.llm import LLMHandler
@@ -941,10 +941,6 @@ class HasGooba:
         return [{"id": "1", "title": "Gooba", "artist": "6ix9ine", "album": "Gooba", "explicitStatus": "explicit"}]
 
 
-# What Claude is told after "Asked SoulSync for X." - never said, as the outcome is said later.
-ON_ITS_WAY = "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it."
-
-
 class AskedDownloads(Downloads):
     """
     The real Downloads, noting each request a yes makes - (query, search_type, satellite) -
@@ -1002,7 +998,7 @@ def test_yes_to_a_download_offer_requests_it_and_says_nothing_yet(downloading):
     assert (reply.say, reply.sounds, reply.listen_again) == ("", [], False)
     assert downloads.requested == [("Gooba by 6ix9ine", "track", "kitchen")]
     # Never empty, which the API refuses, and never sent to Claude.
-    assert llm.remembered[-1] == ("yes please", f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY}")
+    assert llm.remembered[-1] == ("yes please", f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY['track']}")
     assert llm.asked == ["play Gooba by 6ix9ine"]
 
 
@@ -1154,7 +1150,7 @@ def test_claude_is_told_a_download_is_only_asked_for(downloading_with_claude):
     conversation.handle("are you downloading any music right now?")
 
     asked_next = llm.client.requests[1]
-    assert _tool_answers(asked_next) == [f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY}"]
+    assert _tool_answers(asked_next) == [f"Asked SoulSync for Gooba by 6ix9ine. {ON_ITS_WAY['track']}"]
     # Claude's own words stay its reply, as the API refuses an empty one.
     assert asked_next["messages"][3] == {"role": "assistant", "content": "Okay."}
 

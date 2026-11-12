@@ -59,8 +59,13 @@ WHAT_TO_DOWNLOAD = "What would you like me to download?"
 
 # Told to Claude after "Asked SoulSync for X.", as what its call did, and never said: the
 # outcome is said later. Told only "Done.", Claude said on 12 November that a download asked
-# for a minute before had finished - it landed five minutes later.
-ON_ITS_WAY = "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it."
+# for a minute before had finished - it landed five minutes later. By what was asked for, as
+# an album takes longer, and is waited for longer.
+ON_ITS_WAY = {
+    "track": "It usually takes a few minutes; Nova will say when it's in the library, or that it couldn't get it.",
+    "album": ("An album takes longer than a song; Nova will say when it's in the library, or how much of it "
+              "came down."),
+}
 
 # Claude's answer to "what's downloading?" when nothing is being watched for.
 NOTHING_WAITING = "Nothing is downloading."
@@ -317,9 +322,11 @@ class Downloads:
         self._wait = wait or self._stopping.wait
         self._lock = threading.Lock()
         # What's waiting, by its key, in the order it was asked for - and when each was
-        # asked for, by the same key, on the clock the time limits use.
+        # asked for, by the same key, on the clock the time limits use, and how each song
+        # is named once SoulSync has found it: "endless by Gunna" for "Endless by Gunner".
         self._waiting: Dict[str, Wanted] = {}
         self._asked_at: Dict[str, float] = {}
+        self._names: Dict[str, str] = {}
 
     def _own_library(self) -> Optional[NavidromeLibrary]:
         """A NavidromeLibrary from the settings as they are now, or None if they're incomplete."""
@@ -394,9 +401,9 @@ class Downloads:
         Returns:
             Dict with 'success' and 'message' - and 'later', True, once it's requested,
             as nothing is said until SoulSync has it ("X requested.") and the message,
-            "Asked SoulSync for X." and ON_ITS_WAY, is only for Claude; or 'ask_first',
-            the request on a yes, when it's offered: Navidrome has only a clean version
-            of it, or it wasn't asked for in words.
+            "Asked SoulSync for X." and ON_ITS_WAY's words for it, is only for Claude;
+            or 'ask_first', the request on a yes, when it's offered: Navidrome has only
+            a clean version of it, or it wasn't asked for in words.
         """
         return self._ask(query, search_type, satellite, look=True, asked=asked)
 
@@ -456,7 +463,8 @@ class Downloads:
             # Asked for elsewhere since it was checked.
             return already
         # Kept in Claude's history as its call's answer; "X requested." is said once SoulSync has it.
-        return {"success": True, "message": f"Asked SoulSync for {wanted.name}. {ON_ITS_WAY}", "later": True}
+        return {"success": True, "message": f"Asked SoulSync for {wanted.name}. {ON_ITS_WAY[wanted.kind]}",
+                "later": True}
 
     def _is_waiting(self, wanted: Wanted) -> bool:
         """Whether the same request is already waiting."""
@@ -529,8 +537,9 @@ class Downloads:
     def describe_waiting(self) -> str:
         """
         What's waiting, for Claude to answer "what's downloading?" from: each request Nova
-        is still watching for, named as it was asked for, with how long ago that was -
-        "Fashion Killa by A$AP Rocky, asked for 2 minutes ago." Only what Nova watches:
+        is still watching for, with how long ago it was asked for - "Fashion Killa by A$AP
+        Rocky, asked for 2 minutes ago." A song is named as it was asked for until SoulSync
+        has found it, then as "X requested." names it. Only what Nova watches:
         SoulSync's own queue isn't asked, so anything it carries on with once Nova has
         given up isn't here.
 
@@ -540,7 +549,8 @@ class Downloads:
         """
         with self._lock:
             now = self._now()
-            waiting = [(wanted.name, now - self._asked_at[key]) for key, wanted in self._waiting.items()]
+            waiting = [(self._names.get(key, wanted.name), now - self._asked_at[key])
+                       for key, wanted in self._waiting.items()]
         if not waiting:
             return NOTHING_WAITING
         return " ".join(f"{name}, {_asked_ago(seconds)}." for name, seconds in waiting)
@@ -555,6 +565,7 @@ class Downloads:
             forgotten = [wanted.name for wanted in self._waiting.values()]
             self._waiting.clear()
             self._asked_at.clear()
+            self._names.clear()
             self._stopping.set()
         if forgotten:
             logger.warning(f"Forgot {len(forgotten)} download{'' if len(forgotten) == 1 else 's'} still waiting, "
@@ -588,6 +599,7 @@ class Downloads:
                 if self._waiting.get(wanted.key) is wanted:
                     del self._waiting[wanted.key]
                     del self._asked_at[wanted.key]
+                    self._names.pop(wanted.key, None)
 
     def _follow(self, wanted: Wanted, satellite: Optional[str], named: List[Wanted]) -> str:
         """
@@ -621,7 +633,9 @@ class Downloads:
             else:
                 request = soulsync.find_song(wanted.title, wanted.artist)
                 sought = Wanted(wanted.title, request.artist, "track")
-                wanted = named[0] = Wanted(request.title, request.artist, "track")
+                found = named[0] = Wanted(request.title, request.artist, "track")
+                self._name_as_found(wanted, found)
+                wanted = found
                 # Looked for again by SoulSync's artist: Navidrome may have Gunna's
                 # "endless" though it had nothing by "Gunner". Had only clean, it's
                 # still asked for, as the explicit one is what's wanted. The same look
@@ -666,6 +680,15 @@ class Downloads:
                 logger.info(f"{why}, so Navidrome is asked to scan")
                 library.start_scan()
         return ""
+
+    def _name_as_found(self, asked: Wanted, found: Wanted):
+        """
+        Names a song waiting as SoulSync found it, for describe_waiting - unless this
+        request is no longer the one waiting, as once Nova has stopped.
+        """
+        with self._lock:
+            if self._waiting.get(asked.key) is asked:
+                self._names[asked.key] = found.name
 
     def _scan_due(self, wanted: Wanted, started: float, done_at: Optional[float], limit: float) -> Optional[str]:
         """
