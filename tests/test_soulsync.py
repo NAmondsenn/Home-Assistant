@@ -271,6 +271,15 @@ def test_a_mix_isnt_picked_unless_its_the_one_asked_for():
     assert pick_track([remix], "Gooba remix", "6ix9ine") is remix
 
 
+def test_a_credit_is_never_read_as_a_version():
+    # Little Mix ends in "mix", and is no mix of the song.
+    with_them = _track("Kiss My (Uh Oh) (with Little Mix)", "Anne-Marie")
+    assert pick_track([with_them], "Kiss My (Uh Oh)", "Anne-Marie") is with_them
+    for credit in ("Gooba (feat. Live Wire)", "Gooba [ft. The Remix Crew]", "Gooba - featuring Acoustic Ladyland"):
+        candidate = _track(credit, "6ix9ine")
+        assert pick_track([candidate], "Gooba", "6ix9ine") is candidate
+
+
 def test_an_original_mix_is_the_song_itself():
     # On an electronic release, the original mix is the original.
     original = _track("Strobe (Original Mix)", "deadmau5")
@@ -317,9 +326,11 @@ def test_the_first_song_which_will_do_is_picked_with_every_word_of_the_title():
     assert pick_track([second, first], "Gooba", None) is second
     longer = _track("Gooba Gooba", "6ix9ine")
     assert pick_track([longer], "Gooba", "6ix9ine") is longer
-    # The title asked for exactly comes first, with an artist asked for or without.
+    # With an artist asked for, their song with exactly the title asked for comes first.
     assert pick_track([longer, first], "Gooba", "6ix9ine") is first
-    assert pick_track([longer, second], "Gooba", None) is second
+    # With only a title, SoulSync's order decides: an exact title further down may be
+    # a cover, or another act's song.
+    assert pick_track([longer, second], "Gooba", None) is longer
     assert pick_track([_track("Goo", "6ix9ine")], "Gooba", "6ix9ine") is None
 
 

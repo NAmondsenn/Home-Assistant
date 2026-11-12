@@ -384,7 +384,7 @@ def test_a_song_is_found_however_its_import_tagged_it(watching, clock, said):
     assert clock.said_at[-1] == POLL_EVERY
 
 
-def test_a_song_navidrome_has_under_the_name_soulsync_found_isnt_requested(watching, clock, said):
+def test_a_song_navidrome_has_by_the_title_asked_for_and_soulsyncs_artist_isnt_requested(watching, clock, said):
     soulsync = FakeSoulSync(song=ENDLESS_FOUND)
     downloads = watching(soulsync, FakeLibrary(clock, songs=[[ENDLESS_CLEAN, ENDLESS]], names=ENDLESS_NAMES))
 
@@ -393,7 +393,7 @@ def test_a_song_navidrome_has_under_the_name_soulsync_found_isnt_requested(watch
     assert soulsync.requested == [] and clock.time == 0
 
 
-def test_a_song_navidrome_has_only_clean_under_the_name_soulsync_found_is_requested(watching, clock, said):
+def test_a_song_had_only_clean_by_the_title_asked_for_and_soulsyncs_artist_is_requested(watching, clock, said):
     # And the clean copy it had isn't taken for the download.
     soulsync = FakeSoulSync(song=ENDLESS_FOUND)
     library = FakeLibrary(clock, songs=[[ENDLESS_CLEAN], [ENDLESS_CLEAN], [ENDLESS_CLEAN, ENDLESS]],

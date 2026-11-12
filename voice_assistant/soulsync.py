@@ -76,6 +76,10 @@ SONG_VERSIONS = OTHER_VERSIONS + ("demo", "unplugged")
 # release, "Strobe (Original Mix)" is the original.
 ORIGINALS = ("original mix", "original version")
 
+# How a part which credits another artist starts, once normalised - never a version,
+# whatever the artist is called: "(with Little Mix)", "(feat. Live Wire)".
+CREDITS = ("feat ", "ft ", "featuring ", "with ")
+
 # How alike an artist's name must be to the one asked for (difflib's ratio, from 0 to
 # 1) to be taken for a mishearing of it - and then only for exactly the title asked
 # for. Speech to text heard Gunna as "Gunner", which is 0.73; Mac Miller is 0.26 from
@@ -266,7 +270,8 @@ def _another_version(parts: List[str], title: str) -> bool:
     "Extended Mix" and "Club Mix" do - which the title asked doesn't name. A remix is
     a remix by any name, so "remix" asked for takes "(Made Up Remix)", but a mix has to
     be named as it is: "Blue Monday extended mix" isn't its club mix. An original mix,
-    or an original version, is no other version at all - see ORIGINALS.
+    or an original version, is no other version at all - see ORIGINALS - and nor is
+    a credit, however its artist is called - see CREDITS.
 
     Args:
         parts: The bracketed and dashed parts of the song's name and its album's.
@@ -274,7 +279,7 @@ def _another_version(parts: List[str], title: str) -> bool:
     """
     for part in parts:
         words = normalise(part)
-        if words in ORIGINALS:
+        if words in ORIGINALS or words.startswith(CREDITS):
             continue
         versions = [version for version in SONG_VERSIONS if _names(words, version)]
         if not versions and words.endswith("mix"):
@@ -293,11 +298,13 @@ def pick_track(candidates: List[Dict], title: str, artist: Optional[str]) -> Opt
     of their name, as an album is - or, with exactly the title asked for, by a name
     spelt closely like it, as speech to text heard Gunna as "Gunner".
 
-    Of those, it's taken in passes, the first of the earliest in SoulSync's order of its
-    best guesses: the artist's own with exactly the title, then theirs with more words
-    to it, then a close spelling. So Fleetwood Mac's own "Dreams" is taken over
-    "Fleetwood Bac"'s listed above it, and Gunna's "endless" over his "Endless Love".
-    Downloaded, a song nobody asked for would be in the library for good.
+    Of those, with only a title asked for, the first in SoulSync's order of its best
+    guesses is taken: an exact title further down may be a cover, or another act's
+    song. With an artist, it's taken in passes, the first of the earliest in SoulSync's
+    order: the artist's own with exactly the title, then theirs with more words to it,
+    then a close spelling. So Fleetwood Mac's own "Dreams" is taken over "Fleetwood
+    Bac"'s listed above it, and Gunna's "endless" over his "Endless Love". Downloaded,
+    a song nobody asked for would be in the library for good.
 
     Args:
         candidates: Songs as SoulSync's search lists them, each with its name,
@@ -319,11 +326,13 @@ def pick_track(candidates: List[Dict], title: str, artist: Optional[str]) -> Opt
         # As navidrome reads a track in the library: its title or its album's naming a clean version.
         if is_clean({"title": name, "album": album}):
             continue
+        if not artist:
+            return candidate
         # Each artist on their own, and all of them together, as pick_album has it.
         names = _artists(candidate)
         names += [" ".join(names)] if len(names) > 1 else []
-        theirs = not artist or any(artist_likeness(found, artist) >= 2 for found in names)
-        misheard = bool(artist) and any(_spelt_like(found, artist) for found in names)
+        theirs = any(artist_likeness(found, artist) >= 2 for found in names)
+        misheard = any(_spelt_like(found, artist) for found in names)
         usable.append((candidate, title_score == 3, theirs, misheard))
     # A close spelling only ever with exactly the title, so a guess at the artist and a
     # guess at the title never make a song nobody asked for.
@@ -467,7 +476,7 @@ class SoulSync:
         """
         Finds the song asked for: searches SoulSync for it, and takes the one
         pick_track chooses. Nothing is requested yet - see request_song - so Navidrome
-        can be looked in again under the name SoulSync found it by.
+        can be looked in again by the title asked for and SoulSync's artist.
 
         Args:
             title: The song's title as asked for.
