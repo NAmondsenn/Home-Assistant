@@ -271,6 +271,14 @@ def test_a_mix_isnt_picked_unless_its_the_one_asked_for():
     assert pick_track([remix], "Gooba remix", "6ix9ine") is remix
 
 
+def test_an_original_mix_is_the_song_itself():
+    # On an electronic release, the original mix is the original.
+    original = _track("Strobe (Original Mix)", "deadmau5")
+    assert pick_track([_track("Strobe (Club Mix)", "deadmau5"), original], "Strobe", "deadmau5") is original
+    version = _track("Strobe - Original Version", "deadmau5")
+    assert pick_track([version], "Strobe", "deadmau5") is version
+
+
 @pytest.mark.parametrize("name", ["Gooba (Remix)", "Gooba - Acoustic", "Gooba [Instrumental]", "Gooba (Sped Up)",
                                   "Gooba (Slowed)", "Gooba (Karaoke Version)", "Gooba - Live at Wembley",
                                   "Gooba (Extended Mix)", "Gooba - Club Mix", "Gooba (Megamix)", "Gooba (Unplugged)"])

@@ -72,6 +72,10 @@ OTHER_VERSIONS = tuple(version for version in VERSIONS if version not in CLEAN_V
 # _another_version. Only for picking: navidrome.VERSIONS, which "play" uses, is as it was.
 SONG_VERSIONS = OTHER_VERSIONS + ("demo", "unplugged")
 
+# The parts which name the song itself, not another version of it: on an electronic
+# release, "Strobe (Original Mix)" is the original.
+ORIGINALS = ("original mix", "original version")
+
 # How alike an artist's name must be to the one asked for (difflib's ratio, from 0 to
 # 1) to be taken for a mishearing of it - and then only for exactly the title asked
 # for. Speech to text heard Gunna as "Gunner", which is 0.73; Mac Miller is 0.26 from
@@ -261,7 +265,8 @@ def _another_version(parts: List[str], title: str) -> bool:
     the one asked for: one of SONG_VERSIONS, or a mix - a part ending in "mix", as
     "Extended Mix" and "Club Mix" do - which the title asked doesn't name. A remix is
     a remix by any name, so "remix" asked for takes "(Made Up Remix)", but a mix has to
-    be named as it is: "Blue Monday extended mix" isn't its club mix.
+    be named as it is: "Blue Monday extended mix" isn't its club mix. An original mix,
+    or an original version, is no other version at all - see ORIGINALS.
 
     Args:
         parts: The bracketed and dashed parts of the song's name and its album's.
@@ -269,6 +274,8 @@ def _another_version(parts: List[str], title: str) -> bool:
     """
     for part in parts:
         words = normalise(part)
+        if words in ORIGINALS:
+            continue
         versions = [version for version in SONG_VERSIONS if _names(words, version)]
         if not versions and words.endswith("mix"):
             versions = [words]
