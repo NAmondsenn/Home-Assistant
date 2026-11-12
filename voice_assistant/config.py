@@ -79,6 +79,15 @@ LIMITS: Dict[Tuple[str, str], Limit] = {
     ("settings_page", "proxy_port"): Limit("number", 0, 65535, True),
     # 0 is the clock displays' server switched off.
     ("display", "port"): Limit("number", 0, 65535, True),
+    # 0 is no spending alert, and above 100 pounds a day the alert would never be heard.
+    ("usage", "daily_limit"): Limit("number", 0, 100),
+    # Nothing near 0, and not 10 pounds to a dollar either: a number outside this is a slip,
+    # and every pound shown on the dashboard would be wrong by it.
+    ("usage", "pounds_per_dollar"): Limit("number", 0.1, 10),
+    # Dollars per million tokens, and per 1,000 searches. Claude's cost nothing like 1,000.
+    ("usage", "input_price"): Limit("number", 0, 1000),
+    ("usage", "output_price"): Limit("number", 0, 1000),
+    ("usage", "search_price"): Limit("number", 0, 1000),
 }
 
 _TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")

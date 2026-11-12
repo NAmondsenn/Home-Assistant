@@ -53,6 +53,8 @@ from voice_assistant.satellite_passwords import SatellitePasswords, name_problem
 from voice_assistant.session import Session
 from voice_assistant.settings_page import SettingsPage
 from voice_assistant.text_to_speech import TextToSpeech
+from voice_assistant.usage import UsageLog
+from voice_assistant.usage_device import UsageDevice
 from voice_assistant.weather import Weather
 
 logger = logging.getLogger(__name__)
@@ -317,6 +319,16 @@ class Brain:
         ntfy_settings = config.section("ntfy")
         self._night = Ntfy("", quiet_from=ntfy_settings.get("quiet_from", "23:00"),
                            quiet_until=ntfy_settings.get("quiet_until", "07:00"))
+
+        # What each call to Claude cost, kept so the AI dashboard in Home Assistant can show it
+        # and the phone can be told when a day's spending passes the limit - see usage.py. The
+        # prices and the limit are read from the settings at each call, so ones changed on the
+        # settings page are used from the next.
+        self.usage = UsageLog(os.path.join(paths.DATA_DIR, "usage.jsonl"), lambda: self.config.section("usage"),
+                              on_over_limit=self._spending_alert)
+        # The brain's own device in Home Assistant, showing that log - or None with no MQTT broker
+        # set. Started by run().
+        self.usage_device = UsageDevice.from_config(config, os.getenv("MQTT_PASSWORD"), self.usage)
 
         # Home Assistant, the brain's own client - for watching the batteries, and what
         # the satellites' sessions ask of it besides is theirs - or None until it's set
@@ -1335,6 +1347,25 @@ class Brain:
             # download's watch with a traceback instead.
             logger.exception(f"A download message couldn't be sent to the phone: {message}")
 
+    def _spending_alert(self, today: float, limit: float):
+        """
+        Tells the user's phone that today's spending on Claude has passed the limit, once
+        a day - the log calls this as the call which takes it over is recorded. The one
+        sentence says how much and the limit, and nothing which was said to Nova.
+
+        Args:
+            today: Pounds spent today.
+            limit: The daily limit, in pounds.
+        """
+        # Read once, so a topic cleared on the settings page meanwhile is never sent to as "".
+        phone = self.ntfy.phone if self.ntfy else ""
+        if not phone:
+            # With no ntfy, or no topic for the phone, there's nowhere to say it: the dashboard still shows it.
+            logger.info(f"Spending passed the limit (£{today:.2f}, over £{limit:.2f}), with no phone topic to tell")
+            return
+        self.ntfy.send_soon(phone, f"{self.name} has spent £{today:.2f} on Claude today, over your £{limit:.2f} limit.",
+                            title=f"{self.name} spending")
+
     def _unanswered(self, timer, kind, satellite=None):
         """
         Sends a reminder nobody answered to the user's phone, once it's stopped ringing.
@@ -1527,6 +1558,8 @@ class Brain:
         # Alerts are only said from now on, once there's everything to say them with.
         if self.ntfy:
             self.ntfy.start()
+        if self.usage_device:
+            self.usage_device.start()
         if self.settings_page:
             self.settings_page.start()
         if self.display_server and self.display_server.start():
@@ -1598,7 +1631,7 @@ class Brain:
         """
         Closes everything down in order - the clock, so nothing else starts ringing,
         and the downloads, so nothing more is said of them, then the batteries, what's
-        playing, ntfy, the settings page and the clock displays' server and feed, then
+        playing, the usage device, ntfy, the settings page and the clock displays' server and feed, then
         every satellite's session, so its device in Home Assistant and its music stop -
         and then the Piper process kept waiting for the next thing to say.
         """
@@ -1615,6 +1648,8 @@ class Brain:
             self.media.stop()
         if self.registry:
             self.registry.stop()
+        if self.usage_device:
+            self.usage_device.stop()
         if self.ntfy:
             self.ntfy.stop()
         if self.settings_page:

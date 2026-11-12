@@ -149,6 +149,23 @@ web_search:
   enabled: true
   max_uses: 3
 
+# What Nova spends on Claude, shown in Home Assistant's AI dashboard. Each call is
+# costed when it's made, at the prices below, and the log keeps that cost even if a
+# price changes later. All of it is used straight away.
+usage:
+  # In pounds. ntfy's phone topic is told once a day, the first time the day's spending
+  # passes it, in a message saying so and nothing else. 0 switches the alert off.
+  daily_limit: 0.25
+  # Anthropic bills in dollars, and the dashboard shows pounds.
+  pounds_per_dollar: 0.79
+  # Claude's list prices, from the claude-api skill on 12 Nov 2026: Haiku 5.5, which
+  # is llm.model, is $0.10 a million input tokens and $0.50 a million output tokens
+  # for prompts up to 100,000 tokens, and web search is $10 per 1,000 searches. Change
+  # them with llm.model, or when Anthropic does.
+  input_price: 0.10
+  output_price: 0.50
+  search_price: 10.0
+
 voice:
   # How fast Nova speaks, from 0.75 to 1.5. 1.0 is the voice's own pace.
   speed: 1.0

@@ -262,6 +262,12 @@ IN_AND_OUT = {
     ("music", "song_download_minutes"): ([1, 10, 60], [0, 61, 10.5, True]),
     ("music", "album_download_minutes"): ([1, 30, 240], [0, 241, 30.5, True]),
     ("display", "port"): ([0, 8766, 65535], [-1, 70000, 8766.5, True]),
+    # 0 is no spending alert.
+    ("usage", "daily_limit"): ([0, 0.25, 100], [-1, -0.01, 100.5, True]),
+    ("usage", "pounds_per_dollar"): ([0.1, 0.79, 10], [0, 0.09, 10.5, True]),
+    ("usage", "input_price"): ([0, 0.1, 1000], [-1, 1001, True]),
+    ("usage", "output_price"): ([0, 0.5, 1000], [-1, 1001, True]),
+    ("usage", "search_price"): ([0, 10, 1000], [-1, 1001, True]),
 }
 
 
@@ -721,3 +727,12 @@ def test_apply_changes_only_what_it_is_given(config_with):
     assert config.section("thresholds") == {"silence_duration": 1.2, "vad_threshold": 0.5}
     assert config.section("music") == {"player": "navidrome"}
     assert config.section("navidrome") == {"url": "http://music.local:4533", "username": "nova"}
+
+
+def test_the_repositorys_config_has_the_usage_settings(tmp_path):
+    usage = Config(path=str(tmp_path / "none.yaml")).section("usage")
+    assert set(usage) == {"daily_limit", "pounds_per_dollar", "input_price", "output_price", "search_price"}
+    # Each is inside its own limit, so the settings page can save what config.yaml starts it with.
+    for name, value in usage.items():
+        assert limit_problem("usage", name, value) is None, name
+    assert limit_problem("usage", "daily_limit", -1) == "should be from 0 to 100"

@@ -1930,6 +1930,36 @@ def test_a_wake_word_confidence_saved_is_sent_to_every_satellite(files, name):
     assert [session.states_sent for session in sessions.values()] == [1, 1]
 
 
+def test_the_spending_alert_and_claudes_prices_are_on_the_page_and_used_straight_away(files):
+    page = _page()
+    shown = {setting["key"]: setting for setting in page.state()["settings"]}
+    labels = {
+        "usage.daily_limit": "Daily spending alert, in pounds",
+        "usage.pounds_per_dollar": "Pounds per dollar",
+        "usage.input_price": "Claude's price per million input tokens, in dollars",
+        "usage.output_price": "per million output tokens",
+        "usage.search_price": "per 1,000 web searches",
+    }
+    for key, label in labels.items():
+        assert shown[key]["label"] == label and shown[key]["used"] == NOW and shown[key]["kind"] == "number", key
+    assert (shown["usage.daily_limit"]["min"], shown["usage.daily_limit"]["max"]) == (0, 100)
+    assert (shown["usage.pounds_per_dollar"]["min"], shown["usage.pounds_per_dollar"]["max"]) == (0.1, 10)
+
+    # A limit below nothing means nothing, so it's refused, and 0 - no alert - is let through.
+    assert page.save_settings({"usage.daily_limit": -1}, LOGIN) == {
+        "success": False, "message": "Daily spending alert, in pounds should be from 0 to 100."}
+    assert not (files / "config.yaml").exists()
+    assert page.save_settings({"usage.daily_limit": 0}, LOGIN)["success"]
+
+
+def test_a_spending_alert_saved_is_used_with_no_restart(files):
+    page, running = _running(files)
+    result = page.save_settings({"usage.daily_limit": 0.5, "usage.input_price": 0.2}, LOGIN)
+
+    assert result == {"success": True, "message": "Saved. It's used straight away.", "restart_needed": False}
+    assert (running.section("usage")["daily_limit"], running.section("usage")["input_price"]) == (0.5, 0.2)
+
+
 def test_the_voice_check_is_on_the_page_from_0_to_0_95(files):
     label = "How sure Nova must be it's your voice (0 for no check)"
     page = _page()

@@ -125,6 +125,11 @@ EDITABLE = [
     ("mqtt", "port", "Its port", "restart"),
     ("mqtt", "username", "Nova's MQTT user", "restart"),
     ("display", "port", "Port the clock displays connect on", "restart"),
+    ("usage", "daily_limit", "Daily spending alert, in pounds", "now"),
+    ("usage", "pounds_per_dollar", "Pounds per dollar", "now"),
+    ("usage", "input_price", "Claude's price per million input tokens, in dollars", "now"),
+    ("usage", "output_price", "per million output tokens", "now"),
+    ("usage", "search_price", "per 1,000 web searches", "now"),
 ]
 # How the page says which each is.
 NOW = "Used straight away"

@@ -45,6 +45,8 @@ from voice_assistant.ntfy import Alert
 from voice_assistant.recording import RATE
 from voice_assistant.remote import RemoteSatellite
 from voice_assistant.satellite_passwords import SatellitePasswords
+from voice_assistant.usage import UsageLog
+from voice_assistant.usage_device import UsageDevice
 from voice_assistant.vad import LoudnessDetector
 from voice_assistant.volume import VolumeControl
 
@@ -2799,3 +2801,115 @@ def test_an_empty_fallback_model_switches_the_second_model_off(loading, make_con
     with caplog.at_level(logging.WARNING, logger="voice_assistant.brain"):
         assert brain_module._speech_to_text(config, FakePiper()).fallback is None
     assert not [record for record in caplog.records if record.levelno == logging.WARNING]
+
+
+# What Nova spends on Claude
+
+# Prices which make the sums easy: a million output tokens is $5, so 60,000 of them is $0.30.
+USAGE = {"daily_limit": 0.25, "pounds_per_dollar": 1.0, "input_price": 1.0, "output_price": 5.0, "search_price": 10.0}
+
+
+def spend(brain, dollars):
+    """Records one call to Claude which cost this many dollars at USAGE's prices."""
+    usage = SimpleNamespace(input_tokens=0, output_tokens=round(dollars / 5 * 1_000_000), cache_read_input_tokens=0,
+                            cache_creation_input_tokens=0, cache_creation=None, server_tool_use=None)
+    brain.usage.record(SimpleNamespace(usage=usage, content=[]), "claude-haiku-5-5")
+
+
+def test_the_brain_keeps_a_usage_log_in_its_data_folder(make_brain, tmp_path):
+    brain = make_brain(usage=USAGE)
+    assert isinstance(brain.usage, UsageLog)
+    spend(brain, 0.10)
+    assert (tmp_path / "usage.jsonl").exists()
+
+
+def test_the_usage_log_reads_the_settings_as_they_are_now(make_brain):
+    brain = make_brain(usage=USAGE)
+    assert brain.usage.summary()["daily_limit_pounds"] == 0.25
+    # Straight away, with no restart - the next summary is worked out on the new limit.
+    assert brain.apply_settings({("usage", "daily_limit"): 1.5}) == []
+    assert brain.usage.summary()["daily_limit_pounds"] == 1.5
+
+
+def test_a_prices_change_is_used_by_the_next_call_recorded(make_brain):
+    brain = make_brain(usage=USAGE)
+    spend(brain, 0.10)
+    brain.apply_settings({("usage", "pounds_per_dollar"): 0.5})
+    assert brain.usage.summary()["today_pounds"] == 0.05
+
+
+def test_passing_the_daily_limit_tells_the_phone_once(make_brain):
+    brain = make_brain(usage=USAGE)
+    brain.ntfy = FakeNtfy()
+    spend(brain, 0.20)
+    assert brain.ntfy.sent == []
+    spend(brain, 0.10)
+    assert brain.ntfy.sent == [("phone", "Nova spending", "Nova has spent £0.30 on Claude today, over your £0.25 limit.")]
+    spend(brain, 0.10)
+    assert len(brain.ntfy.sent) == 1
+
+
+def test_a_limit_changed_on_the_page_is_the_one_the_alert_uses(make_brain):
+    brain = make_brain(usage=USAGE)
+    brain.ntfy = FakeNtfy()
+    brain.apply_settings({("usage", "daily_limit"): 1})
+    spend(brain, 0.30)
+    assert brain.ntfy.sent == []
+    brain.apply_settings({("usage", "daily_limit"): 0.4})
+    spend(brain, 0.20)
+    assert brain.ntfy.sent == [("phone", "Nova spending", "Nova has spent £0.50 on Claude today, over your £0.40 limit.")]
+
+
+def test_with_no_limit_nothing_is_sent(make_brain):
+    brain = make_brain(usage={**USAGE, "daily_limit": 0})
+    brain.ntfy = FakeNtfy()
+    spend(brain, 5)
+    assert brain.ntfy.sent == []
+
+
+def test_with_no_ntfy_the_spending_alert_goes_nowhere_and_raises_nothing(make_brain, caplog):
+    brain = make_brain(usage=USAGE)
+    assert brain.ntfy is None
+    brain._spending_alert(0.30, 0.25)
+    spend(brain, 0.30)
+    assert brain.usage.summary()["today_pounds"] == 0.30
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_with_no_phone_topic_the_spending_alert_goes_nowhere_and_raises_nothing(make_brain, caplog):
+    brain = make_brain(usage=USAGE)
+    brain.ntfy = FakeNtfy()
+    brain.ntfy.phone = ""
+    spend(brain, 0.30)
+    assert brain.ntfy.sent == []
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_without_an_mqtt_host_there_is_no_usage_device(make_brain):
+    assert make_brain(usage=USAGE).usage_device is None
+
+
+def test_with_an_mqtt_host_the_usage_device_shows_the_brains_log(make_brain):
+    brain = make_brain(usage=USAGE, mqtt={"host": "10.10.0.50", "port": 1883, "username": "nova"})
+    assert isinstance(brain.usage_device, UsageDevice) and brain.usage_device.usage is brain.usage
+
+
+class Device:
+    """Stands in for the usage device, noting that it was started and stopped."""
+
+    def __init__(self, closed):
+        self.closed = closed
+
+    def start(self):
+        self.closed.append("usage started")
+
+    def stop(self):
+        self.closed.append("usage stopped")
+
+
+def test_the_usage_device_starts_and_stops_with_the_brain(stopping):
+    stopping.usage_device = Device(stopping.closed)
+    stopping.serve = stopping.shutdown
+    with pytest.raises(SystemExit):
+        stopping.run()
+    assert stopping.closed == ["usage started", "clock", "usage stopped", "bedroom", "tts"]
