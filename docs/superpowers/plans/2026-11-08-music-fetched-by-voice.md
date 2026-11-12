@@ -660,3 +660,9 @@ Run: `git diff -U0 -- README.md docs/ | grep -nP '\x{2014}'`
 Expected: nothing - no em dashes. Each sentence quoted matches Global Constraints word for word.
 
 - [ ] **Step 3: Commit** - "Say how to fetch music by voice, and how to check it"
+
+---
+
+### Task 9 (added 12 Nov): songs through SoulSync's wishlist
+
+Found at the hand check: SoulSync's `/api/v1/request` downloads a song but never imports it into the library, so it never reaches Navidrome. Songs move to the wishlist route albums already use: track search, pick (title match, no other version or clean one, artist by likeness or a close spelling when the title matches exactly), wishlist add with the album as `{"name": ...}`, wishlist process; the watch then goes by Navidrome under the picked name. Full brief: `.superpowers/sdd/2026-11-08-music-fetched-by-voice/task-9-brief.md` (git-ignored). Approved by the user 12 Nov.

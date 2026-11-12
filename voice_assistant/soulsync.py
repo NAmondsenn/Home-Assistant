@@ -5,23 +5,26 @@ Asks SoulSync for a song or an album Navidrome hasn't got, and how it's getting 
 SoulSync finds music on Soulseek, tags it and files it straight into the folder
 Navidrome scans, so a download needs no moving. Nothing here plays or deletes a file.
 
-A song goes through SoulSync's REST API: a request, then its progress by the id
-SoulSync gave it. An album goes through its MCP server, since the REST API has no
-album request: find_album searches for it, request_album puts its tracks on
-SoulSync's wishlist, and process_wishlist starts them downloading now rather than at
-the wishlist's next run. SoulSync gives no id to follow an album by, so whether one
-has come down is for Navidrome to say.
+Both go on SoulSync's wishlist, which is what files a download into the library -
+its REST API's own song request only downloads, and leaves the file where it landed.
+A song goes through the REST API: a search for the track, the one pick_track chooses
+put on the wishlist, and the wishlist started. An album goes through its MCP server,
+since the REST API has no album request: find_album searches for it, request_album
+puts its tracks on the wishlist, and process_wishlist starts them downloading now
+rather than at the wishlist's next run. SoulSync gives no id to follow either by, so
+whether one has come down is for Navidrome to say.
 """
 
+import difflib
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote
 
 import requests
 
 from voice_assistant import network
-from voice_assistant.navidrome import BRACKETED, CLEAN_VERSIONS, DASH, VERSIONS, artist_likeness, likeness, normalise
+from voice_assistant.navidrome import (BRACKETED, CLEAN_VERSIONS, DASH, VERSIONS, artist_likeness, is_clean, likeness,
+                                       normalise)
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -29,9 +32,21 @@ logger = logging.getLogger(__name__)
 # Seconds to wait for SoulSync's REST API, which only notes a request and answers.
 REQUEST_TIMEOUT = 10
 
+# Seconds to wait for its search for a song, which asks Deezer, beyond the local
+# network, before it answers - as find_album asks MusicBrainz.
+SEARCH_TIMEOUT = 30
+
 # Seconds to wait for its MCP tools: find_album searches MusicBrainz, beyond the
 # local network, before it answers.
 MCP_TIMEOUT = 30
+
+# How many songs a search is asked for: enough for pick_track to find the one asked
+# for past the live and demo versions. "Gary Numan - M.E." found the studio one,
+# then live and demo ones.
+SEARCH_LIMIT = 10
+
+# Why a song is on SoulSync's wishlist, as its own page shows.
+WISHLIST_REASON = "Asked for by voice through Nova"
 
 # How many albums find_album is asked for - the most it takes - so pick_album has
 # every edition to choose from, past the clean and deluxe ones. A popular album
@@ -51,9 +66,25 @@ CLEAN_EDITION_WORDS = CLEAN_VERSIONS
 # The versions of an album which aren't the one asked for unless they're named.
 OTHER_VERSIONS = tuple(version for version in VERSIONS if version not in CLEAN_VERSIONS)
 
-# A song request's states before it ends. "downloading" can also be its last, with
-# timed_out set, when SoulSync stops following a download that may still be running.
-WAITING_STATES = ("queued", "searching", "downloading")
+# The versions of a song which aren't the one asked for unless they're named: an
+# album's, a demo - a search for M.E. found "M.E. (Demo Version)" as well as the
+# studio one - and an unplugged one. A part ending in "mix" is one too: see
+# _another_version. Only for picking: navidrome.VERSIONS, which "play" uses, is as it was.
+SONG_VERSIONS = OTHER_VERSIONS + ("demo", "unplugged")
+
+# The parts which name the song itself, not another version of it: on an electronic
+# release, "Strobe (Original Mix)" is the original.
+ORIGINALS = ("original mix", "original version")
+
+# How a part which credits another artist starts, once normalised - never a version,
+# whatever the artist is called: "(with Little Mix)", "(feat. Live Wire)".
+CREDITS = ("feat ", "ft ", "featuring ", "with ")
+
+# How alike an artist's name must be to the one asked for (difflib's ratio, from 0 to
+# 1) to be taken for a mishearing of it - and then only for exactly the title asked
+# for. Speech to text heard Gunna as "Gunner", which is 0.73; Mac Miller is 0.26 from
+# Fleetwood Mac.
+CLOSE_SPELLING = 0.7
 
 
 class SoulSyncError(Exception):
@@ -75,6 +106,23 @@ class Progress:
 
     state: str
     reason: Optional[str] = None
+
+
+@dataclass
+class SongRequest:
+    """
+    A song SoulSync found for what was asked for.
+
+    Attributes:
+        title: Its title as SoulSync has it - "endless" for "Endless".
+        artist: Its first artist as SoulSync has it - "Gunna" for a misheard
+            "Gunner" - or None if it gave none.
+        track: The track as SoulSync's search found it, for its wishlist.
+    """
+
+    title: str
+    artist: Optional[str]
+    track: Dict
 
 
 @dataclass
@@ -113,20 +161,25 @@ def _names(text: str, words: str) -> bool:
     return f" {words} " in f" {normalise(text)} "
 
 
+def _parts(title: str) -> List[str]:
+    """
+    Each bracketed or dashed part of a title - after a hyphen, an en dash or an em
+    dash alike: "M.E. (Live 79)" -> ["Live 79"]. Each dashed part is one of its own,
+    so a credit can't hide a version after it: "Gooba - feat. X - Live" -> ["feat. X",
+    "Live"].
+    """
+    parts = [text for brackets in BRACKETED.findall(title) for text in brackets if text]
+    return parts + DASH.split(title)[1:]
+
+
 def _edition_notes(candidate: Dict) -> List[str]:
     """
     What says which edition an album find_album found is: its MusicBrainz
     disambiguation, a free note such as "clean, deluxe edition", and each bracketed
-    or dashed part of its title, as version_of finds a track's - after a hyphen, an
-    en dash or an em dash alike. Each is read on its own, so a ")" in the
+    or dashed part of its title. Each is read on its own, so a ")" in the
     disambiguation can't run into the title's brackets.
     """
-    title = candidate.get("title") or ""
-    notes = [text for brackets in BRACKETED.findall(title) for text in brackets if text]
-    dashed = DASH.split(title, 1)
-    if len(dashed) == 2:
-        notes.append(dashed[1])
-    return notes + [str(candidate.get("disambiguation") or "")]
+    return _parts(candidate.get("title") or "") + [str(candidate.get("disambiguation") or "")]
 
 
 def _is_clean_edition(candidate: Dict) -> bool:
@@ -189,6 +242,108 @@ def pick_album(candidates: List[Dict], title: str, artist: Optional[str]) -> Opt
     return max(scored, key=lambda scored_candidate: scored_candidate[0])[1] if scored else None
 
 
+def _name_of(value: Any) -> str:
+    """
+    A name SoulSync gives either as it is or as a dict with a "name" - as an album
+    comes from Deezer as a string, and from other sources as a dict.
+    """
+    if isinstance(value, dict):
+        value = value.get("name")
+    return str(value) if value else ""
+
+
+def _artists(track: Dict) -> List[str]:
+    """The names of a track's artists, as SoulSync's search lists them."""
+    return [name for name in map(_name_of, track.get("artists") or []) if name]
+
+
+def _spelt_like(name: str, artist: str) -> bool:
+    """Whether an artist's name is spelt closely enough like the one asked for to be a mishearing of it."""
+    return difflib.SequenceMatcher(None, normalise(name), normalise(artist)).ratio() >= CLOSE_SPELLING
+
+
+def _another_version(parts: List[str], title: str) -> bool:
+    """
+    Whether a part of a song's name, or of its album's, says it's a version other than
+    the one asked for: one of SONG_VERSIONS, or a mix - a part ending in "mix", as
+    "Extended Mix" and "Club Mix" do - which the title asked doesn't name. A remix is
+    a remix by any name, so "remix" asked for takes "(Made Up Remix)", but a mix has to
+    be named as it is: "Blue Monday extended mix" isn't its club mix. An original mix,
+    or an original version, is no other version at all - see ORIGINALS - and nor is
+    a credit, however its artist is called - see CREDITS.
+
+    Args:
+        parts: The bracketed and dashed parts of the song's name and its album's.
+        title: The song as asked for.
+    """
+    for part in parts:
+        words = normalise(part)
+        if words in ORIGINALS or words.startswith(CREDITS):
+            continue
+        versions = [version for version in SONG_VERSIONS if _names(words, version)]
+        if not versions and words.endswith("mix"):
+            versions = [words]
+        if any(not _names(title, version) for version in versions):
+            return True
+    return False
+
+
+def pick_track(candidates: List[Dict], title: str, artist: Optional[str]) -> Optional[Dict]:
+    """
+    The song SoulSync's search found which is the one asked for. It has every word of
+    the title, and isn't a clean version, nor a live one, a remix, a demo, a mix or the
+    like unless the title asked names it - by its own name or its album's, as a plain
+    "M.E." on a live album is live. Asked for by an artist, it's theirs, with every word
+    of their name, as an album is - or, with exactly the title asked for, by a name
+    spelt closely like it, as speech to text heard Gunna as "Gunner".
+
+    Of those, with only a title asked for, the first in SoulSync's order of its best
+    guesses is taken: an exact title further down may be a cover, or another act's
+    song. With an artist, it's taken in passes, the first of the earliest in SoulSync's
+    order: the artist's own with exactly the title, then theirs with more words to it,
+    then a close spelling. So Fleetwood Mac's own "Dreams" is taken over "Fleetwood
+    Bac"'s listed above it, and Gunna's "endless" over his "Endless Love". Downloaded,
+    a song nobody asked for would be in the library for good.
+
+    Args:
+        candidates: Songs as SoulSync's search lists them, each with its name,
+            artists and album.
+        title: The song as asked for.
+        artist: Its artist, or None if only the title was given, when anyone's will do.
+
+    Returns:
+        One of the candidates, or None if none of them will do.
+    """
+    # Each candidate which will do at all, with whether its title is exactly the one
+    # asked for, whether it's the artist's own, and whether it's by a close spelling.
+    usable = []
+    for candidate in candidates:
+        name, album = _name_of(candidate.get("name")), _name_of(candidate.get("album"))
+        title_score = likeness(name, title)
+        if title_score < 2 or _another_version(_parts(name) + _parts(album), title):
+            continue
+        # As navidrome reads a track in the library: its title or its album's naming a clean version.
+        if is_clean({"title": name, "album": album}):
+            continue
+        if not artist:
+            return candidate
+        # Each artist on their own, and all of them together, as pick_album has it.
+        names = _artists(candidate)
+        names += [" ".join(names)] if len(names) > 1 else []
+        theirs = any(artist_likeness(found, artist) >= 2 for found in names)
+        misheard = any(_spelt_like(found, artist) for found in names)
+        usable.append((candidate, title_score == 3, theirs, misheard))
+    # A close spelling only ever with exactly the title, so a guess at the artist and a
+    # guess at the title never make a song nobody asked for.
+    for will_do in (lambda exact, theirs, misheard: exact and theirs,
+                    lambda exact, theirs, misheard: theirs,
+                    lambda exact, theirs, misheard: exact and misheard):
+        for candidate, exact, theirs, misheard in usable:
+            if will_do(exact, theirs, misheard):
+                return candidate
+    return None
+
+
 class SoulSync:
     """Asks SoulSync for songs and albums, and how they're getting on."""
 
@@ -224,14 +379,14 @@ class SoulSync:
 
     # Talking to SoulSync
 
-    def _send(self, path: str, timeout: float, body: Optional[Dict] = None) -> Tuple[int, Any]:
+    def _send(self, path: str, timeout: float, body: Dict) -> Tuple[int, Any]:
         """
-        One request to SoulSync - a POST of the body, or a GET without one.
+        One request to SoulSync: a POST of the body, as everything Nova asks of it is.
 
         Args:
-            path: Where on SoulSync, e.g. "/api/v1/request".
+            path: Where on SoulSync, e.g. "/api/v1/wishlist".
             timeout: Seconds to wait for its answer.
-            body: The JSON to post, or None to GET.
+            body: The JSON to post.
 
         Returns:
             The status code, and the JSON SoulSync answered with - None if it wasn't JSON.
@@ -244,10 +399,7 @@ class SoulSync:
             # but not with no network at all - see NavidromeLibrary._call.
             if not network.online():
                 raise requests.ConnectionError("No network connection")
-            if body is None:
-                response = self._session.get(f"{self.url}{path}", timeout=timeout)
-            else:
-                response = self._session.post(f"{self.url}{path}", json=body, timeout=timeout)
+            response = self._session.post(f"{self.url}{path}", json=body, timeout=timeout)
         except requests.RequestException as e:
             # Only the kind of error, never the error itself, which can hold the
             # request - and with it the key.
@@ -319,59 +471,72 @@ class SoulSync:
 
     # What the assistant asks for
 
-    def request_song(self, title: str, artist: Optional[str]) -> str:
+    def find_song(self, title: str, artist: Optional[str]) -> SongRequest:
         """
-        Asks SoulSync for a song.
+        Finds the song asked for: searches SoulSync for it, and takes the one
+        pick_track chooses. Nothing is requested yet - see request_song - so Navidrome
+        can be looked in again by the title asked for and SoulSync's artist.
 
         Args:
             title: The song's title as asked for.
             artist: Its artist, or None if only the title was given.
 
         Returns:
-            SoulSync's id for the request, for song_progress.
+            The SongRequest, named as SoulSync has the song.
+
+        Raises:
+            SoulSyncError: If SoulSync couldn't be asked, or found nothing that will do.
+        """
+        status, answer = self._send("/api/v1/search/tracks", SEARCH_TIMEOUT,
+                                    {"query": f"{artist} - {title}" if artist else title, "limit": SEARCH_LIMIT})
+        data = self._read(status, answer).get("data")
+        tracks = data.get("tracks") if isinstance(data, dict) else None
+        tracks = [track for track in tracks if isinstance(track, dict)] if isinstance(tracks, list) else []
+        track = pick_track(tracks, title, artist)
+        if track is None:
+            raise SoulSyncError(NOT_FOUND)
+        artists = _artists(track)
+        return SongRequest(_name_of(track.get("name")), artists[0] if artists else None, track)
+
+    def request_song(self, song: SongRequest):
+        """
+        Asks SoulSync for a song find_song found: puts it on the wishlist, and starts
+        the wishlist, which downloads it, tags it and files it into the library.
+
+        Args:
+            song: The SongRequest find_song gave.
 
         Raises:
             SoulSyncError: If SoulSync couldn't be asked, or refused.
         """
-        body = {"query": f"{artist} - {title}" if artist else title, "title": title}
-        if artist:
-            body["artist"] = artist
-        data = self._read(*self._send("/api/v1/request", REQUEST_TIMEOUT, body)).get("data")
-        request_id = data.get("request_id") if isinstance(data, dict) else None
-        if not request_id:
-            logger.error("SoulSync took a song request without giving it an id")
-            raise SoulSyncError()
-        return str(request_id)
+        track = dict(song.track)
+        if isinstance(track.get("album"), str):
+            # Given Deezer's plain string, SoulSync tagged the album as the song's own
+            # title - M.E.'s as "M.E." rather than The Pleasure Principle.
+            track["album"] = {"name": track["album"]}
+        status, answer = self._send("/api/v1/wishlist", REQUEST_TIMEOUT,
+                                    {"track_data": track, "source_type": "api", "failure_reason": WISHLIST_REASON})
+        name = f"{song.title} by {song.artist}" if song.artist else song.title
+        if status == 409:
+            # Nothing is written, but it's on its way all the same.
+            logger.info(f"{name} is already on SoulSync's wishlist, so it's waited for as it is")
+        else:
+            self._read(status, answer)
+            logger.info(f"SoulSync is getting {name} ({track.get('id')})")
+        try:
+            self._read(*self._send("/api/v1/wishlist/process", REQUEST_TIMEOUT, {}))
+        except SoulSyncError:
+            # It's on the wishlist either way, so it still comes down - only later.
+            logger.warning("SoulSync's wishlist couldn't be started, so the song waits for its next run")
 
-    def song_progress(self, request_id: str) -> Progress:
+    def song_progress(self, request: SongRequest) -> Progress:
         """
-        How a song request is getting on.
+        How a song request is getting on - always "waiting", as for an album: the
+        wishlist gives no request to follow, so the watch goes by Navidrome alone.
 
         Args:
-            request_id: The id request_song gave.
-
-        Returns:
-            Progress "waiting" until SoulSync says it's done or failed. A download
-            SoulSync stopped following, and a request it has cleared away, are
-            "waiting" too, since either may have come down - Navidrome decides.
-
-        Raises:
-            SoulSyncError: If SoulSync couldn't be asked.
+            request: The SongRequest find_song gave.
         """
-        status, answer = self._send(f"/api/v1/request/{quote(request_id, safe='')}", REQUEST_TIMEOUT)
-        if status == 404:
-            return Progress("waiting")
-        data = self._read(status, answer).get("data")
-        data = data if isinstance(data, dict) else {}
-        state = data.get("status")
-        if state == "completed":
-            return Progress("done")
-        if state == "not_found":
-            return Progress("failed", NOT_FOUND)
-        if state == "failed":
-            return Progress("failed", _said(data["error"]) if data.get("error") else None)
-        if state not in WAITING_STATES:
-            logger.warning(f"SoulSync gave a song request a state Nova doesn't know, so it's waited on: {state}")
         return Progress("waiting")
 
     def request_album(self, title: str, artist: Optional[str]) -> AlbumRequest:

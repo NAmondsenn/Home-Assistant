@@ -26,7 +26,7 @@ from voice_assistant import music
 from voice_assistant.actions import Action
 from voice_assistant.navidrome import (BRACKETED, CLEAN_VERSIONS, DASH, NavidromeError, NavidromeLibrary,
                                        _says_version, is_clean, likeness, normalise, split_by)
-from voice_assistant.soulsync import AlbumRequest, Progress, SoulSync, SoulSyncError
+from voice_assistant.soulsync import AlbumRequest, Progress, SongRequest, SoulSync, SoulSyncError
 
 # Logger setup
 logger = logging.getLogger(__name__)
@@ -37,9 +37,9 @@ POLL_EVERY = 15
 
 # Seconds after SoulSync says it's done before Navidrome, still without it, is asked
 # to scan its folders - once. Navidrome finds new files itself, so this is only in
-# case it hasn't. SoulSync never says an album is done, and can leave a song
-# "downloading", so without its word the scan is asked for this long and a poll
-# before the time limit instead, and the last look sees what it found.
+# case it hasn't. SoulSync's wishlist never says a song or album is done, so without
+# its word the scan is asked for this long and a poll before the time limit instead,
+# and the last look sees what it found.
 SCAN_AFTER = 60
 
 NOT_SET_UP = ("Downloading music isn't set up. SoulSync's address goes in Settings, under Music, "
@@ -533,33 +533,67 @@ class Downloads:
         Returns:
             The last message said, or "" if Nova stopped first.
         """
+        # How it's named in what's said - the song SoulSync found, once it has - so
+        # even the answer to something unforeseen names what was requested.
+        named = [wanted]
         try:
-            return self._follow(wanted, satellite)
+            return self._follow(wanted, satellite, named)
         except Exception:
             # Anything unforeseen still ends in an answer, so nobody waits for one
             # which never comes.
-            logger.exception(f"Watching the download of {wanted.name} failed")
-            return self._tell(satellite, _couldnt(wanted, None))
+            logger.exception(f"Watching the download of {named[0].name} failed")
+            return self._tell(satellite, _couldnt(named[0], None))
         finally:
             with self._lock:
                 if self._waiting.get(wanted.key) is wanted:
                     del self._waiting[wanted.key]
 
-    def _follow(self, wanted: Wanted, satellite: Optional[str]) -> str:
-        """The watch itself, as _watch describes it - which answers even when this goes wrong."""
+    def _follow(self, wanted: Wanted, satellite: Optional[str], named: List[Wanted]) -> str:
+        """
+        The watch itself, as _watch describes it - which answers even when this goes
+        wrong.
+
+        A song is named in all that's said of it from "X requested." on as SoulSync
+        found it: "endless by Gunna" for a misheard "Endless by Gunner". It's looked
+        for in Navidrome by the title asked for and SoulSync's artist, though: every
+        word asked for is in SoulSync's title, but its import may tag the file without
+        a "(feat. ...)" or a remaster SoulSync's title had.
+
+        Args:
+            wanted: What was asked for.
+            satellite: The satellite that asked, or None.
+            named: Holds how it's named, for _watch - set to the song SoulSync found
+                once it has.
+        """
         soulsync, library = self._soulsync(), self._library()
         if soulsync is None or library is None:
             # Set up when it was asked for, but not now: the settings changed in between.
             return self._tell(satellite, _couldnt(wanted, self.problem()))
 
-        had = self._had(library, wanted)
-        before = {track.get("id") for track in had}
         started = self._now()
+        # What Navidrome is searched for, which for an album is what was asked for.
+        sought = wanted
         try:
-            request = (soulsync.request_album(wanted.title, wanted.artist) if wanted.kind == "album"
-                       else soulsync.request_song(wanted.title, wanted.artist))
+            if wanted.kind == "album":
+                had = self._had(library, wanted)
+                request = soulsync.request_album(wanted.title, wanted.artist)
+            else:
+                request = soulsync.find_song(wanted.title, wanted.artist)
+                sought = Wanted(wanted.title, request.artist, "track")
+                wanted = named[0] = Wanted(request.title, request.artist, "track")
+                # Looked for again by SoulSync's artist: Navidrome may have Gunna's
+                # "endless" though it had nothing by "Gunner". Had only clean, it's
+                # still asked for, as the explicit one is what's wanted. The same look
+                # as for what lands, so what was there before is never taken for it.
+                had = self._had(library, sought)
+                name = _as_had(wanted, had)
+                if name:
+                    logger.info(f"Navidrome already has {name}, so it isn't requested")
+                    return self._tell(satellite, f"You've already got {name}.")
+                soulsync.request_song(request)
         except SoulSyncError as e:
             return self._tell(satellite, _couldnt(wanted, e.reason))
+        before = {track.get("id") for track in had}
         if isinstance(request, AlbumRequest) and request.queued <= 0:
             # Nothing of it is coming, so there's nothing to wait for.
             return self._tell(satellite, _none_queued(wanted, had))
@@ -571,7 +605,7 @@ class Downloads:
         while not self._wait(POLL_EVERY):
             limit = self._limit(wanted)
             if self._now() - started >= limit:
-                new = self._look(library, wanted, before, new)
+                new = self._look(library, sought, before, new)
                 return self._tell(satellite, self._last_word(wanted, request, new))
             if done_at is None:
                 progress = self._progress(soulsync, wanted, request)
@@ -579,7 +613,7 @@ class Downloads:
                     return self._tell(satellite, self._last_word(wanted, request, new, progress.reason))
                 if progress is not None and progress.state == "done":
                     done_at = self._now()
-            new = self._look(library, wanted, before, new)
+            new = self._look(library, sought, before, new)
             outcome = self._landed(wanted, request, new)
             if outcome:
                 return self._tell(satellite, outcome)
@@ -661,7 +695,7 @@ class Downloads:
         return [track for track in found if track.get("id") not in before]
 
     @staticmethod
-    def _progress(soulsync: SoulSync, wanted: Wanted, request: Union[str, AlbumRequest]) -> Optional[Progress]:
+    def _progress(soulsync: SoulSync, wanted: Wanted, request: Union[SongRequest, AlbumRequest]) -> Optional[Progress]:
         """How SoulSync says the request is getting on - None if it can't be asked this time."""
         try:
             if wanted.kind == "album":
@@ -672,7 +706,7 @@ class Downloads:
             return None
 
     @staticmethod
-    def _landed(wanted: Wanted, request: Union[str, AlbumRequest], new: List[Dict]) -> Optional[str]:
+    def _landed(wanted: Wanted, request: Union[SongRequest, AlbumRequest], new: List[Dict]) -> Optional[str]:
         """
         What to say if the request has landed, or None to wait on. A song has once
         a copy of it is new in Navidrome; an album once as many of its tracks are
@@ -684,7 +718,7 @@ class Downloads:
         return _album_downloaded(wanted, tracks) if len(tracks) >= request.queued else None
 
     @staticmethod
-    def _last_word(wanted: Wanted, request: Union[str, AlbumRequest], new: List[Dict],
+    def _last_word(wanted: Wanted, request: Union[SongRequest, AlbumRequest], new: List[Dict],
                    reason: Optional[str] = None) -> str:
         """
         What to say once the watch ends without seeing all of it land - failed, or
@@ -692,7 +726,7 @@ class Downloads:
 
         Args:
             wanted: What was asked for.
-            request: SoulSync's id for a song, or its AlbumRequest.
+            request: The SongRequest or AlbumRequest SoulSync gave.
             new: What's new in Navidrome, at its last look.
             reason: Why SoulSync said it failed, if it did and said why.
         """
