@@ -4,6 +4,8 @@ Tests how the model's replies are turned into actions and history, using fake
 responses in place of the API, so no request is ever made.
 """
 
+import json
+import threading
 from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -15,6 +17,7 @@ from voice_assistant import llm as llm_module
 from voice_assistant.actions import Action, ActionExecutor
 from voice_assistant.home_assistant import CANT_REACH
 from voice_assistant.llm import LLMHandler
+from voice_assistant.usage import UsageLog
 
 
 class FakeClient:
@@ -952,3 +955,152 @@ def test_a_shorter_thread_is_used_at_the_next_conversation(make_config):
 def test_without_a_config_the_constructors_values_are_used():
     llm = LLMHandler(api_key=None)
     assert llm.history_max_age == 300 and llm.web_search_enabled is True
+
+
+# What each call to Claude cost - see usage.py
+
+class FakeUsage:
+    """Stands in for the UsageLog: keeps each response it's given, with the model and the kind."""
+
+    def __init__(self):
+        self.calls = []
+
+    def record(self, response, model, kind=None):
+        self.calls.append((response, model, kind))
+
+
+def _recorded(llm):
+    """The usage log's calls once the worker which records them has caught up."""
+    llm.flush_usage()
+    return llm.usage.calls
+
+
+def test_each_response_is_recorded():
+    # Every response is a call Anthropic charges for, the one which asked for a read and the one
+    # which answered from it - and each is recorded as the handler's own model.
+    llm = LLMHandler(api_key=None, read_tools=["home_status"], model="claude-test-model", usage=FakeUsage())
+    asking = _reply("", _tool("home_status", use_id="t1", about="sunset"))
+    answer = _reply("Sunset's at 5:52 PM.")
+    llm.client = FakeClient([asking, answer])
+    llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert [(response, model) for response, model, _ in _recorded(llm)] == [
+        (asking, "claude-test-model"), (answer, "claude-test-model")]
+
+
+def test_the_answer_after_a_read_has_the_kind_of_the_turns_first_tool():
+    # The answer has no tool in it, so would be counted as chat. Whatever it's about, the turn is
+    # the kind of what Claude first called.
+    llm = LLMHandler(api_key=None, read_tools=["home_status"], usage=FakeUsage())
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _reply("Okay.", _tool("play_music", use_id="t2", query="jazz")),
+                             _reply("Sunset's at 5:52 PM.")])
+    llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    assert [kind for _, _, kind in _recorded(llm)] == ["Lights and devices", "Lights and devices"]
+
+
+def test_a_turn_with_no_tool_has_no_kind_given_and_a_later_turn_starts_again():
+    llm = LLMHandler(api_key=None, read_tools=["home_status"], usage=FakeUsage())
+    llm.client = FakeClient([_reply("It's 7:36 PM."),
+                             _reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _reply("Sunset's at 5:52 PM."),
+                             _reply("Hello.")])
+    llm.process_query("what time is it")
+    llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    llm.process_query("hello")
+    assert [kind for _, _, kind in _recorded(llm)] == [None, "Lights and devices", "Lights and devices", None]
+
+
+def test_a_search_gives_the_turn_its_kind():
+    llm = LLMHandler(api_key=None, usage=FakeUsage())
+    searched = _reply("", stop_reason="pause_turn")
+    searched.usage = SimpleNamespace(server_tool_use=SimpleNamespace(web_search_requests=1))
+    llm.client = FakeClient([searched, _reply("It's raining.")])
+    llm.process_query("search the web for the weather")
+    assert [kind for _, _, kind in _recorded(llm)] == ["Web search", "Web search"]
+
+
+def test_not_for_me_is_recorded():
+    llm = LLMHandler(api_key=None, usage=FakeUsage())
+    llm.client = FakeClient([_reply("", _tool("not_for_me", use_id="t1"))])
+    assert llm.process_query("turn the lights off, Jack", playing=["Bedroom TV"])["not_for_me"] is True
+    assert len(_recorded(llm)) == 1
+
+
+def test_a_refusal_while_something_plays_is_recorded():
+    llm = LLMHandler(api_key=None, usage=FakeUsage())
+    llm.client = FakeClient([_reply("", stop_reason="refusal")])
+    assert llm.process_query("a line from a film", playing=["Bedroom TV"])["not_for_me"] is True
+    assert len(_recorded(llm)) == 1
+
+
+def test_a_failure_after_the_first_response_still_records_it():
+    # The first response was paid for, whatever happened to the second.
+    llm = LLMHandler(api_key=None, read_tools=["home_status"], usage=FakeUsage())
+    llm.client = FakeClient([_reply("", _tool("home_status", use_id="t1", about="sunset")),
+                             _error(anthropic.APITimeoutError)])
+    assert llm.process_query("when's sunset?", read=lambda action: SUNSET)["success"] is False
+    assert len(_recorded(llm)) == 1
+
+
+def test_usage_failure_does_not_break_reply():
+    class Broken(FakeUsage):
+        def record(self, response, model, kind=None):
+            super().record(response, model, kind)
+            raise RuntimeError("the log is broken")
+
+    llm = LLMHandler(api_key=None, usage=Broken())
+    llm.client = FakeClient([_reply("It's 7:36 PM."), _reply("It's 7:37 PM.")])
+    assert llm.process_query("what time is it") == {"response": "It's 7:36 PM.", "actions": [], "success": True}
+    # And the worker carries on after it.
+    assert llm.process_query("and now")["response"] == "It's 7:37 PM."
+    assert len(_recorded(llm)) == 2
+
+
+def test_recording_never_holds_up_the_reply():
+    # UsageLog.record can wait - on its lock while the summary is worked out, or on the file at
+    # the first call of a day - and the reply must not wait with it.
+    release = threading.Event()
+
+    class Slow(FakeUsage):
+        def record(self, response, model, kind=None):
+            release.wait(10)
+            super().record(response, model, kind)
+
+    llm = LLMHandler(api_key=None, usage=Slow())
+    llm.client = FakeClient(_reply("It's 7:36 PM."))
+    try:
+        assert llm.process_query("what time is it")["response"] == "It's 7:36 PM."
+        assert llm.usage.calls == []
+    finally:
+        release.set()
+    assert len(_recorded(llm)) == 1
+
+
+def test_with_no_usage_log_nothing_is_recorded_and_no_thread_is_made(llm):
+    llm.client = FakeClient(_reply("It's 7:36 PM."))
+    before = threading.active_count()
+    assert llm.process_query("what time is it")["success"] is True
+    llm.flush_usage()
+    assert threading.active_count() == before
+
+
+def test_the_real_log_keeps_both_calls_of_a_turn_under_one_kind(tmp_path):
+    def costed(response, output):
+        response.usage = SimpleNamespace(input_tokens=100, output_tokens=output, cache_read_input_tokens=0,
+                                         cache_creation_input_tokens=0, cache_creation=None,
+                                         server_tool_use=None)
+        return response
+
+    log = UsageLog(str(tmp_path / "usage.jsonl"),
+                   lambda: {"input_price": 1.0, "output_price": 5.0, "search_price": 10.0,
+                            "pounds_per_dollar": 1.0, "daily_limit": 0})
+    llm = LLMHandler(api_key=None, read_tools=["home_status"], usage=log)
+    llm.client = FakeClient([costed(_reply("", _tool("home_status", use_id="t1", about="sunset")), 20),
+                             costed(_reply("Sunset's at 5:52 PM."), 30)])
+    llm.process_query("when's sunset?", read=lambda action: SUNSET)
+    llm.flush_usage()
+    lines = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    assert [(line["kind"], line["output"]) for line in lines] == [("Lights and devices", 20),
+                                                                  ("Lights and devices", 30)]
+    # Only counts, never anything said.
+    assert "5:52" not in json.dumps(lines) and "sunset" not in json.dumps(lines)

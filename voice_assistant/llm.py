@@ -15,7 +15,9 @@ With Claude out of reach - no key, or no internet - a few keywords are matched i
 """
 
 import os
+import queue
 import re
+import threading
 import time
 import logging
 from datetime import datetime
@@ -28,6 +30,7 @@ from voice_assistant.downloads import OFFERS
 from voice_assistant.intents import not_a_list, points_back
 from voice_assistant.logging_setup import TRANSCRIPT
 from voice_assistant import network
+from voice_assistant.usage import UsageLog, kind_of, what_it_did
 
 # Said when there's no way onto the internet - straight away, rather than after
 # waiting out the timeouts (see network.py), and pointing at what still works.
@@ -38,6 +41,10 @@ logger = logging.getLogger(__name__)
 # The most rounds of reading Claude may do before it answers - one is usually enough,
 # and each is another request to wait for before anything's said.
 MOST_READS = 2
+
+# How many responses wait to be recorded at most - see LLMHandler._record_usage. Far more than a
+# conversation makes between one record and the next, however slow.
+USAGE_QUEUE_SIZE = 100
 
 # The efforts Claude's API takes, quickest first.
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -84,7 +91,7 @@ class LLMHandler:
 
     def __init__(self, config=None, api_key=None, model=None, max_tokens=None,
                  temperature=None, history_length=None, assistant_name=None, tools=None, memory=None,
-                 read_tools: Sequence[str] = ()):
+                 read_tools: Sequence[str] = (), usage: Optional[UsageLog] = None):
         """
         Each argument left out comes from config.yaml.
 
@@ -102,6 +109,8 @@ class LLMHandler:
             memory: The Memory, whose facts go with every request, or None.
             read_tools: The names of the tools which only read something for the model
                 to answer from - see ActionExecutor.read_tools.
+            usage: The log each of Claude's responses is recorded in, with what it cost - the
+                brain's, shared by every satellite's session - or None to record nothing.
         """
         # Pulls llm, conversation, assistant and web_search sections from config.yaml
         llm_config = config.section("llm") if config else {}
@@ -155,6 +164,14 @@ class LLMHandler:
         self.read_tools = set(read_tools)
         # What's known about the user, given to the model with every request - see memory.py.
         self.memory = memory
+
+        # Where each response is recorded, and the queue and thread which do it. Recording can
+        # wait - see _record_usage - so it's left to a thread of its own, made at the first
+        # response rather than here, as a handler with no log never needs one.
+        self.usage = usage
+        self._usage_queue: Optional[queue.Queue] = None
+        self._usage_worker: Optional[threading.Thread] = None
+        self._usage_worker_lock = threading.Lock()
 
         # Web search is opt-in per query rather than always on, so ordinary replies
         # aren't slowed down or billed by unnecessary searches.
@@ -559,6 +576,8 @@ class LLMHandler:
                 request_kwargs["temperature"] = self.temperature
             response = client.messages.create(
                 model=self.model_name, system=system, messages=messages, **request_kwargs)
+            # What the turn is, by what Claude first called in it - see _log_usage.
+            turn_kind = self._log_usage(response)
 
             # A long-running search can come back as "pause_turn" rather than a finished
             # answer. The paused turn is sent back unchanged to let it continue, with a
@@ -589,6 +608,7 @@ class LLMHandler:
                     request_kwargs["tool_choice"] = {"type": "none"}
                 response = client.messages.create(
                     model=self.model_name, system=system, messages=messages, **request_kwargs)
+                turn_kind = self._log_usage(response, turn_kind)
 
             stop_reason = getattr(response, "stop_reason", None)
 
@@ -604,14 +624,12 @@ class LLMHandler:
             # set_lights beside it, which a line like "turn the lights off, Jack" could bring.
             if any(use.name == NOT_FOR_ME["name"] for use in uses):
                 logger.debug("Claude took that for speech from what's playing")
-                self._log_usage(response)
                 return {"response": "", "actions": [], "success": True, "not_for_me": True}
 
             # Nor is a refusal answered while something plays - the user's call: "Sorry, that
             # didn't work. Try asking again." was said over the film whose line tripped it. It
             # ends as not_for_me does, with nothing said, run or kept in the history.
             if stop_reason == "refusal" and playing:
-                self._log_usage(response)
                 return {"response": "", "actions": [], "success": True, "not_for_me": True}
 
             # Retrieves text blocks from the model's response, joins them and strips excess whitespace.
@@ -696,7 +714,6 @@ class LLMHandler:
 
             logger.info(f"LLM response: '{response_text}'" + (f" (actions: {actions})" if actions else ""),
                         extra=TRANSCRIPT)
-            self._log_usage(response)
 
             # Returns a dictionary containing the model's response, the actions it asked for, and whether the transaction was successful
             return {"response": response_text, "actions": actions, "success": True}
@@ -712,13 +729,74 @@ class LLMHandler:
             return {"response": self._failure_message(e),
                     "actions": [] if reads or playing else self._fallback_actions(text), "success": False}
 
-    @staticmethod
-    def _log_usage(response):
-        """Logs how much Claude read for a response, and how much of that came from its cache."""
+    def _log_usage(self, response, turn_kind: Optional[str] = None) -> Optional[str]:
+        """
+        Logs how much Claude read and wrote for a response, and how much of what it read came
+        from its cache, and has the response recorded in the usage log. Called for every
+        response - the ones which asked for a read, the ones which carried on a paused search
+        and the last - as Anthropic charges for each. Never raises, as nothing about what a
+        call cost may cost the user their reply.
+
+        Args:
+            response: What Anthropic returned.
+            turn_kind: The kind of the turn so far - that of the first response in it which
+                called a tool or searched - or None before there has been one. The answer to
+                a read calls no tool, so with no help it would be counted as chat; given the
+                kind of the call which asked for the read, it's counted with that.
+
+        Returns:
+            The kind of the turn now, to be given with the next response's.
+        """
         usage = getattr(response, "usage", None)
         if usage is not None:
-            logger.info(f"Claude read {usage.input_tokens} new input tokens, "
-                        f"{getattr(usage, 'cache_read_input_tokens', 0) or 0} from its cache")
+            logger.info(f"Claude read {getattr(usage, 'input_tokens', 0) or 0} new input tokens, "
+                        f"{getattr(usage, 'cache_read_input_tokens', 0) or 0} from its cache, "
+                        f"and wrote {getattr(usage, 'output_tokens', 0) or 0}")
+        try:
+            tools, searches = what_it_did(response)
+            if turn_kind is None and (tools or searches):
+                turn_kind = kind_of(tools, searches)
+            if self.usage is not None:
+                self._record_usage(response, turn_kind)
+        except Exception as e:
+            logger.warning(f"Could not log the usage: {e}")
+        return turn_kind
+
+    def _record_usage(self, response, kind: Optional[str]):
+        """
+        Hands a response to the thread which records it. The log's record can block - the
+        first of each day rewrites the file and waits for the disk, and it waits on a lock
+        which the dashboard's summary holds while it goes through every call kept - and that
+        isn't to be waited on between Claude answering and Nova saying it. One thread takes
+        them in the order they came. The queue is bounded, so a log which has stopped
+        answering costs some lines of it, not the memory of the brain.
+        """
+        with self._usage_worker_lock:
+            if self._usage_worker is None:
+                self._usage_queue = queue.Queue(maxsize=USAGE_QUEUE_SIZE)
+                self._usage_worker = threading.Thread(target=self._record_usages, daemon=True,
+                                                      name="usage-recorder")
+                self._usage_worker.start()
+        try:
+            self._usage_queue.put_nowait((response, kind))
+        except queue.Full:
+            logger.warning("The usage log isn't keeping up, so a call to Claude wasn't recorded")
+
+    def _record_usages(self):
+        """Records what's queued, one at a time, for as long as the handler lives."""
+        while True:
+            response, kind = self._usage_queue.get()
+            try:
+                self.usage.record(response, model=self.model_name, kind=kind)
+            except Exception as e:
+                logger.warning(f"Could not record the usage: {e}")
+            finally:
+                self._usage_queue.task_done()
+
+    def flush_usage(self):
+        """Waits until everything handed over for recording has been recorded. For tests, which look at the log."""
+        if self._usage_queue is not None:
+            self._usage_queue.join()
 
     def _read(self, use, read: Callable[[Action], str]) -> Dict:
         """

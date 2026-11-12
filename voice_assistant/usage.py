@@ -30,7 +30,7 @@ import threading
 import time
 from calendar import monthrange
 from datetime import datetime, timedelta
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import storage
 
@@ -92,6 +92,24 @@ def kind_of(tool_names: Sequence[str], searches: int) -> str:
     if not tool_names:
         return CHAT
     return KINDS.get(tool_names[0], OTHER)
+
+
+def what_it_did(response) -> Tuple[List[str], int]:
+    """
+    Reads from a response which tools Claude called and how many web searches it made - the
+    two things the kind of a call is taken from, and nothing of what it said.
+
+    Args:
+        response: What Anthropic returned, or anything shaped like it.
+
+    Returns:
+        The names of the tools it called, in order, and the number of searches.
+    """
+    tools = [block.name for block in (getattr(response, "content", None) or [])
+             if getattr(block, "type", None) == "tool_use"]
+    usage = getattr(response, "usage", None)
+    searches = int(_count(getattr(usage, "server_tool_use", None), "web_search_requests"))
+    return tools, searches
 
 
 def _count(owner, name: str) -> float:
@@ -229,29 +247,33 @@ class UsageLog:
             if event is not None and event["at"] >= cutoff:
                 self._events.append(event)
 
-    def record(self, response, model: str) -> None:
+    def record(self, response, model: str, kind: Optional[str] = None) -> None:
         """
-        Adds one call to the log. Never raises, as it runs right after Nova's reply and
-        losing a line of the log must never cost the user that - a failure is only logged.
+        Adds one call to the log. Never raises, as losing a line of the log must never cost
+        the user a reply - a failure is only logged. It can be slow, though: the first call
+        of each day rewrites the file and waits for the disk, and it waits on the lock while
+        a summary is worked out. So it's called off the reply's path - see LLMHandler.
 
         Args:
             response: What Anthropic returned. Its usage and the names of the tools it
                 called are read, and nothing else. One with no usage isn't recorded.
             model: The model which answered.
+            kind: The kind of request to record the call as, instead of the one its own
+                tools say. Given for the answer to a read, which calls no tool of its own
+                and would be counted as chat, so that it's counted with the call which
+                asked for the read.
         """
         try:
-            self._record(response, model)
+            self._record(response, model, kind)
         except Exception as e:
             logger.warning(f"Could not record the usage: {e}")
 
-    def _record(self, response, model: str):
+    def _record(self, response, model: str, kind: Optional[str]):
         usage = getattr(response, "usage", None)
         if usage is None:
             return
         settings = self._settings()
-        tools = [block.name for block in (getattr(response, "content", None) or [])
-                 if getattr(block, "type", None) == "tool_use"]
-        searches = int(_count(getattr(usage, "server_tool_use", None), "web_search_requests"))
+        tools, searches = what_it_did(response)
         now = self._clock()
         event = {
             "at": round(now, 3),
@@ -261,7 +283,7 @@ class UsageLog:
             "cache_read": int(_count(usage, "cache_read_input_tokens")),
             "cache_write": int(_cache_writes(usage)),
             "searches": searches,
-            "kind": kind_of(tools, searches),
+            "kind": kind or kind_of(tools, searches),
             "dollars": cost_in_dollars(usage, settings),
         }
 

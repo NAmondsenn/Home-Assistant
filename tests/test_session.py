@@ -254,7 +254,7 @@ def brain(tmp_path, monkeypatch, make_config):
     return SimpleNamespace(config=config, clock=Clock(config=config, start=False), memory=None,
                            routines=Routines(path=str(tmp_path / "routines.json")), ntfy=None, weather=None,
                            batteries=None, lists=None, pc=None, registry=None, calendar=None, media=None,
-                           downloads=None, tts=FakePiper(), stt=FakeSpeechToText(),
+                           downloads=None, usage=None, tts=FakePiper(), stt=FakeSpeechToText(),
                            sounds_folder=Path(paths.SOUNDS_DIR))
 
 
@@ -1842,6 +1842,12 @@ def test_a_sessions_actions_download_through_the_brain(brain, make_session):
     # One for the brain, so the same thing asked for on two satellites is requested once.
     brain.downloads = object()
     assert make_session().actions.downloads is brain.downloads
+
+
+def test_a_sessions_claude_records_into_the_brains_usage_log(brain, make_session):
+    # One log for the brain, so what every satellite's calls cost is added up together.
+    brain.usage = object()
+    assert make_session().llm.usage is brain.usage
 
 
 def test_a_sessions_local_rules_know_its_wake_word(brain, make_session):

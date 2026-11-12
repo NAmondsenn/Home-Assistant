@@ -233,6 +233,18 @@ def test_skips_broken_line(tmp_path):
     assert make_log(tmp_path, clock).summary()["requests_24h"] == 3
 
 
+def test_a_kind_given_is_used_instead_of_the_responses_own(tmp_path):
+    # A turn's answer after a read has no tool in it, and would be "Chat and questions"
+    # without the kind of the turn's first call being given.
+    clock = Clock(local(2026, 11, 12, 12))
+    log = make_log(tmp_path, clock)
+    log.record(reply(output=10), "haiku", kind="Music")
+    log.record(reply(output=10, tools=["set_timer"]), "haiku", kind="Music")
+    log.record(reply(output=10), "haiku")
+    assert [json.loads(line)["kind"] for line in (tmp_path / "usage.jsonl").read_text().splitlines()] == [
+        "Music", "Music", "Chat and questions"]
+
+
 def test_record_without_usage(tmp_path):
     clock = Clock(local(2026, 11, 12, 12))
     log = make_log(tmp_path, clock)
