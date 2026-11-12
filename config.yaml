@@ -150,8 +150,10 @@ web_search:
   max_uses: 3
 
 # What Nova spends on Claude, shown in Home Assistant's AI dashboard. Each call is
-# costed when it's made, at the prices below, and the log keeps that cost even if a
-# price changes later. All of it is used straight away.
+# costed in dollars when it's made, at the prices below, and the log keeps that cost
+# even if a price changes later. Only the dollars are kept: they're turned into pounds
+# at pounds_per_dollar as it is when the dashboard asks, so changing it changes the
+# pounds shown for past days too. All of it is used straight away.
 usage:
   # In pounds. ntfy's phone topic is told once a day, the first time the day's spending
   # passes it, in a message saying so and nothing else. 0 switches the alert off.

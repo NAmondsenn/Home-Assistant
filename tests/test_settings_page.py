@@ -1934,11 +1934,11 @@ def test_the_spending_alert_and_claudes_prices_are_on_the_page_and_used_straight
     page = _page()
     shown = {setting["key"]: setting for setting in page.state()["settings"]}
     labels = {
-        "usage.daily_limit": "Daily spending alert, in pounds",
-        "usage.pounds_per_dollar": "Pounds per dollar",
+        "usage.daily_limit": "Daily spending alert, in pounds (0 for none)",
+        "usage.pounds_per_dollar": "Pounds per dollar, for what Claude costs",
         "usage.input_price": "Claude's price per million input tokens, in dollars",
-        "usage.output_price": "per million output tokens",
-        "usage.search_price": "per 1,000 web searches",
+        "usage.output_price": "Claude's price per million output tokens, in dollars",
+        "usage.search_price": "Claude's price per 1,000 web searches, in dollars",
     }
     for key, label in labels.items():
         assert shown[key]["label"] == label and shown[key]["used"] == NOW and shown[key]["kind"] == "number", key
@@ -1947,9 +1947,23 @@ def test_the_spending_alert_and_claudes_prices_are_on_the_page_and_used_straight
 
     # A limit below nothing means nothing, so it's refused, and 0 - no alert - is let through.
     assert page.save_settings({"usage.daily_limit": -1}, LOGIN) == {
-        "success": False, "message": "Daily spending alert, in pounds should be from 0 to 100."}
+        "success": False, "message": "Daily spending alert, in pounds (0 for none) should be from 0 to 100."}
     assert not (files / "config.yaml").exists()
     assert page.save_settings({"usage.daily_limit": 0}, LOGIN)["success"]
+
+
+def test_every_setting_on_the_page_has_a_group_of_its_own(files):
+    # One under no group is shown under Other, as the spending alert and Claude's prices
+    # were, rather than with the settings it goes with.
+    with open(os.path.join(page_module.WEB_FOLDER, "settings.js")) as file:
+        script = file.read()
+    groups = re.search(r"const GROUPS = \[\n(.*?)\n\];", script, re.S).group(1)
+    starts = {name: re.findall(r'"([a-z_]+\.)"', line)
+              for name, line in re.findall(r'^\s*\["([^"]+)", (\[.*\])\],$', groups, re.M)}
+    assert "usage." in starts["Claude"]
+    for section, name, *_ in page_module.EDITABLE:
+        key = f"{section}.{name}"
+        assert any(key.startswith(start) for prefixes in starts.values() for start in prefixes), key
 
 
 def test_a_spending_alert_saved_is_used_with_no_restart(files):

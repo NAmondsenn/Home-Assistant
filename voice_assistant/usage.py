@@ -25,6 +25,7 @@ midnight there, not in UTC.
 
 import json
 import logging
+import math
 import os
 import queue
 import threading
@@ -47,6 +48,12 @@ KEEP_DAYS = 40
 SUMMARY_SECONDS = 60
 
 SECONDS_PER_DAY = 86400
+
+# The times a line of the log may have, in seconds since 1970: from 2000 to 2100. A line
+# outside them, or with no number at all (Infinity), is taken as broken, as a date that far
+# out can't be turned into a day and would stop every summary.
+EARLIEST = 946684800
+LATEST = 4102444800
 
 # How many calls wait to be recorded at most - see UsageLog.record_later. Far more than a
 # conversation makes between one record and the next, however slow.
@@ -186,8 +193,12 @@ def _parse(line: str) -> Optional[Dict]:
     """One call read from a line of the file, or None if it isn't a complete, readable one."""
     try:
         data = json.loads(line)
+        at = float(data["at"])
+        dollars = float(data["dollars"])
+        if not (EARLIEST <= at <= LATEST and math.isfinite(dollars)):
+            return None
         return {
-            "at": float(data["at"]),
+            "at": at,
             "model": str(data["model"]),
             "input": int(data["input"]),
             "output": int(data["output"]),
@@ -195,9 +206,9 @@ def _parse(line: str) -> Optional[Dict]:
             "cache_write": int(data["cache_write"]),
             "searches": int(data["searches"]),
             "kind": str(data["kind"]),
-            "dollars": float(data["dollars"]),
+            "dollars": dollars,
         }
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, OverflowError):
         return None
 
 
@@ -233,6 +244,9 @@ class UsageLog:
         # first call after the brain starts rewrites it - which also drops any broken line, and
         # so a new line is never glued on to a half written one.
         self._pruned_on = None
+        # Set when the file was there but couldn't be read. The calls in memory are then not all
+        # of the file's, so it's only ever appended to, never rewritten from them.
+        self._load_failed = False
         self._folder_made = False
         # The queue and thread which record_later hands calls to, made at its first use.
         self._queue: Optional[queue.Queue] = None
@@ -249,7 +263,8 @@ class UsageLog:
         except FileNotFoundError:
             return
         except (OSError, UnicodeDecodeError) as e:
-            logger.warning(f"Could not read the usage log: {e}")
+            logger.warning(f"Could not read the usage log, so it will only be added to until the brain restarts: {e}")
+            self._load_failed = True
             return
         for line in lines:
             event = _parse(line)
@@ -373,10 +388,12 @@ class UsageLog:
     def _save(self, event: Dict, today):
         """
         Writes a call to the file - by appending, or on the first call of a day by writing
-        the whole file afresh without the calls older than KEEP_DAYS. Called with the lock held.
+        the whole file afresh without the calls older than KEEP_DAYS. Never rewrites it if it
+        couldn't be read at the start, as that would replace the days in it with the few calls
+        since. Called with the lock held.
         """
         try:
-            if self._pruned_on != today:
+            if self._pruned_on != today and not self._load_failed:
                 cutoff = event["at"] - KEEP_DAYS * SECONDS_PER_DAY
                 self._events = [e for e in self._events if e["at"] >= cutoff]
                 storage.save_text(self._path, "".join(json.dumps(e) + "\n" for e in self._events))
@@ -406,7 +423,8 @@ class UsageLog:
             today_pounds, month_pounds: spent so far today and this month.
             month_projection_pounds: this month's total at the rate so far - what's spent
                 over the days elapsed (today counting as the fraction which has passed),
-                times the days in the month.
+                times the days in the month. At least one whole day is counted as elapsed,
+                so a call just after midnight on the 1st isn't taken as a whole month's rate.
             daily_limit_pounds: the limit, as set.
             requests_24h: calls in the last 24 hours.
             cache_share_24h: of the input tokens in those, the share read from the cache,
@@ -496,7 +514,7 @@ class UsageLog:
         return {
             "today_pounds": pounds(today_dollars),
             "month_pounds": pounds(month_dollars),
-            "month_projection_pounds": pounds(month_dollars / days_elapsed * days_in_month) if days_elapsed else 0.0,
+            "month_projection_pounds": pounds(month_dollars / max(days_elapsed, 1.0) * days_in_month),
             "daily_limit_pounds": _price(settings, "daily_limit"),
             "requests_24h": requests,
             "cache_share_24h": (reads / inputs if inputs else 0.0) if requests else None,

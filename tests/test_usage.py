@@ -234,6 +234,48 @@ def test_skips_broken_line(tmp_path):
     assert make_log(tmp_path, clock).summary()["requests_24h"] == 3
 
 
+def test_skips_lines_with_impossible_times_or_costs(tmp_path):
+    clock = Clock(local(2026, 11, 12, 12))
+    path = tmp_path / "usage.jsonl"
+    good = {"at": clock.now - 60, "model": "haiku", "input": 1, "output": 2, "cache_read": 0,
+            "cache_write": 0, "searches": 0, "kind": "Chat and questions", "dollars": 0.5}
+    bad = [{**good, "at": 1e20}, {**good, "at": 1.0}, {**good, "dollars": float("nan")}]
+    lines = [json.dumps(line) for line in bad]
+    # json.dumps writes Infinity for the time, and an integer field which is infinite too.
+    lines.append(json.dumps({**good, "at": float("inf")}))
+    lines.append(json.dumps({**good, "output": float("inf")}))
+    path.write_text("\n".join(lines + [json.dumps(good)]) + "\n")
+    log = make_log(tmp_path, clock)
+    summary = log.summary()
+    assert summary["requests_24h"] == 1
+    assert summary["today_pounds"] == 0.5
+
+
+def test_a_log_which_couldnt_be_read_is_only_appended_to(tmp_path, monkeypatch):
+    clock = Clock(local(2026, 11, 12, 12))
+    path = tmp_path / "usage.jsonl"
+    old = {"at": clock.now - 10 * DAY, "model": "haiku", "input": 1, "output": 2, "cache_read": 0,
+           "cache_write": 0, "searches": 0, "kind": "Chat and questions", "dollars": 0.5}
+    path.write_text(json.dumps(old) + "\n")
+
+    real_open = open
+
+    def failing_open(file, *args, **kwargs):
+        if str(file) == str(path) and not args and not kwargs:
+            raise PermissionError("not now")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", failing_open)
+    log = make_log(tmp_path, clock)
+    monkeypatch.setattr("builtins.open", real_open)
+    log.record(dollar_reply(1.0), "haiku")
+    clock.now += 2 * DAY
+    log.record(dollar_reply(1.0), "haiku")
+    # The ten-day-old line is still there: neither first call of a day rewrote the file.
+    times = [json.loads(line)["at"] for line in path.read_text().splitlines()]
+    assert times == [old["at"], clock.now - 2 * DAY, clock.now]
+
+
 def test_a_kind_given_is_used_instead_of_the_responses_own(tmp_path):
     # A turn's answer after a read has no tool in it, and would be "Chat and questions"
     # without the kind of the turn's first call being given.
@@ -427,9 +469,21 @@ def test_month_edge_london(tmp_path):
     assert summary["today_pounds"] == 2.0
     assert summary["daily_pounds"][-2:] == [["2026-10-31", 1.0], ["2026-11-01", 2.0]]
 
-    # Exactly midnight on the 1st has no days elapsed, which mustn't be divided by.
+    # Half an hour into the month counts as a whole day, so one call isn't taken as a
+    # month's rate 48 times over - and exactly midnight on the 1st isn't divided by 0.
+    assert summary["month_projection_pounds"] == 2.0 * 30
     clock.now = local(2026, 11, 1, 0, 0)
-    assert log.summary()["month_projection_pounds"] == 0.0
+    assert log.summary()["month_projection_pounds"] == 2.0 * 30
+
+
+def test_projection_counts_a_whole_day_until_one_has_gone(tmp_path):
+    clock = Clock(local(2026, 11, 1, 0, 10))
+    log = make_log(tmp_path, clock)
+    log.record(dollar_reply(0.01), "haiku")
+    assert log.summary()["month_projection_pounds"] == round(0.01 * 30, 4)
+    # Past the first day the days elapsed are counted as they are.
+    clock.now = local(2026, 11, 2, 12)
+    assert log.summary()["month_projection_pounds"] == round(0.01 / 1.5 * 30, 4)
 
 
 def test_prunes_old_lines(tmp_path):

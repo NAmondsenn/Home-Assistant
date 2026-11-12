@@ -112,7 +112,7 @@ const GROUPS = [
   ["Music", ["music.", "navidrome.", "soulsync.", "spotify."]],
   ["Voice", ["voice."]],
   ["Sounds", ["sounds."]],
-  ["Claude", ["web_search.", "conversation."]],
+  ["Claude", ["web_search.", "conversation.", "usage."]],
   ["Home", ["home_assistant.", "mqtt."]],
   ["Notifications", ["ntfy."]],
   ["Listening", ["thresholds."]],
