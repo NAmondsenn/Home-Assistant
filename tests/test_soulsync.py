@@ -278,6 +278,10 @@ def test_a_credit_is_never_read_as_a_version():
     for credit in ("Gooba (feat. Live Wire)", "Gooba [ft. The Remix Crew]", "Gooba - featuring Acoustic Ladyland"):
         candidate = _track(credit, "6ix9ine")
         assert pick_track([candidate], "Gooba", "6ix9ine") is candidate
+    # A version dashed on after a credit is still read, each dashed part on its own.
+    for name in ("Gooba - feat. Made Up - Live", "Gooba - with Made Up - Remix"):
+        for artist in ("6ix9ine", None):
+            assert pick_track([_track(name, "6ix9ine")], "Gooba", artist) is None
 
 
 def test_an_original_mix_is_the_song_itself():

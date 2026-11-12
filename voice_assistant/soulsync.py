@@ -163,14 +163,13 @@ def _names(text: str, words: str) -> bool:
 
 def _parts(title: str) -> List[str]:
     """
-    Each bracketed or dashed part of a title, as version_of finds a track's - after a
-    hyphen, an en dash or an em dash alike: "M.E. (Live 79)" -> ["Live 79"].
+    Each bracketed or dashed part of a title - after a hyphen, an en dash or an em
+    dash alike: "M.E. (Live 79)" -> ["Live 79"]. Each dashed part is one of its own,
+    so a credit can't hide a version after it: "Gooba - feat. X - Live" -> ["feat. X",
+    "Live"].
     """
     parts = [text for brackets in BRACKETED.findall(title) for text in brackets if text]
-    dashed = DASH.split(title, 1)
-    if len(dashed) == 2:
-        parts.append(dashed[1])
-    return parts
+    return parts + DASH.split(title)[1:]
 
 
 def _edition_notes(candidate: Dict) -> List[str]:

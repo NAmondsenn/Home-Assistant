@@ -964,7 +964,8 @@ def test_a_download_is_started_and_nothing_said_until_soulsync_answers(watching,
 
 
 def test_a_misheard_song_asked_for_is_named_as_soulsync_found_it_from_then_on(watching, set_up, clock, said):
-    # Navidrome: nothing under the name asked for, nothing under SoulSync's, then endless.
+    # Navidrome: nothing under the name asked for, nothing by the title asked for and
+    # SoulSync's artist, then endless.
     library = FakeLibrary(clock, songs=[[], [], [ENDLESS]], names=ENDLESS_NAMES)
     downloads = watching(FakeSoulSync(song=ENDLESS_FOUND), library, set_up)
 
