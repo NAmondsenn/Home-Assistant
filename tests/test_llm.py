@@ -4,8 +4,10 @@ Tests how the model's replies are turned into actions and history, using fake
 responses in place of the API, so no request is ever made.
 """
 
+import gc
 import json
 import threading
+import weakref
 from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -960,18 +962,16 @@ def test_without_a_config_the_constructors_values_are_used():
 # What each call to Claude cost - see usage.py
 
 class FakeUsage:
-    """Stands in for the UsageLog: keeps each response it's given, with the model and the kind."""
+    """Stands in for the UsageLog: keeps each response it's handed to record, with the model and the kind."""
 
     def __init__(self):
         self.calls = []
 
-    def record(self, response, model, kind=None):
+    def record_later(self, response, model, kind=None):
         self.calls.append((response, model, kind))
 
 
 def _recorded(llm):
-    """The usage log's calls once the worker which records them has caught up."""
-    llm.flush_usage()
     return llm.usage.calls
 
 
@@ -1043,45 +1043,35 @@ def test_a_failure_after_the_first_response_still_records_it():
 
 
 def test_usage_failure_does_not_break_reply():
-    class Broken(FakeUsage):
-        def record(self, response, model, kind=None):
-            super().record(response, model, kind)
+    class Broken:
+        def record_later(self, response, model, kind=None):
             raise RuntimeError("the log is broken")
 
     llm = LLMHandler(api_key=None, usage=Broken())
     llm.client = FakeClient([_reply("It's 7:36 PM."), _reply("It's 7:37 PM.")])
     assert llm.process_query("what time is it") == {"response": "It's 7:36 PM.", "actions": [], "success": True}
-    # And the worker carries on after it.
     assert llm.process_query("and now")["response"] == "It's 7:37 PM."
-    assert len(_recorded(llm)) == 2
 
 
-def test_recording_never_holds_up_the_reply():
-    # UsageLog.record can wait - on its lock while the summary is worked out, or on the file at
-    # the first call of a day - and the reply must not wait with it.
-    release = threading.Event()
+def test_a_handler_owns_no_thread_so_replacing_sessions_leaks_none(monkeypatch):
+    # A new handler is made with each satellite's session, on every reconnect, and the old ones
+    # are let go - so none may start a thread which would keep it alive for ever. Starting any
+    # thread at all in here is a failure.
+    def no_threads(self):
+        raise AssertionError("a thread was started")
 
-    class Slow(FakeUsage):
-        def record(self, response, model, kind=None):
-            release.wait(10)
-            super().record(response, model, kind)
-
-    llm = LLMHandler(api_key=None, usage=Slow())
-    llm.client = FakeClient(_reply("It's 7:36 PM."))
-    try:
-        assert llm.process_query("what time is it")["response"] == "It's 7:36 PM."
-        assert llm.usage.calls == []
-    finally:
-        release.set()
-    assert len(_recorded(llm)) == 1
-
-
-def test_with_no_usage_log_nothing_is_recorded_and_no_thread_is_made(llm):
-    llm.client = FakeClient(_reply("It's 7:36 PM."))
-    before = threading.active_count()
-    assert llm.process_query("what time is it")["success"] is True
-    llm.flush_usage()
-    assert threading.active_count() == before
+    monkeypatch.setattr(threading.Thread, "start", no_threads)
+    usage = FakeUsage()
+    handlers = []
+    for _ in range(3):
+        llm = LLMHandler(api_key=None, usage=usage)
+        llm.client = FakeClient(_reply("It's 7:36 PM."))
+        assert llm.process_query("what time is it")["success"] is True
+        handlers.append(weakref.ref(llm))
+        del llm
+    gc.collect()
+    assert len(usage.calls) == 3
+    assert [ref() for ref in handlers] == [None, None, None]
 
 
 def test_the_real_log_keeps_both_calls_of_a_turn_under_one_kind(tmp_path):
@@ -1098,7 +1088,7 @@ def test_the_real_log_keeps_both_calls_of_a_turn_under_one_kind(tmp_path):
     llm.client = FakeClient([costed(_reply("", _tool("home_status", use_id="t1", about="sunset")), 20),
                              costed(_reply("Sunset's at 5:52 PM."), 30)])
     llm.process_query("when's sunset?", read=lambda action: SUNSET)
-    llm.flush_usage()
+    log.flush()
     lines = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
     assert [(line["kind"], line["output"]) for line in lines] == [("Lights and devices", 20),
                                                                   ("Lights and devices", 30)]

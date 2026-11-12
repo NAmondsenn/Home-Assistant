@@ -9,6 +9,7 @@ local dates and pass in London and under UTC.
 """
 
 import json
+import threading
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -243,6 +244,77 @@ def test_a_kind_given_is_used_instead_of_the_responses_own(tmp_path):
     log.record(reply(output=10), "haiku")
     assert [json.loads(line)["kind"] for line in (tmp_path / "usage.jsonl").read_text().splitlines()] == [
         "Music", "Music", "Chat and questions"]
+
+
+def test_record_later_records_in_order_off_the_callers_thread(tmp_path):
+    clock = Clock(local(2026, 11, 12, 12))
+    log = make_log(tmp_path, clock)
+    log.record_later(reply(output=10), "haiku", "Music")
+    log.record_later(reply(output=20), "haiku")
+    log.flush()
+    lines = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    assert [(line["output"], line["kind"]) for line in lines] == [(10, "Music"), (20, "Chat and questions")]
+
+
+def test_record_later_never_waits_for_the_log(tmp_path):
+    # Recording can wait - on the disk, or on the lock while a summary is worked out - and the
+    # caller, which is a reply, must not wait with it.
+    clock = Clock(local(2026, 11, 12, 12))
+    release = threading.Event()
+
+    def blocked_settings():
+        release.wait(10)
+        return SETTINGS
+
+    log = UsageLog(str(tmp_path / "usage.jsonl"), blocked_settings, clock=clock)
+    try:
+        log.record_later(reply(output=10), "haiku")
+        assert not (tmp_path / "usage.jsonl").exists()
+    finally:
+        release.set()
+    log.flush()
+    assert log.summary()["requests_24h"] == 1
+
+
+def test_record_later_uses_one_thread_for_all_calls_and_never_raises(tmp_path):
+    clock = Clock(local(2026, 11, 12, 12))
+    log = make_log(tmp_path, clock)
+    log.record_later(object(), "haiku")
+    log.record_later(reply(output=10), "haiku")
+    first = log._worker
+    log.record_later(reply(output=10), "haiku")
+    log.flush()
+    # A call which can't be recorded doesn't stop the thread, and there's still only the one.
+    assert log._worker is first and first.is_alive()
+    assert log.summary()["requests_24h"] == 2
+
+
+def test_record_later_drops_calls_rather_than_grow_without_end(tmp_path, monkeypatch):
+    from voice_assistant import usage as usage_module
+    monkeypatch.setattr(usage_module, "QUEUE_SIZE", 2)
+    clock = Clock(local(2026, 11, 12, 12))
+    release = threading.Event()
+    log = UsageLog(str(tmp_path / "usage.jsonl"), lambda: (release.wait(10), SETTINGS)[1], clock=clock)
+    try:
+        for _ in range(6):
+            log.record_later(reply(output=10), "haiku")
+    finally:
+        release.set()
+    log.flush()
+    assert 2 <= log.summary()["requests_24h"] < 6
+
+
+def test_a_thread_which_cant_start_isnt_kept_or_waited_on(tmp_path, monkeypatch):
+    clock = Clock(local(2026, 11, 12, 12))
+    log = make_log(tmp_path, clock)
+
+    def fail(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", fail)
+    log.record_later(reply(output=10), "haiku")
+    assert log._worker is None
+    log.flush()
 
 
 def test_record_without_usage(tmp_path):

@@ -15,9 +15,7 @@ With Claude out of reach - no key, or no internet - a few keywords are matched i
 """
 
 import os
-import queue
 import re
-import threading
 import time
 import logging
 from datetime import datetime
@@ -41,10 +39,6 @@ logger = logging.getLogger(__name__)
 # The most rounds of reading Claude may do before it answers - one is usually enough,
 # and each is another request to wait for before anything's said.
 MOST_READS = 2
-
-# How many responses wait to be recorded at most - see LLMHandler._record_usage. Far more than a
-# conversation makes between one record and the next, however slow.
-USAGE_QUEUE_SIZE = 100
 
 # The efforts Claude's API takes, quickest first.
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -165,13 +159,9 @@ class LLMHandler:
         # What's known about the user, given to the model with every request - see memory.py.
         self.memory = memory
 
-        # Where each response is recorded, and the queue and thread which do it. Recording can
-        # wait - see _record_usage - so it's left to a thread of its own, made at the first
-        # response rather than here, as a handler with no log never needs one.
+        # Where each response is recorded - the brain's log, handed each one to record in its own
+        # time, so this handler owns no thread: it's made again with each satellite's session.
         self.usage = usage
-        self._usage_queue: Optional[queue.Queue] = None
-        self._usage_worker: Optional[threading.Thread] = None
-        self._usage_worker_lock = threading.Lock()
 
         # Web search is opt-in per query rather than always on, so ordinary replies
         # aren't slowed down or billed by unnecessary searches.
@@ -757,46 +747,10 @@ class LLMHandler:
             if turn_kind is None and (tools or searches):
                 turn_kind = kind_of(tools, searches)
             if self.usage is not None:
-                self._record_usage(response, turn_kind)
+                self.usage.record_later(response, self.model_name, turn_kind)
         except Exception as e:
             logger.warning(f"Could not log the usage: {e}")
         return turn_kind
-
-    def _record_usage(self, response, kind: Optional[str]):
-        """
-        Hands a response to the thread which records it. The log's record can block - the
-        first of each day rewrites the file and waits for the disk, and it waits on a lock
-        which the dashboard's summary holds while it goes through every call kept - and that
-        isn't to be waited on between Claude answering and Nova saying it. One thread takes
-        them in the order they came. The queue is bounded, so a log which has stopped
-        answering costs some lines of it, not the memory of the brain.
-        """
-        with self._usage_worker_lock:
-            if self._usage_worker is None:
-                self._usage_queue = queue.Queue(maxsize=USAGE_QUEUE_SIZE)
-                self._usage_worker = threading.Thread(target=self._record_usages, daemon=True,
-                                                      name="usage-recorder")
-                self._usage_worker.start()
-        try:
-            self._usage_queue.put_nowait((response, kind))
-        except queue.Full:
-            logger.warning("The usage log isn't keeping up, so a call to Claude wasn't recorded")
-
-    def _record_usages(self):
-        """Records what's queued, one at a time, for as long as the handler lives."""
-        while True:
-            response, kind = self._usage_queue.get()
-            try:
-                self.usage.record(response, model=self.model_name, kind=kind)
-            except Exception as e:
-                logger.warning(f"Could not record the usage: {e}")
-            finally:
-                self._usage_queue.task_done()
-
-    def flush_usage(self):
-        """Waits until everything handed over for recording has been recorded. For tests, which look at the log."""
-        if self._usage_queue is not None:
-            self._usage_queue.join()
 
     def _read(self, use, read: Callable[[Action], str]) -> Dict:
         """

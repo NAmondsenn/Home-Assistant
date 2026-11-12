@@ -26,6 +26,7 @@ midnight there, not in UTC.
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from calendar import monthrange
@@ -46,6 +47,10 @@ KEEP_DAYS = 40
 SUMMARY_SECONDS = 60
 
 SECONDS_PER_DAY = 86400
+
+# How many calls wait to be recorded at most - see UsageLog.record_later. Far more than a
+# conversation makes between one record and the next, however slow.
+QUEUE_SIZE = 100
 
 # The kinds of request the dashboard splits spending into.
 MUSIC = "Music"
@@ -229,6 +234,10 @@ class UsageLog:
         # so a new line is never glued on to a half written one.
         self._pruned_on = None
         self._folder_made = False
+        # The queue and thread which record_later hands calls to, made at its first use.
+        self._queue: Optional[queue.Queue] = None
+        self._worker: Optional[threading.Thread] = None
+        self._worker_lock = threading.Lock()
         self._load()
 
     def _load(self):
@@ -267,6 +276,51 @@ class UsageLog:
             self._record(response, model, kind)
         except Exception as e:
             logger.warning(f"Could not record the usage: {e}")
+
+    def record_later(self, response, model: str, kind: Optional[str] = None) -> None:
+        """
+        Hands a call to a thread of this log's own to be recorded, and returns at once. For
+        the reply's path, which record() would hold up: the first call of each day rewrites
+        the file and waits for the disk, and every call waits on the lock which summary()
+        holds while it goes through all the calls kept. One thread takes them in the order
+        they came, and it's the log's, so there is one for the brain however many sessions
+        record to it, and none is left behind when a session is replaced. The queue is
+        bounded, so a log which has stopped answering costs some lines of it, not the memory
+        of the brain. Never raises or blocks.
+
+        Args:
+            response: What Anthropic returned - see record().
+            model: The model which answered.
+            kind: The kind to record the call as - see record().
+        """
+        try:
+            with self._worker_lock:
+                if self._worker is None:
+                    # Kept only once it's started, so a thread which couldn't be isn't waited on.
+                    worker_queue = queue.Queue(maxsize=QUEUE_SIZE)
+                    worker = threading.Thread(target=self._work, args=(worker_queue,), daemon=True,
+                                              name="usage-recorder")
+                    worker.start()
+                    self._queue, self._worker = worker_queue, worker
+            self._queue.put_nowait((response, model, kind))
+        except queue.Full:
+            logger.warning("The usage log isn't keeping up, so a call to Claude wasn't recorded")
+        except Exception as e:
+            logger.warning(f"Could not hand the usage over to be recorded: {e}")
+
+    def _work(self, calls: queue.Queue):
+        """Records what's queued, one at a time, for as long as the brain runs."""
+        while True:
+            response, model, kind = calls.get()
+            try:
+                self.record(response, model, kind)
+            finally:
+                calls.task_done()
+
+    def flush(self) -> None:
+        """Waits until every call handed over with record_later has been recorded. For tests, which look at the log."""
+        if self._queue is not None:
+            self._queue.join()
 
     def _record(self, response, model: str, kind: Optional[str]):
         usage = getattr(response, "usage", None)

@@ -225,7 +225,8 @@ def test_a_broken_summary_is_logged_once_and_doesnt_stop_it(started, usage, capl
     with caplog.at_level("ERROR", logger=ha_device.__name__):
         device.publish_state()
         device.publish_state()
-    assert len([r for r in caplog.records if r.name == ha_device.__name__]) == 1
+    # Only the errors: whether the logger's INFO lines are kept depends on what ran before.
+    assert len([r for r in caplog.records if r.name == ha_device.__name__ and r.levelname == "ERROR"]) == 1
 
 
 def test_its_off_without_a_broker(make_config, usage):
