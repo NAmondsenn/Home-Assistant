@@ -26,7 +26,7 @@ import socket
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from voice_assistant.logging_setup import TRANSCRIPT
 
@@ -331,9 +331,7 @@ class NovaDevice:
                 return
             logger.info(f"Nova's in Home Assistant, through its broker at {self.host}")
             self._complained = False
-            client.subscribe([(f"{self._volume[category]}/set", QOS) for category, _, _, _ in VOLUMES] +
-                             [(f"{self._muted}/set", QOS), (self._stop, QOS), (self._restart, QOS),
-                              (self._speak, QOS), (HA_STATUS, QOS)])
+            client.subscribe(self._subscriptions())
             self._announce()
             # Everything's sent again, since the broker may have restarted and lost
             # what it was keeping - and only then is Nova shown as there.
@@ -354,6 +352,16 @@ class NovaDevice:
         self._connected = False
         if not self._stopping.is_set():
             self._complain(f"Lost Home Assistant's broker ({reason_code}), so trying again")
+
+    def _subscriptions(self) -> List[Tuple[str, int]]:
+        """
+        The topics to listen on once connected, each with its QoS: Home Assistant's
+        commands for each control, and its saying it's back after a restart. A device
+        with no commands of its own, like the brain's usage one, replaces this.
+        """
+        return ([(f"{self._volume[category]}/set", QOS) for category, _, _, _ in VOLUMES] +
+                [(f"{self._muted}/set", QOS), (self._stop, QOS), (self._restart, QOS),
+                 (self._speak, QOS), (HA_STATUS, QOS)])
 
     def _announce(self):
         """Tells Home Assistant about Nova's device and its controls."""
