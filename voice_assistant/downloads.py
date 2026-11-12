@@ -533,24 +533,37 @@ class Downloads:
         Returns:
             The last message said, or "" if Nova stopped first.
         """
+        # How it's named in what's said - the song SoulSync found, once it has - so
+        # even the answer to something unforeseen names what was requested.
+        named = [wanted]
         try:
-            return self._follow(wanted, satellite)
+            return self._follow(wanted, satellite, named)
         except Exception:
             # Anything unforeseen still ends in an answer, so nobody waits for one
             # which never comes.
-            logger.exception(f"Watching the download of {wanted.name} failed")
-            return self._tell(satellite, _couldnt(wanted, None))
+            logger.exception(f"Watching the download of {named[0].name} failed")
+            return self._tell(satellite, _couldnt(named[0], None))
         finally:
             with self._lock:
                 if self._waiting.get(wanted.key) is wanted:
                     del self._waiting[wanted.key]
 
-    def _follow(self, wanted: Wanted, satellite: Optional[str]) -> str:
+    def _follow(self, wanted: Wanted, satellite: Optional[str], named: List[Wanted]) -> str:
         """
         The watch itself, as _watch describes it - which answers even when this goes
-        wrong. A song is looked for in Navidrome, and named in all that's said of it
-        from "X requested." on, as SoulSync found it: "endless by Gunna" for a
-        misheard "Endless by Gunner".
+        wrong.
+
+        A song is named in all that's said of it from "X requested." on as SoulSync
+        found it: "endless by Gunna" for a misheard "Endless by Gunner". It's looked
+        for in Navidrome by the title asked for and SoulSync's artist, though: every
+        word asked for is in SoulSync's title, but its import may tag the file without
+        a "(feat. ...)" or a remaster SoulSync's title had.
+
+        Args:
+            wanted: What was asked for.
+            satellite: The satellite that asked, or None.
+            named: Holds how it's named, for _watch - set to the song SoulSync found
+                once it has.
         """
         soulsync, library = self._soulsync(), self._library()
         if soulsync is None or library is None:
@@ -558,17 +571,21 @@ class Downloads:
             return self._tell(satellite, _couldnt(wanted, self.problem()))
 
         started = self._now()
+        # What Navidrome is searched for, which for an album is what was asked for.
+        sought = wanted
         try:
             if wanted.kind == "album":
                 had = self._had(library, wanted)
                 request = soulsync.request_album(wanted.title, wanted.artist)
             else:
                 request = soulsync.find_song(wanted.title, wanted.artist)
-                wanted = Wanted(request.title, request.artist, "track")
-                # Looked for again under the name SoulSync found it by: Navidrome may
-                # have Gunna's "endless" though it had nothing by "Gunner". Had only
-                # clean, it's still asked for, as the explicit one is what's wanted.
-                had = self._had(library, wanted)
+                sought = Wanted(wanted.title, request.artist, "track")
+                wanted = named[0] = Wanted(request.title, request.artist, "track")
+                # Looked for again by SoulSync's artist: Navidrome may have Gunna's
+                # "endless" though it had nothing by "Gunner". Had only clean, it's
+                # still asked for, as the explicit one is what's wanted. The same look
+                # as for what lands, so what was there before is never taken for it.
+                had = self._had(library, sought)
                 name = _as_had(wanted, had)
                 if name:
                     logger.info(f"Navidrome already has {name}, so it isn't requested")
@@ -588,7 +605,7 @@ class Downloads:
         while not self._wait(POLL_EVERY):
             limit = self._limit(wanted)
             if self._now() - started >= limit:
-                new = self._look(library, wanted, before, new)
+                new = self._look(library, sought, before, new)
                 return self._tell(satellite, self._last_word(wanted, request, new))
             if done_at is None:
                 progress = self._progress(soulsync, wanted, request)
@@ -596,7 +613,7 @@ class Downloads:
                     return self._tell(satellite, self._last_word(wanted, request, new, progress.reason))
                 if progress is not None and progress.state == "done":
                     done_at = self._now()
-            new = self._look(library, wanted, before, new)
+            new = self._look(library, sought, before, new)
             outcome = self._landed(wanted, request, new)
             if outcome:
                 return self._tell(satellite, outcome)

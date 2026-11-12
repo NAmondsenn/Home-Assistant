@@ -67,9 +67,10 @@ CLEAN_EDITION_WORDS = CLEAN_VERSIONS
 OTHER_VERSIONS = tuple(version for version in VERSIONS if version not in CLEAN_VERSIONS)
 
 # The versions of a song which aren't the one asked for unless they're named: an
-# album's, and a demo - a search for M.E. found "M.E. (Demo Version)" as well as the
-# studio one.
-SONG_VERSIONS = OTHER_VERSIONS + ("demo",)
+# album's, a demo - a search for M.E. found "M.E. (Demo Version)" as well as the
+# studio one - and an unplugged one. A part ending in "mix" is one too: see
+# _another_version. Only for picking: navidrome.VERSIONS, which "play" uses, is as it was.
+SONG_VERSIONS = OTHER_VERSIONS + ("demo", "unplugged")
 
 # How alike an artist's name must be to the one asked for (difflib's ratio, from 0 to
 # 1) to be taken for a mishearing of it - and then only for exactly the title asked
@@ -254,47 +255,77 @@ def _spelt_like(name: str, artist: str) -> bool:
     return difflib.SequenceMatcher(None, normalise(name), normalise(artist)).ratio() >= CLOSE_SPELLING
 
 
+def _another_version(parts: List[str], title: str) -> bool:
+    """
+    Whether a part of a song's name, or of its album's, says it's a version other than
+    the one asked for: one of SONG_VERSIONS, or a mix - a part ending in "mix", as
+    "Extended Mix" and "Club Mix" do - which the title asked doesn't name. A remix is
+    a remix by any name, so "remix" asked for takes "(Made Up Remix)", but a mix has to
+    be named as it is: "Blue Monday extended mix" isn't its club mix.
+
+    Args:
+        parts: The bracketed and dashed parts of the song's name and its album's.
+        title: The song as asked for.
+    """
+    for part in parts:
+        words = normalise(part)
+        versions = [version for version in SONG_VERSIONS if _names(words, version)]
+        if not versions and words.endswith("mix"):
+            versions = [words]
+        if any(not _names(title, version) for version in versions):
+            return True
+    return False
+
+
 def pick_track(candidates: List[Dict], title: str, artist: Optional[str]) -> Optional[Dict]:
     """
-    The song SoulSync's search found which is the one asked for: the first, in
-    SoulSync's order of its best guesses, with every word of the title, which isn't a
-    clean version, nor a live one, a remix, a demo or the like unless the title asked
-    names it. Asked for by an artist, it's theirs only with every word of their name,
-    as an album is - or, with exactly the title asked for, a name spelt closely like
-    it, as speech to text heard Gunna as "Gunner". Downloaded, a song nobody asked for
-    would be in the library for good.
+    The song SoulSync's search found which is the one asked for. It has every word of
+    the title, and isn't a clean version, nor a live one, a remix, a demo, a mix or the
+    like unless the title asked names it - by its own name or its album's, as a plain
+    "M.E." on a live album is live. Asked for by an artist, it's theirs, with every word
+    of their name, as an album is - or, with exactly the title asked for, by a name
+    spelt closely like it, as speech to text heard Gunna as "Gunner".
+
+    Of those, it's taken in passes, the first of the earliest in SoulSync's order of its
+    best guesses: the artist's own with exactly the title, then theirs with more words
+    to it, then a close spelling. So Fleetwood Mac's own "Dreams" is taken over
+    "Fleetwood Bac"'s listed above it, and Gunna's "endless" over his "Endless Love".
+    Downloaded, a song nobody asked for would be in the library for good.
 
     Args:
         candidates: Songs as SoulSync's search lists them, each with its name,
             artists and album.
         title: The song as asked for.
-        artist: Its artist, or None if only the title was given.
+        artist: Its artist, or None if only the title was given, when anyone's will do.
 
     Returns:
         One of the candidates, or None if none of them will do.
     """
+    # Each candidate which will do at all, with whether its title is exactly the one
+    # asked for, whether it's the artist's own, and whether it's by a close spelling.
+    usable = []
     for candidate in candidates:
-        name = _name_of(candidate.get("name"))
+        name, album = _name_of(candidate.get("name")), _name_of(candidate.get("album"))
         title_score = likeness(name, title)
-        if title_score < 2:
-            continue
-        if any(_names(part, version) and not _names(title, version)
-               for part in _parts(name) for version in SONG_VERSIONS):
+        if title_score < 2 or _another_version(_parts(name) + _parts(album), title):
             continue
         # As navidrome reads a track in the library: its title or its album's naming a clean version.
-        if is_clean({"title": name, "album": _name_of(candidate.get("album"))}):
+        if is_clean({"title": name, "album": album}):
             continue
-        if artist:
-            # Each artist on their own, and all of them together, as pick_album has it.
-            names = _artists(candidate)
-            names += [" ".join(names)] if len(names) > 1 else []
-            theirs = any(artist_likeness(found, artist) >= 2 for found in names)
-            # Only for exactly the title, so a guess at the artist and a guess at the
-            # title never make a song nobody asked for: not Gunna's "Endless Love".
-            misheard = title_score == 3 and any(_spelt_like(found, artist) for found in names)
-            if not (theirs or misheard):
-                continue
-        return candidate
+        # Each artist on their own, and all of them together, as pick_album has it.
+        names = _artists(candidate)
+        names += [" ".join(names)] if len(names) > 1 else []
+        theirs = not artist or any(artist_likeness(found, artist) >= 2 for found in names)
+        misheard = bool(artist) and any(_spelt_like(found, artist) for found in names)
+        usable.append((candidate, title_score == 3, theirs, misheard))
+    # A close spelling only ever with exactly the title, so a guess at the artist and a
+    # guess at the title never make a song nobody asked for.
+    for will_do in (lambda exact, theirs, misheard: exact and theirs,
+                    lambda exact, theirs, misheard: theirs,
+                    lambda exact, theirs, misheard: exact and misheard):
+        for candidate, exact, theirs, misheard in usable:
+            if will_do(exact, theirs, misheard):
+                return candidate
     return None
 
 

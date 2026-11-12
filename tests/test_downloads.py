@@ -37,8 +37,9 @@ ENDLESS_FOUND = SongRequest("endless", "Gunna", {"id": "made-up-track", "name": 
 ENDLESS = {"id": "e1", "title": "endless", "artist": "Gunna", "album": "made-up album", "explicitStatus": "explicit"}
 ENDLESS_CLEAN = {"id": "e2", "title": "endless (Clean)", "artist": "Gunna", "album": "made-up album",
                  "explicitStatus": ""}
-# Where Navidrome is looked in for it: under the name asked for, then SoulSync's.
-ENDLESS_NAMES = (("Endless", "Gunner"), ("endless", "Gunna"))
+# Where Navidrome is looked in for it: under the name asked for, then by the title asked
+# for and SoulSync's artist.
+ENDLESS_NAMES = (("Endless", "Gunner"), ("Endless", "Gunna"))
 
 
 def _track(number, title, clean=False, album="Rumours", album_id=None):
@@ -363,12 +364,24 @@ def test_a_song_is_looked_for_and_named_as_soulsync_found_it(watching, clock, sa
     assert downloads._watch(ENDLESS_ASKED, "kitchen") == "endless by Gunna has been downloaded."
     assert said == [("kitchen", "endless by Gunna requested."), ("kitchen", "endless by Gunna has been downloaded.")]
     assert soulsync.searched == [("Endless", "Gunner")] and soulsync.requested == [("endless", "Gunna")]
-    assert set(library.looked_for) == {("endless", "Gunna")}
+    assert set(library.looked_for) == {("Endless", "Gunna")}
 
     # And given up on by that name too.
     watching(FakeSoulSync(song=ENDLESS_FOUND), FakeLibrary(clock, names=ENDLESS_NAMES))._watch(ENDLESS_ASKED,
                                                                                                "kitchen")
     assert said[-1] == ("kitchen", "I couldn't download endless by Gunna.")
+
+
+def test_a_song_is_found_however_its_import_tagged_it(watching, clock, said):
+    # SoulSync found "endless (feat. Made Up)", and filed it as plain "endless" - so
+    # it's looked for by the title asked for, though named as SoulSync found it.
+    featuring = SongRequest("endless (feat. Made Up)", "Gunna", {"id": "made-up-track"})
+    library = FakeLibrary(clock, songs=[[], [ENDLESS]], names=(("Endless", "Gunna"),))
+    downloads = watching(FakeSoulSync(song=featuring), library)
+
+    assert downloads._watch(ENDLESS_ASKED, "kitchen") == "endless (feat. Made Up) by Gunna has been downloaded."
+    assert said[0] == ("kitchen", "endless (feat. Made Up) by Gunna requested.")
+    assert clock.said_at[-1] == POLL_EVERY
 
 
 def test_a_song_navidrome_has_under_the_name_soulsync_found_isnt_requested(watching, clock, said):
@@ -639,6 +652,18 @@ def test_something_unforeseen_still_ends_in_an_answer(watching, clock, said, cap
     assert downloads._watch(GOOBA_WANTED, "kitchen") == "I couldn't download Gooba by 6ix9ine."
     assert said == [GOOBA_REQUESTED, ("kitchen", "I couldn't download Gooba by 6ix9ine.")]
     assert "made-up bug" in caplog.text
+
+
+def test_something_unforeseen_names_the_song_as_soulsync_found_it_once_it_has(watching, clock, said):
+    soulsync = FakeSoulSync([RuntimeError("made-up bug")], song=ENDLESS_FOUND)
+    watching(soulsync, FakeLibrary(clock, names=ENDLESS_NAMES))._watch(ENDLESS_ASKED, "kitchen")
+    assert said == [("kitchen", "endless by Gunna requested."), ("kitchen", "I couldn't download endless by Gunna.")]
+
+    # Before SoulSync has found anything, it's named as it was asked for.
+    said.clear()
+    watching(FakeSoulSync(fail=RuntimeError("made-up bug")), FakeLibrary(clock, names=()))._watch(ENDLESS_ASKED,
+                                                                                                   "kitchen")
+    assert said == [("kitchen", "I couldn't download Endless by Gunner.")]
 
 
 def test_set_up_when_asked_but_not_by_the_watch_says_why_it_couldnt(make_config, clock, said):

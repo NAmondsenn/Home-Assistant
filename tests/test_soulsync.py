@@ -156,7 +156,7 @@ def test_a_title_alone_is_searched_for_as_it_is(soulsync, http):
     assert http.posted[0][1] == {"query": "Gooba", "limit": 10}
 
 
-def test_the_song_found_goes_on_the_wishlist_which_is_started(soulsync, http):
+def test_the_song_found_goes_on_the_wishlist_which_is_started(soulsync, http, caplog):
     studio = _track("M.E.", "Gary Numan", "The Pleasure Principle")
     http.answers[SEARCH] = _found(studio)
 
@@ -171,6 +171,7 @@ def test_the_song_found_goes_on_the_wishlist_which_is_started(soulsync, http):
                                  "source_type": "api", "failure_reason": "Asked for by voice through Nova"}
     assert all(headers == {"Authorization": "Bearer the-key"} for _, _, headers in http.posted)
     assert http.timeouts == [SEARCH_TIMEOUT, REQUEST_TIMEOUT, REQUEST_TIMEOUT]
+    assert "couldn't be started" not in caplog.text
 
 
 def test_an_album_given_as_more_than_a_name_goes_on_the_wishlist_as_it_is(soulsync, http):
@@ -195,7 +196,7 @@ def test_a_song_still_comes_down_when_the_wishlist_couldnt_be_started(soulsync, 
     # It's on SoulSync's wishlist either way, so it comes down at the wishlist's next run.
     http.answers[PROCESS] = _refusal(500, "INTERNAL_ERROR", "The wishlist is already being processed")
     soulsync.request_song(soulsync.find_song("Gooba", "6ix9ine"))
-    assert "wishlist" in caplog.text
+    assert "SoulSync's wishlist couldn't be started, so the song waits for its next run" in caplog.text
 
 
 def test_a_song_is_only_waited_for_as_navidrome_decides(soulsync, http):
@@ -226,6 +227,19 @@ def test_a_misheard_artist_spelt_like_the_one_found_is_taken_for_exactly_the_tit
     # Not another title, though, nor an artist only a little like it.
     assert pick_track([_track("Endless Love", "Gunna")], "Endless", "Gunner") is None
     assert pick_track([_track("Endless", "Guns N' Roses")], "Endless", "Gunner") is None
+    assert pick_track([_track("Endless Love", "Gunna"), endless], "Endless", "Gunner") is endless
+
+
+def test_the_named_artists_own_song_comes_before_a_close_spelling_and_the_exact_title_before_more_words():
+    # A spelling close to the artist asked for is only a guess at a mishearing, so the
+    # artist's own song is taken first, wherever SoulSync lists it.
+    bac, mac = _track("Dreams", "Fleetwood Bac"), _track("Dreams", "Fleetwood Mac")
+    assert pick_track([bac, mac], "Dreams", "Fleetwood Mac") is mac
+    assert pick_track([bac], "Dreams", "Fleetwood Mac") is bac
+    # And the title asked for exactly before one with more words to it.
+    love, endless = _track("Endless Love", "Gunna"), _track("endless", "Gunna")
+    assert pick_track([love, endless], "Endless", "Gunna") is endless
+    assert pick_track([love], "Endless", "Gunna") is love
 
 
 def test_the_studio_song_is_picked_over_live_and_demo_ones():
@@ -238,8 +252,28 @@ def test_the_studio_song_is_picked_over_live_and_demo_ones():
     assert pick_track([demo, studio, live], "M.E. live", "Gary Numan") is live
 
 
+def test_a_song_from_a_live_album_is_a_live_version():
+    # Called plain "M.E." on an album whose name says it's live.
+    live = _track("M.E.", "Gary Numan", "Living Ornaments '79 (Live)")
+    unplugged = _track("M.E.", "Gary Numan", {"name": "M.E. - Unplugged"})
+    studio = _track("M.E.", "Gary Numan", "The Pleasure Principle")
+    assert pick_track([live, unplugged, studio], "M.E.", "Gary Numan") is studio
+    assert pick_track([live, unplugged], "M.E.", "Gary Numan") is None
+
+
+def test_a_mix_isnt_picked_unless_its_the_one_asked_for():
+    extended, club = _track("Blue Monday (Extended Mix)", "New Order"), _track("Blue Monday - Club Mix", "New Order")
+    single = _track("Blue Monday", "New Order")
+    assert pick_track([extended, club, single], "Blue Monday", "New Order") is single
+    assert pick_track([club, extended, single], "Blue Monday extended mix", "New Order") is extended
+    # A remix by name is still a remix, which "remix" asks for.
+    remix = _track("Gooba (Made Up Remix)", "6ix9ine")
+    assert pick_track([remix], "Gooba remix", "6ix9ine") is remix
+
+
 @pytest.mark.parametrize("name", ["Gooba (Remix)", "Gooba - Acoustic", "Gooba [Instrumental]", "Gooba (Sped Up)",
-                                  "Gooba (Slowed)", "Gooba (Karaoke Version)", "Gooba - Live at Wembley"])
+                                  "Gooba (Slowed)", "Gooba (Karaoke Version)", "Gooba - Live at Wembley",
+                                  "Gooba (Extended Mix)", "Gooba - Club Mix", "Gooba (Megamix)", "Gooba (Unplugged)"])
 def test_another_version_of_a_song_isnt_picked(name):
     assert pick_track([_track(name, "6ix9ine")], "Gooba", "6ix9ine") is None
 
@@ -274,7 +308,10 @@ def test_the_first_song_which_will_do_is_picked_with_every_word_of_the_title():
     assert pick_track([first, second], "Gooba", None) is first
     assert pick_track([second, first], "Gooba", None) is second
     longer = _track("Gooba Gooba", "6ix9ine")
-    assert pick_track([longer, first], "Gooba", "6ix9ine") is longer
+    assert pick_track([longer], "Gooba", "6ix9ine") is longer
+    # The title asked for exactly comes first, with an artist asked for or without.
+    assert pick_track([longer, first], "Gooba", "6ix9ine") is first
+    assert pick_track([longer, second], "Gooba", None) is second
     assert pick_track([_track("Goo", "6ix9ine")], "Gooba", "6ix9ine") is None
 
 
