@@ -16,7 +16,8 @@ import requests
 from voice_assistant.actions import Action
 from voice_assistant.downloads import NOT_SET_UP, POLL_EVERY, SCAN_AFTER, Downloads, Wanted, _bare_title
 from voice_assistant.navidrome import NavidromeLibrary
-from voice_assistant.soulsync import MCP_OFF, NOT_ANSWERING, NOT_FOUND, AlbumRequest, Progress, SoulSync, SoulSyncError
+from voice_assistant.soulsync import (KEY_REFUSED, MCP_OFF, NOT_ANSWERING, NOT_FOUND, AlbumRequest, Progress,
+                                      SongRequest, SoulSync, SoulSyncError)
 
 GOOBA = {"id": "1", "title": "Gooba", "artist": "6ix9ine", "album": "Gooba", "explicitStatus": "explicit"}
 GOOBA_CLEAN = {"id": "2", "title": "Gooba (Clean)", "artist": "6ix9ine", "album": "Gooba", "explicitStatus": ""}
@@ -28,6 +29,16 @@ WAITING, DONE = Progress("waiting"), Progress("done")
 
 GOOBA_REQUESTED = ("kitchen", "Gooba by 6ix9ine requested.")
 GOOBA_DOWNLOADED = ("kitchen", "Gooba by 6ix9ine has been downloaded.")
+
+# "Endless by Gunner", as speech to text heard Gunna's "endless" live on 12 November,
+# and the song SoulSync found for it.
+ENDLESS_ASKED = Wanted("Endless", "Gunner", "track")
+ENDLESS_FOUND = SongRequest("endless", "Gunna", {"id": "made-up-track", "name": "endless", "artists": ["Gunna"]})
+ENDLESS = {"id": "e1", "title": "endless", "artist": "Gunna", "album": "made-up album", "explicitStatus": "explicit"}
+ENDLESS_CLEAN = {"id": "e2", "title": "endless (Clean)", "artist": "Gunna", "album": "made-up album",
+                 "explicitStatus": ""}
+# Where Navidrome is looked in for it: under the name asked for, then SoulSync's.
+ENDLESS_NAMES = (("Endless", "Gunner"), ("endless", "Gunna"))
 
 
 def _track(number, title, clean=False, album="Rumours", album_id=None):
@@ -85,12 +96,20 @@ class FakeTime:
 
 
 class FakeSoulSync:
-    """Stands in for SoulSync: records what it's asked for, and answers how it's getting on from a list."""
+    """
+    Stands in for SoulSync: records what it searches for and what it's asked for, and
+    answers how it's getting on from a list.
+    """
 
-    def __init__(self, progress=(WAITING,), album=None, fail=None):
+    def __init__(self, progress=(WAITING,), album=None, fail=None, song=None, wishlist_fail=None):
         self.progress = list(progress)
         self.album = album or AlbumRequest(None, [], 3, 3)
         self.fail = fail
+        # The song it finds - by default the one asked for, named as it was asked for.
+        self.song = song
+        self.wishlist_fail = wishlist_fail
+        self.found = None
+        self.searched = []
         self.requested = []
 
     def _request(self, title, artist, answer):
@@ -99,11 +118,21 @@ class FakeSoulSync:
             raise self.fail
         return answer
 
-    def request_song(self, title, artist):
-        return self._request(title, artist, "made-up-request")
+    def find_song(self, title, artist):
+        self.searched.append((title, artist))
+        if self.fail:
+            raise self.fail
+        self.found = self.song or SongRequest(title, artist, {"id": "made-up-track", "name": title})
+        return self.found
 
-    def song_progress(self, request_id):
-        assert request_id == "made-up-request"
+    def request_song(self, song):
+        assert song is self.found
+        self.requested.append((song.title, song.artist))
+        if self.wishlist_fail:
+            raise self.wishlist_fail
+
+    def song_progress(self, request):
+        assert request is self.found
         return _answer(self.progress)
 
     def request_album(self, title, artist):
@@ -118,18 +147,21 @@ class FakeLibrary:
     """
     Stands in for Navidrome: each find_* call is answered by the next of its list -
     the first being what it had before the request - and each scan is noted by the
-    fake clock's time.
+    fake clock's time. A song is only ever looked for under one of the names given.
     """
 
-    def __init__(self, clock, songs=([],), tracks=([],), scans_allowed=True):
+    def __init__(self, clock, songs=([],), tracks=([],), scans_allowed=True, names=(("Gooba", "6ix9ine"),)):
         self.clock = clock
         self.songs = list(songs)
         self.tracks = list(tracks)
         self.scans_allowed = scans_allowed
+        self.names = names
+        self.looked_for = []
         self.scans = []
 
     def find_songs(self, title, artist):
-        assert (title, artist) == ("Gooba", "6ix9ine")
+        assert (title, artist) in self.names
+        self.looked_for.append((title, artist))
         return list(_answer(self.songs))
 
     def find_album_tracks(self, title, artist):
@@ -322,6 +354,60 @@ def test_the_time_limits_are_read_as_they_are_now(watching, config, clock, said)
     assert 120 <= clock.given_up_at < 120 + POLL_EVERY
 
 
+def test_a_song_is_looked_for_and_named_as_soulsync_found_it(watching, clock, said):
+    # A misheard "Endless by Gunner": Navidrome has nothing of Gunna's before, then endless.
+    soulsync = FakeSoulSync(song=ENDLESS_FOUND)
+    library = FakeLibrary(clock, songs=[[], [], [ENDLESS]], names=ENDLESS_NAMES)
+    downloads = watching(soulsync, library)
+
+    assert downloads._watch(ENDLESS_ASKED, "kitchen") == "endless by Gunna has been downloaded."
+    assert said == [("kitchen", "endless by Gunna requested."), ("kitchen", "endless by Gunna has been downloaded.")]
+    assert soulsync.searched == [("Endless", "Gunner")] and soulsync.requested == [("endless", "Gunna")]
+    assert set(library.looked_for) == {("endless", "Gunna")}
+
+    # And given up on by that name too.
+    watching(FakeSoulSync(song=ENDLESS_FOUND), FakeLibrary(clock, names=ENDLESS_NAMES))._watch(ENDLESS_ASKED,
+                                                                                               "kitchen")
+    assert said[-1] == ("kitchen", "I couldn't download endless by Gunna.")
+
+
+def test_a_song_navidrome_has_under_the_name_soulsync_found_isnt_requested(watching, clock, said):
+    soulsync = FakeSoulSync(song=ENDLESS_FOUND)
+    downloads = watching(soulsync, FakeLibrary(clock, songs=[[ENDLESS_CLEAN, ENDLESS]], names=ENDLESS_NAMES))
+
+    assert downloads._watch(ENDLESS_ASKED, "kitchen") == "You've already got endless by Gunna."
+    assert said == [("kitchen", "You've already got endless by Gunna.")]
+    assert soulsync.requested == [] and clock.time == 0
+
+
+def test_a_song_navidrome_has_only_clean_under_the_name_soulsync_found_is_requested(watching, clock, said):
+    # And the clean copy it had isn't taken for the download.
+    soulsync = FakeSoulSync(song=ENDLESS_FOUND)
+    library = FakeLibrary(clock, songs=[[ENDLESS_CLEAN], [ENDLESS_CLEAN], [ENDLESS_CLEAN, ENDLESS]],
+                          names=ENDLESS_NAMES)
+
+    watching(soulsync, library)._watch(ENDLESS_ASKED, "kitchen")
+
+    assert said == [("kitchen", "endless by Gunna requested."), ("kitchen", "endless by Gunna has been downloaded.")]
+    assert soulsync.requested == [("endless", "Gunna")]
+    assert clock.said_at[-1] == 2 * POLL_EVERY
+
+
+def test_a_song_soulsync_found_nothing_for_is_named_as_asked_for(watching, clock, said):
+    library = FakeLibrary(clock, names=())
+    watching(FakeSoulSync(fail=SoulSyncError(NOT_FOUND)), library)._watch(ENDLESS_ASKED, "kitchen")
+
+    assert said == [("kitchen", "I couldn't download Endless by Gunner. SoulSync couldn't find it.")]
+    assert library.looked_for == []
+
+
+def test_a_song_soulsync_found_but_couldnt_request_is_named_as_found(watching, clock, said):
+    soulsync = FakeSoulSync(song=ENDLESS_FOUND, wishlist_fail=SoulSyncError(KEY_REFUSED))
+    watching(soulsync, FakeLibrary(clock, names=ENDLESS_NAMES))._watch(ENDLESS_ASKED, "kitchen")
+
+    assert said == [("kitchen", f"I couldn't download endless by Gunna. {KEY_REFUSED}")]
+
+
 # An album
 
 def test_an_album_is_downloaded_once_every_track_soulsync_named_is_in(watching, clock, said):
@@ -488,7 +574,7 @@ def test_an_album_soulsync_gives_up_on_says_how_much_came_down(watching, clock, 
 # When it goes wrong
 
 def test_a_failure_is_said_with_soulsyncs_reason(watching, clock, said):
-    # request_song raises SoulSyncError("SoulSync isn't answering.").
+    # find_song raises SoulSyncError("SoulSync isn't answering."), so nothing is found or requested.
     soulsync = FakeSoulSync(fail=SoulSyncError(NOT_ANSWERING))
     assert (watching(soulsync, FakeLibrary(clock))._watch(GOOBA_WANTED, "kitchen")
             == "I couldn't download Gooba by 6ix9ine. SoulSync isn't answering.")
@@ -850,6 +936,20 @@ def test_a_download_is_started_and_nothing_said_until_soulsync_answers(watching,
     assert _all_ended()
     assert said == [GOOBA_REQUESTED, GOOBA_DOWNLOADED]
     assert soulsync.requested == [("Gooba", "6ix9ine")]
+
+
+def test_a_misheard_song_asked_for_is_named_as_soulsync_found_it_from_then_on(watching, set_up, clock, said):
+    # Navidrome: nothing under the name asked for, nothing under SoulSync's, then endless.
+    library = FakeLibrary(clock, songs=[[], [], [ENDLESS]], names=ENDLESS_NAMES)
+    downloads = watching(FakeSoulSync(song=ENDLESS_FOUND), library, set_up)
+
+    # Kept in Claude's history as it was asked for, as SoulSync hasn't been asked yet.
+    assert downloads.download("Endless by Gunner", "track", "kitchen") == {
+        "success": True, "message": "Asked SoulSync for Endless by Gunner.", "later": True}
+
+    assert _all_ended()
+    assert said == [("kitchen", "endless by Gunna requested."), ("kitchen", "endless by Gunna has been downloaded.")]
+    assert library.looked_for[:2] == list(ENDLESS_NAMES)
 
 
 def test_a_yes_requests_without_looking_in_navidrome_again(watching, set_up, clock, said):

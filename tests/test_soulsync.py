@@ -1,9 +1,8 @@
 """
 SoulSync Test
-Checks how Nova asks SoulSync for a song or an album, and reads how it's getting on,
-with a fake in place of SoulSync's API and its MCP server - answering in the shapes
-the live check of 9 November recorded, with made-up names and ids - so nothing is
-ever sent to the real one.
+Checks how Nova asks SoulSync for a song or an album, with a fake in place of
+SoulSync's API and its MCP server - answering in the shapes the live checks of 9
+and 12 November recorded, with made-up ids - so nothing is ever sent to the real one.
 """
 
 import copy
@@ -13,13 +12,15 @@ import pytest
 import requests
 
 from voice_assistant import network
-from voice_assistant.soulsync import (MCP_TIMEOUT, REQUEST_TIMEOUT, AlbumRequest, Progress, SoulSync, SoulSyncError,
-                                      pick_album)
+from voice_assistant.soulsync import (MCP_TIMEOUT, REQUEST_TIMEOUT, SEARCH_TIMEOUT, AlbumRequest, Progress,
+                                      SongRequest, SoulSync, SoulSyncError, pick_album, pick_track)
 
 URL = "http://soulsync.local:8008"
-RECORDED_ID = "5b0e7c2a-91d4-4f3e-8a6b-2c7d9e1f0a43"
-RECORDED_REASON = "No one sharing it would send it"
 RECORDED_TRACK_COUNT = 11
+
+SEARCH = f"{URL}/api/v1/search/tracks"
+WISHLIST = f"{URL}/api/v1/wishlist"
+PROCESS = f"{URL}/api/v1/wishlist/process"
 
 
 def _envelope(data, status=200):
@@ -31,20 +32,23 @@ def _refusal(status, code, message):
     return status, {"success": False, "data": None, "error": {"code": code, "message": message}, "pagination": None}
 
 
-def _request(status, error=None, timed_out=False):
-    """A song request's progress, as GET /api/v1/request/<id> describes it."""
-    return _envelope({"request_id": RECORDED_ID, "query": "6ix9ine - Gooba", "status": status,
-                      "download_id": None if status in ("queued", "searching") else "made-up-download",
-                      "error": error, "completed_at": "2026-11-09T10:12:00Z" if status == "completed" else None,
-                      "timed_out": timed_out})
+def _track(name, artist, album="Made Up Album", **more):
+    """A track as POST /api/v1/search/tracks lists it from Deezer, with its album a plain string."""
+    return {"id": f"dz-{name}-{artist}".lower().replace(" ", "-"), "name": name, "artists": [artist], "album": album,
+            "duration_ms": 213000, "release_date": "1979-09-07", "image_url": None, "popularity": 0,
+            "preview_url": None, **more}
 
 
-SONG_ACCEPTED = _envelope({"request_id": RECORDED_ID, "status": "queued", "query": "6ix9ine - Gooba"}, 202)
-SONG_WAITING = _request("downloading")
-SONG_DONE = _request("completed")
-SONG_FAILED = _request("failed", RECORDED_REASON)
-SONG_NOT_FOUND = _request("not_found")
-SONG_EXPIRED = _refusal(404, "NOT_FOUND", "Request not found")
+def _found(*tracks):
+    return _envelope({"source": "deezer", "tracks": list(tracks)})
+
+
+GOOBA_FOUND = _track("GOOBA", "6ix9ine", "GOOBA")
+SONG_FOUND = _found(GOOBA_FOUND)
+WISHLIST_ADDED = _envelope({"created": True}, 201)
+# What POST /api/v1/wishlist answers for a track already on it, which writes nothing.
+ALREADY_WISHED_FOR = _refusal(409, "CONFLICT", "Track is already in the wishlist")
+WISHLIST_PROCESSING = (200, {"message": "Wishlist processing started."})
 NO_KEY = _refusal(401, "AUTH_REQUIRED", "An API key is needed")
 # What POST /mcp answers while SoulSync's MCP server is switched off in its settings.
 MCP_OFF = (404, {"error": "not found"})
@@ -88,23 +92,22 @@ class FakeResponse:
 class FakeSoulSync:
     """
     Stands in for the requests.Session SoulSync is asked through: its REST API
-    answers from the recorded shapes, and its MCP server each tool from a dict.
+    answers from the recorded shapes, by address, and its MCP server each tool from
+    a dict. Everything Nova asks of SoulSync is a POST, so it has no GET to answer.
     """
 
     def __init__(self):
         self.headers = {}
-        # Each REST POST as (address, body, headers), and each GET as (address, headers).
+        # Each REST POST as (address, body, headers).
         self.posted = []
-        self.got = []
         # Each JSON-RPC call posted to /mcp, and every request's timeout.
         self.mcp_calls = []
         self.timeouts = []
-        self.request_answer = SONG_ACCEPTED
-        # Answered in turn, one a GET.
-        self.progress = [SONG_WAITING, SONG_DONE, SONG_FAILED]
+        self.answers = {SEARCH: SONG_FOUND, WISHLIST: WISHLIST_ADDED, PROCESS: WISHLIST_PROCESSING}
         self.tools = {"find_album": ALBUM_FOUND, "request_album": ALBUM_REQUESTED,
                       "process_wishlist": WISHLIST_STARTED}
-        # An answer to every MCP call instead of the tools', such as MCP_OFF.
+        # An answer to every REST request, or every MCP call, instead of its own - such as NO_KEY.
+        self.rest_answer = None
         self.mcp_answer = None
         # An exception every request raises instead of being answered.
         self.fail = None
@@ -119,15 +122,8 @@ class FakeSoulSync:
                 return FakeResponse(*self.mcp_answer)
             return FakeResponse(200, {"jsonrpc": "2.0", "id": json["id"],
                                       "result": self.tools[json["params"]["name"]]})
-        self.posted.append((url, json, dict(self.headers)))
-        return FakeResponse(*self.request_answer)
-
-    def get(self, url, timeout=None):
-        self.timeouts.append(timeout)
-        if self.fail:
-            raise self.fail
-        self.got.append((url, dict(self.headers)))
-        return FakeResponse(*self.progress.pop(0))
+        self.posted.append((url, copy.deepcopy(json), dict(self.headers)))
+        return FakeResponse(*(self.rest_answer or self.answers[url]))
 
 
 @pytest.fixture
@@ -144,58 +140,145 @@ def soulsync(http):
     return SoulSync(URL, "the-key")
 
 
-def test_a_song_is_asked_for_as_artist_dash_title_with_the_key(soulsync, http):
-    assert soulsync.request_song("Gooba", "6ix9ine") == RECORDED_ID
-    url, body, headers = http.posted[0]
-    assert url == "http://soulsync.local:8008/api/v1/request"
-    # Nothing else: SoulSync's request has no field to steer away from a clean version,
-    # and itself avoids live, remixed and radio-edit versions of a song.
-    assert body == {"query": "6ix9ine - Gooba", "title": "Gooba", "artist": "6ix9ine"}
-    assert headers["Authorization"] == "Bearer the-key"
-    assert http.timeouts == [REQUEST_TIMEOUT]
+# A song
+
+def test_a_song_is_searched_for_as_artist_dash_title_with_the_key(soulsync, http):
+    song = soulsync.find_song("Gooba", "6ix9ine")
+    # Named as SoulSync has it, which is how the watch looks for it and says it.
+    assert song == SongRequest("GOOBA", "6ix9ine", GOOBA_FOUND)
+    assert http.posted == [(SEARCH, {"query": "6ix9ine - Gooba", "limit": 10}, {"Authorization": "Bearer the-key"})]
+    # It searches Deezer, beyond the local network, so it's given longer.
+    assert http.timeouts == [SEARCH_TIMEOUT]
 
 
-def test_a_title_alone_is_asked_for_as_it_is(soulsync, http):
-    soulsync.request_song("Gooba", None)
-    assert http.posted[0][1] == {"query": "Gooba", "title": "Gooba"}
+def test_a_title_alone_is_searched_for_as_it_is(soulsync, http):
+    soulsync.find_song("Gooba", None)
+    assert http.posted[0][1] == {"query": "Gooba", "limit": 10}
 
 
-def test_a_songs_progress_is_waiting_done_or_failed_with_its_reason(soulsync, http):
-    assert [soulsync.song_progress(RECORDED_ID) for _ in range(3)] == [
-        Progress("waiting"), Progress("done"), Progress("failed", f"SoulSync said: {RECORDED_REASON}.")]
-    assert [url for url, _ in http.got] == [f"{URL}/api/v1/request/{RECORDED_ID}"] * 3
-    assert all(headers["Authorization"] == "Bearer the-key" for _, headers in http.got)
+def test_the_song_found_goes_on_the_wishlist_which_is_started(soulsync, http):
+    studio = _track("M.E.", "Gary Numan", "The Pleasure Principle")
+    http.answers[SEARCH] = _found(studio)
 
-    # A reason which isn't words is still SoulSync's, rather than ending the watch.
-    http.progress = [_request("failed", 42)]
-    assert soulsync.song_progress(RECORDED_ID) == Progress("failed", "SoulSync said: 42.")
+    soulsync.request_song(soulsync.find_song("M.E.", "Gary Numan"))
 
-
-def test_every_state_before_the_end_is_waiting(soulsync, http):
-    http.progress = [_request("queued"), _request("searching"), _request("downloading")]
-    assert {soulsync.song_progress(RECORDED_ID).state for _ in range(3)} == {"waiting"}
-
-
-def test_a_song_not_found_or_failed_without_saying_why_has_the_reason_there_is(soulsync, http):
-    http.progress = [SONG_NOT_FOUND, _request("failed", ""), _request("failed", "Nobody had it.")]
-    assert [soulsync.song_progress(RECORDED_ID) for _ in range(3)] == [
-        Progress("failed", "SoulSync couldn't find it."), Progress("failed"),
-        Progress("failed", "SoulSync said: Nobody had it.")]
+    # The wishlist, as SoulSync's own requests go, files what it gets into the library:
+    # its /api/v1/request only downloads, live on 11 November, and nothing reached Navidrome.
+    assert [url for url, _, _ in http.posted] == [SEARCH, WISHLIST, PROCESS]
+    # Its album as a name: given Deezer's plain string, SoulSync tagged the album as
+    # the song's own title, "M.E.", live on 12 November.
+    assert http.posted[1][1] == {"track_data": {**studio, "album": {"name": "The Pleasure Principle"}},
+                                 "source_type": "api", "failure_reason": "Asked for by voice through Nova"}
+    assert all(headers == {"Authorization": "Bearer the-key"} for _, _, headers in http.posted)
+    assert http.timeouts == [SEARCH_TIMEOUT, REQUEST_TIMEOUT, REQUEST_TIMEOUT]
 
 
-def test_a_download_past_soulsyncs_own_time_limit_is_still_waited_for(soulsync, http):
-    # SoulSync stops following it, but the download may still be running, so the watch
-    # goes on to Nova's own time limit, with Navidrome to say whether it landed.
-    http.progress = [_request("downloading", timed_out=True)]
-    assert soulsync.song_progress(RECORDED_ID) == Progress("waiting")
+def test_an_album_given_as_more_than_a_name_goes_on_the_wishlist_as_it_is(soulsync, http):
+    album = {"name": "GOOBA", "id": "made-up-album"}
+    http.answers[SEARCH] = _found(_track("GOOBA", "6ix9ine", album))
+    soulsync.request_song(soulsync.find_song("Gooba", "6ix9ine"))
+    assert http.posted[1][1]["track_data"]["album"] == album
 
 
-def test_a_request_soulsync_has_cleared_away_is_still_waited_for(soulsync, http):
-    # SoulSync forgets a request a while after it ends, so a 404 says nothing about
-    # whether it came down - Navidrome decides.
-    http.progress = [SONG_EXPIRED]
-    assert soulsync.song_progress(RECORDED_ID) == Progress("waiting")
+def test_a_song_already_on_the_wishlist_is_still_requested(soulsync, http, caplog):
+    caplog.set_level(logging.INFO)
+    http.answers[WISHLIST] = ALREADY_WISHED_FOR
 
+    soulsync.request_song(soulsync.find_song("Gooba", "6ix9ine"))
+
+    # Started all the same, so it comes down now rather than at the wishlist's next run.
+    assert [url for url, _, _ in http.posted] == [SEARCH, WISHLIST, PROCESS]
+    assert "already on SoulSync's wishlist" in caplog.text
+
+
+def test_a_song_still_comes_down_when_the_wishlist_couldnt_be_started(soulsync, http, caplog):
+    # It's on SoulSync's wishlist either way, so it comes down at the wishlist's next run.
+    http.answers[PROCESS] = _refusal(500, "INTERNAL_ERROR", "The wishlist is already being processed")
+    soulsync.request_song(soulsync.find_song("Gooba", "6ix9ine"))
+    assert "wishlist" in caplog.text
+
+
+def test_a_song_is_only_waited_for_as_navidrome_decides(soulsync, http):
+    song = soulsync.find_song("Gooba", "6ix9ine")
+    soulsync.request_song(song)
+    posted = len(http.posted)
+    assert soulsync.song_progress(song) == Progress("waiting")
+    assert len(http.posted) == posted
+
+
+@pytest.mark.parametrize("found", [
+    _found(), _envelope({"source": "deezer"}),
+    # Only a clean version, and only another artist's.
+    _found(_track("Gooba (Clean)", "6ix9ine"), _track("Gooba", "Someone Else"))])
+def test_no_song_found_that_will_do_says_so(soulsync, http, found):
+    http.answers[SEARCH] = found
+    with pytest.raises(SoulSyncError) as error:
+        soulsync.find_song("Gooba", "6ix9ine")
+    assert error.value.reason == "SoulSync couldn't find it."
+    assert [url for url, _, _ in http.posted] == [SEARCH]
+
+
+def test_a_misheard_artist_spelt_like_the_one_found_is_taken_for_exactly_the_title():
+    # "Gunner - Endless", live on 12 November - speech to text's mishearing of Gunna -
+    # found Gunna's "endless" first.
+    endless = _track("endless", "Gunna")
+    assert pick_track([endless], "Endless", "Gunner") is endless
+    # Not another title, though, nor an artist only a little like it.
+    assert pick_track([_track("Endless Love", "Gunna")], "Endless", "Gunner") is None
+    assert pick_track([_track("Endless", "Guns N' Roses")], "Endless", "Gunner") is None
+
+
+def test_the_studio_song_is_picked_over_live_and_demo_ones():
+    # "Gary Numan - M.E.", live on 12 November, found it, then live and demo versions.
+    live, demo = _track("M.E. (Live 79)", "Gary Numan"), _track("M.E. (Demo Version)", "Gary Numan")
+    studio = _track("M.E.", "Gary Numan", "The Pleasure Principle")
+    assert pick_track([live, demo, studio], "M.E.", "Gary Numan") is studio
+    assert pick_track([live, demo], "M.E.", "Gary Numan") is None
+    # Unless it's the version asked for.
+    assert pick_track([demo, studio, live], "M.E. live", "Gary Numan") is live
+
+
+@pytest.mark.parametrize("name", ["Gooba (Remix)", "Gooba - Acoustic", "Gooba [Instrumental]", "Gooba (Sped Up)",
+                                  "Gooba (Slowed)", "Gooba (Karaoke Version)", "Gooba - Live at Wembley"])
+def test_another_version_of_a_song_isnt_picked(name):
+    assert pick_track([_track(name, "6ix9ine")], "Gooba", "6ix9ine") is None
+
+
+@pytest.mark.parametrize("name, album", [
+    ("Gooba (Clean)", "GOOBA"), ("Gooba - Radio Edit", "GOOBA"), ("Gooba [Edited]", "GOOBA"),
+    ("Gooba (Censored Version)", "GOOBA"), ("Gooba", "GOOBA (Clean)"), ("Gooba", {"name": "GOOBA - Clean Version"})])
+def test_a_clean_version_of_a_song_is_never_picked(name, album):
+    assert pick_track([_track(name, "6ix9ine", album)], "Gooba", "6ix9ine") is None
+
+
+def test_a_song_called_clean_is_its_title_not_a_version():
+    # Only a bracketed or dashed part saying so makes it one, as navidrome.is_clean has it.
+    clean = _track("Clean", "Taylor Swift", "1989")
+    assert pick_track([clean], "Clean", "Taylor Swift") is clean
+    credit = _track("Gooba (feat. Clean Bandit)", "6ix9ine")
+    assert pick_track([credit], "Gooba", "6ix9ine") is credit
+
+
+def test_a_song_is_by_the_artist_only_with_every_word_of_their_name():
+    # Mac Miller isn't Fleetwood Mac, nor spelt enough like it to be a mishearing.
+    assert pick_track([_track("Dreams", "Mac Miller")], "Dreams", "Fleetwood Mac") is None
+    featuring = _track("Dreams", "Someone Else", artists=["Someone Else", "Fleetwood Mac"])
+    assert pick_track([featuring], "Dreams", "Fleetwood Mac") is featuring
+    together = _track("No Church in the Wild", "Jay-Z", artists=["Jay-Z", "Kanye West"])
+    assert pick_track([together], "No Church in the Wild", "Jay-Z and Kanye West") is together
+
+
+def test_the_first_song_which_will_do_is_picked_with_every_word_of_the_title():
+    # SoulSync lists its best guesses first.
+    first, second = _track("Gooba", "6ix9ine"), _track("Gooba", "Someone Else")
+    assert pick_track([first, second], "Gooba", None) is first
+    assert pick_track([second, first], "Gooba", None) is second
+    longer = _track("Gooba Gooba", "6ix9ine")
+    assert pick_track([longer, first], "Gooba", "6ix9ine") is longer
+    assert pick_track([_track("Goo", "6ix9ine")], "Gooba", "6ix9ine") is None
+
+
+# An album
 
 def test_an_album_is_found_then_requested_through_mcp(soulsync, http):
     request = soulsync.request_album("Rumours", "Fleetwood Mac")
@@ -237,7 +320,7 @@ def test_an_album_is_only_waited_for_as_soulsync_gives_nothing_to_follow(soulsyn
     request = soulsync.request_album("Rumours", "Fleetwood Mac")
     calls = len(http.mcp_calls)
     assert soulsync.album_progress(request) == Progress("waiting")
-    assert len(http.mcp_calls) == calls and http.got == []
+    assert len(http.mcp_calls) == calls and http.posted == []
 
 
 def test_an_album_still_comes_down_when_the_wishlist_couldnt_be_started(soulsync, http, caplog):
@@ -374,27 +457,29 @@ def test_a_tool_soulsync_says_failed_gives_its_own_words(soulsync, http):
     assert error.value.reason == "SoulSync said: This needs an admin key."
 
 
+# When it goes wrong
+
 def test_an_error_soulsync_answers_with_gives_its_own_words(soulsync, http):
-    http.request_answer = _refusal(400, "BAD_REQUEST", "query is required")
+    song = soulsync.find_song("Gooba", "6ix9ine")
+    http.answers[SEARCH] = _refusal(400, "BAD_REQUEST", "query is required")
     with pytest.raises(SoulSyncError) as error:
-        soulsync.request_song("Gooba", None)
+        soulsync.find_song("Gooba", None)
     assert error.value.reason == "SoulSync said: query is required."
 
+    http.answers[WISHLIST] = _refusal(400, "BAD_REQUEST", "track_data is required")
+    with pytest.raises(SoulSyncError) as error:
+        soulsync.request_song(song)
+    assert error.value.reason == "SoulSync said: track_data is required."
 
-def test_a_refused_key_says_which_key_to_check(soulsync, http):
-    # Answered with NO_KEY, as SoulSync answers without one.
-    http.request_answer = http.mcp_answer = NO_KEY
-    http.progress = [NO_KEY]
-    for ask in (lambda: soulsync.request_song("Gooba", "6ix9ine"), lambda: soulsync.song_progress(RECORDED_ID),
-                lambda: soulsync.request_album("Rumours", "Fleetwood Mac")):
-        with pytest.raises(SoulSyncError) as error:
-            ask()
-        assert error.value.reason == "SoulSync didn't accept its key, so SOULSYNC_API_KEY under Keys needs checking."
 
+@pytest.mark.parametrize("refusal", [
+    NO_KEY,
     # A key it knows but won't let request anything - one which can only read - is the same key to check.
-    http.request_answer = http.mcp_answer = _refusal(403, "FORBIDDEN", "This key can't do that")
-    http.progress = [_refusal(403, "FORBIDDEN", "This key can't do that")]
-    for ask in (lambda: soulsync.request_song("Gooba", "6ix9ine"), lambda: soulsync.song_progress(RECORDED_ID),
+    _refusal(403, "FORBIDDEN", "This key can't do that")])
+def test_a_refused_key_says_which_key_to_check(soulsync, http, refusal):
+    song = soulsync.find_song("Gooba", "6ix9ine")
+    http.rest_answer = http.mcp_answer = refusal
+    for ask in (lambda: soulsync.find_song("Gooba", "6ix9ine"), lambda: soulsync.request_song(song),
                 lambda: soulsync.request_album("Rumours", "Fleetwood Mac")):
         with pytest.raises(SoulSyncError) as error:
             ask()
@@ -404,7 +489,8 @@ def test_a_refused_key_says_which_key_to_check(soulsync, http):
 def test_soulsync_out_of_reach_is_said_plainly_and_the_key_never_logged(soulsync, http, caplog):
     # The fake raises requests.ConnectionError - with the key in it, to show its words aren't logged.
     http.fail = requests.ConnectionError("Authorization: Bearer the-key")
-    for ask in (lambda: soulsync.request_song("Gooba", "6ix9ine"), lambda: soulsync.song_progress(RECORDED_ID),
+    song = SongRequest("GOOBA", "6ix9ine", GOOBA_FOUND)
+    for ask in (lambda: soulsync.find_song("Gooba", "6ix9ine"), lambda: soulsync.request_song(song),
                 lambda: soulsync.request_album("Rumours", "Fleetwood Mac")):
         with pytest.raises(SoulSyncError) as error:
             ask()
@@ -415,23 +501,25 @@ def test_soulsync_out_of_reach_is_said_plainly_and_the_key_never_logged(soulsync
 def test_soulsync_too_slow_to_answer_isnt_answering(soulsync, http):
     http.fail = requests.Timeout("Read timed out")
     with pytest.raises(SoulSyncError) as error:
-        soulsync.song_progress(RECORDED_ID)
+        soulsync.find_song("Gooba", "6ix9ine")
     assert error.value.reason == "SoulSync isn't answering."
 
 
 def test_an_answer_which_isnt_json_is_an_error_with_no_reason(soulsync, http, caplog):
-    http.progress = [(502, None)]
+    http.answers[SEARCH] = (502, None)
     with pytest.raises(SoulSyncError) as error:
-        soulsync.song_progress(RECORDED_ID)
+        soulsync.find_song("Gooba", "6ix9ine")
     assert error.value.reason is None and "502" in caplog.text
 
 
 def test_with_no_network_soulsync_isnt_asked_at_all(soulsync, http, monkeypatch):
     monkeypatch.setattr(network, "online", lambda: False)
     with pytest.raises(SoulSyncError) as error:
-        soulsync.request_song("Gooba", "6ix9ine")
+        soulsync.find_song("Gooba", "6ix9ine")
     assert error.value.reason == "SoulSync isn't answering." and http.timeouts == []
 
+
+# Set up or not
 
 def test_it_is_made_only_with_an_address_and_a_key(make_config):
     assert SoulSync.from_config(make_config(soulsync={"url": ""}), "the-key") is None
