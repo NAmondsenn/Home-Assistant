@@ -105,7 +105,7 @@ Where the project stands, using the finding IDs from the audit of 19 October 202
 
 ## Outside the code
 
-- [ ] Sign out the Google sessions and old Tailscale machines whose cookies were in Git history
-- [ ] Ask GitHub Support to purge the cached old commits
-- [ ] Delete the old backups (`nova-backup.tgz` on the Mac, the `.bundle` on the Windows PC)
-- [ ] Consider new Anthropic and Spotify keys, in case either was ever in `.bash_history`
+- [x] Sign out the Google sessions and old Tailscale machines whose cookies were in Git history - done by November 2026
+- [ ] Ask GitHub Support to purge the cached old commits - a ticket was started on 8 November 2026; done once GitHub Support says so
+- [x] Delete the old backups (`nova-backup.tgz` on the Mac, the `.bundle` on the Windows PC) - neither was there any more in November 2026
+- [x] Consider new Anthropic and Spotify keys, in case either was ever in `.bash_history` - both replaced
